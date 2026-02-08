@@ -1,0 +1,398 @@
+from abc import abstractmethod
+
+from mcp.types import ServerCapabilities
+
+from .base import BaseRule, RuleResult, RuleSeverity, requires_capabilities
+from .registry import register_rule
+
+
+class CapabilityBaseRule(BaseRule):
+    """Base class for all capabilities related audit rules.
+
+    This abstract base class provides common functionality for rules that
+    validate MCP server capabilities compliance. It handles the case where
+    no capabilities info is available and delegates the actual validation
+    to subclasses via the _check_capabilities method.
+    """
+
+    group_name = "capabilities"
+    group_order = 3
+
+    @requires_capabilities
+    def check(self, capabilities: ServerCapabilities | None) -> RuleResult:
+        """Execute the capabilities rule check.
+
+        Args:
+            capabilities: The capabilities info to validate
+
+        Returns:
+            RuleResult indicating whether the capabilities check passed
+
+        """
+        if capabilities is None:
+            return RuleResult(
+                rule_name=self.rule_name,
+                severity=self.severity,
+                passed=False,
+                message="❌ Capabilities object is not available",
+                details={"capabilities": None},
+            )
+
+        return self._check_capabilities(capabilities)
+
+    @abstractmethod
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """Perform the actual capabilities' validation.
+
+        Args:
+            capabilities: The capabilities to validate
+
+        Returns:
+            RuleResult with the validation outcome
+
+        Note:
+            This method must be implemented by subclasses to define
+            the specific validation logic for each rule type.
+
+        """
+        ...
+
+
+@register_rule
+class CapabilityToolsPresentRule(CapabilityBaseRule):
+    """Critical check: Verify that capabilities.tools is present."""
+
+    rule_id = "capability_tools_present"
+    rule_order = 1
+
+    @property
+    def rule_name(self) -> str:
+        return "Capabilities - Tools Present"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.CRITICAL
+
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """Critical check: Verify that capabilities.tools is present.
+
+        Args:
+            capabilities: Server capabilities to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        if not hasattr(capabilities, "tools") or not capabilities.tools:
+            passed = False
+            message = "❌ Tools is not present in capabilities"
+        else:
+            passed = True
+            message = "✅ Tools capability is present"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"capability_tools": getattr(capabilities, "tools", None)},
+        )
+
+
+@register_rule
+class CapabilityToolsListChangedRule(CapabilityBaseRule):
+    """High check: Verify that capabilities.tools has listChanged implemented."""
+
+    rule_id = "capability_tools_list_changed"
+    rule_order = 2
+
+    @property
+    def rule_name(self) -> str:
+        return "Capabilities - Tools listChanged Implemented"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """High check: Verify that capabilities.tools has listChanged implemented.
+
+        Args:
+            capabilities: Server capabilities to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        if not hasattr(capabilities, "tools") or not capabilities.tools:
+            passed = False
+            message = "❌ Tools is not present in capabilities"
+        elif not capabilities.tools.listChanged:
+            passed = False
+            message = "❌ listChanged is not supported by Tools"
+        else:
+            passed = True
+            message = f"✅ Tools support listChanged: '{capabilities.tools}'"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"capability_tools": getattr(capabilities, "tools", None)},
+        )
+
+
+@register_rule
+class CapabilityPromptsPresentRule(CapabilityBaseRule):
+    """Critical check: Verify that capabilities.prompts is present."""
+
+    rule_id = "capability_prompts_present"
+    rule_order = 3
+
+    @property
+    def rule_name(self) -> str:
+        return "Capabilities - Prompts Present"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.CRITICAL
+
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """Critical check: Verify that capabilities.prompts is present.
+
+        Args:
+            capabilities: Server capabilities to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        if not hasattr(capabilities, "prompts") or not capabilities.prompts:
+            passed = False
+            message = "❌ Prompts is not present in capabilities"
+        else:
+            passed = True
+            message = "✅ Prompts capability is present"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"capability_prompts": getattr(capabilities, "prompts", None)},
+        )
+
+
+@register_rule
+class CapabilityPromptsListChangedRule(CapabilityBaseRule):
+    """High check: Verify that capabilities.prompts has listChanged implemented."""
+
+    rule_id = "capability_prompts_list_changed"
+    rule_order = 4
+
+    @property
+    def rule_name(self) -> str:
+        return "Capabilities - Prompts listChanged Implemented"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """High check: Verify that capabilities.prompts has listChanged implemented.
+
+        Args:
+            capabilities: Server capabilities to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        if not hasattr(capabilities, "prompts") or not capabilities.prompts:
+            passed = False
+            message = "❌ Prompts is not present in capabilities"
+        elif not capabilities.prompts.listChanged:
+            passed = False
+            message = "❌ listChanged is not supported by Prompts"
+        else:
+            passed = True
+            message = f"✅ Prompts support listChanged: '{capabilities.prompts}'"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"capability_prompts": getattr(capabilities, "prompts", None)},
+        )
+
+
+@register_rule
+class CapabilityResourcesPresentRule(CapabilityBaseRule):
+    """Critical check: Verify that capabilities.resources is present."""
+
+    rule_id = "capability_resources_present"
+    rule_order = 5
+
+    @property
+    def rule_name(self) -> str:
+        return "Capabilities - Resources Present"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.CRITICAL
+
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """Critical check: Verify that capabilities.resources is present.
+
+        Args:
+            capabilities: Server capabilities to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        if not hasattr(capabilities, "resources") or not capabilities.resources:
+            passed = False
+            message = "❌ Resources is not present in capabilities"
+        else:
+            passed = True
+            message = "✅ Resources capability is present"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"capability_resources": getattr(capabilities, "resources", None)},
+        )
+
+
+@register_rule
+class CapabilityResourcesListChangedRule(CapabilityBaseRule):
+    """High check: Verify that capabilities.resources has listChanged implemented."""
+
+    rule_id = "capability_resources_list_changed"
+    rule_order = 6
+
+    @property
+    def rule_name(self) -> str:
+        return "Capabilities - Resources listChanged Implemented"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """High check: Verify that capabilities.resources has listChanged implemented.
+
+        Args:
+            capabilities: Server capabilities to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        if not hasattr(capabilities, "resources") or not capabilities.resources:
+            passed = False
+            message = "❌ Resources is not present in capabilities"
+        elif not capabilities.resources.listChanged:
+            passed = False
+            message = "❌ listChanged is not supported by Resources"
+        else:
+            passed = True
+            message = f"✅ Resources support listChanged: '{capabilities.resources}'"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"capability_resources": getattr(capabilities, "resources", None)},
+        )
+
+
+@register_rule
+class CapabilityResourcesSubscribeRule(CapabilityBaseRule):
+    """High check: Verify that capabilities.resources has subscribe implemented."""
+
+    rule_id = "capability_resources_subscribe"
+    rule_order = 7
+
+    @property
+    def rule_name(self) -> str:
+        return "Capabilities - Resources subscribe Implemented"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """High check: Verify that capabilities.resources has subscribe implemented.
+
+        Args:
+            capabilities: Server capabilities to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        if not hasattr(capabilities, "resources") or not capabilities.resources:
+            passed = False
+            message = "❌ Resources is not present in capabilities"
+        elif not capabilities.resources.subscribe:
+            passed = False
+            message = "❌ subscribe is not supported by Resources"
+        else:
+            passed = True
+            message = f"✅ Resources support subscribe: '{capabilities.resources}'"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"capability_resources": getattr(capabilities, "resources", None)},
+        )
+
+
+@register_rule
+class CapabilityLoggingPresentRule(CapabilityBaseRule):
+    """Medium check: Verify that capabilities.logging is present."""
+
+    rule_id = "capability_logging_present"
+    rule_order = 8
+
+    @property
+    def rule_name(self) -> str:
+        return "Capabilities - Logging Present"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
+        """Medium check: Verify that capabilities.logging is present.
+
+        Args:
+            capabilities: Server capabilities to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        if not hasattr(capabilities, "logging") or not capabilities.logging:
+            passed = False
+            message = "❌ Logging is not present in capabilities"
+        else:
+            passed = True
+            message = f"✅ Logging capability is present: '{capabilities.logging}'"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"capability_logging": getattr(capabilities, "logging", None)},
+        )
