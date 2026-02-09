@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import wraps
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from mcp.types import Implementation, Prompt, Resource, ServerCapabilities, Tool
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from mcp.types import Implementation, Prompt, Resource, ServerCapabilities, Tool
 
 
 class RuleSeverity(IntEnum):
@@ -96,7 +100,9 @@ def requires_tools(func: Callable) -> Callable:
     return wrapper
 
 
-def requires_fields(*field_names: str) -> Callable:
+def requires_fields(
+    *field_names: str,
+) -> Callable[[Callable[..., RuleResult]], Callable[[BaseRule, AuditData], RuleResult]]:
     """Indicate this rule needs specific fields from audit_data.
 
     Args:
@@ -109,7 +115,9 @@ def requires_fields(*field_names: str) -> Callable:
 
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(
+        func: Callable[..., RuleResult],
+    ) -> Callable[[BaseRule, AuditData], RuleResult]:
         @wraps(func)
         def wrapper(self: BaseRule, audit_data: AuditData) -> RuleResult:
             # Extract the requested fields from audit_data
@@ -127,7 +135,9 @@ def requires_fields(*field_names: str) -> Callable:
     return decorator
 
 
-def requires_full_data(func: Callable) -> Callable:
+def requires_full_data(
+    func: Callable[[BaseRule, AuditData], RuleResult],
+) -> Callable[[BaseRule, AuditData], RuleResult]:
     """Indicate this rule needs the full AuditData object."""
 
     @wraps(func)

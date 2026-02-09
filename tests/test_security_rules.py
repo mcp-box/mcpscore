@@ -158,7 +158,9 @@ class TestErrorDataLeakRule:
     def test_stack_trace_leak_fails(self, rule):
         """Test that stack trace leakage fails."""
         audit_data = AuditData(
-            error_response='Traceback (most recent call last):\n  File "server.py", line 10, in main\n    raise Exception("Error")'
+            error_response=(
+                'Traceback (most recent call last):\n  File "server.py", line 10, in main\n    raise Exception("Error")'
+            )
         )
 
         result = rule.check(audit_data)

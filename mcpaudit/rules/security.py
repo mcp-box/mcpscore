@@ -1,4 +1,5 @@
 import re
+from typing import ClassVar
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_fields
 from .registry import register_rule
@@ -28,7 +29,7 @@ class TLSEnabledRule(BaseRule):
         return RuleSeverity.CRITICAL
 
     @requires_fields("url", "tls_verified", "tls_version")
-    def check(self, url: str | None, tls_verified: bool | None, tls_version: str | None) -> RuleResult:
+    def check(self, url: str | None, tls_verified: bool | None, tls_version: str | None) -> RuleResult:  # type: ignore[override]
         """Check if HTTPS/TLS is enabled and properly configured.
 
         Args:
@@ -118,7 +119,7 @@ class MalformedRequestHandlingRule(BaseRule):
         return RuleSeverity.MEDIUM
 
     @requires_fields("error_response", "transport_type")
-    def check(self, error_response: str | None, transport_type: str | None) -> RuleResult:
+    def check(self, error_response: str | None, transport_type: str | None) -> RuleResult:  # type: ignore[override]
         """Check if server handles malformed requests properly.
 
         Args:
@@ -145,7 +146,7 @@ class MalformedRequestHandlingRule(BaseRule):
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=True,
-                message="ℹ️ Malformed request handling test not performed",
+                message="[INFO] Malformed request handling test not performed",
                 details={"reason": "test_not_performed"},
             )
 
@@ -204,7 +205,7 @@ class ErrorDataLeakRule(BaseRule):
     rule_order = 3
 
     # Patterns that indicate sensitive data leakage
-    SENSITIVE_PATTERNS = [
+    SENSITIVE_PATTERNS: ClassVar[list[tuple[str, str]]] = [
         (r"/home/\w+", "file path"),
         (r"/usr/\w+", "file path"),
         (r"C:\\Users\\", "file path"),
@@ -226,7 +227,7 @@ class ErrorDataLeakRule(BaseRule):
         return RuleSeverity.MEDIUM
 
     @requires_fields("error_response")
-    def check(self, error_response: str | None) -> RuleResult:
+    def check(self, error_response: str | None) -> RuleResult:  # type: ignore[override]
         """Check if error responses leak sensitive data.
 
         Args:
@@ -241,7 +242,7 @@ class ErrorDataLeakRule(BaseRule):
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=True,
-                message="ℹ️ No error response to analyze",
+                message="[INFO] No error response to analyze",
                 details={"reason": "no_error_response"},
             )
 
@@ -258,7 +259,7 @@ class ErrorDataLeakRule(BaseRule):
                 )
 
         if leaks_found:
-            leak_types = ", ".join(set(leak["type"] for leak in leaks_found))
+            leak_types = ", ".join({leak["type"] for leak in leaks_found})
             return RuleResult(
                 rule_name=self.rule_name,
                 severity=self.severity,

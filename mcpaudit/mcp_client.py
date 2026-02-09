@@ -156,18 +156,17 @@ class MCPClient:
             return True
         except FileNotFoundError as e:
             if is_python:
-                logger.error("Python interpreter not found. Please ensure Python is installed and on PATH.")
+                logger.exception("Python interpreter not found. Please ensure Python is installed and on PATH.")
             else:
-                logger.error("Node.js not found. Please ensure Node.js is installed and on PATH.")
+                logger.exception("Node.js not found. Please ensure Node.js is installed and on PATH.")
             logger.debug("Error details: %s", e)
             return False
         except PermissionError as e:
-            logger.error("Permission denied accessing server script: %s", server_script_path)
+            logger.exception("Permission denied accessing server script: %s", server_script_path)
             logger.debug("Error details: %s", e)
             return False
-        except Exception as e:
-            logger.error("Failed to connect to MCP server: %s", e)
-            logger.debug("Full error details:", exc_info=True)
+        except Exception:
+            logger.exception("Failed to connect to MCP server")
             return False
 
     async def _connect_with_streamable_http(self, server_url: str) -> bool:
@@ -205,8 +204,8 @@ class MCPClient:
 
             # Establish connection using MCP SDK's streamable_http_client
             start_time = time.perf_counter()
-            read_stream, write_stream = await self.exit_stack.enter_async_context(
-                streamable_http_client(server_url, http_client=lambda: client)
+            read_stream, write_stream, _session_id_callback = await self.exit_stack.enter_async_context(
+                streamable_http_client(server_url, http_client=client)
             )
 
             self.session = await self.exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
@@ -220,20 +219,19 @@ class MCPClient:
             return True
 
         except httpx.ConnectError as e:
-            logger.error("Connection refused or server unreachable: %s", server_url)
+            logger.exception("Connection refused or server unreachable: %s", server_url)
             logger.debug("Error details: %s", e)
             return False
         except httpx.TimeoutException as e:
-            logger.error("Connection timeout for server: %s", server_url)
+            logger.exception("Connection timeout for server: %s", server_url)
             logger.debug("Error details: %s", e)
             return False
         except httpx.HTTPStatusError as e:
-            logger.error("HTTP error %s from server: %s", e.response.status_code, server_url)
+            logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
             logger.debug("Error details: %s", e)
             return False
-        except Exception as e:
-            logger.error("Failed to connect to MCP server via Streamable HTTP: %s", e)
-            logger.debug("Full error details:", exc_info=True)
+        except Exception:
+            logger.exception("Failed to connect to MCP server via Streamable HTTP")
             return False
 
     async def _connect_with_sse(self, server_url: str) -> bool:
@@ -270,9 +268,17 @@ class MCPClient:
             )
 
             # Establish connection using MCP SDK's sse_client
+            # Create a factory that ignores extra parameters since we already have a client
+            def client_factory(
+                headers: dict[str, str] | None = None,
+                timeout: httpx.Timeout | None = None,
+                auth: httpx.Auth | None = None,
+            ) -> httpx.AsyncClient:
+                return client
+
             start_time = time.perf_counter()
             read_stream, write_stream = await self.exit_stack.enter_async_context(
-                sse_client(server_url, httpx_client_factory=lambda: client)
+                sse_client(server_url, httpx_client_factory=client_factory)
             )
 
             self.session = await self.exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
@@ -286,20 +292,19 @@ class MCPClient:
             return True
 
         except httpx.ConnectError as e:
-            logger.error("Connection refused or server unreachable: %s", server_url)
+            logger.exception("Connection refused or server unreachable: %s", server_url)
             logger.debug("Error details: %s", e)
             return False
         except httpx.TimeoutException as e:
-            logger.error("Connection timeout for server: %s", server_url)
+            logger.exception("Connection timeout for server: %s", server_url)
             logger.debug("Error details: %s", e)
             return False
         except httpx.HTTPStatusError as e:
-            logger.error("HTTP error %s from server: %s", e.response.status_code, server_url)
+            logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
             logger.debug("Error details: %s", e)
             return False
-        except Exception as e:
-            logger.error("Failed to connect to MCP server via SSE: %s", e)
-            logger.debug("Full error details:", exc_info=True)
+        except Exception:
+            logger.exception("Failed to connect to MCP server via SSE")
             return False
 
     async def initialize(self) -> InitializeResult | None:

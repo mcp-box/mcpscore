@@ -26,7 +26,7 @@ class SSETransportSupportRule(BaseRule):
         return RuleSeverity.LOW
 
     @requires_fields("transport_type", "url")
-    def check(self, transport_type: str | None, url: str | None) -> RuleResult:
+    def check(self, transport_type: str | None, url: str | None) -> RuleResult:  # type: ignore[override]
         """Check if server supports SSE transport.
 
         Args:
@@ -43,7 +43,7 @@ class SSETransportSupportRule(BaseRule):
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=True,
-                message="ℹ️ SSE transport not applicable for stdio connections",
+                message="[INFO] SSE transport not applicable for stdio connections",
                 details={"transport_type": transport_type},
             )
 
@@ -63,7 +63,7 @@ class SSETransportSupportRule(BaseRule):
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
-                message="⚠️ Server uses Streamable HTTP but not SSE. Consider adding SSE support for better performance.",
+                message="Server uses Streamable HTTP but not SSE. Consider adding SSE support for better performance.",
                 details={"transport_type": transport_type, "url": url},
             )
 
@@ -72,6 +72,6 @@ class SSETransportSupportRule(BaseRule):
             rule_name=self.rule_name,
             severity=self.severity,
             passed=False,
-            message=f"ℹ️ Unknown transport type: {transport_type}",
+            message=f"[INFO] Unknown transport type: {transport_type}",
             details={"transport_type": transport_type, "url": url},
         )
