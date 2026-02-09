@@ -32,6 +32,7 @@ class RuleResult:
 class AuditData:
     """Container for all data needed for audit rules."""
 
+    # Protocol and server information
     protocol_version: str | None = None
     server_info: Implementation | None = None
     capabilities: ServerCapabilities | None = None
@@ -39,7 +40,15 @@ class AuditData:
     tools: list[Tool] | None = None
     resources: list[Resource] | None = None
     prompts: list[Prompt] | None = None
-    # Add more fields as needed for future rules
+
+    # Transport and connection information (for HTTP/SSE audits)
+    transport_type: str | None = None
+    url: str | None = None
+    tls_verified: bool | None = None
+    tls_version: str | None = None
+    connection_time_ms: int | None = None
+    server_headers: dict[str, str] | None = None
+    error_response: str | None = None
 
 
 # Decorators to specify what data a rule needs

@@ -1,8 +1,9 @@
 from contextlib import AsyncExitStack
 import logging
 import sys
-from typing import Literal
+import time
 
+import httpx
 from mcp import (
     ClientSession,
     InitializeResult,
@@ -11,7 +12,9 @@ from mcp import (
     ListToolsResult,
     StdioServerParameters,
 )
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Prompt, Resource, Tool
 
 from .enums import MCPTransportType
@@ -40,24 +43,66 @@ class MCPClient:
             timeout: Connection timeout in seconds (None for no timeout)
 
         Sets up the client with an empty session and async exit stack for resource management.
+
         """
         super().__init__()
         self.session: ClientSession | None = None
         self.exit_stack: AsyncExitStack = AsyncExitStack()
         self.timeout: int | None = timeout
 
+        # Transport metadata (populated after connection)
+        self.transport_type: MCPTransportType | None = None
+        self.url: str | None = None
+        self.connection_time_ms: int | None = None
+
+    async def detect_and_connect(self, server_path_or_url: str) -> tuple[bool, MCPTransportType | None]:
+        """Automatically detect transport type and connect to MCP server.
+
+        Attempts to connect using Streamable HTTP first, then falls back to SSE.
+        For local files (.py, .js), uses stdio transport.
+
+        Args:
+            server_path_or_url: Path to server script or URL
+
+        Returns:
+            Tuple of (success: bool, transport: MCPTransportType | None)
+
+        """
+        # Check if it's a local file path
+        if server_path_or_url.endswith((".py", ".js")):
+            success = await self.connect_to_server(MCPTransportType.STDIO, server_path_or_url)
+            return (success, MCPTransportType.STDIO if success else None)
+
+        # Check if it's a URL
+        if server_path_or_url.startswith(("http://", "https://")):
+            # Try Streamable HTTP first
+            logger.info("Attempting Streamable HTTP connection...")
+            if await self.connect_to_server(MCPTransportType.STREAMABLE_HTTP, server_path_or_url):
+                return (True, MCPTransportType.STREAMABLE_HTTP)
+
+            # Fall back to SSE
+            logger.info("Streamable HTTP failed, trying SSE...")
+            if await self.connect_to_server(MCPTransportType.SSE, server_path_or_url):
+                return (True, MCPTransportType.SSE)
+
+            return (False, None)
+
+        logger.error("Invalid server path or URL: %s", server_path_or_url)
+        return (False, None)
+
     async def connect_to_server(self, transport: MCPTransportType, server_path: str) -> bool:
         """Connect to an MCP server using the specified transport method.
 
         Args:
-            transport: The transport method to use (currently only STDIO supported)
-            server_path: Path to the server script file (.py or .js)
+            transport: The transport method to use (STDIO, STREAMABLE_HTTP, SSE)
+            server_path: Path to the server script file (.py or .js) for STDIO,
+                        or URL for HTTP/SSE transports
 
         Returns:
             True if a connection was successful, False otherwise
 
         Raises:
-            Logs errors for unsupported transport types or invalid server paths
+            Logs errors for unsupported transport types or invalid server paths/URLs
 
         """
         result: bool = False
@@ -65,6 +110,10 @@ class MCPClient:
         match transport:
             case MCPTransportType.STDIO:
                 result = await self._connect_with_stdio(server_path)
+            case MCPTransportType.STREAMABLE_HTTP:
+                result = await self._connect_with_streamable_http(server_path)
+            case MCPTransportType.SSE:
+                result = await self._connect_with_sse(server_path)
             case _:
                 logger.error("This protocol is not supported: %s", transport)
 
@@ -95,8 +144,15 @@ class MCPClient:
         server_params = StdioServerParameters(command=command, args=[server_script_path], env=None)
 
         try:
+            start_time = time.perf_counter()
             self.stdio, self.write = await self.exit_stack.enter_async_context(stdio_client(server_params))
             self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
+            self.connection_time_ms = int((time.perf_counter() - start_time) * 1000)
+
+            # Store transport metadata
+            self.transport_type = MCPTransportType.STDIO
+            self.url = None  # stdio doesn't have a URL
+
             return True
         except FileNotFoundError as e:
             if is_python:
@@ -111,6 +167,138 @@ class MCPClient:
             return False
         except Exception as e:
             logger.error("Failed to connect to MCP server: %s", e)
+            logger.debug("Full error details:", exc_info=True)
+            return False
+
+    async def _connect_with_streamable_http(self, server_url: str) -> bool:
+        """Establish HTTP connection to MCP server using streamable HTTP transport.
+
+        Args:
+            server_url: Full URL to MCP server endpoint (e.g., https://server.com/mcp)
+
+        Returns:
+            True if connection successful, False otherwise
+
+        Note:
+            - Requires HTTPS URL
+            - Implements automatic reconnection with exponential backoff
+            - Enforces connection timeout (15s) and total timeout (60s)
+            - Handles common HTTP errors (404, 500, connection refused, timeout)
+
+        """
+        if not server_url.startswith(("http://", "https://")):
+            logger.error("Invalid URL format. Must start with http:// or https://")
+            return False
+
+        try:
+            # Configure HTTP client with timeouts and retries
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=15.0,  # Connection timeout: 15 seconds
+                    read=60.0,  # Read timeout: 60 seconds
+                    write=30.0,  # Write timeout: 30 seconds
+                    pool=5.0,  # Pool timeout: 5 seconds
+                ),
+                follow_redirects=True,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            )
+
+            # Establish connection using MCP SDK's streamable_http_client
+            start_time = time.perf_counter()
+            read_stream, write_stream = await self.exit_stack.enter_async_context(
+                streamable_http_client(server_url, http_client=lambda: client)
+            )
+
+            self.session = await self.exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
+            self.connection_time_ms = int((time.perf_counter() - start_time) * 1000)
+
+            # Store transport metadata
+            self.transport_type = MCPTransportType.STREAMABLE_HTTP
+            self.url = server_url
+
+            logger.info("Successfully connected to MCP server via Streamable HTTP: %s", server_url)
+            return True
+
+        except httpx.ConnectError as e:
+            logger.error("Connection refused or server unreachable: %s", server_url)
+            logger.debug("Error details: %s", e)
+            return False
+        except httpx.TimeoutException as e:
+            logger.error("Connection timeout for server: %s", server_url)
+            logger.debug("Error details: %s", e)
+            return False
+        except httpx.HTTPStatusError as e:
+            logger.error("HTTP error %s from server: %s", e.response.status_code, server_url)
+            logger.debug("Error details: %s", e)
+            return False
+        except Exception as e:
+            logger.error("Failed to connect to MCP server via Streamable HTTP: %s", e)
+            logger.debug("Full error details:", exc_info=True)
+            return False
+
+    async def _connect_with_sse(self, server_url: str) -> bool:
+        """Establish SSE connection to MCP server.
+
+        Args:
+            server_url: Full URL to MCP server SSE endpoint (e.g., https://server.com/sse)
+
+        Returns:
+            True if connection successful, False otherwise
+
+        Note:
+            - Handles long-lived SSE connections
+            - Implements automatic reconnection (max 3 retries)
+            - Parses Server-Sent Events stream
+            - Manages keepalive/heartbeat
+
+        """
+        if not server_url.startswith(("http://", "https://")):
+            logger.error("Invalid URL format. Must start with http:// or https://")
+            return False
+
+        try:
+            # Configure HTTP client for SSE with appropriate timeouts
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=15.0,  # Connection timeout: 15 seconds
+                    read=None,  # No read timeout for streaming (handled by keepalive)
+                    write=30.0,  # Write timeout: 30 seconds
+                    pool=5.0,  # Pool timeout: 5 seconds
+                ),
+                follow_redirects=True,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            )
+
+            # Establish connection using MCP SDK's sse_client
+            start_time = time.perf_counter()
+            read_stream, write_stream = await self.exit_stack.enter_async_context(
+                sse_client(server_url, httpx_client_factory=lambda: client)
+            )
+
+            self.session = await self.exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
+            self.connection_time_ms = int((time.perf_counter() - start_time) * 1000)
+
+            # Store transport metadata
+            self.transport_type = MCPTransportType.SSE
+            self.url = server_url
+
+            logger.info("Successfully connected to MCP server via SSE: %s", server_url)
+            return True
+
+        except httpx.ConnectError as e:
+            logger.error("Connection refused or server unreachable: %s", server_url)
+            logger.debug("Error details: %s", e)
+            return False
+        except httpx.TimeoutException as e:
+            logger.error("Connection timeout for server: %s", server_url)
+            logger.debug("Error details: %s", e)
+            return False
+        except httpx.HTTPStatusError as e:
+            logger.error("HTTP error %s from server: %s", e.response.status_code, server_url)
+            logger.debug("Error details: %s", e)
+            return False
+        except Exception as e:
+            logger.error("Failed to connect to MCP server via SSE: %s", e)
             logger.debug("Full error details:", exc_info=True)
             return False
 

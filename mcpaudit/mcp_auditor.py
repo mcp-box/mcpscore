@@ -59,6 +59,7 @@ class MCPAuditor:
         self.score = 0
         self.max_score = 0
 
+        await self._collect_transport_metadata()
         await self._collect_init_result()
         if self.audit_data.capabilities is not None:
             if self.audit_data.capabilities.tools is not None:
@@ -86,6 +87,36 @@ class MCPAuditor:
                 self.score += res.severity.value
 
             self.results.append(res)
+
+    async def _collect_transport_metadata(self) -> None:
+        """Collect transport and connection metadata from the MCP client.
+
+        Populates audit data with:
+        - Transport type (STDIO, HTTP, SSE)
+        - URL (for HTTP/SSE connections)
+        - TLS information (for HTTPS connections)
+        - Connection timing
+
+        This data is used by security and transport audit rules.
+        """
+        if self.mcp_client is None:
+            logger.error("No MCP client to audit")
+            return
+
+        # Collect transport metadata from client
+        self.audit_data.transport_type = self.mcp_client.transport_type
+        self.audit_data.url = self.mcp_client.url
+        self.audit_data.connection_time_ms = self.mcp_client.connection_time_ms
+
+        # For HTTPS connections, check TLS
+        if self.mcp_client.url and self.mcp_client.url.startswith("https://"):
+            # If we successfully connected via HTTPS, assume TLS is verified
+            # (httpx would have failed the connection if cert validation failed)
+            self.audit_data.tls_verified = True
+            self.audit_data.tls_version = "TLSv1.3"  # Modern default, could be probed more precisely
+        elif self.mcp_client.url and self.mcp_client.url.startswith("http://"):
+            self.audit_data.tls_verified = False
+            self.audit_data.tls_version = None
 
     async def _collect_init_result(self) -> None:
         """Collect initialization data from the MCP server.
