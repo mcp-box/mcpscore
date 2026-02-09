@@ -13,9 +13,9 @@ class SSETransportSupportRule(BaseRule):
     """
 
     rule_id = "transport_sse_support"
-    group_name = "features"  # Grouped under features as it's a capability
-    group_order = 2
-    rule_order = 10  # Run after other feature checks
+    group_name = "transport"
+    group_order = 5
+    rule_order = 1
 
     @property
     def rule_name(self) -> str:
