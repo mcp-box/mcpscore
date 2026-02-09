@@ -1,6 +1,6 @@
 from abc import abstractmethod
-import re
 from collections import Counter
+import re
 from typing import Any
 
 from mcp.types import Tool
@@ -172,9 +172,7 @@ class ToolsNamesUniqueRule(ToolsBaseRule):
 
         passed = len(duplicates) == 0
         message = (
-            "✅ All Tools have unique names"
-            if passed
-            else f"❌ Duplicate tool names found: {', '.join(duplicates)}"
+            "✅ All Tools have unique names" if passed else f"❌ Duplicate tool names found: {', '.join(duplicates)}"
         )
 
         return RuleResult(
