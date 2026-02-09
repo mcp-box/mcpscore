@@ -22,17 +22,22 @@ class TestMCPClientHTTP:
         """Test successful Streamable HTTP connection."""
         server_url = "https://example.com/mcp"
 
-        # Mock the streamablehttp_client context manager
+        # Mock the streamable_http_client context manager
         mock_read_stream = AsyncMock()
         mock_write_stream = AsyncMock()
+        mock_session_id_callback = MagicMock(return_value="test-session-id")
         mock_session = AsyncMock()
 
         with (
-            patch("mcpaudit.mcp_client.streamablehttp_client") as mock_client,
+            patch("mcpaudit.mcp_client.streamable_http_client") as mock_client,
             patch("mcpaudit.mcp_client.ClientSession", return_value=mock_session),
         ):
-            # Set up the mock to return streams
-            mock_client.return_value.__aenter__.return_value = (mock_read_stream, mock_write_stream)
+            # Set up the mock to return streams and session_id_callback
+            mock_client.return_value.__aenter__.return_value = (
+                mock_read_stream,
+                mock_write_stream,
+                mock_session_id_callback,
+            )
             mock_session.__aenter__.return_value = mock_session
 
             # Test connection
@@ -60,7 +65,7 @@ class TestMCPClientHTTP:
         """Test Streamable HTTP connection with connection refused."""
         server_url = "https://example.com/mcp"
 
-        with patch("mcpaudit.mcp_client.streamablehttp_client") as mock_client:
+        with patch("mcpaudit.mcp_client.streamable_http_client") as mock_client:
             # Simulate connection error
             mock_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
 
@@ -73,7 +78,7 @@ class TestMCPClientHTTP:
         """Test Streamable HTTP connection with timeout."""
         server_url = "https://example.com/mcp"
 
-        with patch("mcpaudit.mcp_client.streamablehttp_client") as mock_client:
+        with patch("mcpaudit.mcp_client.streamable_http_client") as mock_client:
             # Simulate timeout
             mock_client.return_value.__aenter__.side_effect = httpx.TimeoutException("Request timed out")
 
@@ -86,7 +91,7 @@ class TestMCPClientHTTP:
         """Test Streamable HTTP connection with HTTP error."""
         server_url = "https://example.com/mcp"
 
-        with patch("mcpaudit.mcp_client.streamablehttp_client") as mock_client:
+        with patch("mcpaudit.mcp_client.streamable_http_client") as mock_client:
             # Simulate 404 error
             mock_response = MagicMock()
             mock_response.status_code = 404
@@ -104,13 +109,18 @@ class TestMCPClientHTTP:
 
         mock_read_stream = AsyncMock()
         mock_write_stream = AsyncMock()
+        mock_session_id_callback = MagicMock(return_value="test-session-id")
         mock_session = AsyncMock()
 
         with (
-            patch("mcpaudit.mcp_client.streamablehttp_client") as mock_client,
+            patch("mcpaudit.mcp_client.streamable_http_client") as mock_client,
             patch("mcpaudit.mcp_client.ClientSession", return_value=mock_session),
         ):
-            mock_client.return_value.__aenter__.return_value = (mock_read_stream, mock_write_stream)
+            mock_client.return_value.__aenter__.return_value = (
+                mock_read_stream,
+                mock_write_stream,
+                mock_session_id_callback,
+            )
             mock_session.__aenter__.return_value = mock_session
 
             success, transport = await mcp_client.detect_and_connect(server_url)
@@ -128,7 +138,7 @@ class TestMCPClientHTTP:
         mock_session = AsyncMock()
 
         with (
-            patch("mcpaudit.mcp_client.streamablehttp_client") as mock_http_client,
+            patch("mcpaudit.mcp_client.streamable_http_client") as mock_http_client,
             patch("mcpaudit.mcp_client.sse_client") as mock_sse_client,
             patch("mcpaudit.mcp_client.ClientSession", return_value=mock_session),
         ):
@@ -151,13 +161,18 @@ class TestMCPClientHTTP:
 
         mock_read_stream = AsyncMock()
         mock_write_stream = AsyncMock()
+        mock_session_id_callback = MagicMock(return_value="test-session-id")
         mock_session = AsyncMock()
 
         with (
-            patch("mcpaudit.mcp_client.streamablehttp_client") as mock_client,
+            patch("mcpaudit.mcp_client.streamable_http_client") as mock_client,
             patch("mcpaudit.mcp_client.ClientSession", return_value=mock_session),
         ):
-            mock_client.return_value.__aenter__.return_value = (mock_read_stream, mock_write_stream)
+            mock_client.return_value.__aenter__.return_value = (
+                mock_read_stream,
+                mock_write_stream,
+                mock_session_id_callback,
+            )
             mock_session.__aenter__.return_value = mock_session
 
             await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, server_url)

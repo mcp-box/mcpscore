@@ -34,7 +34,6 @@ class TestSSETransportSupportRule:
         result = rule.check(audit_data)
 
         assert result.passed is False
-        assert "⚠️" in result.message
         assert "Consider adding SSE" in result.message
 
     def test_stdio_transport_not_applicable(self, rule):

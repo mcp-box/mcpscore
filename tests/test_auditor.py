@@ -62,7 +62,11 @@ async def test_auditor_collects_data_and_scores():
             super().__init__()
             self.protocolVersion = "2025-06-18"
             self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
-            self.capabilities = type("Caps", (), {})()
+            self.capabilities = type(
+                "Caps",
+                (),
+                {"tools": None, "resources": None, "prompts": None, "logging": None, "sampling": None},
+            )()
             self.instructions = "instr"
 
     auditor = MCPAuditor()
@@ -72,7 +76,9 @@ async def test_auditor_collects_data_and_scores():
     ]
 
     score, max_score = await auditor.audit(DummyClient(InitResult()))
-    assert score == (RuleSeverity.HIGH - RuleSeverity.MEDIUM)
+    # Score is sum of passed rules' severity values
+    assert score == RuleSeverity.HIGH
+    # Max score is sum of all rules' severity values
     assert max_score == (RuleSeverity.HIGH + RuleSeverity.MEDIUM)
 
     summary = auditor.get_audit_summary()
