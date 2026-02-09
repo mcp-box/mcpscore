@@ -34,6 +34,11 @@ from .protocol_version import (
     LatestVersionRule,
 )
 from .registry import RuleRegistry, create_all_rules
+from .security import (
+    ErrorDataLeakRule,
+    MalformedRequestHandlingRule,
+    TLSEnabledRule,
+)
 from .server_info import (
     ServerNamePresentRule,
     ServerTitlePresentRule,
@@ -46,6 +51,9 @@ from .tools import (
     ToolsNamePresentRule,
     ToolsOutputSchemaValidRule,
     ToolsTitlePresentRule,
+)
+from .transport import (
+    SSETransportSupportRule,
 )
 
 __all__ = (
@@ -60,13 +68,17 @@ __all__ = (
     "CapabilityResourcesSubscribeRule",
     "CapabilityToolsListChangedRule",
     "DeprecatedVersionRule",
+    "ErrorDataLeakRule",
     "LatestVersionRule",
+    "MalformedRequestHandlingRule",
     "RuleRegistry",
     "RuleResult",
     "RuleSeverity",
+    "SSETransportSupportRule",
     "ServerNamePresentRule",
     "ServerTitlePresentRule",
     "ServerVersionPresentRule",
+    "TLSEnabledRule",
     "ToolsAtLeastOneRule",
     "ToolsDescriptionPresentRule",
     "ToolsInputSchemaValidRule",
