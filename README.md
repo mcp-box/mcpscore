@@ -61,12 +61,24 @@ Run the auditor against a local MCP server script. The tool automatically detect
 
 ### Basic usage
 
+After installation, you can use the `mcpaudit` command:
+
 ```bash
 # Audit a Python MCP server
-python main.py path/to/your/server.py
+mcpaudit path/to/your/server.py
 
-# Audit a Node.js MCP server  
-python main.py path/to/your/server.js
+# Audit a Node.js MCP server
+mcpaudit path/to/your/server.js
+```
+
+**Alternative (backwards compatible):**
+
+```bash
+# Using uv run
+uv run mcpaudit path/to/your/server.py
+
+# Or using the legacy main.py
+python main.py path/to/your/server.py
 ```
 
 ### Example output
@@ -261,7 +273,7 @@ pip install -e .
 
 ```bash
 # Run the auditor during development
-uv run python main.py path/to/server.py
+uv run mcpaudit path/to/server.py
 
 # Run linting
 uv run ruff check .
@@ -274,9 +286,10 @@ uv run pytest
 
 ```
 MCPAudit/
-├── main.py                    # CLI entry point
+├── main.py                    # Legacy CLI wrapper (backwards compatibility)
 ├── mcpaudit/                  # Core package
 │   ├── __init__.py           # Package exports and documentation
+│   ├── cli.py                # CLI entry point (mcpaudit command)
 │   ├── mcp_client.py         # MCP client wrapper for server communication
 │   ├── mcp_auditor.py        # Audit orchestrator and workflow management
 │   ├── enums.py              # Enumerations and constants (protocol versions, transport types)

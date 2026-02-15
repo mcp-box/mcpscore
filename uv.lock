@@ -348,7 +348,7 @@ wheels = [
 [[package]]
 name = "mcpaudit"
 version = "0.2.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "httpx-sse" },
