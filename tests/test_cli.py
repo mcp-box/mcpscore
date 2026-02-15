@@ -71,9 +71,7 @@ class TestMain:
             main()
 
             # Verify basicConfig was called with correct parameters
-            mock_basic_config.assert_called_once_with(
-                level=logging.INFO, format="%(message)s"
-            )
+            mock_basic_config.assert_called_once_with(level=logging.INFO, format="%(message)s")
 
         # Check that asyncio.run was called
         mock_run.assert_called_once()
@@ -133,9 +131,7 @@ class TestAsyncMain:
         assert "Welcome to MCPAudit!" in caplog.text
 
         # Verify connection was attempted
-        mock_client.connect_to_server.assert_called_once_with(
-            MCPTransportType.STDIO, "/path/to/server.py"
-        )
+        mock_client.connect_to_server.assert_called_once_with(MCPTransportType.STDIO, "/path/to/server.py")
 
         # Verify success messages
         assert "Connected to the MCP server: /path/to/server.py" in caplog.text
@@ -246,9 +242,7 @@ class TestAsyncMain:
             await async_main()
 
         # Verify the custom path was used
-        mock_client.connect_to_server.assert_called_once_with(
-            MCPTransportType.STDIO, server_path
-        )
+        mock_client.connect_to_server.assert_called_once_with(MCPTransportType.STDIO, server_path)
         assert f"Connected to the MCP server: {server_path}" in caplog.text
 
     @pytest.mark.asyncio
@@ -410,9 +404,7 @@ class TestLogging:
             main()
 
             # Verify basicConfig was called with correct parameters
-            mock_basic_config.assert_called_once_with(
-                level=logging.INFO, format="%(message)s"
-            )
+            mock_basic_config.assert_called_once_with(level=logging.INFO, format="%(message)s")
 
     @pytest.mark.asyncio
     async def test_logging_messages_appear_correctly(
