@@ -13,3 +13,4 @@ wheels/
 
 # Other
 .idea
+.DS_Store
