@@ -137,6 +137,54 @@ class TestMCPClientSSE:
             assert transport is None
 
     @pytest.mark.asyncio
+    async def test_connect_with_sse_generic_exception(self, mcp_client, caplog):
+        """Test SSE connection with generic exception."""
+        server_url = "https://example.com/sse"
+
+        with patch("mcpaudit.mcp_client.sse_client") as mock_client:
+            # Simulate generic exception
+            mock_client.return_value.__aenter__.side_effect = RuntimeError("Unexpected error")
+
+            result = await mcp_client.connect_to_server(MCPTransportType.SSE, server_url)
+
+            assert result is False
+            assert "Failed to connect to MCP server via SSE" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_connect_with_sse_custom_client_factory(self, mcp_client):
+        """Test SSE connection with custom client factory."""
+        server_url = "https://example.com/sse"
+
+        mock_read_stream = AsyncMock()
+        mock_write_stream = AsyncMock()
+        mock_session = AsyncMock()
+
+        with (
+            patch("mcpaudit.mcp_client.sse_client") as mock_sse_client,
+            patch("mcpaudit.mcp_client.ClientSession", return_value=mock_session),
+        ):
+            # Verify client factory is called correctly
+            def check_client_factory_call(*args, **kwargs):
+                # Verify that httpx_client_factory parameter is passed
+                assert "httpx_client_factory" in kwargs
+                client_factory = kwargs["httpx_client_factory"]
+                # Test the factory returns an httpx.AsyncClient
+                client = client_factory()
+                assert client is not None
+                mock_context = MagicMock()
+                mock_context.__aenter__ = AsyncMock(return_value=(mock_read_stream, mock_write_stream))
+                mock_context.__aexit__ = AsyncMock()
+                return mock_context
+
+            mock_sse_client.side_effect = check_client_factory_call
+            mock_session.__aenter__.return_value = mock_session
+
+            result = await mcp_client.connect_to_server(MCPTransportType.SSE, server_url)
+
+            assert result is True
+            assert mcp_client.transport_type == MCPTransportType.SSE
+
+    @pytest.mark.asyncio
     async def test_cleanup_after_sse_connection(self, mcp_client):
         """Test cleanup after SSE connection."""
         server_url = "https://example.com/sse"

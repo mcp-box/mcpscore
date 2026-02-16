@@ -155,6 +155,56 @@ class TestMCPClientHTTP:
             assert transport == MCPTransportType.SSE
 
     @pytest.mark.asyncio
+    async def test_connect_with_streamable_http_generic_exception(self, mcp_client, caplog):
+        """Test Streamable HTTP connection with generic exception."""
+        server_url = "https://example.com/mcp"
+
+        with patch("mcpaudit.mcp_client.streamable_http_client") as mock_client:
+            # Simulate generic exception
+            mock_client.return_value.__aenter__.side_effect = RuntimeError("Unexpected error")
+
+            result = await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, server_url)
+
+            assert result is False
+            assert "Failed to connect to MCP server via Streamable HTTP" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_detect_and_connect_both_transports_fail(self, mcp_client, caplog):
+        """Test detect_and_connect when both HTTP and SSE fail."""
+        import logging
+
+        caplog.set_level(logging.INFO)
+
+        server_url = "https://example.com/mcp"
+
+        with (
+            patch("mcpaudit.mcp_client.streamable_http_client") as mock_http_client,
+            patch("mcpaudit.mcp_client.sse_client") as mock_sse_client,
+        ):
+            # Both fail
+            mock_http_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
+            mock_sse_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
+
+            success, transport = await mcp_client.detect_and_connect(server_url)
+
+            assert success is False
+            assert transport is None
+            assert "Attempting Streamable HTTP connection" in caplog.text
+            assert "Streamable HTTP failed, trying SSE" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_connect_unsupported_transport_type(self, mcp_client, caplog):
+        """Test connect_to_server with unsupported transport type."""
+        # Create a mock transport type that's not handled
+        unsupported_transport = MagicMock()
+        unsupported_transport.value = "UNSUPPORTED"
+
+        result = await mcp_client.connect_to_server(unsupported_transport, "test-path")
+
+        assert result is False
+        assert "This protocol is not supported" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_cleanup(self, mcp_client):
         """Test cleanup closes connections properly."""
         server_url = "https://example.com/mcp"
