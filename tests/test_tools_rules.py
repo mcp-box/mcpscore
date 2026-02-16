@@ -16,8 +16,8 @@ And the is_valid_schema() helper function.
 
 from typing import Any
 
-import pytest
 from mcp.types import Tool
+import pytest
 
 from mcpaudit.rules import AuditData, RuleSeverity
 from mcpaudit.rules.tools import (
@@ -32,7 +32,6 @@ from mcpaudit.rules.tools import (
     ToolsTitlePresentRule,
     is_valid_schema,
 )
-
 
 # ============================================================================
 # Fixtures
