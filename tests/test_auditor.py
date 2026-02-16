@@ -7,12 +7,35 @@ from mcpaudit.rules import AuditData, BaseRule, RuleResult, RuleSeverity
 
 
 class DummyClient(MCPClient):
-    def __init__(self, init_result: Any | None) -> None:
+    def __init__(
+        self,
+        init_result: Any | None,
+        tools: list[Any] | None = None,
+        resources: list[Any] | None = None,
+        prompts: list[Any] | None = None,
+        url: str | None = None,
+        transport_type: str = "streamable-http",
+    ) -> None:
         super().__init__()
         self._init_result = init_result
+        self._tools = tools
+        self._resources = resources
+        self._prompts = prompts
+        self.url = url
+        self.transport_type = transport_type  # type: ignore[assignment]
+        self.connection_time_ms = 100
 
     async def initialize(self):
         return self._init_result
+
+    async def list_tools(self):
+        return self._tools
+
+    async def list_resources(self):
+        return self._resources
+
+    async def list_prompts(self):
+        return self._prompts
 
 
 class DummyRule(BaseRule):
@@ -85,3 +108,545 @@ async def test_auditor_collects_data_and_scores():
     assert summary["total"] == 2
     assert summary["passed"] == 1
     assert summary["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_auditor_with_tools_capability():
+    """Test that auditor collects tools when tools capability is present.
+
+    Verifies that:
+    - When capabilities.tools is not None, _collect_tools() is called
+    - Tools data is collected and stored in audit_data
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            # Tools capability is present (empty dict signals capability exists)
+            self.capabilities = type(
+                "Caps",
+                (),
+                {"tools": {}, "resources": None, "prompts": None, "logging": None, "sampling": None},
+            )()
+            self.instructions = "instr"
+
+    class Tool:
+        def __init__(self) -> None:
+            super().__init__()
+            self.name = "test_tool"
+            self.description = "A test tool"
+
+    tools = [Tool()]
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    await auditor.audit(DummyClient(InitResult(), tools=tools))
+
+    assert auditor.audit_data.tools == tools
+
+
+@pytest.mark.asyncio
+async def test_auditor_with_resources_capability():
+    """Test that auditor collects resources when resources capability is present.
+
+    Verifies that:
+    - When capabilities.resources is not None, _collect_resources() is called
+    - Resources data is collected and stored in audit_data
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            # Resources capability is present
+            self.capabilities = type(
+                "Caps",
+                (),
+                {"tools": None, "resources": {}, "prompts": None, "logging": None, "sampling": None},
+            )()
+            self.instructions = "instr"
+
+    class Resource:
+        def __init__(self) -> None:
+            super().__init__()
+            self.uri = "test://resource"
+            self.name = "Test Resource"
+
+    resources = [Resource()]
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    await auditor.audit(DummyClient(InitResult(), resources=resources))
+
+    assert auditor.audit_data.resources == resources
+
+
+@pytest.mark.asyncio
+async def test_auditor_with_prompts_capability():
+    """Test that auditor collects prompts when prompts capability is present.
+
+    Verifies that:
+    - When capabilities.prompts is not None, _collect_prompts() is called
+    - Prompts data is collected and stored in audit_data
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            # Prompts capability is present
+            self.capabilities = type(
+                "Caps",
+                (),
+                {"tools": None, "resources": None, "prompts": {}, "logging": None, "sampling": None},
+            )()
+            self.instructions = "instr"
+
+    class Prompt:
+        def __init__(self) -> None:
+            super().__init__()
+            self.name = "test_prompt"
+            self.description = "A test prompt"
+
+    prompts = [Prompt()]
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    await auditor.audit(DummyClient(InitResult(), prompts=prompts))
+
+    assert auditor.audit_data.prompts == prompts
+
+
+@pytest.mark.asyncio
+async def test_auditor_with_all_capabilities():
+    """Test that auditor collects all data when all capabilities are present.
+
+    Verifies that:
+    - All collection methods are called when all capabilities are present
+    - All data types are properly collected and stored
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            # All capabilities present
+            self.capabilities = type(
+                "Caps",
+                (),
+                {"tools": {}, "resources": {}, "prompts": {}, "logging": None, "sampling": None},
+            )()
+            self.instructions = "instr"
+
+    class Tool:
+        def __init__(self) -> None:
+            super().__init__()
+            self.name = "test_tool"
+
+    class Resource:
+        def __init__(self) -> None:
+            super().__init__()
+            self.uri = "test://resource"
+
+    class Prompt:
+        def __init__(self) -> None:
+            super().__init__()
+            self.name = "test_prompt"
+
+    tools = [Tool()]
+    resources = [Resource()]
+    prompts = [Prompt()]
+
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    await auditor.audit(DummyClient(InitResult(), tools=tools, resources=resources, prompts=prompts))
+
+    assert auditor.audit_data.tools == tools
+    assert auditor.audit_data.resources == resources
+    assert auditor.audit_data.prompts == prompts
+
+
+@pytest.mark.asyncio
+async def test_auditor_with_no_capabilities():
+    """Test that auditor handles minimal server with no capabilities.
+
+    Verifies that:
+    - Auditor works with servers that have None capabilities
+    - No collection methods are called
+    - Audit completes successfully
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.capabilities = None  # No capabilities
+            self.instructions = None
+
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    score, max_score = await auditor.audit(DummyClient(InitResult()))
+
+    assert score == 0
+    assert max_score == 0
+    # When capabilities is None, collection methods are not called, so fields remain None
+    assert auditor.audit_data.tools is None
+    assert auditor.audit_data.resources is None
+    assert auditor.audit_data.prompts is None
+
+
+@pytest.mark.asyncio
+async def test_auditor_https_tls_detection():
+    """Test that auditor properly detects TLS for HTTPS URLs.
+
+    Verifies that:
+    - HTTPS URLs are detected
+    - TLS verification is marked as True
+    - TLS version is populated
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.capabilities = None
+            self.instructions = None
+
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp"))
+
+    assert auditor.audit_data.tls_verified is True
+    assert auditor.audit_data.tls_version == "TLSv1.3"
+
+
+@pytest.mark.asyncio
+async def test_auditor_http_no_tls():
+    """Test that auditor properly handles HTTP URLs without TLS.
+
+    Verifies that:
+    - HTTP URLs are detected
+    - TLS verification is marked as False
+    - TLS version is None
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.capabilities = None
+            self.instructions = None
+
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    await auditor.audit(DummyClient(InitResult(), url="http://example.com/mcp"))
+
+    assert auditor.audit_data.tls_verified is False
+    assert auditor.audit_data.tls_version is None
+
+
+@pytest.mark.asyncio
+async def test_auditor_stdio_no_tls_detection():
+    """Test that auditor handles STDIO transport without TLS detection.
+
+    Verifies that:
+    - STDIO transport (no URL) is handled correctly
+    - TLS fields remain at default values
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.capabilities = None
+            self.instructions = None
+
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    await auditor.audit(DummyClient(InitResult(), url=None, transport_type="stdio"))
+
+    # TLS fields should remain None for STDIO transport
+    assert auditor.audit_data.tls_verified is None
+    assert auditor.audit_data.tls_version is None
+
+
+@pytest.mark.asyncio
+async def test_collect_init_result_with_none_client(caplog):
+    """Test error handling when client is None in _collect_init_result.
+
+    Verifies that:
+    - Error is logged when mcp_client is None
+    - Method returns early without crashing
+    """
+    auditor = MCPAuditor()
+    auditor.mcp_client = None
+
+    await auditor._collect_init_result()
+
+    assert "No MCP client to audit" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_collect_init_result_with_none_result(caplog):
+    """Test error handling when initialize() returns None.
+
+    Verifies that:
+    - Error is logged when init_result is None
+    - Method returns early without populating audit data
+    """
+
+    class NoneClient(MCPClient):
+        async def initialize(self):
+            return None
+
+    auditor = MCPAuditor()
+    auditor.mcp_client = NoneClient()
+
+    await auditor._collect_init_result()
+
+    assert "No Init Result to audit" in caplog.text
+    assert auditor.audit_data.protocol_version is None
+
+
+@pytest.mark.asyncio
+async def test_collect_tools_with_none_client(caplog):
+    """Test error handling when client is None in _collect_tools.
+
+    Verifies that:
+    - Error is logged when mcp_client is None
+    - Method returns early without crashing
+    """
+    auditor = MCPAuditor()
+    auditor.mcp_client = None
+
+    await auditor._collect_tools()
+
+    assert "No MCP client to audit" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_collect_tools_with_none_response(caplog):
+    """Test error handling when list_tools() returns None.
+
+    Verifies that:
+    - Error is logged when tools response is None
+    - Method returns early without populating tools data
+    """
+
+    class NoneToolsClient(MCPClient):
+        async def list_tools(self):
+            return None
+
+    auditor = MCPAuditor()
+    auditor.mcp_client = NoneToolsClient()
+
+    await auditor._collect_tools()
+
+    assert "No Tools to audit" in caplog.text
+    # When list_tools() returns None, the field remains None (default value)
+    assert auditor.audit_data.tools is None
+
+
+@pytest.mark.asyncio
+async def test_collect_resources_with_none_client(caplog):
+    """Test error handling when client is None in _collect_resources.
+
+    Verifies that:
+    - Error is logged when mcp_client is None
+    - Method returns early without crashing
+    """
+    auditor = MCPAuditor()
+    auditor.mcp_client = None
+
+    await auditor._collect_resources()
+
+    assert "No MCP client to audit" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_collect_resources_with_none_response(caplog):
+    """Test error handling when list_resources() returns None.
+
+    Verifies that:
+    - Error is logged when resources response is None
+    - Method returns early without populating resources data
+    """
+
+    class NoneResourcesClient(MCPClient):
+        async def list_resources(self):
+            return None
+
+    auditor = MCPAuditor()
+    auditor.mcp_client = NoneResourcesClient()
+
+    await auditor._collect_resources()
+
+    assert "No Resources to audit" in caplog.text
+    # When list_resources() returns None, the field remains None (default value)
+    assert auditor.audit_data.resources is None
+
+
+@pytest.mark.asyncio
+async def test_collect_prompts_with_none_client(caplog):
+    """Test error handling when client is None in _collect_prompts.
+
+    Verifies that:
+    - Error is logged when mcp_client is None
+    - Method returns early without crashing
+    """
+    auditor = MCPAuditor()
+    auditor.mcp_client = None
+
+    await auditor._collect_prompts()
+
+    assert "No MCP client to audit" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_collect_prompts_with_none_response(caplog):
+    """Test error handling when list_prompts() returns None.
+
+    Verifies that:
+    - Error is logged when prompts response is None
+    - Method returns early without populating prompts data
+    """
+
+    class NonePromptsClient(MCPClient):
+        async def list_prompts(self):
+            return None
+
+    auditor = MCPAuditor()
+    auditor.mcp_client = NonePromptsClient()
+
+    await auditor._collect_prompts()
+
+    assert "No prompts to audit" in caplog.text
+    # When list_prompts() returns None, the field remains None (default value)
+    assert auditor.audit_data.prompts is None
+
+
+@pytest.mark.asyncio
+async def test_get_audit_summary_with_mixed_results():
+    """Test audit summary generation with mixed pass/fail results.
+
+    Verifies that:
+    - Summary correctly counts total, passed, and failed rules
+    - By-severity breakdown is accurate
+    """
+    auditor = MCPAuditor()
+    auditor.results = [
+        RuleResult(rule_name="rule1", severity=RuleSeverity.CRITICAL, passed=True, message="pass"),
+        RuleResult(rule_name="rule2", severity=RuleSeverity.HIGH, passed=False, message="fail"),
+        RuleResult(rule_name="rule3", severity=RuleSeverity.MEDIUM, passed=True, message="pass"),
+        RuleResult(rule_name="rule4", severity=RuleSeverity.LOW, passed=False, message="fail"),
+    ]
+
+    summary = auditor.get_audit_summary()
+
+    assert summary["total"] == 4
+    assert summary["passed"] == 2
+    assert summary["failed"] == 2
+    assert summary["by_severity"][RuleSeverity.CRITICAL.value]["passed"] == 1
+    assert summary["by_severity"][RuleSeverity.HIGH.value]["failed"] == 1
+    assert summary["by_severity"][RuleSeverity.MEDIUM.value]["passed"] == 1
+    assert summary["by_severity"][RuleSeverity.LOW.value]["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_audit_summary_all_passed():
+    """Test audit summary when all rules pass.
+
+    Verifies that:
+    - All rules are counted as passed
+    - Failed count is zero
+    """
+    auditor = MCPAuditor()
+    auditor.results = [
+        RuleResult(rule_name="rule1", severity=RuleSeverity.HIGH, passed=True, message="pass"),
+        RuleResult(rule_name="rule2", severity=RuleSeverity.MEDIUM, passed=True, message="pass"),
+    ]
+
+    summary = auditor.get_audit_summary()
+
+    assert summary["total"] == 2
+    assert summary["passed"] == 2
+    assert summary["failed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_audit_summary_all_failed():
+    """Test audit summary when all rules fail.
+
+    Verifies that:
+    - All rules are counted as failed
+    - Passed count is zero
+    """
+    auditor = MCPAuditor()
+    auditor.results = [
+        RuleResult(rule_name="rule1", severity=RuleSeverity.HIGH, passed=False, message="fail"),
+        RuleResult(rule_name="rule2", severity=RuleSeverity.MEDIUM, passed=False, message="fail"),
+    ]
+
+    summary = auditor.get_audit_summary()
+
+    assert summary["total"] == 2
+    assert summary["passed"] == 0
+    assert summary["failed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_collect_transport_metadata_with_none_client(caplog):
+    """Test error handling when client is None in _collect_transport_metadata.
+
+    Verifies that:
+    - Error is logged when mcp_client is None
+    - Method returns early without crashing
+    """
+    auditor = MCPAuditor()
+    auditor.mcp_client = None
+
+    await auditor._collect_transport_metadata()
+
+    assert "No MCP client to audit" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_auditor_transport_metadata_collection():
+    """Test that transport metadata is properly collected.
+
+    Verifies that:
+    - Transport type is collected from client
+    - URL is collected
+    - Connection time is collected
+    """
+
+    class InitResult:
+        def __init__(self) -> None:
+            super().__init__()
+            self.protocolVersion = "2025-06-18"
+            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.capabilities = None
+            self.instructions = None
+
+    auditor = MCPAuditor()
+    auditor.rules = []
+
+    await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp", transport_type="sse"))
+
+    assert auditor.audit_data.transport_type == "sse"
+    assert auditor.audit_data.url == "https://example.com/mcp"
+    assert auditor.audit_data.connection_time_ms == 100
