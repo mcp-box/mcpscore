@@ -393,6 +393,7 @@ class TestToolsBaseRule:
         result = rule.check(AuditData(tools=None))
         assert result.passed is False
         assert "not available" in result.message
+        assert result.details is not None
         assert result.details["tools"] is None
 
 
@@ -417,6 +418,7 @@ class TestToolsAtLeastOneRule:
         rule = ToolsAtLeastOneRule()
         result = rule.check(AuditData(tools=[valid_tool]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["tools_count"] == 1
 
     def test_with_multiple_tools(self, valid_tool: Tool) -> None:
@@ -424,6 +426,7 @@ class TestToolsAtLeastOneRule:
         rule = ToolsAtLeastOneRule()
         result = rule.check(AuditData(tools=[valid_tool, valid_tool]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["tools_count"] == 2
 
     def test_with_empty_list(self) -> None:
@@ -431,6 +434,7 @@ class TestToolsAtLeastOneRule:
         rule = ToolsAtLeastOneRule()
         result = rule.check(AuditData(tools=[]))
         assert result.passed is False
+        assert result.details is not None
         assert result.details["tools_count"] == 0
 
 
@@ -455,6 +459,7 @@ class TestToolsNamePresentRule:
         rule = ToolsNamePresentRule()
         result = rule.check(AuditData(tools=[valid_tool]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["tools_with_empty_names"] == 0
 
     def test_with_empty_name(self, tool_with_empty_name: Tool) -> None:
@@ -462,6 +467,7 @@ class TestToolsNamePresentRule:
         rule = ToolsNamePresentRule()
         result = rule.check(AuditData(tools=[tool_with_empty_name]))
         assert result.passed is False
+        assert result.details is not None
         assert result.details["tools_with_empty_names"] == 1
 
     def test_with_mixed_names(self, valid_tool: Tool, tool_with_empty_name: Tool) -> None:
@@ -469,6 +475,7 @@ class TestToolsNamePresentRule:
         rule = ToolsNamePresentRule()
         result = rule.check(AuditData(tools=[valid_tool, tool_with_empty_name, tool_with_empty_name]))
         assert result.passed is False
+        assert result.details is not None
         assert result.details["tools_with_empty_names"] == 2
 
 
@@ -495,6 +502,7 @@ class TestToolsNamesUniqueRule:
         tool2 = Tool(name="tool2", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
         result = rule.check(AuditData(tools=[tool1, tool2]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["duplicate_names"] == []
 
     def test_with_duplicate_names(self, valid_tool: Tool) -> None:
@@ -504,6 +512,7 @@ class TestToolsNamesUniqueRule:
         tool2 = Tool(name="duplicate", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
         result = rule.check(AuditData(tools=[tool1, tool2]))
         assert result.passed is False
+        assert result.details is not None
         assert "duplicate" in result.details["duplicate_names"]
         assert result.details["name_counts"]["duplicate"] == 2
 
@@ -519,6 +528,7 @@ class TestToolsNamesUniqueRule:
         ]
         result = rule.check(AuditData(tools=tools))
         assert result.passed is False
+        assert result.details is not None
         assert "dup1" in result.details["duplicate_names"]
         assert "dup2" in result.details["duplicate_names"]
         assert "unique" not in result.details["duplicate_names"]
@@ -545,6 +555,7 @@ class TestToolsNamesValidFormatRule:
         rule = ToolsNamesValidFormatRule()
         result = rule.check(AuditData(tools=[valid_tool]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["tools_with_invalid_names"] == 0
 
     def test_with_alphanumeric_name(self) -> None:
@@ -587,6 +598,7 @@ class TestToolsNamesValidFormatRule:
         rule = ToolsNamesValidFormatRule()
         result = rule.check(AuditData(tools=[tool_with_invalid_name]))
         assert result.passed is False
+        assert result.details is not None
         assert result.details["tools_with_invalid_names"] == 1
 
     def test_with_too_long_name(self, tool_with_long_name: Tool) -> None:
@@ -594,6 +606,7 @@ class TestToolsNamesValidFormatRule:
         rule = ToolsNamesValidFormatRule()
         result = rule.check(AuditData(tools=[tool_with_long_name]))
         assert result.passed is False
+        assert result.details is not None
         assert result.details["tools_with_invalid_names"] == 1
 
     def test_with_space_in_name(self) -> None:
@@ -602,6 +615,7 @@ class TestToolsNamesValidFormatRule:
         tool = Tool(name="my tool name", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is False
+        assert result.details is not None
         assert result.details["tools_with_invalid_names"] == 1
 
 
@@ -626,6 +640,7 @@ class TestToolsTitlePresentRule:
         rule = ToolsTitlePresentRule()
         result = rule.check(AuditData(tools=[valid_tool]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["tools_with_empty_titles"] == []
 
     def test_with_empty_title(self, tool_with_empty_title: Tool) -> None:
@@ -633,6 +648,7 @@ class TestToolsTitlePresentRule:
         rule = ToolsTitlePresentRule()
         result = rule.check(AuditData(tools=[tool_with_empty_title]))
         assert result.passed is False
+        assert result.details is not None
         assert "valid_name" in result.details["tools_with_empty_titles"]
 
     def test_with_mixed_titles(self, valid_tool: Tool, tool_with_empty_title: Tool) -> None:
@@ -640,6 +656,7 @@ class TestToolsTitlePresentRule:
         rule = ToolsTitlePresentRule()
         result = rule.check(AuditData(tools=[valid_tool, tool_with_empty_title]))
         assert result.passed is False
+        assert result.details is not None
         assert len(result.details["tools_with_empty_titles"]) == 1
 
 
@@ -664,6 +681,7 @@ class TestToolsDescriptionPresentRule:
         rule = ToolsDescriptionPresentRule()
         result = rule.check(AuditData(tools=[valid_tool]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["tools_with_empty_descriptions"] == []
 
     def test_with_empty_description(self, tool_with_empty_description: Tool) -> None:
@@ -671,6 +689,7 @@ class TestToolsDescriptionPresentRule:
         rule = ToolsDescriptionPresentRule()
         result = rule.check(AuditData(tools=[tool_with_empty_description]))
         assert result.passed is False
+        assert result.details is not None
         assert "valid_name" in result.details["tools_with_empty_descriptions"]
 
     def test_with_mixed_descriptions(self, valid_tool: Tool, tool_with_empty_description: Tool) -> None:
@@ -678,6 +697,7 @@ class TestToolsDescriptionPresentRule:
         rule = ToolsDescriptionPresentRule()
         result = rule.check(AuditData(tools=[valid_tool, tool_with_empty_description]))
         assert result.passed is False
+        assert result.details is not None
         assert len(result.details["tools_with_empty_descriptions"]) == 1
 
 
@@ -702,6 +722,7 @@ class TestToolsInputSchemaValidRule:
         rule = ToolsInputSchemaValidRule()
         result = rule.check(AuditData(tools=[valid_tool]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["tools_with_invalid_input_schema"] == []
 
     def test_with_invalid_input_schema(self, tool_with_invalid_input_schema: Tool) -> None:
@@ -709,6 +730,7 @@ class TestToolsInputSchemaValidRule:
         rule = ToolsInputSchemaValidRule()
         result = rule.check(AuditData(tools=[tool_with_invalid_input_schema]))
         assert result.passed is False
+        assert result.details is not None
         assert "valid_name" in result.details["tools_with_invalid_input_schema"]
 
     def test_with_none_input_schema(self) -> None:
@@ -750,6 +772,7 @@ class TestToolsOutputSchemaValidRule:
         rule = ToolsOutputSchemaValidRule()
         result = rule.check(AuditData(tools=[valid_tool]))
         assert result.passed is True
+        assert result.details is not None
         assert result.details["tools_with_invalid_output_schema"] == []
 
     def test_with_invalid_output_schema(self, tool_with_invalid_output_schema: Tool) -> None:
@@ -757,6 +780,7 @@ class TestToolsOutputSchemaValidRule:
         rule = ToolsOutputSchemaValidRule()
         result = rule.check(AuditData(tools=[tool_with_invalid_output_schema]))
         assert result.passed is False
+        assert result.details is not None
         assert "valid_name" in result.details["tools_with_invalid_output_schema"]
 
     def test_with_none_output_schema(self) -> None:
@@ -774,6 +798,7 @@ class TestToolsOutputSchemaValidRule:
         )
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is False
+        assert result.details is not None
         assert "test" in result.details["tools_with_invalid_output_schema"]
 
     def test_with_mixed_output_schemas(self, valid_tool: Tool, tool_with_invalid_output_schema: Tool) -> None:
@@ -781,4 +806,5 @@ class TestToolsOutputSchemaValidRule:
         rule = ToolsOutputSchemaValidRule()
         result = rule.check(AuditData(tools=[valid_tool, tool_with_invalid_output_schema]))
         assert result.passed is False
+        assert result.details is not None
         assert len(result.details["tools_with_invalid_output_schema"]) == 1

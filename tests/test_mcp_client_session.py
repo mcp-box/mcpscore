@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from mcp import InitializeResult, ListPromptsResult, ListResourcesResult, ListToolsResult
 from mcp.types import Prompt, Resource, Tool
+from pydantic import AnyUrl
 import pytest
 
 from mcpaudit.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
@@ -111,8 +112,8 @@ class TestMCPClientSessionOperations:
     async def test_list_resources_success(self, mock_connected_client):
         """Test successful list_resources."""
         mock_resources = [
-            Resource(uri="file:///test1.txt", name="Test Resource 1", mimeType="text/plain"),
-            Resource(uri="file:///test2.txt", name="Test Resource 2", mimeType="text/plain"),
+            Resource(uri=AnyUrl("file:///test1.txt"), name="Test Resource 1", mimeType="text/plain"),
+            Resource(uri=AnyUrl("file:///test2.txt"), name="Test Resource 2", mimeType="text/plain"),
         ]
         mock_result = ListResourcesResult(resources=mock_resources)
         mock_connected_client.session.list_resources.return_value = mock_result
