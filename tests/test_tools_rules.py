@@ -40,7 +40,7 @@ from mcpaudit.rules.tools import (
 
 @pytest.fixture
 def valid_schema() -> dict[str, Any]:
-    """Valid JSON schema for tool input/output."""
+    """Return a valid JSON schema for tool input/output."""
     return {
         "type": "object",
         "title": "Valid Schema",
@@ -55,7 +55,7 @@ def valid_schema() -> dict[str, Any]:
 
 @pytest.fixture
 def valid_tool() -> Tool:
-    """A fully valid tool with all required fields."""
+    """Return a fully valid tool with all required fields."""
     return Tool(
         name="test_tool",
         title="Test Tool",
