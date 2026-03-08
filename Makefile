@@ -1,26 +1,42 @@
-.PHONY: test windows-weather-py windows-weather-ts windows-my-mcp-server mac-weather-py mac-weather-ts
+.DEFAULT_GOAL := help
 
-test:
-	uv run pytest -q
+.PHONY: install
+install: ## Install for development
+	uv sync --all-groups
+	uv run pre-commit install
 
-windows-weather-py:
-	uv run main.py c:/mcp/weather-server-python/weather.py
+.PHONY: format
+format: ## Auto-format code
+	uv run ruff check --fix
+	uv run ruff format
 
-windows-weather-ts:
-	uv run main.py c:/mcp/weather-server-typescript/build/index.js
+.PHONY: lint
+lint: ## Lint code (no auto-fix)
+	uv run ruff check
+	uv run ruff format --check
 
-windows-my-server:
-	uv run main.py c:/mcp/MyMCPServer/server.py
+.PHONY: typecheck
+typecheck: ## Type check with pyright
+	uv run pyright mcpaudit/
 
-windows-time-server:
-	uv run main.py c:/mcp/time/src/mcp_server_time/server.py
+.PHONY: test
+test: ## Run tests
+	uv run pytest -v
 
-windows-git-server:
-	uv run main.py c:/mcp/git/src/mcp_server_git/server.py
+.PHONY: testcov
+testcov: ## Run tests with coverage report
+	uv run pytest --cov --cov-report=html --cov-report=term-missing
+	@echo "Coverage report: htmlcov/index.html"
 
-mac-weather-py:
-	uv run main.py /Users/alex/GitHub/alex-a/quickstart-resources/weather-server-python/weather.py
+.PHONY: all
+all: lint typecheck testcov ## Run all checks (mirrors CI)
 
-mac-weather-ts:
-	uv run main.py /Users/alex/GitHub/alex-a/quickstart-resources/weather-server-typescript/build/index.js
+.PHONY: clean
+clean: ## Clean build artifacts and caches
+	rm -rf build dist *.egg-info
+	rm -rf .pytest_cache .ruff_cache htmlcov .coverage coverage.xml
 
+.PHONY: help
+help: ## Show available commands
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-12s\033[0m %s\n", $$1, $$2}'
