@@ -17,7 +17,7 @@ MCPAudit connects to your MCP server and validates:
 
 - **Protocol Version Compliance**:
   - ✅ Allowed versions check (CRITICAL)
-  - ✅ Latest version recommendation (MEDIUM) 
+  - ✅ Latest version recommendation (MEDIUM)
   - ✅ Deprecated version detection (HIGH)
 
 - **Server Information**:
@@ -130,7 +130,7 @@ MCPAudit follows a modular architecture designed for extensibility:
 
 - **`main.py`**: CLI entry point that orchestrates the audit process
 - **`MCPClient`**: Wrapper around the official MCP client for server communication
-- **`MCPAuditor`**: Orchestrates the audit process and rule execution  
+- **`MCPAuditor`**: Orchestrates the audit process and rule execution
 - **`BaseRule` system**: Extensible framework for implementing audit rules
 - **`RuleRegistry`**: Central registry managing all available audit rules
 
