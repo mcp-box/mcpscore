@@ -25,7 +25,7 @@ MCPAudit connects to your MCP server and validates:
   - ✅ Server title presence (MEDIUM)
   - ✅ Server version presence (HIGH)
 
-- **Future capabilities**: Framework ready for additional checks (capabilities, tools, resources)
+- **Capabilities validation**: Checks tools, resources, prompts, logging, and subscription support
 
 
 ## Requirements
@@ -259,34 +259,28 @@ Result of a rule execution:
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd MCPAudit
+git clone https://github.com/mcpaudit/mcpaudit.git
+cd mcpaudit
 
-# Install dependencies with uv (recommended)
-uv sync
-
-# Or with pip
-pip install -e .
+# Install dependencies and pre-commit hooks
+make install
 ```
 
 ### Development workflow
 
 ```bash
-# Run the auditor during development
-uv run mcpaudit path/to/server.py
-
-# Run linting
-uv run ruff check .
-
-# Run tests
-uv run pytest
+make format    # Auto-format code
+make lint      # Lint (no auto-fix)
+make typecheck # Type check with pyright
+make test      # Run tests
+make testcov   # Run tests with coverage report
+make all       # Run everything (mirrors CI)
 ```
 
 ### Project structure
 
 ```
-MCPAudit/
-├── main.py                    # Legacy CLI wrapper (backwards compatibility)
+mcpaudit/
 ├── mcpaudit/                  # Core package
 │   ├── __init__.py           # Package exports and documentation
 │   ├── cli.py                # CLI entry point (mcpaudit command)
@@ -298,7 +292,14 @@ MCPAudit/
 │       ├── base.py           # Base rule classes and decorators
 │       ├── registry.py       # Rule registry and registration system
 │       ├── protocol_version.py  # Protocol version validation rules
-│       └── server_info.py    # Server information validation rules
+│       ├── server_info.py    # Server information validation rules
+│       ├── capabilities.py   # Capabilities validation rules
+│       ├── tools.py          # Tools validation rules
+│       ├── security.py       # Security validation rules
+│       └── transport.py      # Transport validation rules
+├── tests/                    # Test suite (97% coverage)
+├── .github/workflows/ci.yml  # GitHub Actions CI (lint, typecheck, test)
+├── .pre-commit-config.yaml   # Pre-commit hooks (ruff, codespell, pyright)
 ├── pyproject.toml            # Project configuration and dependencies
 ├── ruff.toml                 # Linting configuration
 ├── uv.lock                   # Dependency lock file
@@ -308,12 +309,12 @@ MCPAudit/
 
 ### Code quality
 
-- **Linting**: ruff is configured for code formatting and style
-- **Type hints**: Full type annotation support with comprehensive docstrings
-- **Documentation**: Google-style docstrings throughout the codebase
-- **Testing**: pytest framework included
+- **Linting & formatting**: ruff (configured in `ruff.toml`)
+- **Type checking**: pyright with strict settings
+- **Testing**: pytest with 97% coverage
+- **Pre-commit hooks**: ruff, codespell, pyright, file checks — run automatically on every commit
+- **CI**: GitHub Actions runs lint, typecheck, and tests on ubuntu, windows, and macos
 - **Python version**: Requires Python 3.13+
-- **Architecture**: Modular design with clear separation of concerns
 
 
 ## Troubleshooting
@@ -352,7 +353,7 @@ If you encounter issues not covered here:
 - **Transport**: Currently only stdio transport is supported (HTTP, WebSocket, SSE planned)
 - **Output**: Results are printed to stdout; structured output (JSON) available via programmatic API
 - **Protocol versions**: Version definitions in `enums.py` need manual updates as MCP spec evolves
-- **Rule coverage**: Focuses on basic compliance; advanced server capabilities (tools, resources) not yet audited
+- **Rule coverage**: Security and performance rules are planned for future releases
 - **Server types**: Optimized for Python and Node.js servers; other languages may require additional setup
 
 ## Contributing
@@ -360,20 +361,17 @@ If you encounter issues not covered here:
 Contributions are welcome! Areas for improvement:
 
 - **Transport methods**: HTTP, WebSocket, SSE support
-- **Audit rules**: More comprehensive compliance checks (tools, resources, capabilities)
+- **Audit rules**: More comprehensive compliance checks
 - **Output formats**: JSON/structured output options for CLI
-- **Test coverage**: Unit tests and integration tests
 - **Documentation**: Additional examples and tutorials
 - **Performance**: Optimizations for large-scale server auditing
-- **CI/CD**: Automated testing and deployment pipelines
 
 ### Development guidelines
 
-- Follow the existing code style and docstring format
-- Add comprehensive docstrings for all new classes and methods
-- Use type hints throughout
-- Write tests for new functionality
-- Update this README when adding new features
+- Run `make all` before submitting a PR (mirrors CI checks)
+- Add tests for new functionality (maintain 95%+ coverage)
+- Use type hints throughout — all public APIs must be typed
+- Follow the existing code style (ruff handles formatting automatically)
 
 ## License
 
