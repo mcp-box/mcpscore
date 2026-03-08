@@ -6,14 +6,46 @@ build-backend = "hatchling.build"
 name = "mcpaudit"
 version = "0.2.0"
 description = "CLI tool to analyze your MCP server and get a comprehensive report on its quality"
+authors = [{ name = "Alex Akimov", email = "alexeyakimov@gmail.com" }]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.13"
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "audit",
+    "cli",
+    "quality",
+    "llm",
+    "ai",
+    "developer-tools",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+    "Environment :: Console",
+]
 dependencies = [
     "mcp>=1.23.0",
     "httpx>=0.28.0",
     "httpx-sse>=0.4.0",
 ]
+
+[project.urls]
+Homepage = "https://mcpaudit.dev"
+Repository = "https://github.com/mcpaudit/mcpaudit"
+Issues = "https://github.com/mcpaudit/mcpaudit/issues"
 
 [project.scripts]
 mcpaudit = "mcpaudit.cli:main"
@@ -51,3 +83,21 @@ reportMissingSuperCall = true
 reportFunctionMemberAccess = false
 reportInvalidTypeForm = false
 reportPrivateImportUsage = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers"]
+
+[tool.coverage.run]
+source = ["mcpaudit"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 95
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
