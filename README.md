@@ -90,6 +90,8 @@ uv run mcpaudit path/to/your/server.py
 python main.py path/to/your/server.py
 ```
 
+> **Note**: The CLI currently supports STDIO transport for local servers. For remote servers (HTTP/SSE), use the programmatic API with `detect_and_connect()` or `connect_to_server()` — see [Using the library programmatically](#using-the-library-programmatically).
+
 ### Example output
 
 ```
@@ -214,7 +216,8 @@ asyncio.run(audit_remote_server("https://example.com/mcp"))
 Client for connecting to and communicating with MCP servers.
 
 **Key methods:**
-- `connect_to_server(transport, server_path)`: Connect to an MCP server
+- `detect_and_connect(server_path_or_url)`: Auto-detect transport and connect (Streamable HTTP → SSE fallback for URLs, STDIO for local files)
+- `connect_to_server(transport, server_path)`: Connect using a specific transport
 - `initialize()`: Initialize the server session and get capabilities
 - `list_tools()`: List available tools from the server
 - `cleanup()`: Clean up resources and close connections
@@ -371,17 +374,18 @@ If you encounter issues not covered here:
 
 ## Limitations
 
-- **Transport**: Currently only stdio transport is supported (HTTP, WebSocket, SSE planned)
+- **CLI transport**: The CLI currently only supports STDIO for local servers; use the programmatic API for remote servers (HTTP/SSE)
+- **WebSocket**: WebSocket transport is not yet implemented
 - **Output**: Results are printed to stdout; structured output (JSON) available via programmatic API
 - **Protocol versions**: Version definitions in `enums.py` need manual updates as MCP spec evolves
-- **Rule coverage**: Security and performance rules are planned for future releases
 - **Server types**: Optimized for Python and Node.js servers; other languages may require additional setup
 
 ## Contributing
 
 Contributions are welcome! Areas for improvement:
 
-- **Transport methods**: HTTP, WebSocket, SSE support
+- **CLI remote support**: Wire HTTP/SSE transports into the CLI (auto-detection via URL)
+- **WebSocket transport**: Implement WebSocket support in `MCPClient`
 - **Audit rules**: More comprehensive compliance checks
 - **Output formats**: JSON/structured output options for CLI
 - **Documentation**: Additional examples and tutorials
