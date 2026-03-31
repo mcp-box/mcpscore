@@ -66,7 +66,7 @@ This will install the `mcpaudit` package and its dependency `mcp`.
 
 ## Quick start
 
-Run the auditor against a local MCP server script. The tool automatically detects the script type and uses the appropriate launcher.
+Run the auditor against any MCP server. The tool automatically detects the transport type: STDIO for local scripts, Streamable HTTP (with SSE fallback) for URLs.
 
 ### Basic usage
 
@@ -78,6 +78,9 @@ mcpaudit path/to/your/server.py
 
 # Audit a local Node.js MCP server (via STDIO)
 mcpaudit path/to/your/server.js
+
+# Audit a remote MCP server (auto-detects Streamable HTTP or SSE)
+mcpaudit https://example.com/mcp
 ```
 
 **Alternative (backwards compatible):**
@@ -89,8 +92,6 @@ uv run mcpaudit path/to/your/server.py
 # Or using the legacy main.py
 python main.py path/to/your/server.py
 ```
-
-> **Note**: The CLI currently supports STDIO transport for local servers. For remote servers (HTTP/SSE), use the programmatic API with `detect_and_connect()` or `connect_to_server()` — see [Using the library programmatically](#using-the-library-programmatically).
 
 ### Example output
 

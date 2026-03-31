@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 
-from mcpaudit import MCPAuditor, MCPClient, MCPTransportType
+from mcpaudit import MCPAuditor, MCPClient
 
 logger = logging.getLogger(__name__)
 
@@ -13,32 +13,34 @@ async def async_main() -> None:
     """Execute the main entry point for the MCPAudit CLI application.
 
     Orchestrates the audit process by:
-    1. Parsing command line arguments for the server script path
+    1. Parsing command line arguments for the server path or URL
     2. Creating MCP client and auditor instances
-    3. Connecting to the MCP server via stdio transport
+    3. Auto-detecting transport and connecting to the MCP server
     4. Running the audit process and displaying results
     5. Cleaning up resources
+
+    Supports local servers (.py, .js) via STDIO and remote servers via
+    Streamable HTTP or SSE (auto-detected).
 
     Exits with code 1 if no server path is provided, or code 2 if connection fails.
     """
     logger.info("Welcome to MCPAudit!")
 
     if len(sys.argv) < 2:
-        logger.error("Usage: mcpaudit <path_to_server_script>")
+        logger.error("Usage: mcpaudit <server_path_or_url>")
         sys.exit(1)
 
-    mcp_transport: MCPTransportType = MCPTransportType.STDIO
-    mcp_path: str = sys.argv[1]
+    target: str = sys.argv[1]
     client: MCPClient = MCPClient()
     auditor: MCPAuditor = MCPAuditor()
 
-    success: bool = await client.connect_to_server(mcp_transport, mcp_path)
+    success, transport = await client.detect_and_connect(target)
 
     if success:
-        logger.info("Connected to the MCP server: %s", mcp_path)
-        logger.info("Transport: %s", mcp_transport)
+        logger.info("Connected to the MCP server: %s", target)
+        logger.info("Transport: %s", transport)
     else:
-        logger.error("Error connecting to the MCP server: %s", mcp_path)
+        logger.error("Error connecting to the MCP server: %s", target)
         sys.exit(2)
 
     logger.info("Starting the audit...")

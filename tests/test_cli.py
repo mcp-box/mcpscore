@@ -5,6 +5,7 @@ This module tests the command-line interface functionality including:
 - Async main execution flow
 - Success and error paths
 - Command-line argument handling
+- Auto-detection of transport types (STDIO, Streamable HTTP, SSE)
 - Integration with MCPClient and MCPAuditor
 """
 
@@ -30,11 +31,11 @@ def mock_client() -> MagicMock:
     """Create a mock MCPClient for testing.
 
     Returns:
-        MagicMock configured with async methods for connect_to_server and cleanup.
+        MagicMock configured with async methods for detect_and_connect and cleanup.
 
     """
     client = MagicMock(spec=MCPClient)
-    client.connect_to_server = AsyncMock(return_value=True)
+    client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STDIO))
     client.cleanup = AsyncMock()
     return client
 
