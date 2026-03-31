@@ -1,12 +1,14 @@
 # MCPAudit
 
-A command-line tool and library for auditing MCP (Model Context Protocol) servers. MCPAudit connects to MCP servers via stdio transport, initializes them, and runs a comprehensive set of validation rules to ensure compliance with MCP standards. The tool provides detailed audit reports with severity-based categorization and extensible rule framework.
+A command-line tool and library for auditing MCP (Model Context Protocol) servers. MCPAudit connects to MCP servers, initializes them, and runs a comprehensive set of validation rules to ensure compliance with MCP standards. The tool provides detailed audit reports with severity-based categorization and extensible rule framework.
 
 
 ## Features
 
-- **Multi-language support**: Audits both Python (`.py`) and Node.js (`.js`) MCP servers
-- **Comprehensive validation**: Checks protocol compliance, server metadata, and configuration
+- **Multiple transports**: Supports STDIO (local servers), Streamable HTTP, and SSE (remote servers)
+- **Auto-detection**: Automatically detects the right transport — tries Streamable HTTP first, falls back to SSE for URLs
+- **Multi-language support**: Audits both Python (`.py`) and Node.js (`.js`) MCP servers via STDIO
+- **Comprehensive validation**: Checks protocol compliance, server metadata, security, and transport configuration
 - **Severity-based reporting**: Rules categorized by CRITICAL, HIGH, MEDIUM, and LOW severity levels
 - **Extensible rule system**: Easy to add custom audit rules
 - **Detailed reporting**: Provides pass/fail status with descriptive messages and technical details
@@ -26,6 +28,13 @@ MCPAudit connects to your MCP server and validates:
   - ✅ Server version presence (HIGH)
 
 - **Capabilities validation**: Checks tools, resources, prompts, logging, and subscription support
+
+- **Security**:
+  - ✅ HTTPS/TLS usage verification
+  - ✅ Valid certificate checks
+
+- **Transport**:
+  - ✅ SSE transport support detection
 
 
 ## Requirements
@@ -64,10 +73,10 @@ Run the auditor against a local MCP server script. The tool automatically detect
 After installation, you can use the `mcpaudit` command:
 
 ```bash
-# Audit a Python MCP server
+# Audit a local Python MCP server (via STDIO)
 mcpaudit path/to/your/server.py
 
-# Audit a Node.js MCP server
+# Audit a local Node.js MCP server (via STDIO)
 mcpaudit path/to/your/server.js
 ```
 
@@ -159,30 +168,42 @@ You can also use MCPAudit as a library in your own applications:
 import asyncio
 from mcpaudit import MCPAuditor, MCPClient, MCPTransportType
 
-async def audit_server(server_path: str):
-    """Audit an MCP server programmatically."""
+async def audit_local_server(server_path: str):
+    """Audit a local MCP server via STDIO."""
     client = MCPClient()
     auditor = MCPAuditor()
 
-    # Connect to the server
     success = await client.connect_to_server(MCPTransportType.STDIO, server_path)
     if not success:
         print("Failed to connect to server")
         return
 
-    # Run the audit
     score = await auditor.audit(client)
-
-    # Get detailed summary
     summary = auditor.get_audit_summary()
     print(f"Audit completed with score: {score}")
     print(f"Summary: {summary}")
+    await client.cleanup()
 
-    # Cleanup
+async def audit_remote_server(url: str):
+    """Audit a remote MCP server with auto-detection (Streamable HTTP → SSE fallback)."""
+    client = MCPClient()
+    auditor = MCPAuditor()
+
+    success, transport = await client.detect_and_connect(url)
+    if not success:
+        print("Failed to connect to server")
+        return
+
+    print(f"Connected via {transport}")
+    score = await auditor.audit(client)
+    summary = auditor.get_audit_summary()
+    print(f"Audit completed with score: {score}")
+    print(f"Summary: {summary}")
     await client.cleanup()
 
 # Usage
-asyncio.run(audit_server("path/to/server.py"))
+asyncio.run(audit_local_server("path/to/server.py"))
+asyncio.run(audit_remote_server("https://example.com/mcp"))
 ```
 
 ## API Reference
@@ -217,9 +238,9 @@ Abstract base class for all audit rules.
 
 #### `MCPTransportType`
 Supported transport methods:
-- `STDIO`: Standard input/output (currently supported)
-- `STREAMABLE_HTTP`: HTTP with streaming (planned)
-- `SSE`: Server-Sent Events (planned)
+- `STDIO`: Standard input/output for local server processes
+- `STREAMABLE_HTTP`: HTTP-based transport with streaming capabilities
+- `SSE`: Server-Sent Events transport for real-time communication
 - `WEBSOCKET`: WebSocket transport (planned)
 
 #### `MCPProtocolVersion`
