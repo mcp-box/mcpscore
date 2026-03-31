@@ -375,7 +375,6 @@ If you encounter issues not covered here:
 
 ## Limitations
 
-- **CLI transport**: The CLI currently only supports STDIO for local servers; use the programmatic API for remote servers (HTTP/SSE)
 - **WebSocket**: WebSocket transport is not yet implemented
 - **Output**: Results are printed to stdout; structured output (JSON) available via programmatic API
 - **Protocol versions**: Version definitions in `enums.py` need manual updates as MCP spec evolves
@@ -385,7 +384,6 @@ If you encounter issues not covered here:
 
 Contributions are welcome! Areas for improvement:
 
-- **CLI remote support**: Wire HTTP/SSE transports into the CLI (auto-detection via URL)
 - **WebSocket transport**: Implement WebSocket support in `MCPClient`
 - **Audit rules**: More comprehensive compliance checks
 - **Output formats**: JSON/structured output options for CLI
