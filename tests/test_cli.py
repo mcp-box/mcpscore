@@ -76,6 +76,8 @@ class TestMain:
 
         # Check that asyncio.run was called
         mock_run.assert_called_once()
+        # Close the unawaited coroutine to avoid RuntimeWarning
+        mock_run.call_args[0][0].close()
 
     def test_main_calls_asyncio_run_with_async_main(self, monkeypatch: MonkeyPatch) -> None:
         """Verify that main() properly calls asyncio.run with async_main.
@@ -95,6 +97,8 @@ class TestMain:
         assert len(args) == 1
         # Verify it's a coroutine by checking if it has send/throw/close methods
         assert hasattr(args[0], "send")
+        # Close the unawaited coroutine to avoid RuntimeWarning
+        args[0].close()
 
 
 class TestAsyncMain:
@@ -355,6 +359,8 @@ class TestLogging:
             main()
 
             mock_basic_config.assert_called_once_with(level=logging.INFO, format="%(message)s")
+            # Close the unawaited coroutine to avoid RuntimeWarning
+            mock_run.call_args[0][0].close()
 
     @pytest.mark.asyncio
     async def test_logging_messages_appear_correctly(
@@ -538,3 +544,5 @@ class TestIntegration:
         args = mock_run.call_args[0]
         assert len(args) == 1
         assert hasattr(args[0], "send")  # Coroutine duck-typing
+        # Close the unawaited coroutine to avoid RuntimeWarning
+        args[0].close()
