@@ -171,6 +171,7 @@ You can also use MCPAudit as a library in your own applications:
 import asyncio
 from mcpaudit import MCPAuditor, MCPClient, MCPTransportType
 
+
 async def audit_local_server(server_path: str):
     """Audit a local MCP server via STDIO."""
     client = MCPClient()
@@ -186,6 +187,7 @@ async def audit_local_server(server_path: str):
     print(f"Audit completed with score: {score}")
     print(f"Summary: {summary}")
     await client.cleanup()
+
 
 async def audit_remote_server(url: str):
     """Audit a remote MCP server with auto-detection (Streamable HTTP → SSE fallback)."""
