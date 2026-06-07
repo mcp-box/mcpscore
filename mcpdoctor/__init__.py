@@ -13,7 +13,7 @@ aspects of MCP compliance and contributes to an overall audit score.
 """
 
 from .enums import MCPProtocolVersion, MCPTransportType
-from .mcp_auditor import MCPAuditor
+from .mcp_auditor import MCPDoctor
 from .mcp_client import MCPClient
 from .rules import (
     AuditData,
@@ -25,7 +25,7 @@ from .rules import (
 __all__ = (
     "AuditData",
     "BaseRule",
-    "MCPAuditor",
+    "MCPDoctor",
     "MCPClient",
     "MCPProtocolVersion",
     "MCPTransportType",

@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from mcpdoctor import MCPAuditor, MCPClient
+from mcpdoctor import MCPDoctor, MCPClient
 from mcpdoctor.rules import AuditData, BaseRule, RuleResult, RuleSeverity
 
 
@@ -92,7 +92,7 @@ async def test_auditor_collects_data_and_scores():
             )()
             self.instructions = "instr"
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = [
         DummyRule(passed=True, severity=RuleSeverity.HIGH),
         DummyRule(passed=False, severity=RuleSeverity.MEDIUM),
@@ -139,7 +139,7 @@ async def test_auditor_with_tools_capability():
             self.description = "A test tool"
 
     tools = [Tool()]
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     await auditor.audit(DummyClient(InitResult(), tools=tools))
@@ -176,7 +176,7 @@ async def test_auditor_with_resources_capability():
             self.name = "Test Resource"
 
     resources = [Resource()]
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     await auditor.audit(DummyClient(InitResult(), resources=resources))
@@ -213,7 +213,7 @@ async def test_auditor_with_prompts_capability():
             self.description = "A test prompt"
 
     prompts = [Prompt()]
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     await auditor.audit(DummyClient(InitResult(), prompts=prompts))
@@ -262,7 +262,7 @@ async def test_auditor_with_all_capabilities():
     resources = [Resource()]
     prompts = [Prompt()]
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     await auditor.audit(DummyClient(InitResult(), tools=tools, resources=resources, prompts=prompts))
@@ -290,7 +290,7 @@ async def test_auditor_with_no_capabilities():
             self.capabilities = None  # No capabilities
             self.instructions = None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     score, max_score = await auditor.audit(DummyClient(InitResult()))
@@ -321,7 +321,7 @@ async def test_auditor_https_tls_detection():
             self.capabilities = None
             self.instructions = None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp"))
@@ -348,7 +348,7 @@ async def test_auditor_http_no_tls():
             self.capabilities = None
             self.instructions = None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     await auditor.audit(DummyClient(InitResult(), url="http://example.com/mcp"))
@@ -374,7 +374,7 @@ async def test_auditor_stdio_no_tls_detection():
             self.capabilities = None
             self.instructions = None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     await auditor.audit(DummyClient(InitResult(), url=None, transport_type="stdio"))
@@ -392,7 +392,7 @@ async def test_collect_init_result_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = None
 
     await auditor._collect_init_result()
@@ -413,7 +413,7 @@ async def test_collect_init_result_with_none_result(caplog):
         async def initialize(self):
             return None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = NoneClient()
 
     await auditor._collect_init_result()
@@ -430,7 +430,7 @@ async def test_collect_tools_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = None
 
     await auditor._collect_tools()
@@ -451,7 +451,7 @@ async def test_collect_tools_with_none_response(caplog):
         async def list_tools(self):
             return None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = NoneToolsClient()
 
     await auditor._collect_tools()
@@ -469,7 +469,7 @@ async def test_collect_resources_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = None
 
     await auditor._collect_resources()
@@ -490,7 +490,7 @@ async def test_collect_resources_with_none_response(caplog):
         async def list_resources(self):
             return None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = NoneResourcesClient()
 
     await auditor._collect_resources()
@@ -508,7 +508,7 @@ async def test_collect_prompts_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = None
 
     await auditor._collect_prompts()
@@ -529,7 +529,7 @@ async def test_collect_prompts_with_none_response(caplog):
         async def list_prompts(self):
             return None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = NonePromptsClient()
 
     await auditor._collect_prompts()
@@ -547,7 +547,7 @@ async def test_get_audit_summary_with_mixed_results():
     - Summary correctly counts total, passed, and failed rules
     - By-severity breakdown is accurate
     """
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.results = [
         RuleResult(rule_name="rule1", severity=RuleSeverity.CRITICAL, passed=True, message="pass"),
         RuleResult(rule_name="rule2", severity=RuleSeverity.HIGH, passed=False, message="fail"),
@@ -574,7 +574,7 @@ async def test_get_audit_summary_all_passed():
     - All rules are counted as passed
     - Failed count is zero
     """
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.results = [
         RuleResult(rule_name="rule1", severity=RuleSeverity.HIGH, passed=True, message="pass"),
         RuleResult(rule_name="rule2", severity=RuleSeverity.MEDIUM, passed=True, message="pass"),
@@ -595,7 +595,7 @@ async def test_get_audit_summary_all_failed():
     - All rules are counted as failed
     - Passed count is zero
     """
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.results = [
         RuleResult(rule_name="rule1", severity=RuleSeverity.HIGH, passed=False, message="fail"),
         RuleResult(rule_name="rule2", severity=RuleSeverity.MEDIUM, passed=False, message="fail"),
@@ -616,7 +616,7 @@ async def test_collect_transport_metadata_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.mcp_client = None
 
     await auditor._collect_transport_metadata()
@@ -642,7 +642,7 @@ async def test_auditor_transport_metadata_collection():
             self.capabilities = None
             self.instructions = None
 
-    auditor = MCPAuditor()
+    auditor = MCPDoctor()
     auditor.rules = []
 
     await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp", transport_type="sse"))

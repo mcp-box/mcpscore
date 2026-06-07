@@ -169,13 +169,13 @@ You can also use MCPAudit as a library in your own applications:
 
 ```python
 import asyncio
-from mcpdoctor import MCPAuditor, MCPClient, MCPTransportType
+from mcpdoctor import MCPDoctor, MCPClient, MCPTransportType
 
 
 async def audit_local_server(server_path: str):
   """Audit a local MCP server via STDIO."""
   client = MCPClient()
-  auditor = MCPAuditor()
+  auditor = MCPDoctor()
 
   success = await client.connect_to_server(MCPTransportType.STDIO, server_path)
   if not success:
@@ -192,7 +192,7 @@ async def audit_local_server(server_path: str):
 async def audit_remote_server(url: str):
   """Audit a remote MCP server with auto-detection (Streamable HTTP → SSE fallback)."""
   client = MCPClient()
-  auditor = MCPAuditor()
+  auditor = MCPDoctor()
 
   success, transport = await client.detect_and_connect(url)
   if not success:

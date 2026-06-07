@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcpdoctor import MCPAuditor, MCPClient, MCPTransportType
+from mcpdoctor import MCPDoctor, MCPClient, MCPTransportType
 from mcpdoctor.cli import async_main, main
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ def mock_auditor() -> MagicMock:
         MagicMock configured with async audit method returning score tuple.
 
     """
-    auditor = MagicMock(spec=MCPAuditor)
+    auditor = MagicMock(spec=MCPDoctor)
     auditor.audit = AsyncMock(return_value=(85, 100))
     return auditor
 
