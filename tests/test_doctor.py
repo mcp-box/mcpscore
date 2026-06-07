@@ -2,8 +2,8 @@ from typing import Any
 
 import pytest
 
-from mcpdoctor import MCPClient, MCPDoctor
-from mcpdoctor.rules import AuditData, BaseRule, RuleResult, RuleSeverity
+from mcpscore import MCPClient, MCPDoctor
+from mcpscore.rules import AuditData, BaseRule, RuleResult, RuleSeverity
 
 
 class DummyClient(MCPClient):

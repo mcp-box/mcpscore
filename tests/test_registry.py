@@ -1,4 +1,4 @@
-from mcpdoctor.rules import (
+from mcpscore.rules import (
     AllowedVersionRule,
     CapabilityLoggingPresentRule,
     RuleRegistry,

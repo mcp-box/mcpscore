@@ -1,8 +1,8 @@
-from mcpdoctor.rules import (
+from mcpscore.rules import (
     AuditData,
     CapabilityLoggingPresentRule,
 )
-from mcpdoctor.rules.capabilities import (
+from mcpscore.rules.capabilities import (
     CapabilityPromptsListChangedRule,
     CapabilityPromptsPresentRule,
     CapabilityResourcesListChangedRule,

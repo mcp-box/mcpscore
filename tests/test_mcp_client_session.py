@@ -7,7 +7,7 @@ from mcp.types import Prompt, Resource, Tool
 from pydantic import AnyUrl
 import pytest
 
-from mcpdoctor.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
+from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
 
 
 class TestMCPClientSessionOperations:

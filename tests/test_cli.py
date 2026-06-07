@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcpdoctor import MCPClient, MCPDoctor, MCPTransportType
-from mcpdoctor.cli import async_main, main
+from mcpscore import MCPClient, MCPDoctor, MCPTransportType
+from mcpscore.cli import async_main, main
 
 if TYPE_CHECKING:
     from _pytest.logging import LogCaptureFixture
@@ -65,10 +65,10 @@ class TestMain:
         """
         # Mock asyncio.run to prevent actual execution
         mock_run = MagicMock()
-        monkeypatch.setattr("mcpdoctor.cli.asyncio.run", mock_run)
+        monkeypatch.setattr("mcpscore.cli.asyncio.run", mock_run)
 
         # Mock logging.basicConfig to verify it's called correctly
-        with patch("mcpdoctor.cli.logging.basicConfig") as mock_basic_config:
+        with patch("mcpscore.cli.logging.basicConfig") as mock_basic_config:
             main()
 
             # Verify basicConfig was called with correct parameters
@@ -86,7 +86,7 @@ class TestMain:
         the asynchronous main function via asyncio.run().
         """
         mock_run = MagicMock()
-        monkeypatch.setattr("mcpdoctor.cli.asyncio.run", mock_run)
+        monkeypatch.setattr("mcpscore.cli.asyncio.run", mock_run)
 
         main()
 
@@ -121,12 +121,12 @@ class TestAsyncMain:
         4. Final score is displayed
         5. Client cleanup is called
         """
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
         mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STDIO))
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -149,12 +149,12 @@ class TestAsyncMain:
         caplog: LogCaptureFixture,
     ) -> None:
         """Test successful audit workflow with a remote server via Streamable HTTP."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "https://example.com/mcp"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp"])
         mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STREAMABLE_HTTP))
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -174,12 +174,12 @@ class TestAsyncMain:
         caplog: LogCaptureFixture,
     ) -> None:
         """Test successful audit workflow with a remote server via SSE."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "https://example.com/sse"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/sse"])
         mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.SSE))
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -197,7 +197,7 @@ class TestAsyncMain:
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that missing server path argument exits with code 1."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore"])
 
         with (
             caplog.at_level(logging.INFO),
@@ -207,7 +207,7 @@ class TestAsyncMain:
 
         assert exc_info.value.code == 1
         assert "Welcome to MCPDoctor!" in caplog.text
-        assert "Usage: mcpdoctor <server_path_or_url>" in caplog.text
+        assert "Usage: mcpscore <server_path_or_url>" in caplog.text
 
     @pytest.mark.asyncio
     async def test_async_main_connection_failure(
@@ -218,12 +218,12 @@ class TestAsyncMain:
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that connection failure exits with code 2."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
         mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -244,11 +244,11 @@ class TestAsyncMain:
     ) -> None:
         """Test that different server paths are correctly processed."""
         server_path = "/custom/path/to/my_server.js"
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", server_path])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", server_path])
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -265,12 +265,12 @@ class TestAsyncMain:
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that audit scores are displayed correctly in logs."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
         mock_doctor.audit = AsyncMock(return_value=(42, 75))
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -285,11 +285,11 @@ class TestAsyncMain:
         mock_doctor: MagicMock,
     ) -> None:
         """Test that fresh instances of client and doctor are created."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client) as mock_client_cls,
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor) as mock_doctor_cls,
+            patch("mcpscore.cli.MCPClient", return_value=mock_client) as mock_client_cls,
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor) as mock_doctor_cls,
         ):
             await async_main()
 
@@ -304,11 +304,11 @@ class TestAsyncMain:
         mock_doctor: MagicMock,
     ) -> None:
         """Test that cleanup is always called after successful audit."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
         ):
             await async_main()
 
@@ -323,11 +323,11 @@ class TestAsyncMain:
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that all key steps in the audit process are logged."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -353,9 +353,9 @@ class TestLogging:
     ) -> None:
         """Verify that main() configures the logging system."""
         mock_run = MagicMock()
-        monkeypatch.setattr("mcpdoctor.cli.asyncio.run", mock_run)
+        monkeypatch.setattr("mcpscore.cli.asyncio.run", mock_run)
 
-        with patch("mcpdoctor.cli.logging.basicConfig") as mock_basic_config:
+        with patch("mcpscore.cli.logging.basicConfig") as mock_basic_config:
             main()
 
             mock_basic_config.assert_called_once_with(level=logging.INFO, format="%(message)s")
@@ -371,11 +371,11 @@ class TestLogging:
         caplog: LogCaptureFixture,
     ) -> None:
         """Verify that log messages are output correctly during execution."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -405,7 +405,7 @@ class TestErrorHandling:
             await async_main()
 
         assert exc_info.value.code == 1
-        assert "Usage: mcpdoctor <server_path_or_url>" in caplog.text
+        assert "Usage: mcpscore <server_path_or_url>" in caplog.text
 
     @pytest.mark.asyncio
     async def test_argv_with_only_script_name(
@@ -414,7 +414,7 @@ class TestErrorHandling:
         caplog: LogCaptureFixture,
     ) -> None:
         """Test handling of argv with only script name (typical no-args case)."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore"])
 
         with (
             caplog.at_level(logging.INFO),
@@ -423,7 +423,7 @@ class TestErrorHandling:
             await async_main()
 
         assert exc_info.value.code == 1
-        assert "Usage: mcpdoctor <server_path_or_url>" in caplog.text
+        assert "Usage: mcpscore <server_path_or_url>" in caplog.text
 
     @pytest.mark.asyncio
     async def test_connection_failure_exits_before_audit(
@@ -433,12 +433,12 @@ class TestErrorHandling:
         mock_doctor: MagicMock,
     ) -> None:
         """Test that connection failure prevents audit execution."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
         mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             pytest.raises(SystemExit),
         ):
             await async_main()
@@ -454,12 +454,12 @@ class TestErrorHandling:
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that connection failure for a URL exits with code 2."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "https://example.com/mcp"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp"])
         mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -478,9 +478,9 @@ class TestMainGuard:
         """Test that the __main__ guard properly calls main()."""
         import inspect
 
-        import mcpdoctor.cli
+        import mcpscore.cli
 
-        source = inspect.getsource(mcpdoctor.cli)
+        source = inspect.getsource(mcpscore.cli)
         assert 'if __name__ == "__main__":' in source
         assert "    main()" in source
 
@@ -510,11 +510,11 @@ class TestIntegration:
             mock_client.cleanup = AsyncMock()
             mock_doctor.audit = AsyncMock(return_value=(80, 100))
 
-            monkeypatch.setattr(sys, "argv", ["mcpdoctor", target])
+            monkeypatch.setattr(sys, "argv", ["mcpscore", target])
 
             with (
-                patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-                patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+                patch("mcpscore.cli.MCPClient", return_value=mock_client),
+                patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
             ):
                 await async_main()
 
@@ -529,14 +529,14 @@ class TestIntegration:
         mock_doctor: MagicMock,
     ) -> None:
         """Test that main() properly integrates with asyncio.run()."""
-        monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
 
         mock_run = MagicMock()
-        monkeypatch.setattr("mcpdoctor.cli.asyncio.run", mock_run)
+        monkeypatch.setattr("mcpscore.cli.asyncio.run", mock_run)
 
         with (
-            patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
         ):
             main()
 

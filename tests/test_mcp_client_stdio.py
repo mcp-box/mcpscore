@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mcpdoctor.enums import MCPTransportType
-from mcpdoctor.mcp_client import MCPClient
+from mcpscore.enums import MCPTransportType
+from mcpscore.mcp_client import MCPClient
 
 
 class TestMCPClientStdioErrors:
@@ -36,7 +36,7 @@ class TestMCPClientStdioErrors:
         """Test stdio connection with Python interpreter not found."""
         server_path = "server.py"
 
-        with patch("mcpdoctor.mcp_client.stdio_client") as mock_client:
+        with patch("mcpscore.mcp_client.stdio_client") as mock_client:
             # Simulate FileNotFoundError (Python not found)
             mock_client.return_value.__aenter__.side_effect = FileNotFoundError("python not found")
 
@@ -50,7 +50,7 @@ class TestMCPClientStdioErrors:
         """Test stdio connection with Node.js not found."""
         server_path = "server.js"
 
-        with patch("mcpdoctor.mcp_client.stdio_client") as mock_client:
+        with patch("mcpscore.mcp_client.stdio_client") as mock_client:
             # Simulate FileNotFoundError (Node.js not found)
             mock_client.return_value.__aenter__.side_effect = FileNotFoundError("node not found")
 
@@ -64,7 +64,7 @@ class TestMCPClientStdioErrors:
         """Test stdio connection with permission denied."""
         server_path = "server.py"
 
-        with patch("mcpdoctor.mcp_client.stdio_client") as mock_client:
+        with patch("mcpscore.mcp_client.stdio_client") as mock_client:
             # Simulate PermissionError
             mock_client.return_value.__aenter__.side_effect = PermissionError("Permission denied")
 
@@ -78,7 +78,7 @@ class TestMCPClientStdioErrors:
         """Test stdio connection with generic exception."""
         server_path = "server.py"
 
-        with patch("mcpdoctor.mcp_client.stdio_client") as mock_client:
+        with patch("mcpscore.mcp_client.stdio_client") as mock_client:
             # Simulate generic exception
             mock_client.return_value.__aenter__.side_effect = RuntimeError("Unexpected error")
 
@@ -97,8 +97,8 @@ class TestMCPClientStdioErrors:
         mock_session = AsyncMock()
 
         with (
-            patch("mcpdoctor.mcp_client.stdio_client") as mock_client,
-            patch("mcpdoctor.mcp_client.ClientSession", return_value=mock_session),
+            patch("mcpscore.mcp_client.stdio_client") as mock_client,
+            patch("mcpscore.mcp_client.ClientSession", return_value=mock_session),
         ):
             # Set up successful connection
             mock_client.return_value.__aenter__.return_value = (mock_stdio, mock_write)
@@ -121,8 +121,8 @@ class TestMCPClientStdioErrors:
         mock_session = AsyncMock()
 
         with (
-            patch("mcpdoctor.mcp_client.stdio_client") as mock_client,
-            patch("mcpdoctor.mcp_client.ClientSession", return_value=mock_session),
+            patch("mcpscore.mcp_client.stdio_client") as mock_client,
+            patch("mcpscore.mcp_client.ClientSession", return_value=mock_session),
         ):
             # Set up successful connection
             mock_client.return_value.__aenter__.return_value = (mock_stdio, mock_write)
