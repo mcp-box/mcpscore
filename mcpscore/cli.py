@@ -1,20 +1,20 @@
-"""Command-line interface for MCPDoctor."""
+"""Command-line interface for MCPScore."""
 
 import asyncio
 import logging
 import sys
 
-from mcpdoctor import MCPClient, MCPDoctor
+from mcpscore import MCPAuditor, MCPClient
 
 logger = logging.getLogger(__name__)
 
 
 async def async_main() -> None:
-    """Execute the main entry point for the MCPDoctor CLI application.
+    """Execute the main entry point for the MCPScore CLI application.
 
     Orchestrates the audit process by:
     1. Parsing command line arguments for the server path or URL
-    2. Creating MCP client and doctor instances
+    2. Creating MCP client and auditor instances
     3. Auto-detecting transport and connecting to the MCP server
     4. Running the audit process and displaying results
     5. Cleaning up resources
@@ -24,15 +24,15 @@ async def async_main() -> None:
 
     Exits with code 1 if no server path is provided, or code 2 if connection fails.
     """
-    logger.info("Welcome to MCPDoctor!")
+    logger.info("Welcome to MCPScore!")
 
     if len(sys.argv) < 2:
-        logger.error("Usage: mcpdoctor <server_path_or_url>")
+        logger.error("Usage: mcpscore <server_path_or_url>")
         sys.exit(1)
 
     target: str = sys.argv[1]
     client: MCPClient = MCPClient()
-    doctor: MCPDoctor = MCPDoctor()
+    doctor: MCPAuditor = MCPAuditor()
 
     success, transport = await client.detect_and_connect(target)
 
@@ -51,9 +51,9 @@ async def async_main() -> None:
 
 
 def main() -> None:
-    """Entry point for the mcpdoctor CLI command.
+    """Entry point for the mcpscore CLI command.
 
-    This function is called when running `mcpdoctor` from the command line.
+    This function is called when running `mcpscore` from the command line.
     It sets up logging and runs the async main function.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")

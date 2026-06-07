@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from mcpdoctor.enums import MCPTransportType
-from mcpdoctor.mcp_client import MCPClient
+from mcpscore.enums import MCPTransportType
+from mcpscore.mcp_client import MCPClient
 
 
 class TestMCPClientHTTP:
@@ -29,8 +29,8 @@ class TestMCPClientHTTP:
         mock_session = AsyncMock()
 
         with (
-            patch("mcpdoctor.mcp_client.streamable_http_client") as mock_client,
-            patch("mcpdoctor.mcp_client.ClientSession", return_value=mock_session),
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_client,
+            patch("mcpscore.mcp_client.ClientSession", return_value=mock_session),
         ):
             # Set up the mock to return streams and session_id_callback
             mock_client.return_value.__aenter__.return_value = (
@@ -65,7 +65,7 @@ class TestMCPClientHTTP:
         """Test Streamable HTTP connection with connection refused."""
         server_url = "https://example.com/mcp"
 
-        with patch("mcpdoctor.mcp_client.streamable_http_client") as mock_client:
+        with patch("mcpscore.mcp_client.streamable_http_client") as mock_client:
             # Simulate connection error
             mock_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
 
@@ -78,7 +78,7 @@ class TestMCPClientHTTP:
         """Test Streamable HTTP connection with timeout."""
         server_url = "https://example.com/mcp"
 
-        with patch("mcpdoctor.mcp_client.streamable_http_client") as mock_client:
+        with patch("mcpscore.mcp_client.streamable_http_client") as mock_client:
             # Simulate timeout
             mock_client.return_value.__aenter__.side_effect = httpx.TimeoutException("Request timed out")
 
@@ -91,7 +91,7 @@ class TestMCPClientHTTP:
         """Test Streamable HTTP connection with HTTP error."""
         server_url = "https://example.com/mcp"
 
-        with patch("mcpdoctor.mcp_client.streamable_http_client") as mock_client:
+        with patch("mcpscore.mcp_client.streamable_http_client") as mock_client:
             # Simulate 404 error
             mock_response = MagicMock()
             mock_response.status_code = 404
@@ -113,8 +113,8 @@ class TestMCPClientHTTP:
         mock_session = AsyncMock()
 
         with (
-            patch("mcpdoctor.mcp_client.streamable_http_client") as mock_client,
-            patch("mcpdoctor.mcp_client.ClientSession", return_value=mock_session),
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_client,
+            patch("mcpscore.mcp_client.ClientSession", return_value=mock_session),
         ):
             mock_client.return_value.__aenter__.return_value = (
                 mock_read_stream,
@@ -138,9 +138,9 @@ class TestMCPClientHTTP:
         mock_session = AsyncMock()
 
         with (
-            patch("mcpdoctor.mcp_client.streamable_http_client") as mock_http_client,
-            patch("mcpdoctor.mcp_client.sse_client") as mock_sse_client,
-            patch("mcpdoctor.mcp_client.ClientSession", return_value=mock_session),
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_http_client,
+            patch("mcpscore.mcp_client.sse_client") as mock_sse_client,
+            patch("mcpscore.mcp_client.ClientSession", return_value=mock_session),
         ):
             # HTTP fails
             mock_http_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
@@ -159,7 +159,7 @@ class TestMCPClientHTTP:
         """Test Streamable HTTP connection with generic exception."""
         server_url = "https://example.com/mcp"
 
-        with patch("mcpdoctor.mcp_client.streamable_http_client") as mock_client:
+        with patch("mcpscore.mcp_client.streamable_http_client") as mock_client:
             # Simulate generic exception
             mock_client.return_value.__aenter__.side_effect = RuntimeError("Unexpected error")
 
@@ -178,8 +178,8 @@ class TestMCPClientHTTP:
         server_url = "https://example.com/mcp"
 
         with (
-            patch("mcpdoctor.mcp_client.streamable_http_client") as mock_http_client,
-            patch("mcpdoctor.mcp_client.sse_client") as mock_sse_client,
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_http_client,
+            patch("mcpscore.mcp_client.sse_client") as mock_sse_client,
         ):
             # Both fail
             mock_http_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
@@ -215,8 +215,8 @@ class TestMCPClientHTTP:
         mock_session = AsyncMock()
 
         with (
-            patch("mcpdoctor.mcp_client.streamable_http_client") as mock_client,
-            patch("mcpdoctor.mcp_client.ClientSession", return_value=mock_session),
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_client,
+            patch("mcpscore.mcp_client.ClientSession", return_value=mock_session),
         ):
             mock_client.return_value.__aenter__.return_value = (
                 mock_read_stream,

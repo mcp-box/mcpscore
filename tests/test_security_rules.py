@@ -2,7 +2,7 @@
 
 import pytest
 
-from mcpdoctor.rules import (
+from mcpscore.rules import (
     AuditData,
     ErrorDataLeakRule,
     MalformedRequestHandlingRule,

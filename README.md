@@ -1,6 +1,6 @@
-# MCPDoctor
+# MCPScore
 
-A command-line tool for auditing MCP (Model Context Protocol) servers. MCPDoctor connects to your server, runs a comprehensive set of validation rules against it, and produces a severity-based report showing what's compliant and what needs attention.
+A command-line tool for auditing MCP (Model Context Protocol) servers. MCPScore connects to your server, runs a comprehensive set of validation rules against it, and produces a severity-based report showing what's compliant and what needs attention.
 
 ## Features
 
@@ -40,34 +40,34 @@ A command-line tool for auditing MCP (Model Context Protocol) servers. MCPDoctor
 ## Installation
 
 ```bash
-pip install mcpdoctor
+pip install mcpscore
 ```
 
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install mcpdoctor
+uv tool install mcpscore
 ```
 
 ## Quick start
 
-Run `mcpdoctor` against any MCP server — local script or remote URL. The transport is detected automatically.
+Run `mcpscore` against any MCP server — local script or remote URL. The transport is detected automatically.
 
 ```bash
 # Local Python MCP server (STDIO)
-mcpdoctor path/to/your/server.py
+mcpscore path/to/your/server.py
 
 # Local Node.js MCP server (STDIO)
-mcpdoctor path/to/your/server.js
+mcpscore path/to/your/server.js
 
 # Remote MCP server (auto-detects Streamable HTTP or SSE)
-mcpdoctor https://example.com/mcp
+mcpscore https://example.com/mcp
 ```
 
 ### Example output
 
 ```
-Welcome to MCPDoctor!
+Welcome to MCPScore!
 Connected to the MCP server: /path/to/server.py
 Transport: stdio
 Starting the audit...
@@ -109,11 +109,11 @@ Each passing rule contributes points equal to its severity weight: **CRITICAL = 
 **Protocol version errors**
 
 - Confirm your server uses a currently supported MCP protocol version
-- If your server uses a newer version that MCPDoctor doesn't yet recognize, please [open an issue](https://github.com/mcp-box/mcpdoctor/issues)
+- If your server uses a newer version that MCPScore doesn't yet recognize, please [open an issue](https://github.com/mcp-box/mcpscore/issues)
 
 ## Feedback
 
-Bug reports, feature requests, and general feedback are welcome at <https://github.com/mcp-box/mcpdoctor/issues>.
+Bug reports, feature requests, and general feedback are welcome at <https://github.com/mcp-box/mcpscore/issues>.
 
 ## License
 

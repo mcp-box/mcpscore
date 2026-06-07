@@ -17,7 +17,7 @@ lint: ## Lint code (no auto-fix)
 
 .PHONY: typecheck
 typecheck: ## Type check with pyright
-	uv run pyright mcpdoctor/
+	uv run pyright mcpscore/
 
 .PHONY: test
 test: ## Run tests

@@ -1,6 +1,6 @@
 from abc import abstractmethod
 
-from mcpdoctor.enums import MCPProtocolVersion
+from mcpscore.enums import MCPProtocolVersion
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_protocol_version
 from .registry import register_rule

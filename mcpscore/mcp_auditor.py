@@ -10,7 +10,7 @@ from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, create_all_rul
 logger = logging.getLogger(__name__)
 
 
-class MCPDoctor:
+class MCPAuditor:
     """Orchestrates the MCP server audit process.
 
     This class manages the complete audit workflow:

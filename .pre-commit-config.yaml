@@ -29,7 +29,7 @@ repos:
     hooks:
       - id: typecheck
         name: Type Check
-        entry: uv run pyright mcpdoctor/
+        entry: uv run pyright mcpscore/
         language: system
         types: [python]
         pass_filenames: false
