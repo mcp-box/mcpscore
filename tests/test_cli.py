@@ -48,9 +48,9 @@ def mock_doctor() -> MagicMock:
         MagicMock configured with async audit method returning score tuple.
 
     """
-    auditor = MagicMock(spec=MCPDoctor)
-    auditor.audit = AsyncMock(return_value=(85, 100))
-    return auditor
+    doctor = MagicMock(spec=MCPDoctor)
+    doctor.audit = AsyncMock(return_value=(85, 100))
+    return doctor
 
 
 class TestMain:
@@ -278,13 +278,13 @@ class TestAsyncMain:
         assert "Audit finished. Final score: 42/75" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_async_main_creates_fresh_client_and_auditor(
+    async def test_async_main_creates_fresh_client_and_doctor(
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
         mock_doctor: MagicMock,
     ) -> None:
-        """Test that fresh instances of client and auditor are created."""
+        """Test that fresh instances of client and doctorare created."""
         monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
 
         with (
