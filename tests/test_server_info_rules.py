@@ -1,4 +1,4 @@
-from mcpaudit.rules import (
+from mcpdoctor.rules import (
     AuditData,
     ServerNamePresentRule,
     ServerTitlePresentRule,

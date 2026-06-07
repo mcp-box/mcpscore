@@ -1,8 +1,8 @@
-from mcpaudit.rules import (
+from mcpdoctor.rules import (
     AuditData,
     CapabilityLoggingPresentRule,
 )
-from mcpaudit.rules.capabilities import (
+from mcpdoctor.rules.capabilities import (
     CapabilityPromptsListChangedRule,
     CapabilityPromptsPresentRule,
     CapabilityResourcesListChangedRule,

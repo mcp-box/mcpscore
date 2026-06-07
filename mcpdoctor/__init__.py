@@ -1,10 +1,10 @@
-"""MCPAudit - A comprehensive auditing tool for MCP (Model Context Protocol) servers.
+"""MCPDoctor - A comprehensive auditing tool for MCP (Model Context Protocol) servers.
 
 This package provides tools for auditing MCP servers to ensure compliance with
 protocol standards and best practices. It includes:
 
 - MCPClient: For connecting to and communicating with MCP servers
-- MCPAuditor: For orchestrating the audit process
+- MCPDoctor: For orchestrating the audit process
 - Rule system: Extensible framework for implementing audit checks
 - Enums: Protocol versions and transport types
 
@@ -13,8 +13,8 @@ aspects of MCP compliance and contributes to an overall audit score.
 """
 
 from .enums import MCPProtocolVersion, MCPTransportType
-from .mcp_auditor import MCPAuditor
 from .mcp_client import MCPClient
+from .mcp_doctor import MCPDoctor
 from .rules import (
     AuditData,
     BaseRule,
@@ -25,8 +25,8 @@ from .rules import (
 __all__ = (
     "AuditData",
     "BaseRule",
-    "MCPAuditor",
     "MCPClient",
+    "MCPDoctor",
     "MCPProtocolVersion",
     "MCPTransportType",
     "RuleResult",

@@ -19,8 +19,8 @@ from typing import Any
 from mcp.types import Tool
 import pytest
 
-from mcpaudit.rules import AuditData, RuleSeverity
-from mcpaudit.rules.tools import (
+from mcpdoctor.rules import AuditData, RuleSeverity
+from mcpdoctor.rules.tools import (
     ToolsAtLeastOneRule,
     ToolsBaseRule,
     ToolsDescriptionPresentRule,

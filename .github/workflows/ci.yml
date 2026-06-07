@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --all-groups
-      - run: uv run pyright mcpaudit/
+      - run: uv run pyright mcpdoctor/
 
   test:
     name: Test / ${{ matrix.os }}
