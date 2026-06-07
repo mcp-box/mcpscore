@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "mcpdoctor",
+    "mcpscore",
     "tests",
     "README.md",
     "LICENSE",
@@ -12,11 +12,11 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["mcpdoctor"]
+packages = ["mcpscore"]
 
 [project]
-name = "mcpdoctor"
-version = "0.2.0"
+name = "mcpscore"
+version = "0.3.0"
 description = "CLI tool to analyze your MCP server and get a comprehensive report on its quality"
 authors = [{ name = "Alex Akimov"}]
 license = "MIT"
@@ -56,11 +56,11 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://mcp-box.dev"
-Repository = "https://github.com/mcp-box/mcpdoctor"
-Issues = "https://github.com/mcp-box/mcpdoctor/issues"
+Repository = "https://github.com/mcp-box/mcpscore"
+Issues = "https://github.com/mcp-box/mcpscore/issues"
 
 [project.scripts]
-mcpdoctor = "mcpdoctor.cli:main"
+mcpscore = "mcpscore.cli:main"
 
 [dependency-groups]
 dev = [
@@ -101,7 +101,7 @@ testpaths = ["tests"]
 addopts = ["--strict-config", "--strict-markers"]
 
 [tool.coverage.run]
-source = ["mcpdoctor"]
+source = ["mcpscore"]
 branch = true
 
 [tool.coverage.report]
