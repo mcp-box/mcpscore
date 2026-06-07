@@ -284,7 +284,7 @@ class TestAsyncMain:
         mock_client: MagicMock,
         mock_doctor: MagicMock,
     ) -> None:
-        """Test that fresh instances of client and doctorare created."""
+        """Test that fresh instances of client and doctor are created."""
         monkeypatch.setattr(sys, "argv", ["mcpdoctor", "/path/to/server.py"])
 
         with (
