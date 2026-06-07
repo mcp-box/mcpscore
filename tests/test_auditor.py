@@ -149,7 +149,7 @@ async def test_auditor_with_tools_capability():
 
 @pytest.mark.asyncio
 async def test_auditor_with_resources_capability():
-    """Test that auditor collects resources when resources capability is present.
+    """Test that doctor collects resources when resources capability is present.
 
     Verifies that:
     - When capabilities.resources is not None, _collect_resources() is called
@@ -176,17 +176,17 @@ async def test_auditor_with_resources_capability():
             self.name = "Test Resource"
 
     resources = [Resource()]
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), resources=resources))
+    await doctor.audit(DummyClient(InitResult(), resources=resources))
 
-    assert auditor.audit_data.resources == resources
+    assert doctor.audit_data.resources == resources
 
 
 @pytest.mark.asyncio
 async def test_auditor_with_prompts_capability():
-    """Test that auditor collects prompts when prompts capability is present.
+    """Test that doctor collects prompts when prompts capability is present.
 
     Verifies that:
     - When capabilities.prompts is not None, _collect_prompts() is called
@@ -213,12 +213,12 @@ async def test_auditor_with_prompts_capability():
             self.description = "A test prompt"
 
     prompts = [Prompt()]
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), prompts=prompts))
+    await doctor.audit(DummyClient(InitResult(), prompts=prompts))
 
-    assert auditor.audit_data.prompts == prompts
+    assert doctor.audit_data.prompts == prompts
 
 
 @pytest.mark.asyncio
