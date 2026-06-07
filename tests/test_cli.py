@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcpdoctor import MCPDoctor, MCPClient, MCPTransportType
+from mcpdoctor import MCPClient, MCPDoctor, MCPTransportType
 from mcpdoctor.cli import async_main, main
 
 if TYPE_CHECKING:

@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from mcpdoctor import MCPDoctor, MCPClient
+from mcpdoctor import MCPClient, MCPDoctor
 from mcpdoctor.rules import AuditData, BaseRule, RuleResult, RuleSeverity
 
 

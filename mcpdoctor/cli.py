@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 
-from mcpdoctor import MCPDoctor, MCPClient
+from mcpdoctor import MCPClient, MCPDoctor
 
 logger = logging.getLogger(__name__)
 
