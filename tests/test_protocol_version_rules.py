@@ -1,5 +1,5 @@
-from mcpaudit.enums import MCPProtocolVersion
-from mcpaudit.rules import (
+from mcpdoctor.enums import MCPProtocolVersion
+from mcpdoctor.rules import (
     AllowedVersionRule,
     AuditData,
     DeprecatedVersionRule,

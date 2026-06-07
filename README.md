@@ -61,7 +61,7 @@ Using pip:
 pip install -e .
 ```
 
-This will install the `mcpaudit` package and its dependency `mcp`.
+This will install the `mcpdoctor` package and its dependency `mcp`.
 
 
 ## Quick start
@@ -70,24 +70,24 @@ Run the auditor against any MCP server. The tool automatically detects the trans
 
 ### Basic usage
 
-After installation, you can use the `mcpaudit` command:
+After installation, you can use the `mcpdoctor` command:
 
 ```bash
 # Audit a local Python MCP server (via STDIO)
-mcpaudit path/to/your/server.py
+mcpdoctor path/to/your/server.py
 
 # Audit a local Node.js MCP server (via STDIO)
-mcpaudit path/to/your/server.js
+mcpdoctor path/to/your/server.js
 
 # Audit a remote MCP server (auto-detects Streamable HTTP or SSE)
-mcpaudit https://example.com/mcp
+mcpdoctor https://example.com/mcp
 ```
 
 **Alternative (backwards compatible):**
 
 ```bash
 # Using uv run
-uv run mcpaudit path/to/your/server.py
+uv run mcpdoctor path/to/your/server.py
 
 # Or using the legacy main.py
 python main.py path/to/your/server.py
@@ -169,42 +169,43 @@ You can also use MCPAudit as a library in your own applications:
 
 ```python
 import asyncio
-from mcpaudit import MCPAuditor, MCPClient, MCPTransportType
+from mcpdoctor import MCPAuditor, MCPClient, MCPTransportType
 
 
 async def audit_local_server(server_path: str):
-    """Audit a local MCP server via STDIO."""
-    client = MCPClient()
-    auditor = MCPAuditor()
+  """Audit a local MCP server via STDIO."""
+  client = MCPClient()
+  auditor = MCPAuditor()
 
-    success = await client.connect_to_server(MCPTransportType.STDIO, server_path)
-    if not success:
-        print("Failed to connect to server")
-        return
+  success = await client.connect_to_server(MCPTransportType.STDIO, server_path)
+  if not success:
+    print("Failed to connect to server")
+    return
 
-    score = await auditor.audit(client)
-    summary = auditor.get_audit_summary()
-    print(f"Audit completed with score: {score}")
-    print(f"Summary: {summary}")
-    await client.cleanup()
+  score = await auditor.audit(client)
+  summary = auditor.get_audit_summary()
+  print(f"Audit completed with score: {score}")
+  print(f"Summary: {summary}")
+  await client.cleanup()
 
 
 async def audit_remote_server(url: str):
-    """Audit a remote MCP server with auto-detection (Streamable HTTP → SSE fallback)."""
-    client = MCPClient()
-    auditor = MCPAuditor()
+  """Audit a remote MCP server with auto-detection (Streamable HTTP → SSE fallback)."""
+  client = MCPClient()
+  auditor = MCPAuditor()
 
-    success, transport = await client.detect_and_connect(url)
-    if not success:
-        print("Failed to connect to server")
-        return
+  success, transport = await client.detect_and_connect(url)
+  if not success:
+    print("Failed to connect to server")
+    return
 
-    print(f"Connected via {transport}")
-    score = await auditor.audit(client)
-    summary = auditor.get_audit_summary()
-    print(f"Audit completed with score: {score}")
-    print(f"Summary: {summary}")
-    await client.cleanup()
+  print(f"Connected via {transport}")
+  score = await auditor.audit(client)
+  summary = auditor.get_audit_summary()
+  print(f"Audit completed with score: {score}")
+  print(f"Summary: {summary}")
+  await client.cleanup()
+
 
 # Usage
 asyncio.run(audit_local_server("path/to/server.py"))
@@ -286,8 +287,8 @@ Result of a rule execution:
 
 ```bash
 # Clone the repository
-git clone https://github.com/mcpaudit/mcpaudit.git
-cd mcpaudit
+git clone https://github.com/mcp-box/mcpdoctor.git
+cd mcpdoctor
 
 # Install dependencies and pre-commit hooks
 make install
@@ -307,10 +308,10 @@ make all       # Run everything (mirrors CI)
 ### Project structure
 
 ```
-mcpaudit/
-├── mcpaudit/                  # Core package
+mcpdoctor/
+├── mcpdoctor/                  # Core package
 │   ├── __init__.py           # Package exports and documentation
-│   ├── cli.py                # CLI entry point (mcpaudit command)
+│   ├── cli.py                # CLI entry point (mcpdoctor command)
 │   ├── mcp_client.py         # MCP client wrapper for server communication
 │   ├── mcp_auditor.py        # Audit orchestrator and workflow management
 │   ├── enums.py              # Enumerations and constants (protocol versions, transport types)
@@ -356,7 +357,7 @@ mcpaudit/
 
 **Protocol version errors**
 
-- Update `mcpaudit/enums.py` with the latest MCP protocol versions
+- Update `mcpdoctor/enums.py` with the latest MCP protocol versions
 - Ensure your server is using a supported protocol version
 - Check the `MCPProtocolVersion` enum for currently supported versions
 
@@ -371,7 +372,7 @@ If you encounter issues not covered here:
 
 1. Check the error messages for specific guidance
 2. Verify your MCP server implementation follows the protocol specification
-3. Review the audit rule details in the `mcpaudit/rules/` package
+3. Review the audit rule details in the `mcpdoctor/rules/` package
 4. Check the comprehensive docstrings in the source code for API details
 5. Use the programmatic API for more control over the audit process
 
