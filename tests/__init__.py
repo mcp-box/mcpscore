@@ -1,1 +1,1 @@
-"""Test suite for MCPDoctor."""
+"""Test suite for MCPScore."""

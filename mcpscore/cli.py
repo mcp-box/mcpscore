@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 
-from mcpscore import MCPClient, MCPDoctor
+from mcpscore import MCPAuditor, MCPClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ async def async_main() -> None:
 
     target: str = sys.argv[1]
     client: MCPClient = MCPClient()
-    doctor: MCPDoctor = MCPDoctor()
+    doctor: MCPAuditor = MCPAuditor()
 
     success, transport = await client.detect_and_connect(target)
 

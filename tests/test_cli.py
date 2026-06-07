@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcpscore import MCPClient, MCPDoctor, MCPTransportType
+from mcpscore import MCPAuditor, MCPClient, MCPTransportType
 from mcpscore.cli import async_main, main
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ def mock_doctor() -> MagicMock:
         MagicMock configured with async audit method returning score tuple.
 
     """
-    doctor = MagicMock(spec=MCPDoctor)
+    doctor = MagicMock(spec=MCPAuditor)
     doctor.audit = AsyncMock(return_value=(85, 100))
     return doctor
 
@@ -126,7 +126,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -154,7 +154,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -179,7 +179,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -223,7 +223,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -248,7 +248,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -270,7 +270,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -289,7 +289,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client) as mock_client_cls,
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor) as mock_doctor_cls,
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor) as mock_doctor_cls,
         ):
             await async_main()
 
@@ -308,7 +308,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
         ):
             await async_main()
 
@@ -327,7 +327,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -375,7 +375,7 @@ class TestLogging:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -438,7 +438,7 @@ class TestErrorHandling:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             pytest.raises(SystemExit),
         ):
             await async_main()
@@ -459,7 +459,7 @@ class TestErrorHandling:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             caplog.at_level(logging.INFO),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -514,7 +514,7 @@ class TestIntegration:
 
             with (
                 patch("mcpscore.cli.MCPClient", return_value=mock_client),
-                patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+                patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
             ):
                 await async_main()
 
@@ -536,7 +536,7 @@ class TestIntegration:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPDoctor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
         ):
             main()
 
