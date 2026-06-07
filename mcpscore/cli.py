@@ -1,4 +1,4 @@
-"""Command-line interface for MCPDoctor."""
+"""Command-line interface for MCPScore."""
 
 import asyncio
 import logging
@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 
 
 async def async_main() -> None:
-    """Execute the main entry point for the MCPDoctor CLI application.
+    """Execute the main entry point for the MCPScore CLI application.
 
     Orchestrates the audit process by:
     1. Parsing command line arguments for the server path or URL
-    2. Creating MCP client and doctor instances
+    2. Creating MCP client and auditor instances
     3. Auto-detecting transport and connecting to the MCP server
     4. Running the audit process and displaying results
     5. Cleaning up resources
@@ -24,7 +24,7 @@ async def async_main() -> None:
 
     Exits with code 1 if no server path is provided, or code 2 if connection fails.
     """
-    logger.info("Welcome to MCPDoctor!")
+    logger.info("Welcome to MCPScore!")
 
     if len(sys.argv) < 2:
         logger.error("Usage: mcpscore <server_path_or_url>")
