@@ -14,7 +14,7 @@ async def async_main() -> None:
 
     Orchestrates the audit process by:
     1. Parsing command line arguments for the server path or URL
-    2. Creating MCP client and auditor instances
+    2. Creating MCP client and doctor instances
     3. Auto-detecting transport and connecting to the MCP server
     4. Running the audit process and displaying results
     5. Cleaning up resources
@@ -32,7 +32,7 @@ async def async_main() -> None:
 
     target: str = sys.argv[1]
     client: MCPClient = MCPClient()
-    auditor: MCPDoctor = MCPDoctor()
+    doctor: MCPDoctor = MCPDoctor()
 
     success, transport = await client.detect_and_connect(target)
 
@@ -44,7 +44,7 @@ async def async_main() -> None:
         sys.exit(2)
 
     logger.info("Starting the audit...")
-    final_score, max_score = await auditor.audit(client)
+    final_score, max_score = await doctor.audit(client)
     logger.info("Audit finished. Final score: %s/%s", final_score, max_score)
 
     await client.cleanup()

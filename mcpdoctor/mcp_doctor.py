@@ -19,14 +19,14 @@ class MCPDoctor:
     - Tracks audit results and scoring
     - Provides audit summary and reporting
 
-    The auditor uses a rule-based system where each rule checks specific
+    The doctor uses a rule-based system where each rule checks specific
     aspects of MCP compliance and contributes to an overall audit score.
     """
 
     def __init__(self) -> None:
-        """Initialize a new MCP auditor instance.
+        """Initialize a new MCPDoctor instance.
 
-        Sets up the auditor with:
+        Sets up the doctor with:
         - Empty audit data container
         - All registered audit rules
         - Zero initial score
