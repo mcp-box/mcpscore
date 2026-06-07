@@ -131,7 +131,7 @@ class TestAsyncMain:
         ):
             await async_main()
 
-        assert "Welcome to MCPDoctor!" in caplog.text
+        assert "Welcome to MCPScore!" in caplog.text
         mock_client.detect_and_connect.assert_called_once_with("/path/to/server.py")
         assert "Connected to the MCP server: /path/to/server.py" in caplog.text
         assert "Transport: stdio" in caplog.text
@@ -206,7 +206,7 @@ class TestAsyncMain:
             await async_main()
 
         assert exc_info.value.code == 1
-        assert "Welcome to MCPDoctor!" in caplog.text
+        assert "Welcome to MCPScore!" in caplog.text
         assert "Usage: mcpscore <server_path_or_url>" in caplog.text
 
     @pytest.mark.asyncio
@@ -333,7 +333,7 @@ class TestAsyncMain:
             await async_main()
 
         log_messages = [
-            "Welcome to MCPDoctor!",
+            "Welcome to MCPScore!",
             "Connected to the MCP server: /path/to/server.py",
             "Transport: stdio",
             "Starting the audit...",
@@ -380,7 +380,7 @@ class TestLogging:
         ):
             await async_main()
 
-        assert "Welcome to MCPDoctor!" in caplog.text
+        assert "Welcome to MCPScore!" in caplog.text
         assert "Connected to the MCP server" in caplog.text
         assert "Starting the audit" in caplog.text
         assert "Audit finished" in caplog.text
