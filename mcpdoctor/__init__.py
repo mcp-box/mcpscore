@@ -13,7 +13,7 @@ aspects of MCP compliance and contributes to an overall audit score.
 """
 
 from .enums import MCPProtocolVersion, MCPTransportType
-from .mcp_auditor import MCPDoctor
+from .mcp_doctor import MCPDoctor
 from .mcp_client import MCPClient
 from .rules import (
     AuditData,
