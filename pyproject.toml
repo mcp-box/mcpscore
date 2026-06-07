@@ -18,7 +18,7 @@ packages = ["mcpdoctor"]
 name = "mcpdoctor"
 version = "0.2.0"
 description = "CLI tool to analyze your MCP server and get a comprehensive report on its quality"
-authors = [{ name = "Alex Akimov", email = "alexeyakimov@gmail.com" }]
+authors = [{ name = "Alex Akimov"}]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.13"
