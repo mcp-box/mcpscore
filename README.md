@@ -1,6 +1,6 @@
-# MCPAudit
+# MCPDoctor
 
-A command-line tool and library for auditing MCP (Model Context Protocol) servers. MCPAudit connects to MCP servers, initializes them, and runs a comprehensive set of validation rules to ensure compliance with MCP standards. The tool provides detailed audit reports with severity-based categorization and extensible rule framework.
+A command-line tool and library for auditing MCP (Model Context Protocol) servers. MCPDoctor connects to MCP servers, initializes them, and runs a comprehensive set of validation rules to ensure compliance with MCP standards. The tool provides detailed audit reports with severity-based categorization and extensible rule framework.
 
 
 ## Features
@@ -15,7 +15,7 @@ A command-line tool and library for auditing MCP (Model Context Protocol) server
 
 ## What it audits
 
-MCPAudit connects to your MCP server and validates:
+MCPDoctor connects to your MCP server and validates:
 
 - **Protocol Version Compliance**:
   - ✅ Allowed versions check (CRITICAL)
@@ -96,7 +96,7 @@ python main.py path/to/your/server.py
 ### Example output
 
 ```
-Welcome to MCPAudit!
+Welcome to MCPDoctor!
 Connected to the MCP server: /path/to/server.py
 Transport: stdio
 Starting the audit...
@@ -136,7 +136,7 @@ If the server cannot be launched or initialized, you'll see descriptive error me
 
 ## Architecture
 
-MCPAudit follows a modular architecture designed for extensibility:
+MCPDoctor follows a modular architecture designed for extensibility:
 
 ### Core Components
 
@@ -165,7 +165,7 @@ To add new audit rules:
 
 ### Using the library programmatically
 
-You can also use MCPAudit as a library in your own applications:
+You can also use MCPDoctor as a library in your own applications:
 
 ```python
 import asyncio
