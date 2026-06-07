@@ -142,7 +142,7 @@ MCPAudit follows a modular architecture designed for extensibility:
 
 - **`main.py`**: CLI entry point that orchestrates the audit process
 - **`MCPClient`**: Wrapper around the official MCP client for server communication
-- **`MCPAuditor`**: Orchestrates the audit process and rule execution
+- **`MCPDoctor`**: Orchestrates the audit process and rule execution
 - **`BaseRule` system**: Extensible framework for implementing audit rules
 - **`RuleRegistry`**: Central registry managing all available audit rules
 
@@ -226,7 +226,7 @@ Client for connecting to and communicating with MCP servers.
 - `list_tools()`: List available tools from the server
 - `cleanup()`: Clean up resources and close connections
 
-#### `MCPAuditor`
+#### `MCPDoctor`
 Orchestrates the complete audit process.
 
 **Key methods:**

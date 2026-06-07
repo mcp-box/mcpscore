@@ -4,7 +4,7 @@ This package provides tools for auditing MCP servers to ensure compliance with
 protocol standards and best practices. It includes:
 
 - MCPClient: For connecting to and communicating with MCP servers
-- MCPAuditor: For orchestrating the audit process
+- MCPDoctor: For orchestrating the audit process
 - Rule system: Extensible framework for implementing audit checks
 - Enums: Protocol versions and transport types
 

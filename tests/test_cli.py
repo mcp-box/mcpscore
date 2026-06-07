@@ -6,7 +6,7 @@ This module tests the command-line interface functionality including:
 - Success and error paths
 - Command-line argument handling
 - Auto-detection of transport types (STDIO, Streamable HTTP, SSE)
-- Integration with MCPClient and MCPAuditor
+- Integration with MCPClient and MCPDoctor
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def mock_client() -> MagicMock:
 
 @pytest.fixture
 def mock_auditor() -> MagicMock:
-    """Create a mock MCPAuditor for testing.
+    """Create a mock MCPDoctor for testing.
 
     Returns:
         MagicMock configured with async audit method returning score tuple.
@@ -126,7 +126,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -154,7 +154,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -179,7 +179,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -223,7 +223,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -248,7 +248,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -270,7 +270,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -289,7 +289,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client) as mock_client_cls,
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor) as mock_auditor_cls,
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor) as mock_auditor_cls,
         ):
             await async_main()
 
@@ -308,7 +308,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
         ):
             await async_main()
 
@@ -327,7 +327,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -375,7 +375,7 @@ class TestLogging:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -438,7 +438,7 @@ class TestErrorHandling:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             pytest.raises(SystemExit),
         ):
             await async_main()
@@ -459,7 +459,7 @@ class TestErrorHandling:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -514,7 +514,7 @@ class TestIntegration:
 
             with (
                 patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-                patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+                patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
             ):
                 await async_main()
 
@@ -536,7 +536,7 @@ class TestIntegration:
 
         with (
             patch("mcpdoctor.cli.MCPClient", return_value=mock_client),
-            patch("mcpdoctor.cli.MCPAuditor", return_value=mock_auditor),
+            patch("mcpdoctor.cli.MCPDoctor", return_value=mock_auditor),
         ):
             main()
 
