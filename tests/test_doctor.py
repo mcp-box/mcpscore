@@ -70,11 +70,11 @@ class DummyRule(BaseRule):
 
 
 @pytest.mark.asyncio
-async def test_auditor_collects_data_and_scores():
-    """Test that the auditor properly collects server data and calculates audit scores.
+async def test_doctor_collects_data_and_scores():
+    """Test that the doctor properly collects server data and calculates audit scores.
 
     This test verifies that:
-    - The auditor can process initialization results from MCP servers
+    - The doctor can process initialization results from MCP servers
     - Rule execution affects the final audit score correctly
     - Passed rules add points, failed rules subtract points
     - The audit summary provides accurate counts of passed/failed rules
@@ -92,27 +92,27 @@ async def test_auditor_collects_data_and_scores():
             )()
             self.instructions = "instr"
 
-    auditor = MCPDoctor()
-    auditor.rules = [
+    doctor = MCPDoctor()
+    doctor.rules = [
         DummyRule(passed=True, severity=RuleSeverity.HIGH),
         DummyRule(passed=False, severity=RuleSeverity.MEDIUM),
     ]
 
-    score, max_score = await auditor.audit(DummyClient(InitResult()))
+    score, max_score = await doctor.audit(DummyClient(InitResult()))
     # Score is sum of passed rules' severity values
     assert score == RuleSeverity.HIGH
     # Max score is sum of all rules' severity values
     assert max_score == (RuleSeverity.HIGH + RuleSeverity.MEDIUM)
 
-    summary = auditor.get_audit_summary()
+    summary = doctor.get_audit_summary()
     assert summary["total"] == 2
     assert summary["passed"] == 1
     assert summary["failed"] == 1
 
 
 @pytest.mark.asyncio
-async def test_auditor_with_tools_capability():
-    """Test that auditor collects tools when tools capability is present.
+async def test_doctor_with_tools_capability():
+    """Test that doctor collects tools when tools capability is present.
 
     Verifies that:
     - When capabilities.tools is not None, _collect_tools() is called
@@ -139,16 +139,16 @@ async def test_auditor_with_tools_capability():
             self.description = "A test tool"
 
     tools = [Tool()]
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), tools=tools))
+    await doctor.audit(DummyClient(InitResult(), tools=tools))
 
-    assert auditor.audit_data.tools == tools
+    assert doctor.audit_data.tools == tools
 
 
 @pytest.mark.asyncio
-async def test_auditor_with_resources_capability():
+async def test_doctor_with_resources_capability():
     """Test that doctor collects resources when resources capability is present.
 
     Verifies that:
@@ -185,7 +185,7 @@ async def test_auditor_with_resources_capability():
 
 
 @pytest.mark.asyncio
-async def test_auditor_with_prompts_capability():
+async def test_doctor_with_prompts_capability():
     """Test that doctor collects prompts when prompts capability is present.
 
     Verifies that:
@@ -222,8 +222,8 @@ async def test_auditor_with_prompts_capability():
 
 
 @pytest.mark.asyncio
-async def test_auditor_with_all_capabilities():
-    """Test that auditor collects all data when all capabilities are present.
+async def test_doctor_with_all_capabilities():
+    """Test that doctor collects all data when all capabilities are present.
 
     Verifies that:
     - All collection methods are called when all capabilities are present
@@ -262,22 +262,22 @@ async def test_auditor_with_all_capabilities():
     resources = [Resource()]
     prompts = [Prompt()]
 
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), tools=tools, resources=resources, prompts=prompts))
+    await doctor.audit(DummyClient(InitResult(), tools=tools, resources=resources, prompts=prompts))
 
-    assert auditor.audit_data.tools == tools
-    assert auditor.audit_data.resources == resources
-    assert auditor.audit_data.prompts == prompts
+    assert doctor.audit_data.tools == tools
+    assert doctor.audit_data.resources == resources
+    assert doctor.audit_data.prompts == prompts
 
 
 @pytest.mark.asyncio
-async def test_auditor_with_no_capabilities():
-    """Test that auditor handles minimal server with no capabilities.
+async def test_doctor_with_no_capabilities():
+    """Test that doctor handles minimal server with no capabilities.
 
     Verifies that:
-    - Auditor works with servers that have None capabilities
+    - Doctor works with servers that have None capabilities
     - No collection methods are called
     - Audit completes successfully
     """
@@ -290,22 +290,22 @@ async def test_auditor_with_no_capabilities():
             self.capabilities = None  # No capabilities
             self.instructions = None
 
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    score, max_score = await auditor.audit(DummyClient(InitResult()))
+    score, max_score = await doctor.audit(DummyClient(InitResult()))
 
     assert score == 0
     assert max_score == 0
     # When capabilities is None, collection methods are not called, so fields remain None
-    assert auditor.audit_data.tools is None
-    assert auditor.audit_data.resources is None
-    assert auditor.audit_data.prompts is None
+    assert doctor.audit_data.tools is None
+    assert doctor.audit_data.resources is None
+    assert doctor.audit_data.prompts is None
 
 
 @pytest.mark.asyncio
-async def test_auditor_https_tls_detection():
-    """Test that auditor properly detects TLS for HTTPS URLs.
+async def test_doctor_https_tls_detection():
+    """Test that doctor properly detects TLS for HTTPS URLs.
 
     Verifies that:
     - HTTPS URLs are detected
@@ -321,18 +321,18 @@ async def test_auditor_https_tls_detection():
             self.capabilities = None
             self.instructions = None
 
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp"))
+    await doctor.audit(DummyClient(InitResult(), url="https://example.com/mcp"))
 
-    assert auditor.audit_data.tls_verified is True
-    assert auditor.audit_data.tls_version == "TLSv1.3"
+    assert doctor.audit_data.tls_verified is True
+    assert doctor.audit_data.tls_version == "TLSv1.3"
 
 
 @pytest.mark.asyncio
-async def test_auditor_http_no_tls():
-    """Test that auditor properly handles HTTP URLs without TLS.
+async def test_doctor_http_no_tls():
+    """Test that doctor properly handles HTTP URLs without TLS.
 
     Verifies that:
     - HTTP URLs are detected
@@ -348,18 +348,18 @@ async def test_auditor_http_no_tls():
             self.capabilities = None
             self.instructions = None
 
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), url="http://example.com/mcp"))
+    await doctor.audit(DummyClient(InitResult(), url="http://example.com/mcp"))
 
-    assert auditor.audit_data.tls_verified is False
-    assert auditor.audit_data.tls_version is None
+    assert doctor.audit_data.tls_verified is False
+    assert doctor.audit_data.tls_version is None
 
 
 @pytest.mark.asyncio
-async def test_auditor_stdio_no_tls_detection():
-    """Test that auditor handles STDIO transport without TLS detection.
+async def test_doctor_stdio_no_tls_detection():
+    """Test that doctor handles STDIO transport without TLS detection.
 
     Verifies that:
     - STDIO transport (no URL) is handled correctly
@@ -374,14 +374,14 @@ async def test_auditor_stdio_no_tls_detection():
             self.capabilities = None
             self.instructions = None
 
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), url=None, transport_type="stdio"))
+    await doctor.audit(DummyClient(InitResult(), url=None, transport_type="stdio"))
 
     # TLS fields should remain None for STDIO transport
-    assert auditor.audit_data.tls_verified is None
-    assert auditor.audit_data.tls_version is None
+    assert doctor.audit_data.tls_verified is None
+    assert doctor.audit_data.tls_version is None
 
 
 @pytest.mark.asyncio
@@ -392,10 +392,10 @@ async def test_collect_init_result_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPDoctor()
-    auditor.mcp_client = None
+    doctor = MCPDoctor()
+    doctor.mcp_client = None
 
-    await auditor._collect_init_result()
+    await doctor._collect_init_result()
 
     assert "No MCP client to audit" in caplog.text
 
@@ -413,13 +413,13 @@ async def test_collect_init_result_with_none_result(caplog):
         async def initialize(self):
             return None
 
-    auditor = MCPDoctor()
-    auditor.mcp_client = NoneClient()
+    doctor = MCPDoctor()
+    doctor.mcp_client = NoneClient()
 
-    await auditor._collect_init_result()
+    await doctor._collect_init_result()
 
     assert "No Init Result to audit" in caplog.text
-    assert auditor.audit_data.protocol_version is None
+    assert doctor.audit_data.protocol_version is None
 
 
 @pytest.mark.asyncio
@@ -430,10 +430,10 @@ async def test_collect_tools_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPDoctor()
-    auditor.mcp_client = None
+    doctor = MCPDoctor()
+    doctor.mcp_client = None
 
-    await auditor._collect_tools()
+    await doctor._collect_tools()
 
     assert "No MCP client to audit" in caplog.text
 
@@ -451,14 +451,14 @@ async def test_collect_tools_with_none_response(caplog):
         async def list_tools(self):
             return None
 
-    auditor = MCPDoctor()
-    auditor.mcp_client = NoneToolsClient()
+    doctor = MCPDoctor()
+    doctor.mcp_client = NoneToolsClient()
 
-    await auditor._collect_tools()
+    await doctor._collect_tools()
 
     assert "No Tools to audit" in caplog.text
     # When list_tools() returns None, the field remains None (default value)
-    assert auditor.audit_data.tools is None
+    assert doctor.audit_data.tools is None
 
 
 @pytest.mark.asyncio
@@ -469,10 +469,10 @@ async def test_collect_resources_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPDoctor()
-    auditor.mcp_client = None
+    doctor = MCPDoctor()
+    doctor.mcp_client = None
 
-    await auditor._collect_resources()
+    await doctor._collect_resources()
 
     assert "No MCP client to audit" in caplog.text
 
@@ -490,14 +490,14 @@ async def test_collect_resources_with_none_response(caplog):
         async def list_resources(self):
             return None
 
-    auditor = MCPDoctor()
-    auditor.mcp_client = NoneResourcesClient()
+    doctor = MCPDoctor()
+    doctor.mcp_client = NoneResourcesClient()
 
-    await auditor._collect_resources()
+    await doctor._collect_resources()
 
     assert "No Resources to audit" in caplog.text
     # When list_resources() returns None, the field remains None (default value)
-    assert auditor.audit_data.resources is None
+    assert doctor.audit_data.resources is None
 
 
 @pytest.mark.asyncio
@@ -508,10 +508,10 @@ async def test_collect_prompts_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPDoctor()
-    auditor.mcp_client = None
+    doctor = MCPDoctor()
+    doctor.mcp_client = None
 
-    await auditor._collect_prompts()
+    await doctor._collect_prompts()
 
     assert "No MCP client to audit" in caplog.text
 
@@ -529,14 +529,14 @@ async def test_collect_prompts_with_none_response(caplog):
         async def list_prompts(self):
             return None
 
-    auditor = MCPDoctor()
-    auditor.mcp_client = NonePromptsClient()
+    doctor = MCPDoctor()
+    doctor.mcp_client = NonePromptsClient()
 
-    await auditor._collect_prompts()
+    await doctor._collect_prompts()
 
     assert "No prompts to audit" in caplog.text
     # When list_prompts() returns None, the field remains None (default value)
-    assert auditor.audit_data.prompts is None
+    assert doctor.audit_data.prompts is None
 
 
 @pytest.mark.asyncio
@@ -547,15 +547,15 @@ async def test_get_audit_summary_with_mixed_results():
     - Summary correctly counts total, passed, and failed rules
     - By-severity breakdown is accurate
     """
-    auditor = MCPDoctor()
-    auditor.results = [
+    doctor = MCPDoctor()
+    doctor.results = [
         RuleResult(rule_name="rule1", severity=RuleSeverity.CRITICAL, passed=True, message="pass"),
         RuleResult(rule_name="rule2", severity=RuleSeverity.HIGH, passed=False, message="fail"),
         RuleResult(rule_name="rule3", severity=RuleSeverity.MEDIUM, passed=True, message="pass"),
         RuleResult(rule_name="rule4", severity=RuleSeverity.LOW, passed=False, message="fail"),
     ]
 
-    summary = auditor.get_audit_summary()
+    summary = doctor.get_audit_summary()
 
     assert summary["total"] == 4
     assert summary["passed"] == 2
@@ -574,13 +574,13 @@ async def test_get_audit_summary_all_passed():
     - All rules are counted as passed
     - Failed count is zero
     """
-    auditor = MCPDoctor()
-    auditor.results = [
+    doctor = MCPDoctor()
+    doctor.results = [
         RuleResult(rule_name="rule1", severity=RuleSeverity.HIGH, passed=True, message="pass"),
         RuleResult(rule_name="rule2", severity=RuleSeverity.MEDIUM, passed=True, message="pass"),
     ]
 
-    summary = auditor.get_audit_summary()
+    summary = doctor.get_audit_summary()
 
     assert summary["total"] == 2
     assert summary["passed"] == 2
@@ -595,13 +595,13 @@ async def test_get_audit_summary_all_failed():
     - All rules are counted as failed
     - Passed count is zero
     """
-    auditor = MCPDoctor()
-    auditor.results = [
+    doctor = MCPDoctor()
+    doctor.results = [
         RuleResult(rule_name="rule1", severity=RuleSeverity.HIGH, passed=False, message="fail"),
         RuleResult(rule_name="rule2", severity=RuleSeverity.MEDIUM, passed=False, message="fail"),
     ]
 
-    summary = auditor.get_audit_summary()
+    summary = doctor.get_audit_summary()
 
     assert summary["total"] == 2
     assert summary["passed"] == 0
@@ -616,16 +616,16 @@ async def test_collect_transport_metadata_with_none_client(caplog):
     - Error is logged when mcp_client is None
     - Method returns early without crashing
     """
-    auditor = MCPDoctor()
-    auditor.mcp_client = None
+    doctor = MCPDoctor()
+    doctor.mcp_client = None
 
-    await auditor._collect_transport_metadata()
+    await doctor._collect_transport_metadata()
 
     assert "No MCP client to audit" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_auditor_transport_metadata_collection():
+async def test_doctor_transport_metadata_collection():
     """Test that transport metadata is properly collected.
 
     Verifies that:
@@ -642,11 +642,11 @@ async def test_auditor_transport_metadata_collection():
             self.capabilities = None
             self.instructions = None
 
-    auditor = MCPDoctor()
-    auditor.rules = []
+    doctor = MCPDoctor()
+    doctor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp", transport_type="sse"))
+    await doctor.audit(DummyClient(InitResult(), url="https://example.com/mcp", transport_type="sse"))
 
-    assert auditor.audit_data.transport_type == "sse"
-    assert auditor.audit_data.url == "https://example.com/mcp"
-    assert auditor.audit_data.connection_time_ms == 100
+    assert doctor.audit_data.transport_type == "sse"
+    assert doctor.audit_data.url == "https://example.com/mcp"
+    assert doctor.audit_data.connection_time_ms == 100

@@ -66,7 +66,7 @@ This will install the `mcpdoctor` package and its dependency `mcp`.
 
 ## Quick start
 
-Run the auditor against any MCP server. The tool automatically detects the transport type: STDIO for local scripts, Streamable HTTP (with SSE fallback) for URLs.
+Run the doctor against any MCP server. The tool automatically detects the transport type: STDIO for local scripts, Streamable HTTP (with SSE fallback) for URLs.
 
 ### Basic usage
 
@@ -175,15 +175,15 @@ from mcpdoctor import MCPDoctor, MCPClient, MCPTransportType
 async def audit_local_server(server_path: str):
   """Audit a local MCP server via STDIO."""
   client = MCPClient()
-  auditor = MCPDoctor()
+  doctor = MCPDoctor()
 
   success = await client.connect_to_server(MCPTransportType.STDIO, server_path)
   if not success:
     print("Failed to connect to server")
     return
 
-  score = await auditor.audit(client)
-  summary = auditor.get_audit_summary()
+  score = await doctor.audit(client)
+  summary = doctor.get_audit_summary()
   print(f"Audit completed with score: {score}")
   print(f"Summary: {summary}")
   await client.cleanup()
@@ -192,7 +192,7 @@ async def audit_local_server(server_path: str):
 async def audit_remote_server(url: str):
   """Audit a remote MCP server with auto-detection (Streamable HTTP → SSE fallback)."""
   client = MCPClient()
-  auditor = MCPDoctor()
+  doctor = MCPDoctor()
 
   success, transport = await client.detect_and_connect(url)
   if not success:
@@ -200,8 +200,8 @@ async def audit_remote_server(url: str):
     return
 
   print(f"Connected via {transport}")
-  score = await auditor.audit(client)
-  summary = auditor.get_audit_summary()
+  score = await doctor.audit(client)
+  summary = doctor.get_audit_summary()
   print(f"Audit completed with score: {score}")
   print(f"Summary: {summary}")
   await client.cleanup()
@@ -313,7 +313,7 @@ mcpdoctor/
 │   ├── __init__.py           # Package exports and documentation
 │   ├── cli.py                # CLI entry point (mcpdoctor command)
 │   ├── mcp_client.py         # MCP client wrapper for server communication
-│   ├── mcp_auditor.py        # Audit orchestrator and workflow management
+│   ├── mcp_doctor.py        # Audit orchestrator and workflow management
 │   ├── enums.py              # Enumerations and constants (protocol versions, transport types)
 │   └── rules/                # Rule system and implementations
 │       ├── __init__.py       # Rule system exports
