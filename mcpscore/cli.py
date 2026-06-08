@@ -32,7 +32,7 @@ async def async_main() -> None:
 
     target: str = sys.argv[1]
     client: MCPClient = MCPClient()
-    doctor: MCPAuditor = MCPAuditor()
+    auditor: MCPAuditor = MCPAuditor()
 
     success, transport = await client.detect_and_connect(target)
 
@@ -44,7 +44,7 @@ async def async_main() -> None:
         sys.exit(2)
 
     logger.info("Starting the audit...")
-    final_score, max_score = await doctor.audit(client)
+    final_score, max_score = await auditor.audit(client)
     logger.info("Audit finished. Final score: %s/%s", final_score, max_score)
 
     await client.cleanup()

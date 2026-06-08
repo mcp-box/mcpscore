@@ -1,6 +1,6 @@
 """Enumerations and constants for MCP (Model Context Protocol) auditing.
 
-This module defines the core enumerations used throughout the MCPDoctor system:
+This module defines the core enumerations used throughout the MCPScore system:
 
 - MCPTransportType: Supported transport methods for MCP communication
 - MCPProtocolVersion: Supported versions of the MCP protocol

@@ -6,7 +6,7 @@ This module tests the command-line interface functionality including:
 - Success and error paths
 - Command-line argument handling
 - Auto-detection of transport types (STDIO, Streamable HTTP, SSE)
-- Integration with MCPClient and MCPDoctor
+- Integration with MCPClient and MCPAuditor
 """
 
 from __future__ import annotations
@@ -41,16 +41,16 @@ def mock_client() -> MagicMock:
 
 
 @pytest.fixture
-def mock_doctor() -> MagicMock:
-    """Create a mock MCPDoctor for testing.
+def mock_auditor() -> MagicMock:
+    """Create a mock MCPAuditor for testing.
 
     Returns:
         MagicMock configured with async audit method returning score tuple.
 
     """
-    doctor = MagicMock(spec=MCPAuditor)
-    doctor.audit = AsyncMock(return_value=(85, 100))
-    return doctor
+    auditor = MagicMock(spec=MCPAuditor)
+    auditor.audit = AsyncMock(return_value=(85, 100))
+    return auditor
 
 
 class TestMain:
@@ -109,7 +109,7 @@ class TestAsyncMain:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Test successful audit workflow with a local server (STDIO).
@@ -126,7 +126,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -136,7 +136,7 @@ class TestAsyncMain:
         assert "Connected to the MCP server: /path/to/server.py" in caplog.text
         assert "Transport: stdio" in caplog.text
         assert "Starting the audit..." in caplog.text
-        mock_doctor.audit.assert_called_once_with(mock_client)
+        mock_auditor.audit.assert_called_once_with(mock_client)
         assert "Audit finished. Final score: 85/100" in caplog.text
         mock_client.cleanup.assert_called_once()
 
@@ -145,7 +145,7 @@ class TestAsyncMain:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Test successful audit workflow with a remote server via Streamable HTTP."""
@@ -154,7 +154,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -162,7 +162,7 @@ class TestAsyncMain:
         mock_client.detect_and_connect.assert_called_once_with("https://example.com/mcp")
         assert "Connected to the MCP server: https://example.com/mcp" in caplog.text
         assert "Transport: streamable-http" in caplog.text
-        mock_doctor.audit.assert_called_once_with(mock_client)
+        mock_auditor.audit.assert_called_once_with(mock_client)
         mock_client.cleanup.assert_called_once()
 
     @pytest.mark.asyncio
@@ -170,7 +170,7 @@ class TestAsyncMain:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Test successful audit workflow with a remote server via SSE."""
@@ -179,7 +179,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -187,7 +187,7 @@ class TestAsyncMain:
         mock_client.detect_and_connect.assert_called_once_with("https://example.com/sse")
         assert "Connected to the MCP server: https://example.com/sse" in caplog.text
         assert "Transport: sse" in caplog.text
-        mock_doctor.audit.assert_called_once_with(mock_client)
+        mock_auditor.audit.assert_called_once_with(mock_client)
         mock_client.cleanup.assert_called_once()
 
     @pytest.mark.asyncio
@@ -214,7 +214,7 @@ class TestAsyncMain:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that connection failure exits with code 2."""
@@ -223,7 +223,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -231,7 +231,7 @@ class TestAsyncMain:
 
         assert exc_info.value.code == 2
         assert "Error connecting to the MCP server: /path/to/server.py" in caplog.text
-        mock_doctor.audit.assert_not_called()
+        mock_auditor.audit.assert_not_called()
         mock_client.cleanup.assert_not_called()
 
     @pytest.mark.asyncio
@@ -239,7 +239,7 @@ class TestAsyncMain:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that different server paths are correctly processed."""
@@ -248,7 +248,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -261,16 +261,16 @@ class TestAsyncMain:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that audit scores are displayed correctly in logs."""
         monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
-        mock_doctor.audit = AsyncMock(return_value=(42, 75))
+        mock_auditor.audit = AsyncMock(return_value=(42, 75))
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -278,37 +278,37 @@ class TestAsyncMain:
         assert "Audit finished. Final score: 42/75" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_async_main_creates_fresh_client_and_doctor(
+    async def test_async_main_creates_fresh_client_and_auditor(
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
     ) -> None:
-        """Test that fresh instances of client and doctor are created."""
+        """Test that fresh instances of client and auditor are created."""
         monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client) as mock_client_cls,
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor) as mock_doctor_cls,
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor) as mock_auditor_cls,
         ):
             await async_main()
 
         mock_client_cls.assert_called_once()
-        mock_doctor_cls.assert_called_once()
+        mock_auditor_cls.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_async_main_cleanup_always_called_on_success(
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
     ) -> None:
         """Test that cleanup is always called after successful audit."""
         monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
         ):
             await async_main()
 
@@ -319,7 +319,7 @@ class TestAsyncMain:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that all key steps in the audit process are logged."""
@@ -327,7 +327,7 @@ class TestAsyncMain:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -367,7 +367,7 @@ class TestLogging:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Verify that log messages are output correctly during execution."""
@@ -375,7 +375,7 @@ class TestLogging:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
         ):
             await async_main()
@@ -430,7 +430,7 @@ class TestErrorHandling:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
     ) -> None:
         """Test that connection failure prevents audit execution."""
         monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
@@ -438,19 +438,19 @@ class TestErrorHandling:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             pytest.raises(SystemExit),
         ):
             await async_main()
 
-        mock_doctor.audit.assert_not_called()
+        mock_auditor.audit.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_connection_failure_with_url(
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
         caplog: LogCaptureFixture,
     ) -> None:
         """Test that connection failure for a URL exits with code 2."""
@@ -459,7 +459,7 @@ class TestErrorHandling:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             caplog.at_level(logging.INFO),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -467,7 +467,7 @@ class TestErrorHandling:
 
         assert exc_info.value.code == 2
         assert "Error connecting to the MCP server: https://example.com/mcp" in caplog.text
-        mock_doctor.audit.assert_not_called()
+        mock_auditor.audit.assert_not_called()
         mock_client.cleanup.assert_not_called()
 
 
@@ -493,7 +493,7 @@ class TestIntegration:
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
     ) -> None:
         """Test that multiple CLI runs don't interfere with each other."""
         targets = [
@@ -504,29 +504,29 @@ class TestIntegration:
 
         for target, transport in targets:
             mock_client.reset_mock()
-            mock_doctor.reset_mock()
+            mock_auditor.reset_mock()
 
             mock_client.detect_and_connect = AsyncMock(return_value=(True, transport))
             mock_client.cleanup = AsyncMock()
-            mock_doctor.audit = AsyncMock(return_value=(80, 100))
+            mock_auditor.audit = AsyncMock(return_value=(80, 100))
 
             monkeypatch.setattr(sys, "argv", ["mcpscore", target])
 
             with (
                 patch("mcpscore.cli.MCPClient", return_value=mock_client),
-                patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+                patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
             ):
                 await async_main()
 
             mock_client.detect_and_connect.assert_called_once_with(target)
-            mock_doctor.audit.assert_called_once()
+            mock_auditor.audit.assert_called_once()
             mock_client.cleanup.assert_called_once()
 
     def test_integration_with_asyncio_run_mocked(
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
-        mock_doctor: MagicMock,
+        mock_auditor: MagicMock,
     ) -> None:
         """Test that main() properly integrates with asyncio.run()."""
         monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
@@ -536,7 +536,7 @@ class TestIntegration:
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
-            patch("mcpscore.cli.MCPAuditor", return_value=mock_doctor),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
         ):
             main()
 

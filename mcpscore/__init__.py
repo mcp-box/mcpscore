@@ -1,10 +1,10 @@
-"""MCPDoctor - A comprehensive auditing tool for MCP (Model Context Protocol) servers.
+"""MCPScore - A comprehensive auditing tool for MCP (Model Context Protocol) servers.
 
 This package provides tools for auditing MCP servers to ensure compliance with
 protocol standards and best practices. It includes:
 
+- MCPAuditor: For orchestrating the audit process
 - MCPClient: For connecting to and communicating with MCP servers
-- MCPDoctor: For orchestrating the audit process
 - Rule system: Extensible framework for implementing audit checks
 - Enums: Protocol versions and transport types
 
