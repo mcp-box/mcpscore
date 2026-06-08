@@ -33,7 +33,8 @@ class MCPClient:
     - Listing available tools and resources
     - Managing connection lifecycle and cleanup
 
-    Currently supports stdio transport for local server processes.
+    Supports STDIO (local server processes), Streamable HTTP, and SSE
+    transports, with automatic transport detection.
     """
 
     def __init__(self, timeout: int | None = None) -> None:
