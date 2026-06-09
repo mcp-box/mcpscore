@@ -17,7 +17,6 @@ class TestMCPClientHTTP:
         """Create a fresh MCPClient instance for each test."""
         return MCPClient()
 
-    @pytest.mark.asyncio
     async def test_connect_with_streamable_http_success(self, mcp_client):
         """Test successful Streamable HTTP connection."""
         server_url = "https://example.com/mcp"
@@ -46,7 +45,6 @@ class TestMCPClientHTTP:
             assert result is True
             assert mcp_client.session == mock_session
 
-    @pytest.mark.asyncio
     async def test_connect_with_streamable_http_invalid_url(self, mcp_client):
         """Test Streamable HTTP connection with invalid URL."""
         invalid_urls = [
@@ -60,7 +58,6 @@ class TestMCPClientHTTP:
             result = await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, url)
             assert result is False
 
-    @pytest.mark.asyncio
     async def test_connect_with_streamable_http_connection_error(self, mcp_client):
         """Test Streamable HTTP connection with connection refused."""
         server_url = "https://example.com/mcp"
@@ -73,7 +70,6 @@ class TestMCPClientHTTP:
 
             assert result is False
 
-    @pytest.mark.asyncio
     async def test_connect_with_streamable_http_timeout(self, mcp_client):
         """Test Streamable HTTP connection with timeout."""
         server_url = "https://example.com/mcp"
@@ -86,7 +82,6 @@ class TestMCPClientHTTP:
 
             assert result is False
 
-    @pytest.mark.asyncio
     async def test_connect_with_streamable_http_http_error(self, mcp_client):
         """Test Streamable HTTP connection with HTTP error."""
         server_url = "https://example.com/mcp"
@@ -102,7 +97,6 @@ class TestMCPClientHTTP:
 
             assert result is False
 
-    @pytest.mark.asyncio
     async def test_detect_and_connect_streamable_http(self, mcp_client):
         """Test auto-detection chooses Streamable HTTP."""
         server_url = "https://example.com/mcp"
@@ -128,7 +122,6 @@ class TestMCPClientHTTP:
             assert success is True
             assert transport == MCPTransportType.STREAMABLE_HTTP
 
-    @pytest.mark.asyncio
     async def test_detect_and_connect_fallback_to_sse(self, mcp_client):
         """Test auto-detection falls back to SSE when HTTP fails."""
         server_url = "https://example.com/mcp"
@@ -154,7 +147,6 @@ class TestMCPClientHTTP:
             assert success is True
             assert transport == MCPTransportType.SSE
 
-    @pytest.mark.asyncio
     async def test_connect_with_streamable_http_generic_exception(self, mcp_client, caplog):
         """Test Streamable HTTP connection with generic exception."""
         server_url = "https://example.com/mcp"
@@ -168,7 +160,6 @@ class TestMCPClientHTTP:
             assert result is False
             assert "Failed to connect to MCP server via Streamable HTTP" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_detect_and_connect_both_transports_fail(self, mcp_client, caplog):
         """Test detect_and_connect when both HTTP and SSE fail."""
         import logging
@@ -192,7 +183,6 @@ class TestMCPClientHTTP:
             assert "Attempting Streamable HTTP connection" in caplog.text
             assert "Streamable HTTP failed, trying SSE" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_connect_unsupported_transport_type(self, mcp_client, caplog):
         """Test connect_to_server with unsupported transport type."""
         # Create a mock transport type that's not handled
@@ -204,7 +194,6 @@ class TestMCPClientHTTP:
         assert result is False
         assert "This protocol is not supported" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_cleanup(self, mcp_client):
         """Test cleanup closes connections properly."""
         server_url = "https://example.com/mcp"

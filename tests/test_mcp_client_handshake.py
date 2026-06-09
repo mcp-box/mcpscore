@@ -31,7 +31,6 @@ class TestHandshakeDuringConnect:
     def mcp_client(self):
         return MCPClient()
 
-    @pytest.mark.asyncio
     async def test_connect_succeeds_and_caches_init_result(self, mcp_client):
         mock_session = AsyncMock()
         init_result = MagicMock()
@@ -52,7 +51,6 @@ class TestHandshakeDuringConnect:
             assert await mcp_client.initialize() is init_result
             mock_session.initialize.assert_awaited_once()
 
-    @pytest.mark.asyncio
     async def test_connect_fails_when_handshake_raises(self, mcp_client):
         mock_session = AsyncMock()
         mock_session.initialize.side_effect = RuntimeError("not an MCP server")
@@ -70,7 +68,6 @@ class TestHandshakeDuringConnect:
             # The failed attempt was torn down immediately
             mock_client.return_value.__aexit__.assert_awaited_once()
 
-    @pytest.mark.asyncio
     async def test_connect_fails_when_handshake_times_out(self):
         mcp_client = MCPClient(timeout=1)
         mock_session = AsyncMock()
@@ -87,7 +84,6 @@ class TestHandshakeDuringConnect:
             assert result is False
             assert mcp_client.session is None
 
-    @pytest.mark.asyncio
     async def test_connect_fails_when_transport_cancels_task(self, mcp_client):
         """Treat CancelledError leaked by the transport as a failed connection."""
         mock_session = AsyncMock()
@@ -104,7 +100,6 @@ class TestHandshakeDuringConnect:
             assert result is False
             assert mcp_client.session is None
 
-    @pytest.mark.asyncio
     async def test_genuine_cancellation_propagates(self, mcp_client):
         mock_session = AsyncMock()
 
@@ -128,7 +123,6 @@ class TestHandshakeDuringConnect:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-    @pytest.mark.asyncio
     async def test_sse_connect_fails_when_handshake_raises(self, mcp_client):
         mock_session = AsyncMock()
         mock_session.initialize.side_effect = RuntimeError("not an MCP server")
@@ -145,7 +139,6 @@ class TestHandshakeDuringConnect:
             assert result is False
             assert mcp_client.session is None
 
-    @pytest.mark.asyncio
     async def test_detect_and_connect_falls_back_to_sse_after_failed_http_handshake(self, mcp_client):
         http_session = AsyncMock()
         http_session.initialize.side_effect = asyncio.CancelledError()
@@ -172,7 +165,6 @@ class TestHandshakeDuringConnect:
             assert transport == MCPTransportType.SSE
             assert mcp_client.session is sse_session
 
-    @pytest.mark.asyncio
     async def test_failed_attempt_teardown_error_is_swallowed(self, mcp_client):
         """Teardown errors from a failed attempt must not mask the connect result."""
         mock_session = AsyncMock()
