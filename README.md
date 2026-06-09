@@ -103,9 +103,9 @@ Welcome to MCPScore!
 Connected to the MCP server: /path/to/server.py
 Transport: stdio
 Starting the audit...
-✅ Protocol version '2025-06-18' is one of the allowed versions
-✅ Protocol version '2025-06-18' is not deprecated
-✅ Protocol version '2025-06-18' is the latest version
+✅ Protocol version '2025-11-25' is one of the allowed versions
+✅ Protocol version '2025-11-25' is not deprecated
+✅ Protocol version '2025-11-25' is the latest version
 ✅ Server name is present: 'weather'
 ✅ Server version is present: '1.17.0'
 ❌ Server title is not present in server info
