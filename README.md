@@ -1,14 +1,43 @@
 # MCPScore
 
+[![CI](https://github.com/mcp-box/mcpscore/actions/workflows/ci.yml/badge.svg)](https://github.com/mcp-box/mcpscore/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/mcp-box/mcpscore/graph/badge.svg)](https://codecov.io/gh/mcp-box/mcpscore)
+[![PyPI](https://img.shields.io/pypi/v/mcpscore.svg)](https://pypi.org/project/mcpscore/)
+[![Python](https://img.shields.io/pypi/pyversions/mcpscore.svg)](https://pypi.org/project/mcpscore/)
+[![License](https://img.shields.io/github/license/mcp-box/mcpscore.svg)](LICENSE)
+
 A command-line tool for auditing MCP (Model Context Protocol) servers. MCPScore connects to your server, runs a comprehensive set of validation rules against it, and produces a severity-based report showing what's compliant and what needs attention.
+
+## Why MCPScore?
+
+MCP servers that violate the spec fail silently in the worst place: inside someone else's AI agent. A missing tool description, an outdated protocol version, or an unencrypted endpoint won't crash your server — it will just make agents pick the wrong tool, drop your server from their registry, or leak traffic. MCPScore catches these issues in seconds, before your users do.
+
+```bash
+pip install mcpscore
+mcpscore https://your-server.example/mcp
+```
+
+## How scoring works
+
+Every rule has a severity, and each passing rule contributes its weight to the score:
+
+| Severity | Points | Meaning |
+|----------|--------|---------|
+| CRITICAL | 5 | Spec violations that break interoperability (protocol version, server name, TLS) |
+| HIGH | 3 | Strong spec expectations (server version, valid tool schemas) |
+| MEDIUM | 2 | Recommendations that improve agent UX (titles, descriptions, error hygiene) |
+| LOW | 1 | Nice-to-haves (capability extras, transport recommendations) |
+
+The final score is reported as `earned/maximum` — higher means better MCP compliance.
 
 ## Features
 
 - **Multiple transports**: STDIO (local servers), Streamable HTTP, and SSE (remote servers)
 - **Auto-detection**: Picks the right transport automatically — tries Streamable HTTP first, falls back to SSE for URLs
+- **Real handshake verification**: A connection only counts once the server completes the MCP `initialize` handshake — pointing it at a non-MCP endpoint fails cleanly
 - **Multi-language**: Audits both Python (`.py`) and Node.js (`.js`) MCP servers via STDIO
 - **Severity-based reporting**: Rules categorized as CRITICAL, HIGH, MEDIUM, or LOW
-- **Comprehensive validation**: Protocol compliance, server metadata, capabilities, security, and transport
+- **Library-friendly**: Fully typed (`py.typed`); use `MCPClient` + `MCPAuditor` programmatically
 
 ## What it audits
 
@@ -24,16 +53,19 @@ A command-line tool for auditing MCP (Model Context Protocol) servers. MCPScore 
 
 - **Capabilities**: Tools, resources, prompts, logging, and subscription support
 
+- **Tools**: Names (presence, uniqueness, format), titles, descriptions, and JSON Schema validity of input/output schemas
+
 - **Security**:
-  - ✅ HTTPS/TLS usage verification
+  - ✅ HTTPS/TLS usage with the actually negotiated TLS version
   - ✅ Valid certificate checks
+  - ✅ Error responses checked for data leaks
 
 - **Transport**:
-  - ✅ SSE transport support detection
+  - ✅ Streamable HTTP usage (the current MCP standard; SSE-only servers get migration advice)
 
 ## Requirements
 
-- Python 3.13+
+- Python 3.11+
 - Node.js on `PATH` if auditing a Node.js MCP server
 - A Python interpreter on `PATH` if auditing a Python MCP server
 
@@ -94,22 +126,22 @@ Starting the audit...
 Audit finished. Final score: 55/71
 ```
 
-### Understanding the score
-
-Each passing rule contributes points equal to its severity weight: **CRITICAL = 5, HIGH = 3, MEDIUM = 2, LOW = 1**. Higher scores indicate better compliance with MCP standards.
-
 ## Troubleshooting
 
 **Connection fails**
 
 - Check the path or URL is correct and reachable
 - For local servers, make sure Python or Node.js is on `PATH`
-- Verify the server actually implements the MCP protocol
+- "Not a valid MCP server (handshake failed)" means the endpoint responded but did not complete the MCP `initialize` handshake — verify the URL points at an actual MCP endpoint (often `/mcp`)
 
 **Protocol version errors**
 
 - Confirm your server uses a currently supported MCP protocol version
 - If your server uses a newer version that MCPScore doesn't yet recognize, please [open an issue](https://github.com/mcp-box/mcpscore/issues)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and how to add audit rules. Security reports: [SECURITY.md](SECURITY.md). Release history: [CHANGELOG.md](CHANGELOG.md).
 
 ## Feedback
 
