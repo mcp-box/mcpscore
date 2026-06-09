@@ -38,9 +38,12 @@ class MCPProtocolVersion(StrEnum):
     """MCP protocol version from March 26, 2025."""
 
     v2025_06_18 = "2025-06-18"
-    """Latest MCP protocol version (June 18, 2025)."""
+    """MCP protocol version from June 18, 2025."""
 
-    Latest = v2025_06_18
+    v2025_11_25 = "2025-11-25"
+    """Latest MCP protocol version (November 25, 2025)."""
+
+    Latest = v2025_11_25
     """Alias for the latest protocol version.
 
     This is an enum alias, not a distinct member: it does not appear in
