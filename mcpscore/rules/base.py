@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
     from mcp.types import Implementation, Prompt, Resource, ServerCapabilities, Tool
 
+    from ..enums import MCPTransportType
+
 
 class RuleSeverity(IntEnum):
     """Severity levels for audit rules."""
@@ -46,7 +48,7 @@ class AuditData:
     prompts: list[Prompt] | None = None
 
     # Transport and connection information (for HTTP/SSE audits)
-    transport_type: str | None = None
+    transport_type: MCPTransportType | None = None
     url: str | None = None
     tls_verified: bool | None = None
     tls_version: str | None = None

@@ -27,6 +27,7 @@ from .capabilities import (
     CapabilityResourcesPresentRule,
     CapabilityResourcesSubscribeRule,
     CapabilityToolsListChangedRule,
+    CapabilityToolsPresentRule,
 )
 from .protocol_version import (
     AllowedVersionRule,
@@ -49,11 +50,13 @@ from .tools import (
     ToolsDescriptionPresentRule,
     ToolsInputSchemaValidRule,
     ToolsNamePresentRule,
+    ToolsNamesUniqueRule,
+    ToolsNamesValidFormatRule,
     ToolsOutputSchemaValidRule,
     ToolsTitlePresentRule,
 )
 from .transport import (
-    SSETransportSupportRule,
+    StreamableHTTPTransportRule,
 )
 
 __all__ = (
@@ -67,6 +70,7 @@ __all__ = (
     "CapabilityResourcesPresentRule",
     "CapabilityResourcesSubscribeRule",
     "CapabilityToolsListChangedRule",
+    "CapabilityToolsPresentRule",
     "DeprecatedVersionRule",
     "ErrorDataLeakRule",
     "LatestVersionRule",
@@ -74,15 +78,17 @@ __all__ = (
     "RuleRegistry",
     "RuleResult",
     "RuleSeverity",
-    "SSETransportSupportRule",
     "ServerNamePresentRule",
     "ServerTitlePresentRule",
     "ServerVersionPresentRule",
+    "StreamableHTTPTransportRule",
     "TLSEnabledRule",
     "ToolsAtLeastOneRule",
     "ToolsDescriptionPresentRule",
     "ToolsInputSchemaValidRule",
     "ToolsNamePresentRule",
+    "ToolsNamesUniqueRule",
+    "ToolsNamesValidFormatRule",
     "ToolsOutputSchemaValidRule",
     "ToolsTitlePresentRule",
     "create_all_rules",

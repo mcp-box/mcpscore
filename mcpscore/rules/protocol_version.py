@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from typing import ClassVar
 
 from mcpscore.enums import MCPProtocolVersion
 
@@ -149,6 +150,11 @@ class DeprecatedVersionRule(ProtocolVersionBaseRule):
     rule_id = "protocol_version_not_deprecated"
     rule_order = 2
 
+    deprecated_versions: ClassVar[list[str]] = [
+        # Add versions here as the MCP spec deprecates them
+    ]
+    """Protocol versions deprecated by the MCP specification."""
+
     @property
     def rule_name(self) -> str:
         return "MCP Protocol Version - Deprecated Version"
@@ -167,12 +173,7 @@ class DeprecatedVersionRule(ProtocolVersionBaseRule):
             RuleResult with the check outcome
 
         """
-        # Define deprecated versions (these would be updated based on MCP spec changes)
-        deprecated_versions: list[str] = [
-            # Add deprecated versions here as they become deprecated
-        ]
-
-        passed: bool = protocol_version not in deprecated_versions
+        passed: bool = protocol_version not in self.deprecated_versions
         if passed:
             message: str = f"✅ Protocol version '{protocol_version}' is not deprecated"
         else:
@@ -183,5 +184,5 @@ class DeprecatedVersionRule(ProtocolVersionBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"version": protocol_version, "deprecated_versions": list(deprecated_versions)},
+            details={"version": protocol_version, "deprecated_versions": list(self.deprecated_versions)},
         )
