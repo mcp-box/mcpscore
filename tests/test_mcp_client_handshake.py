@@ -74,16 +74,11 @@ class TestHandshakeDuringConnect:
     async def test_connect_fails_when_handshake_times_out(self):
         mcp_client = MCPClient(timeout=1)
         mock_session = AsyncMock()
-
-        async def hang():
-            await asyncio.sleep(60)
-
-        mock_session.initialize.side_effect = hang
+        mock_session.initialize.side_effect = TimeoutError
 
         with (
             patch("mcpscore.mcp_client.streamable_http_client") as mock_client,
             patch("mcpscore.mcp_client.ClientSession", return_value=mock_session),
-            patch("mcpscore.mcp_client.asyncio.wait_for", side_effect=TimeoutError),
         ):
             _mock_http_transport(mock_client, mock_session)
 
