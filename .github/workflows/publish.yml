@@ -1,9 +1,10 @@
 name: Publish
 
+# Triggered by publishing a GitHub Release (not a raw tag push), so the
+# `pypi` environment's protection rules gate the deploy.
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 jobs:
   build:
@@ -34,7 +35,7 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
-  github-release:
+  attach-artifacts:
     needs: publish-pypi
     runs-on: ubuntu-latest
     permissions:
@@ -47,4 +48,3 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
