@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in mcpscore doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: Auditing my server fails with ...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >-
+        The exact command you ran and, if possible, a way to reach or
+        reproduce the MCP server being audited.
+      placeholder: |
+        mcpscore https://example.com/mcp
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Full console output, including any traceback.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: mcpscore version
+      placeholder: "0.4.0 (pip show mcpscore)"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version and OS
+      placeholder: "Python 3.13 on macOS 15"
+    validations:
+      required: true

@@ -319,14 +319,23 @@ class ToolsDescriptionPresentRule(ToolsBaseRule):
         )
 
 
-def is_valid_schema(schema: dict[str, Any] | None) -> bool:
-    """Validate that a schema has a proper structure and required fields.
+_VALID_JSON_TYPES = {"string", "number", "integer", "boolean", "array", "object", "null"}
 
-    A valid schema should have:
-    - type: "object"
-    - properties: dict with property definitions
-    - required: list of required property names
-    - title: string title for the schema
+
+def is_valid_schema(schema: dict[str, Any] | None) -> bool:
+    """Validate that a schema is a structurally valid JSON Schema object.
+
+    MCP tool schemas are JSON Schema, which permits far more than a fixed
+    field set; only structural validity is checked here:
+
+    - the top level must be an object schema, or use a combinator/reference
+      (``anyOf``/``oneOf``/``allOf``/``$ref``)
+    - ``properties``, ``required``, and ``title`` are optional but must have
+      the correct shape when present — zero-argument tools with empty or
+      omitted ``properties`` are valid
+    - every name listed in ``required`` must exist in ``properties``
+    - each property definition must be a mapping; a plain-string ``type``
+      must be a valid JSON Schema type
 
     Args:
         schema: The schema dictionary to validate
@@ -338,47 +347,37 @@ def is_valid_schema(schema: dict[str, Any] | None) -> bool:
     if schema is None:
         return False
 
-    # Check basic type
+    # Combinators and references are valid top-level schema forms
+    if any(key in schema for key in ("anyOf", "oneOf", "allOf", "$ref")):
+        return True
+
     if schema.get("type") != "object":
         return False
 
-    # Check for required fields
-    required_fields = ["properties", "required", "title"]
-    if not all(field in schema for field in required_fields):
-        return False
-
-    # Validate properties is a dict
-    properties = schema.get("properties")
+    properties = schema.get("properties", {})
     if not isinstance(properties, dict):
         return False
 
-    # Validate required is a list
-    required = schema.get("required")
+    required = schema.get("required", [])
     if not isinstance(required, list):
         return False
 
-    # Validate title is a non-empty string
-    title = schema.get("title")
-    if not isinstance(title, str) or title.strip() == "":
+    if "title" in schema and not isinstance(schema["title"], str):
         return False
 
-    # Validate that all required properties exist in properties
+    # Every required property must be defined in properties
     for prop_name in required:
         if prop_name not in properties:
             return False
 
-    # Validate that each property has a proper structure
-    for _prop_def in properties.values():
-        if not isinstance(_prop_def, dict):
+    for prop_def in properties.values():
+        if not isinstance(prop_def, dict):
             return False
 
-        # Each property should have at least a type
-        if "type" not in _prop_def:
-            return False
-
-        # Property type should be a valid JSON Schema type
-        valid_types = {"string", "number", "integer", "boolean", "array", "object", "null"}
-        if _prop_def.get("type") not in valid_types:
+        # "type" is optional (enum/anyOf/$ref properties are valid), but a
+        # plain-string type must be a real JSON Schema type
+        prop_type = prop_def.get("type")
+        if isinstance(prop_type, str) and prop_type not in _VALID_JSON_TYPES:
             return False
 
     return True
@@ -430,7 +429,12 @@ class ToolsInputSchemaValidRule(ToolsBaseRule):
 
 @register_rule
 class ToolsOutputSchemaValidRule(ToolsBaseRule):
-    """High check: Verify that each tool has a valid output schema."""
+    """High check: Verify that each declared output schema is valid.
+
+    The MCP specification makes ``outputSchema`` optional — tools returning
+    unstructured content simply omit it. Only tools that declare one are
+    validated.
+    """
 
     rule_id = "tools_output_schema_valid"
     rule_order = 8
@@ -453,7 +457,7 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
 
         """
         tools_with_invalid_output_schema: list[str] = [
-            tool.name for tool in tools if not is_valid_schema(tool.outputSchema)
+            tool.name for tool in tools if tool.outputSchema is not None and not is_valid_schema(tool.outputSchema)
         ]
 
         passed = len(tools_with_invalid_output_schema) == 0

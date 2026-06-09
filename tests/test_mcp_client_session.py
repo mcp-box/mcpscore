@@ -24,7 +24,6 @@ class TestMCPClientSessionOperations:
         mcp_client.session = AsyncMock()
         return mcp_client
 
-    @pytest.mark.asyncio
     async def test_initialize_no_session(self, mcp_client, caplog):
         """Test initialize fails when no session is active."""
         result = await mcp_client.initialize()
@@ -32,7 +31,6 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert ERROR_NO_ACTIVE_SESSION in caplog.text
 
-    @pytest.mark.asyncio
     async def test_initialize_exception(self, mock_connected_client, caplog):
         """Test initialize handles exceptions properly."""
         # Simulate exception during initialization
@@ -43,7 +41,6 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert "Failed to initialize MCP server" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_initialize_success(self, mock_connected_client):
         """Test successful initialization."""
         mock_init_result = MagicMock(spec=InitializeResult)
@@ -54,7 +51,6 @@ class TestMCPClientSessionOperations:
         assert result == mock_init_result
         mock_connected_client.session.initialize.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_list_tools_no_session(self, mcp_client, caplog):
         """Test list_tools fails when no session is active."""
         result = await mcp_client.list_tools()
@@ -62,7 +58,6 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert ERROR_NO_ACTIVE_SESSION in caplog.text
 
-    @pytest.mark.asyncio
     async def test_list_tools_exception(self, mock_connected_client, caplog):
         """Test list_tools handles exceptions properly."""
         # Simulate exception during list_tools
@@ -73,7 +68,6 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert "Failed to list tools from the MCP server" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_list_tools_success(self, mock_connected_client):
         """Test successful list_tools."""
         mock_tools = [
@@ -89,7 +83,6 @@ class TestMCPClientSessionOperations:
         assert len(result) == 2
         mock_connected_client.session.list_tools.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_list_resources_no_session(self, mcp_client, caplog):
         """Test list_resources fails when no session is active."""
         result = await mcp_client.list_resources()
@@ -97,7 +90,6 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert ERROR_NO_ACTIVE_SESSION in caplog.text
 
-    @pytest.mark.asyncio
     async def test_list_resources_exception(self, mock_connected_client, caplog):
         """Test list_resources handles exceptions properly."""
         # Simulate exception during list_resources
@@ -108,7 +100,6 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert "Failed to list resources from the MCP server" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_list_resources_success(self, mock_connected_client):
         """Test successful list_resources."""
         mock_resources = [
@@ -124,7 +115,6 @@ class TestMCPClientSessionOperations:
         assert len(result) == 2
         mock_connected_client.session.list_resources.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_list_prompts_no_session(self, mcp_client, caplog):
         """Test list_prompts fails when no session is active."""
         result = await mcp_client.list_prompts()
@@ -132,7 +122,6 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert ERROR_NO_ACTIVE_SESSION in caplog.text
 
-    @pytest.mark.asyncio
     async def test_list_prompts_exception(self, mock_connected_client, caplog):
         """Test list_prompts handles exceptions properly."""
         # Simulate exception during list_prompts
@@ -143,7 +132,6 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert "Failed to list prompts from the MCP server" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_list_prompts_success(self, mock_connected_client):
         """Test successful list_prompts."""
         mock_prompts = [
@@ -159,7 +147,6 @@ class TestMCPClientSessionOperations:
         assert len(result) == 2
         mock_connected_client.session.list_prompts.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_list_tools_empty_list(self, mock_connected_client):
         """Test list_tools returns empty list when no tools available."""
         mock_result = ListToolsResult(tools=[])
@@ -170,7 +157,6 @@ class TestMCPClientSessionOperations:
         assert result == []
         assert len(result) == 0
 
-    @pytest.mark.asyncio
     async def test_list_resources_empty_list(self, mock_connected_client):
         """Test list_resources returns empty list when no resources available."""
         mock_result = ListResourcesResult(resources=[])
@@ -181,7 +167,6 @@ class TestMCPClientSessionOperations:
         assert result == []
         assert len(result) == 0
 
-    @pytest.mark.asyncio
     async def test_list_prompts_empty_list(self, mock_connected_client):
         """Test list_prompts returns empty list when no prompts available."""
         mock_result = ListPromptsResult(prompts=[])

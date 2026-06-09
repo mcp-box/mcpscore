@@ -36,18 +36,19 @@ async def async_main() -> None:
 
     success, transport = await client.detect_and_connect(target)
 
-    if success:
-        logger.info("Connected to the MCP server: %s", target)
-        logger.info("Transport: %s", transport)
-    else:
+    if not success:
         logger.error("Error connecting to the MCP server: %s", target)
         sys.exit(2)
 
-    logger.info("Starting the audit...")
-    final_score, max_score = await auditor.audit(client)
-    logger.info("Audit finished. Final score: %s/%s", final_score, max_score)
+    logger.info("Connected to the MCP server: %s", target)
+    logger.info("Transport: %s", transport)
 
-    await client.cleanup()
+    try:
+        logger.info("Starting the audit...")
+        final_score, max_score = await auditor.audit(client)
+        logger.info("Audit finished. Final score: %s/%s", final_score, max_score)
+    finally:
+        await client.cleanup()
 
 
 def main() -> None:

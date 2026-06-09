@@ -55,3 +55,16 @@ def test_deprecated_version_rule_default_none_deprecations():
     rule = DeprecatedVersionRule()
     res = rule.check(AuditData(protocol_version=MCPProtocolVersion.v2024_11_05.value))
     assert res.passed  # none are deprecated by default
+
+
+def test_deprecated_version_rule_fails_for_deprecated_version(monkeypatch):
+    """A version listed in deprecated_versions must fail the rule."""
+    monkeypatch.setattr(DeprecatedVersionRule, "deprecated_versions", ["2024-11-05"])
+    rule = DeprecatedVersionRule()
+
+    result = rule.check(AuditData(protocol_version="2024-11-05"))
+
+    assert result.passed is False
+    assert "deprecated" in result.message
+    assert result.details is not None
+    assert result.details["deprecated_versions"] == ["2024-11-05"]

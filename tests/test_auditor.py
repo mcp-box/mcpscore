@@ -1,6 +1,6 @@
+import logging
 from typing import Any
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from mcpscore import MCPAuditor, MCPClient
 from mcpscore.rules import AuditData, BaseRule, RuleResult, RuleSeverity
@@ -69,7 +69,6 @@ class DummyRule(BaseRule):
         )
 
 
-@pytest.mark.asyncio
 async def test_auditor_collects_data_and_scores():
     """Test that the auditor properly collects server data and calculates audit scores.
 
@@ -110,7 +109,6 @@ async def test_auditor_collects_data_and_scores():
     assert summary["failed"] == 1
 
 
-@pytest.mark.asyncio
 async def test_auditor_with_tools_capability():
     """Test that auditor collects tools when tools capability is present.
 
@@ -147,7 +145,6 @@ async def test_auditor_with_tools_capability():
     assert auditor.audit_data.tools == tools
 
 
-@pytest.mark.asyncio
 async def test_auditor_with_resources_capability():
     """Test that auditor collects resources when resources capability is present.
 
@@ -184,7 +181,6 @@ async def test_auditor_with_resources_capability():
     assert auditor.audit_data.resources == resources
 
 
-@pytest.mark.asyncio
 async def test_auditor_with_prompts_capability():
     """Test that auditor collects prompts when prompts capability is present.
 
@@ -221,7 +217,6 @@ async def test_auditor_with_prompts_capability():
     assert auditor.audit_data.prompts == prompts
 
 
-@pytest.mark.asyncio
 async def test_auditor_with_all_capabilities():
     """Test that auditor collects all data when all capabilities are present.
 
@@ -272,7 +267,6 @@ async def test_auditor_with_all_capabilities():
     assert auditor.audit_data.prompts == prompts
 
 
-@pytest.mark.asyncio
 async def test_auditor_with_no_capabilities():
     """Test that auditor handles minimal server with no capabilities.
 
@@ -303,14 +297,13 @@ async def test_auditor_with_no_capabilities():
     assert auditor.audit_data.prompts is None
 
 
-@pytest.mark.asyncio
 async def test_auditor_https_tls_detection():
     """Test that auditor properly detects TLS for HTTPS URLs.
 
     Verifies that:
     - HTTPS URLs are detected
     - TLS verification is marked as True
-    - TLS version is populated
+    - TLS version is probed and populated
     """
 
     class InitResult:
@@ -324,13 +317,14 @@ async def test_auditor_https_tls_detection():
     auditor = MCPAuditor()
     auditor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp"))
+    with patch.object(MCPAuditor, "_probe_tls_version", AsyncMock(return_value="TLSv1.3")) as mock_probe:
+        await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp"))
 
+    mock_probe.assert_awaited_once_with("https://example.com/mcp")
     assert auditor.audit_data.tls_verified is True
     assert auditor.audit_data.tls_version == "TLSv1.3"
 
 
-@pytest.mark.asyncio
 async def test_auditor_http_no_tls():
     """Test that auditor properly handles HTTP URLs without TLS.
 
@@ -357,7 +351,6 @@ async def test_auditor_http_no_tls():
     assert auditor.audit_data.tls_version is None
 
 
-@pytest.mark.asyncio
 async def test_auditor_stdio_no_tls_detection():
     """Test that auditor handles STDIO transport without TLS detection.
 
@@ -384,7 +377,6 @@ async def test_auditor_stdio_no_tls_detection():
     assert auditor.audit_data.tls_version is None
 
 
-@pytest.mark.asyncio
 async def test_collect_init_result_with_none_client(caplog):
     """Test error handling when client is None in _collect_init_result.
 
@@ -400,7 +392,6 @@ async def test_collect_init_result_with_none_client(caplog):
     assert "No MCP client to audit" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_collect_init_result_with_none_result(caplog):
     """Test error handling when initialize() returns None.
 
@@ -422,7 +413,6 @@ async def test_collect_init_result_with_none_result(caplog):
     assert auditor.audit_data.protocol_version is None
 
 
-@pytest.mark.asyncio
 async def test_collect_tools_with_none_client(caplog):
     """Test error handling when client is None in _collect_tools.
 
@@ -438,7 +428,6 @@ async def test_collect_tools_with_none_client(caplog):
     assert "No MCP client to audit" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_collect_tools_with_none_response(caplog):
     """Test error handling when list_tools() returns None.
 
@@ -461,7 +450,6 @@ async def test_collect_tools_with_none_response(caplog):
     assert auditor.audit_data.tools is None
 
 
-@pytest.mark.asyncio
 async def test_collect_resources_with_none_client(caplog):
     """Test error handling when client is None in _collect_resources.
 
@@ -477,7 +465,6 @@ async def test_collect_resources_with_none_client(caplog):
     assert "No MCP client to audit" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_collect_resources_with_none_response(caplog):
     """Test error handling when list_resources() returns None.
 
@@ -500,7 +487,6 @@ async def test_collect_resources_with_none_response(caplog):
     assert auditor.audit_data.resources is None
 
 
-@pytest.mark.asyncio
 async def test_collect_prompts_with_none_client(caplog):
     """Test error handling when client is None in _collect_prompts.
 
@@ -516,7 +502,6 @@ async def test_collect_prompts_with_none_client(caplog):
     assert "No MCP client to audit" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_collect_prompts_with_none_response(caplog):
     """Test error handling when list_prompts() returns None.
 
@@ -539,7 +524,6 @@ async def test_collect_prompts_with_none_response(caplog):
     assert auditor.audit_data.prompts is None
 
 
-@pytest.mark.asyncio
 async def test_get_audit_summary_with_mixed_results():
     """Test audit summary generation with mixed pass/fail results.
 
@@ -566,7 +550,6 @@ async def test_get_audit_summary_with_mixed_results():
     assert summary["by_severity"][RuleSeverity.LOW.value]["failed"] == 1
 
 
-@pytest.mark.asyncio
 async def test_get_audit_summary_all_passed():
     """Test audit summary when all rules pass.
 
@@ -587,7 +570,6 @@ async def test_get_audit_summary_all_passed():
     assert summary["failed"] == 0
 
 
-@pytest.mark.asyncio
 async def test_get_audit_summary_all_failed():
     """Test audit summary when all rules fail.
 
@@ -608,7 +590,6 @@ async def test_get_audit_summary_all_failed():
     assert summary["failed"] == 2
 
 
-@pytest.mark.asyncio
 async def test_collect_transport_metadata_with_none_client(caplog):
     """Test error handling when client is None in _collect_transport_metadata.
 
@@ -624,7 +605,6 @@ async def test_collect_transport_metadata_with_none_client(caplog):
     assert "No MCP client to audit" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_auditor_transport_metadata_collection():
     """Test that transport metadata is properly collected.
 
@@ -645,8 +625,54 @@ async def test_auditor_transport_metadata_collection():
     auditor = MCPAuditor()
     auditor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp", transport_type="sse"))
+    with patch.object(MCPAuditor, "_probe_tls_version", AsyncMock(return_value="TLSv1.3")):
+        await auditor.audit(DummyClient(InitResult(), url="https://example.com/mcp", transport_type="sse"))
 
     assert auditor.audit_data.transport_type == "sse"
     assert auditor.audit_data.url == "https://example.com/mcp"
     assert auditor.audit_data.connection_time_ms == 100
+
+
+async def test_probe_tls_version_returns_negotiated_version():
+    """Probe returns the version negotiated on the TLS connection."""
+    ssl_object = MagicMock()
+    ssl_object.version.return_value = "TLSv1.3"
+    writer = MagicMock()
+    writer.get_extra_info.return_value = ssl_object
+
+    with patch("mcpscore.mcp_auditor.asyncio.open_connection", AsyncMock(return_value=(MagicMock(), writer))):
+        version = await MCPAuditor._probe_tls_version("https://example.com/mcp")
+
+    assert version == "TLSv1.3"
+    writer.get_extra_info.assert_called_once_with("ssl_object")
+    writer.close.assert_called_once()
+
+
+async def test_probe_tls_version_no_ssl_object():
+    """Probe returns None when the transport exposes no ssl_object."""
+    writer = MagicMock()
+    writer.get_extra_info.return_value = None
+
+    with patch("mcpscore.mcp_auditor.asyncio.open_connection", AsyncMock(return_value=(MagicMock(), writer))):
+        version = await MCPAuditor._probe_tls_version("https://example.com/mcp")
+
+    assert version is None
+    writer.close.assert_called_once()
+
+
+async def test_probe_tls_version_connection_error_returns_none(caplog):
+    """Probe failures are logged and yield None instead of raising."""
+    with (
+        caplog.at_level(logging.INFO),
+        patch("mcpscore.mcp_auditor.asyncio.open_connection", AsyncMock(side_effect=OSError("refused"))),
+    ):
+        version = await MCPAuditor._probe_tls_version("https://example.com/mcp")
+
+    assert version is None
+    assert "Could not probe TLS version" in caplog.text
+
+
+async def test_probe_tls_version_invalid_url_returns_none():
+    """Probe returns None for URLs without a hostname."""
+    version = await MCPAuditor._probe_tls_version("https://")
+    assert version is None

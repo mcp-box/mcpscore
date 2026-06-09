@@ -17,7 +17,6 @@ class TestMCPClientSSE:
         """Create a fresh MCPClient instance for each test."""
         return MCPClient()
 
-    @pytest.mark.asyncio
     async def test_connect_with_sse_success(self, mcp_client):
         """Test successful SSE connection."""
         server_url = "https://example.com/sse"
@@ -41,7 +40,6 @@ class TestMCPClientSSE:
             assert result is True
             assert mcp_client.session == mock_session
 
-    @pytest.mark.asyncio
     async def test_connect_with_sse_invalid_url(self, mcp_client):
         """Test SSE connection with invalid URL."""
         invalid_urls = [
@@ -55,7 +53,6 @@ class TestMCPClientSSE:
             result = await mcp_client.connect_to_server(MCPTransportType.SSE, url)
             assert result is False
 
-    @pytest.mark.asyncio
     async def test_connect_with_sse_connection_error(self, mcp_client):
         """Test SSE connection with connection refused."""
         server_url = "https://example.com/sse"
@@ -68,7 +65,6 @@ class TestMCPClientSSE:
 
             assert result is False
 
-    @pytest.mark.asyncio
     async def test_connect_with_sse_timeout(self, mcp_client):
         """Test SSE connection with timeout."""
         server_url = "https://example.com/sse"
@@ -81,7 +77,6 @@ class TestMCPClientSSE:
 
             assert result is False
 
-    @pytest.mark.asyncio
     async def test_connect_with_sse_http_error(self, mcp_client):
         """Test SSE connection with HTTP error."""
         server_url = "https://example.com/sse"
@@ -97,7 +92,6 @@ class TestMCPClientSSE:
 
             assert result is False
 
-    @pytest.mark.asyncio
     async def test_detect_and_connect_stdio_for_py_file(self, mcp_client):
         """Test auto-detection uses stdio for .py files."""
         server_path = "server.py"
@@ -109,7 +103,6 @@ class TestMCPClientSSE:
             assert transport == MCPTransportType.STDIO
             mock_stdio.assert_called_once_with(server_path)
 
-    @pytest.mark.asyncio
     async def test_detect_and_connect_stdio_for_js_file(self, mcp_client):
         """Test auto-detection uses stdio for .js files."""
         server_path = "server.js"
@@ -121,7 +114,6 @@ class TestMCPClientSSE:
             assert transport == MCPTransportType.STDIO
             mock_stdio.assert_called_once_with(server_path)
 
-    @pytest.mark.asyncio
     async def test_detect_and_connect_invalid_input(self, mcp_client):
         """Test auto-detection with invalid input."""
         invalid_inputs = [
@@ -136,7 +128,6 @@ class TestMCPClientSSE:
             assert success is False
             assert transport is None
 
-    @pytest.mark.asyncio
     async def test_connect_with_sse_generic_exception(self, mcp_client, caplog):
         """Test SSE connection with generic exception."""
         server_url = "https://example.com/sse"
@@ -150,7 +141,6 @@ class TestMCPClientSSE:
             assert result is False
             assert "Failed to connect to MCP server via SSE" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_connect_with_sse_custom_client_factory(self, mcp_client):
         """Test SSE connection with custom client factory."""
         server_url = "https://example.com/sse"
@@ -184,7 +174,6 @@ class TestMCPClientSSE:
             assert result is True
             assert mcp_client.transport_type == MCPTransportType.SSE
 
-    @pytest.mark.asyncio
     async def test_cleanup_after_sse_connection(self, mcp_client):
         """Test cleanup after SSE connection."""
         server_url = "https://example.com/sse"

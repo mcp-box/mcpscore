@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a new audit rule or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: >-
+        Describe the gap — e.g. an aspect of the MCP specification that
+        mcpscore doesn't audit yet, or a workflow that's awkward today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: >-
+        For new audit rules, include the severity you'd expect
+        (CRITICAL/HIGH/MEDIUM/LOW) and a link to the relevant section of the
+        MCP specification if applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

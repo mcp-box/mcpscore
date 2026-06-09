@@ -230,32 +230,39 @@ class TestIsValidSchema:
         }
         assert is_valid_schema(schema) is False
 
-    def test_missing_properties_field(self) -> None:
-        """Schema missing 'properties' field returns False."""
+    def test_missing_properties_field_is_valid(self) -> None:
+        """Schema without 'properties' is valid (zero-argument tool)."""
         schema = {
             "type": "object",
             "title": "Test",
             "required": [],
         }
-        assert is_valid_schema(schema) is False
+        assert is_valid_schema(schema) is True
 
-    def test_missing_required_field(self) -> None:
-        """Schema missing 'required' field returns False."""
+    def test_missing_required_field_is_valid(self) -> None:
+        """Schema without 'required' is valid (all parameters optional)."""
         schema = {
             "type": "object",
             "title": "Test",
             "properties": {"name": {"type": "string"}},
         }
-        assert is_valid_schema(schema) is False
+        assert is_valid_schema(schema) is True
 
-    def test_missing_title_field(self) -> None:
-        """Schema missing 'title' field returns False."""
+    def test_missing_title_field_is_valid(self) -> None:
+        """Schema without 'title' is valid (title is not required by JSON Schema)."""
         schema = {
             "type": "object",
             "properties": {"name": {"type": "string"}},
             "required": [],
         }
-        assert is_valid_schema(schema) is False
+        assert is_valid_schema(schema) is True
+
+    def test_top_level_combinators_are_valid(self) -> None:
+        """Schemas using anyOf/oneOf/allOf/$ref at the top level are valid."""
+        assert is_valid_schema({"anyOf": [{"type": "object"}, {"type": "null"}]}) is True
+        assert is_valid_schema({"oneOf": [{"type": "object"}]}) is True
+        assert is_valid_schema({"allOf": [{"type": "object"}]}) is True
+        assert is_valid_schema({"$ref": "#/definitions/params"}) is True
 
     def test_properties_not_dict(self) -> None:
         """Schema with 'properties' not a dict returns False."""
@@ -277,21 +284,21 @@ class TestIsValidSchema:
         }
         assert is_valid_schema(schema) is False
 
-    def test_empty_title(self) -> None:
-        """Schema with empty title returns False."""
+    def test_empty_title_is_valid(self) -> None:
+        """Schema with empty title is valid (title content is not enforced)."""
         schema = {
             "type": "object",
             "title": "",
             "properties": {"name": {"type": "string"}},
             "required": [],
         }
-        assert is_valid_schema(schema) is False
+        assert is_valid_schema(schema) is True
 
-    def test_whitespace_only_title(self) -> None:
-        """Schema with whitespace-only title returns False."""
+    def test_non_string_title_is_invalid(self) -> None:
+        """Schema with a non-string title returns False."""
         schema = {
             "type": "object",
-            "title": "   ",
+            "title": 42,
             "properties": {"name": {"type": "string"}},
             "required": [],
         }
@@ -307,17 +314,18 @@ class TestIsValidSchema:
         }
         assert is_valid_schema(schema) is False
 
-    def test_property_missing_type_field(self) -> None:
-        """Schema with property missing 'type' field returns False."""
+    def test_property_without_type_is_valid(self) -> None:
+        """Properties without 'type' are valid (enum/anyOf/$ref properties)."""
         schema = {
             "type": "object",
             "title": "Test",
             "properties": {
-                "name": {"description": "Name field"},  # Missing 'type'
+                "name": {"description": "Name field"},
+                "mode": {"enum": ["fast", "slow"]},
             },
             "required": [],
         }
-        assert is_valid_schema(schema) is False
+        assert is_valid_schema(schema) is True
 
     def test_property_with_invalid_type(self) -> None:
         """Schema with property having invalid type returns False."""
@@ -733,22 +741,25 @@ class TestToolsInputSchemaValidRule:
         assert result.details is not None
         assert "valid_name" in result.details["tools_with_invalid_input_schema"]
 
-    def test_with_none_input_schema(self) -> None:
-        """Fail: Tool has None input schema."""
+    def test_with_invalid_input_schema_shape(self) -> None:
+        """Fail: Tool has a structurally invalid input schema."""
         rule = ToolsInputSchemaValidRule()
-        # Note: Tool requires inputSchema, so this test verifies behavior
-        # when the schema exists but is invalid
         tool = Tool(
             name="test",
             inputSchema={
                 "type": "object",
-                "title": "",  # Empty title makes it invalid
-                "properties": {},
-                "required": [],
+                "properties": {"name": "not-a-mapping"},  # property def must be a dict
             },
         )
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is False
+
+    def test_zero_argument_tool_passes(self) -> None:
+        """Pass: a zero-argument tool with a minimal schema is valid."""
+        rule = ToolsInputSchemaValidRule()
+        tool = Tool(name="test", inputSchema={"type": "object", "properties": {}})
+        result = rule.check(AuditData(tools=[tool]))
+        assert result.passed is True
 
 
 # ============================================================================
@@ -783,8 +794,8 @@ class TestToolsOutputSchemaValidRule:
         assert result.details is not None
         assert "valid_name" in result.details["tools_with_invalid_output_schema"]
 
-    def test_with_none_output_schema(self) -> None:
-        """Fail: Tool has None output schema."""
+    def test_with_none_output_schema_is_valid(self) -> None:
+        """Pass: outputSchema is optional in the MCP spec; None is valid."""
         rule = ToolsOutputSchemaValidRule()
         tool = Tool(
             name="test",
@@ -797,9 +808,9 @@ class TestToolsOutputSchemaValidRule:
             outputSchema=None,
         )
         result = rule.check(AuditData(tools=[tool]))
-        assert result.passed is False
+        assert result.passed is True
         assert result.details is not None
-        assert "test" in result.details["tools_with_invalid_output_schema"]
+        assert result.details["tools_with_invalid_output_schema"] == []
 
     def test_with_mixed_output_schemas(self, valid_tool: Tool, tool_with_invalid_output_schema: Tool) -> None:
         """Fail: Some tools have invalid output schemas."""

@@ -72,7 +72,7 @@ class RuleRegistry:
 _registry = RuleRegistry()
 
 
-def register_rule(cls: type[BaseRule]):
+def register_rule(cls: type[BaseRule]) -> type[BaseRule]:
     """Register a rule class automatically.
 
     Args:
@@ -92,7 +92,7 @@ def register_rule(cls: type[BaseRule]):
     return cls
 
 
-def create_all_rules(**kwargs: Any):
+def create_all_rules(**kwargs: Any) -> Iterable[BaseRule]:
     """Create instances of all registered rules.
 
     Args:

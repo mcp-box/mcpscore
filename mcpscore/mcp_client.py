@@ -1,7 +1,9 @@
+import asyncio
 from contextlib import AsyncExitStack
 import logging
 import sys
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 from mcp import (
@@ -19,9 +21,15 @@ from mcp.types import Prompt, Resource, Tool
 
 from .enums import MCPTransportType
 
+if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
 logger = logging.getLogger(__name__)
 
 ERROR_NO_ACTIVE_SESSION = "No active session, connect to the MCP server first!"
+
+HANDSHAKE_TIMEOUT_S = 30
+"""Default timeout for the MCP initialize handshake performed during connect."""
 
 
 class MCPClient:
@@ -50,6 +58,7 @@ class MCPClient:
         self.session: ClientSession | None = None
         self.exit_stack: AsyncExitStack = AsyncExitStack()
         self.timeout: int | None = timeout
+        self._init_result: InitializeResult | None = None
 
         # Transport metadata (populated after connection)
         self.transport_type: MCPTransportType | None = None
@@ -120,6 +129,73 @@ class MCPClient:
 
         return result
 
+    async def _establish_session(
+        self,
+        transport_cm: "AbstractAsyncContextManager",
+        transport: MCPTransportType,
+        url: str | None,
+    ) -> None:
+        """Enter the transport, open a session, and verify the MCP handshake.
+
+        A connection only counts as established once the server completes the
+        MCP `initialize` handshake — merely opening the transport stream
+        succeeds against any reachable endpoint, MCP server or not.
+
+        The attempt runs on its own exit stack: on any failure the transport
+        is torn down immediately (so a failed attempt never leaks into this
+        client's lifecycle), and the exception is re-raised for the caller to
+        classify. On success the contexts are transferred to the client's
+        exit stack and session metadata is populated.
+        """
+        stack = AsyncExitStack()
+        try:
+            start_time = time.perf_counter()
+            streams = await stack.enter_async_context(transport_cm)
+            read_stream, write_stream = streams[0], streams[1]
+            session: ClientSession = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            init_result: InitializeResult = await asyncio.wait_for(
+                session.initialize(),
+                timeout=self.timeout or HANDSHAKE_TIMEOUT_S,
+            )
+            connection_time_ms = int((time.perf_counter() - start_time) * 1000)
+        except BaseException:
+            # Includes CancelledError thrown by the transport's anyio task
+            # group when its background task fails (e.g. non-MCP endpoint).
+            await self._discard_attempt(stack)
+            raise
+
+        self.exit_stack.push_async_callback(stack.pop_all().aclose)
+        self.session = session
+        self._init_result = init_result
+        self.transport_type = transport
+        self.url = url
+        self.connection_time_ms = connection_time_ms
+
+    @staticmethod
+    async def _discard_attempt(stack: AsyncExitStack) -> None:
+        """Tear down a failed connection attempt without raising.
+
+        Closing the transport's task group surfaces the underlying error
+        (e.g. an HTTP 4xx/5xx buffered by a background task); log it as the
+        real failure reason instead of letting it mask the connect result.
+        """
+        try:
+            await stack.aclose()
+        except Exception as e:  # noqa: BLE001 — teardown must not mask the connect failure
+            logger.info("Connection attempt failed: %s", e)
+
+    @staticmethod
+    def _reraise_if_cancelled() -> None:
+        """Re-raise only when this task itself is being cancelled.
+
+        The transport's anyio cancel scope cancels the connecting task when
+        its background task dies; that leaked cancellation is a failed
+        connection, not a request to stop.
+        """
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError
+
     async def _connect_with_stdio(self, server_script_path: str) -> bool:
         """Establish a stdio connection to a local MCP server process.
 
@@ -145,15 +221,7 @@ class MCPClient:
         server_params = StdioServerParameters(command=command, args=[server_script_path], env=None)
 
         try:
-            start_time = time.perf_counter()
-            self.stdio, self.write = await self.exit_stack.enter_async_context(stdio_client(server_params))
-            self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
-            self.connection_time_ms = int((time.perf_counter() - start_time) * 1000)
-
-            # Store transport metadata
-            self.transport_type = MCPTransportType.STDIO
-            self.url = None  # stdio doesn't have a URL
-
+            await self._establish_session(stdio_client(server_params), MCPTransportType.STDIO, url=None)
             return True
         except FileNotFoundError as e:
             if is_python:
@@ -165,6 +233,13 @@ class MCPClient:
         except PermissionError as e:
             logger.exception("Permission denied accessing server script: %s", server_script_path)
             logger.debug("Error details: %s", e)
+            return False
+        except TimeoutError:
+            logger.error("MCP initialize handshake timed out for server: %s", server_script_path)  # noqa: TRY400
+            return False
+        except asyncio.CancelledError:
+            self._reraise_if_cancelled()
+            logger.error("MCP initialize handshake failed for server: %s", server_script_path)  # noqa: TRY400
             return False
         except Exception:
             logger.exception("Failed to connect to MCP server")
@@ -203,18 +278,12 @@ class MCPClient:
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
             )
 
-            # Establish connection using MCP SDK's streamable_http_client
-            start_time = time.perf_counter()
-            read_stream, write_stream, _session_id_callback = await self.exit_stack.enter_async_context(
-                streamable_http_client(server_url, http_client=client)
+            # Establish connection and verify the MCP handshake
+            await self._establish_session(
+                streamable_http_client(server_url, http_client=client),
+                MCPTransportType.STREAMABLE_HTTP,
+                url=server_url,
             )
-
-            self.session = await self.exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
-            self.connection_time_ms = int((time.perf_counter() - start_time) * 1000)
-
-            # Store transport metadata
-            self.transport_type = MCPTransportType.STREAMABLE_HTTP
-            self.url = server_url
 
             logger.info("Successfully connected to MCP server via Streamable HTTP: %s", server_url)
             return True
@@ -230,6 +299,13 @@ class MCPClient:
         except httpx.HTTPStatusError as e:
             logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
             logger.debug("Error details: %s", e)
+            return False
+        except TimeoutError:
+            logger.error("MCP initialize handshake timed out for server: %s", server_url)  # noqa: TRY400
+            return False
+        except asyncio.CancelledError:
+            self._reraise_if_cancelled()
+            logger.error("Not a valid MCP server (handshake failed): %s", server_url)  # noqa: TRY400
             return False
         except Exception:
             logger.exception("Failed to connect to MCP server via Streamable HTTP")
@@ -277,17 +353,11 @@ class MCPClient:
             ) -> httpx.AsyncClient:
                 return client
 
-            start_time = time.perf_counter()
-            read_stream, write_stream = await self.exit_stack.enter_async_context(
-                sse_client(server_url, httpx_client_factory=client_factory)
+            await self._establish_session(
+                sse_client(server_url, httpx_client_factory=client_factory),
+                MCPTransportType.SSE,
+                url=server_url,
             )
-
-            self.session = await self.exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
-            self.connection_time_ms = int((time.perf_counter() - start_time) * 1000)
-
-            # Store transport metadata
-            self.transport_type = MCPTransportType.SSE
-            self.url = server_url
 
             logger.info("Successfully connected to MCP server via SSE: %s", server_url)
             return True
@@ -304,6 +374,13 @@ class MCPClient:
             logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
             logger.debug("Error details: %s", e)
             return False
+        except TimeoutError:
+            logger.error("MCP initialize handshake timed out for server: %s", server_url)  # noqa: TRY400
+            return False
+        except asyncio.CancelledError:
+            self._reraise_if_cancelled()
+            logger.error("Not a valid MCP server (handshake failed): %s", server_url)  # noqa: TRY400
+            return False
         except Exception:
             logger.exception("Failed to connect to MCP server via SSE")
             return False
@@ -318,15 +395,21 @@ class MCPClient:
             or None if initialization failed
 
         Note:
-            Must be called after successfully connecting to a server
+            Must be called after successfully connecting to a server. The
+            handshake already happens during connect; this returns the cached
+            result rather than re-initializing the session.
 
         """
+        if self._init_result is not None:
+            return self._init_result
+
         if not self.session:
             logger.error(ERROR_NO_ACTIVE_SESSION)
             return None
 
         try:
             init_result: InitializeResult = await self.session.initialize()
+            self._init_result = init_result
             return init_result
         except Exception:
             logger.exception("Failed to initialize MCP server")

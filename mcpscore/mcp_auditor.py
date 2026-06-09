@@ -1,5 +1,8 @@
+import asyncio
 import logging
+import ssl
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from mcp.types import InitializeResult, Prompt, Resource, Tool
@@ -8,6 +11,9 @@ from .mcp_client import MCPClient
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, create_all_rules
 
 logger = logging.getLogger(__name__)
+
+TLS_PROBE_TIMEOUT_S = 10
+"""Timeout for probing the negotiated TLS version of an HTTPS server."""
 
 
 class MCPAuditor:
@@ -68,11 +74,11 @@ class MCPAuditor:
                 await self._collect_resources()
             if self.audit_data.capabilities.prompts is not None:
                 await self._collect_prompts()
-        await self._run_all_rules()
+        self._run_all_rules()
 
         return self.score, self.max_score
 
-    async def _run_all_rules(self) -> None:
+    def _run_all_rules(self) -> None:
         """Execute all registered audit rules and update the audit score.
 
         Iterates through all rules, executes each one, logs the results,
@@ -110,13 +116,47 @@ class MCPAuditor:
 
         # For HTTPS connections, check TLS
         if self.mcp_client.url and self.mcp_client.url.startswith("https://"):
-            # If we successfully connected via HTTPS, assume TLS is verified
+            # If we successfully connected via HTTPS, TLS is verified
             # (httpx would have failed the connection if cert validation failed)
             self.audit_data.tls_verified = True
-            self.audit_data.tls_version = "TLSv1.3"  # Modern default, could be probed more precisely
+            self.audit_data.tls_version = await self._probe_tls_version(self.mcp_client.url)
         elif self.mcp_client.url and self.mcp_client.url.startswith("http://"):
             self.audit_data.tls_verified = False
             self.audit_data.tls_version = None
+
+    @staticmethod
+    async def _probe_tls_version(url: str) -> str | None:
+        """Probe the TLS version negotiated with an HTTPS server.
+
+        Opens a short-lived TLS connection to the server and reads the
+        negotiated protocol version (e.g. "TLSv1.3") from the SSL object.
+
+        Returns:
+            The negotiated TLS version string, or None if it could not be
+            determined (the TLS rules treat an unknown version leniently).
+
+        """
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if host is None:
+            return None
+        port = parsed.port or 443
+
+        writer = None
+        try:
+            context = ssl.create_default_context()
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port, ssl=context),
+                timeout=TLS_PROBE_TIMEOUT_S,
+            )
+            ssl_object = writer.get_extra_info("ssl_object")
+            return ssl_object.version() if ssl_object is not None else None
+        except Exception as e:  # noqa: BLE001 — probe failure must not abort the audit
+            logger.info("Could not probe TLS version for %s: %s", url, e)
+            return None
+        finally:
+            if writer is not None:
+                writer.close()
 
     async def _collect_init_result(self) -> None:
         """Collect initialization data from the MCP server.

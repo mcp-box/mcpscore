@@ -2,6 +2,7 @@
 
 import pytest
 
+from mcpscore.enums import MCPTransportType
 from mcpscore.rules import (
     AuditData,
     ErrorDataLeakRule,
@@ -77,7 +78,7 @@ class TestMalformedRequestHandlingRule:
         """Test that proper JSON-RPC error response passes."""
         audit_data = AuditData(
             error_response='{"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}',
-            transport_type="streamable-http",
+            transport_type=MCPTransportType.STREAMABLE_HTTP,
         )
 
         result = rule.check(audit_data)
@@ -89,7 +90,8 @@ class TestMalformedRequestHandlingRule:
     def test_crash_response_fails(self, rule):
         """Test that crash responses fail."""
         audit_data = AuditData(
-            error_response="Server crash: Segmentation fault (core dumped)", transport_type="streamable-http"
+            error_response="Server crash: Segmentation fault (core dumped)",
+            transport_type=MCPTransportType.STREAMABLE_HTTP,
         )
 
         result = rule.check(audit_data)
@@ -100,7 +102,7 @@ class TestMalformedRequestHandlingRule:
 
     def test_non_json_rpc_error_fails(self, rule):
         """Test that non-JSON-RPC error format fails."""
-        audit_data = AuditData(error_response="Error: Invalid input", transport_type="streamable-http")
+        audit_data = AuditData(error_response="Error: Invalid input", transport_type=MCPTransportType.STREAMABLE_HTTP)
 
         result = rule.check(audit_data)
 
@@ -109,7 +111,7 @@ class TestMalformedRequestHandlingRule:
 
     def test_stdio_transport_not_tested(self, rule):
         """Test that stdio transport is not tested."""
-        audit_data = AuditData(error_response=None, transport_type="stdio")
+        audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STDIO)
 
         result = rule.check(audit_data)
 
@@ -118,7 +120,7 @@ class TestMalformedRequestHandlingRule:
 
     def test_no_error_response_captured(self, rule):
         """Test when no error response was captured."""
-        audit_data = AuditData(error_response=None, transport_type="streamable-http")
+        audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STREAMABLE_HTTP)
 
         result = rule.check(audit_data)
 

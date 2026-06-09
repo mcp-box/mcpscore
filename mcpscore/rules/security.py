@@ -1,6 +1,7 @@
 import re
 from typing import ClassVar
 
+from ..enums import MCPTransportType
 from .base import BaseRule, RuleResult, RuleSeverity, requires_fields
 from .registry import register_rule
 
@@ -119,7 +120,7 @@ class MalformedRequestHandlingRule(BaseRule):
         return RuleSeverity.MEDIUM
 
     @requires_fields("error_response", "transport_type")
-    def check(self, error_response: str | None, transport_type: str | None) -> RuleResult:  # type: ignore[override]
+    def check(self, error_response: str | None, transport_type: MCPTransportType | None) -> RuleResult:  # type: ignore[override]
         """Check if server handles malformed requests properly.
 
         Args:
@@ -131,7 +132,7 @@ class MalformedRequestHandlingRule(BaseRule):
 
         """
         # For stdio, this test may not be applicable
-        if transport_type == "stdio":
+        if transport_type == MCPTransportType.STDIO:
             return RuleResult(
                 rule_name=self.rule_name,
                 severity=self.severity,

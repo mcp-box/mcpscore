@@ -104,7 +104,6 @@ class TestMain:
 class TestAsyncMain:
     """Tests for the async_main() core logic function."""
 
-    @pytest.mark.asyncio
     async def test_async_main_success_with_stdio(
         self,
         monkeypatch: MonkeyPatch,
@@ -140,7 +139,6 @@ class TestAsyncMain:
         assert "Audit finished. Final score: 85/100" in caplog.text
         mock_client.cleanup.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_async_main_success_with_streamable_http(
         self,
         monkeypatch: MonkeyPatch,
@@ -165,7 +163,6 @@ class TestAsyncMain:
         mock_auditor.audit.assert_called_once_with(mock_client)
         mock_client.cleanup.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_async_main_success_with_sse(
         self,
         monkeypatch: MonkeyPatch,
@@ -190,7 +187,6 @@ class TestAsyncMain:
         mock_auditor.audit.assert_called_once_with(mock_client)
         mock_client.cleanup.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_async_main_no_arguments(
         self,
         monkeypatch: MonkeyPatch,
@@ -209,7 +205,6 @@ class TestAsyncMain:
         assert "Welcome to MCPScore!" in caplog.text
         assert "Usage: mcpscore <server_path_or_url>" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_async_main_connection_failure(
         self,
         monkeypatch: MonkeyPatch,
@@ -234,7 +229,6 @@ class TestAsyncMain:
         mock_auditor.audit.assert_not_called()
         mock_client.cleanup.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_async_main_with_different_server_path(
         self,
         monkeypatch: MonkeyPatch,
@@ -256,7 +250,6 @@ class TestAsyncMain:
         mock_client.detect_and_connect.assert_called_once_with(server_path)
         assert f"Connected to the MCP server: {server_path}" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_async_main_audit_scores_displayed_correctly(
         self,
         monkeypatch: MonkeyPatch,
@@ -277,7 +270,6 @@ class TestAsyncMain:
 
         assert "Audit finished. Final score: 42/75" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_async_main_creates_fresh_client_and_auditor(
         self,
         monkeypatch: MonkeyPatch,
@@ -296,7 +288,6 @@ class TestAsyncMain:
         mock_client_cls.assert_called_once()
         mock_auditor_cls.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_async_main_cleanup_always_called_on_success(
         self,
         monkeypatch: MonkeyPatch,
@@ -314,7 +305,6 @@ class TestAsyncMain:
 
         mock_client.cleanup.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_async_main_logs_all_key_steps(
         self,
         monkeypatch: MonkeyPatch,
@@ -362,7 +352,6 @@ class TestLogging:
             # Close the unawaited coroutine to avoid RuntimeWarning
             mock_run.call_args[0][0].close()
 
-    @pytest.mark.asyncio
     async def test_logging_messages_appear_correctly(
         self,
         monkeypatch: MonkeyPatch,
@@ -389,7 +378,6 @@ class TestLogging:
 class TestErrorHandling:
     """Tests for error handling and edge cases."""
 
-    @pytest.mark.asyncio
     async def test_empty_argv_list(
         self,
         monkeypatch: MonkeyPatch,
@@ -407,7 +395,6 @@ class TestErrorHandling:
         assert exc_info.value.code == 1
         assert "Usage: mcpscore <server_path_or_url>" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_argv_with_only_script_name(
         self,
         monkeypatch: MonkeyPatch,
@@ -425,7 +412,6 @@ class TestErrorHandling:
         assert exc_info.value.code == 1
         assert "Usage: mcpscore <server_path_or_url>" in caplog.text
 
-    @pytest.mark.asyncio
     async def test_connection_failure_exits_before_audit(
         self,
         monkeypatch: MonkeyPatch,
@@ -445,7 +431,6 @@ class TestErrorHandling:
 
         mock_auditor.audit.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_connection_failure_with_url(
         self,
         monkeypatch: MonkeyPatch,
@@ -488,7 +473,6 @@ class TestMainGuard:
 class TestIntegration:
     """Integration tests for the complete CLI workflow."""
 
-    @pytest.mark.asyncio
     async def test_full_workflow_with_multiple_runs(
         self,
         monkeypatch: MonkeyPatch,
@@ -546,3 +530,26 @@ class TestIntegration:
         assert hasattr(args[0], "send")  # Coroutine duck-typing
         # Close the unawaited coroutine to avoid RuntimeWarning
         args[0].close()
+
+
+class TestAsyncMainCleanup:
+    """Tests for cleanup guarantees in async_main()."""
+
+    async def test_async_main_cleanup_called_when_audit_raises(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """Client cleanup must run even when the audit itself raises."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp"])
+        mock_auditor.audit = AsyncMock(side_effect=RuntimeError("audit blew up"))
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(RuntimeError, match="audit blew up"),
+        ):
+            await async_main()
+
+        mock_client.cleanup.assert_called_once()
