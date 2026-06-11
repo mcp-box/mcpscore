@@ -32,6 +32,30 @@ class RuleResult:
     passed: bool
     message: str
     details: dict | None = None
+    rule_id: str = ""
+    """Stable identifier of the rule that produced this result.
+
+    Stamped by the auditor from the rule's rule_id; unlike rule_name and
+    message, it is a stable contract for machine consumers (JSON reports,
+    snapshot-based acceptance tests)."""
+
+    def to_dict(self) -> dict:
+        """Serialize this result for machine-readable reports.
+
+        Returns:
+            Dictionary with the rule identity, severity (name and numeric
+            score weight), pass/fail status, message, and details.
+
+        """
+        return {
+            "rule_id": self.rule_id,
+            "rule_name": self.rule_name,
+            "severity": self.severity.name,
+            "severity_value": int(self.severity),
+            "passed": self.passed,
+            "message": self.message,
+            "details": self.details,
+        }
 
 
 @dataclass

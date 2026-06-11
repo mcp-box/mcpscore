@@ -86,6 +86,7 @@ class MCPAuditor:
         """
         for rule in sorted(self.rules, key=lambda r: r.sort_order):
             res: RuleResult = rule.check(self.audit_data)
+            res.rule_id = rule.rule_id
             logger.info(res.message)
 
             self.max_score += res.severity.value
@@ -237,6 +238,25 @@ class MCPAuditor:
         else:
             self.audit_data.prompts = prompts
 
+    def get_audit_report(self) -> dict:
+        """Generate a machine-readable report of the full audit.
+
+        Returns:
+            Dictionary containing:
+            - score: Achieved audit score
+            - max_score: Maximum possible score
+            - summary: Aggregate pass/fail counts (see get_audit_summary)
+            - results: Per-rule results keyed by stable rule_id
+              (see RuleResult.to_dict)
+
+        """
+        return {
+            "score": self.score,
+            "max_score": self.max_score,
+            "summary": self.get_audit_summary(),
+            "results": [res.to_dict() for res in self.results],
+        }
+
     def get_audit_summary(self) -> dict:
         """Generate a comprehensive summary of the audit results.
 
@@ -254,7 +274,7 @@ class MCPAuditor:
             "passed": sum(1 for r in self.results if r.passed),
             "failed": sum(1 for r in self.results if not r.passed),
             "by_severity": {
-                severity.value: {
+                severity.name: {
                     "total": sum(1 for r in self.results if r.severity == severity),
                     "passed": sum(1 for r in self.results if r.severity == severity and r.passed),
                     "failed": sum(1 for r in self.results if r.severity == severity and not r.passed),

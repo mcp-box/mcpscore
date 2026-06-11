@@ -544,10 +544,10 @@ async def test_get_audit_summary_with_mixed_results():
     assert summary["total"] == 4
     assert summary["passed"] == 2
     assert summary["failed"] == 2
-    assert summary["by_severity"][RuleSeverity.CRITICAL.value]["passed"] == 1
-    assert summary["by_severity"][RuleSeverity.HIGH.value]["failed"] == 1
-    assert summary["by_severity"][RuleSeverity.MEDIUM.value]["passed"] == 1
-    assert summary["by_severity"][RuleSeverity.LOW.value]["failed"] == 1
+    assert summary["by_severity"][RuleSeverity.CRITICAL.name]["passed"] == 1
+    assert summary["by_severity"][RuleSeverity.HIGH.name]["failed"] == 1
+    assert summary["by_severity"][RuleSeverity.MEDIUM.name]["passed"] == 1
+    assert summary["by_severity"][RuleSeverity.LOW.name]["failed"] == 1
 
 
 async def test_get_audit_summary_all_passed():
@@ -676,3 +676,60 @@ async def test_probe_tls_version_invalid_url_returns_none():
     """Probe returns None for URLs without a hostname."""
     version = await MCPAuditor._probe_tls_version("https://")
     assert version is None
+
+
+async def test_auditor_stamps_rule_id_on_results():
+    """Every result carries the stable rule_id of the rule that produced it.
+
+    Rules construct RuleResult without a rule_id; the auditor stamps it so
+    machine consumers (JSON reports, acceptance snapshots) can key on it.
+    """
+    auditor = MCPAuditor()
+    auditor.rules = [DummyRule(passed=True, severity=RuleSeverity.HIGH)]
+
+    await auditor.audit(DummyClient(None))
+
+    assert len(auditor.results) == 1
+    assert auditor.results[0].rule_id == "dummy_rule"
+
+
+def test_rule_result_to_dict():
+    """RuleResult.to_dict() serializes all fields with severity name and value."""
+    result = RuleResult(
+        rule_name="dummy",
+        severity=RuleSeverity.MEDIUM,
+        passed=False,
+        message="msg",
+        details={"key": "value"},
+        rule_id="dummy_rule",
+    )
+
+    assert result.to_dict() == {
+        "rule_id": "dummy_rule",
+        "rule_name": "dummy",
+        "severity": "MEDIUM",
+        "severity_value": 2,
+        "passed": False,
+        "message": "msg",
+        "details": {"key": "value"},
+    }
+
+
+async def test_get_audit_report():
+    """get_audit_report() bundles score, summary, and per-rule results."""
+    auditor = MCPAuditor()
+    auditor.rules = [
+        DummyRule(passed=True, severity=RuleSeverity.HIGH),
+        DummyRule(passed=False, severity=RuleSeverity.MEDIUM),
+    ]
+
+    score, max_score = await auditor.audit(DummyClient(None))
+    report = auditor.get_audit_report()
+
+    assert report["score"] == score
+    assert report["max_score"] == max_score
+    assert report["summary"] == auditor.get_audit_summary()
+    assert len(report["results"]) == 2
+    assert all(res["rule_id"] == "dummy_rule" for res in report["results"])
+    assert report["results"][0]["passed"] is True
+    assert report["results"][1]["passed"] is False

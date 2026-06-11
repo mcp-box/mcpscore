@@ -94,6 +94,9 @@ mcpscore path/to/your/server.js
 
 # Remote MCP server (auto-detects Streamable HTTP or SSE)
 mcpscore https://example.com/mcp
+
+# Machine-readable report for CI pipelines and tooling
+mcpscore path/to/your/server.py --json > report.json
 ```
 
 ### Example output
@@ -125,6 +128,49 @@ Starting the audit...
 ✅ All Tools have a valid Output Schema
 Audit finished. Final score: 55/71
 ```
+
+### JSON output
+
+With `--json`, a machine-readable report is written to stdout (all log
+output goes to stderr, so the JSON can be piped or redirected cleanly):
+
+```json
+{
+  "schema_version": 1,
+  "mcpscore_version": "0.5.0",
+  "generated_at": "2026-06-10T10:42:22+00:00",
+  "target": "/path/to/server.py",
+  "transport": "stdio",
+  "score": 73,
+  "max_score": 89,
+  "summary": {
+    "total": 26,
+    "passed": 20,
+    "failed": 6,
+    "by_severity": {
+      "CRITICAL": { "total": 9, "passed": 9, "failed": 0 },
+      "HIGH": { "total": 11, "passed": 7, "failed": 4 },
+      "MEDIUM": { "total": 5, "passed": 3, "failed": 2 },
+      "LOW": { "total": 1, "passed": 1, "failed": 0 }
+    }
+  },
+  "results": [
+    {
+      "rule_id": "protocol_version_allowed",
+      "rule_name": "MCP Protocol Version - Allowed Versions",
+      "severity": "CRITICAL",
+      "severity_value": 5,
+      "passed": true,
+      "message": "✅ Protocol version '2025-11-25' is one of the allowed versions",
+      "details": { "version": "2025-11-25" }
+    }
+  ]
+}
+```
+
+`rule_id` values are stable identifiers intended for machine consumers
+(snapshots, dashboards); display names and messages may change between
+releases.
 
 ## Troubleshooting
 

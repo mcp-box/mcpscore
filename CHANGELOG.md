@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--json` CLI flag: emits a machine-readable audit report to stdout
+  (schema v1) with per-rule results, while logs go to stderr. Designed for
+  CI pipelines and automated tooling.
+- `RuleResult.rule_id`: results now carry the stable identifier of the rule
+  that produced them (stamped by the auditor), plus `RuleResult.to_dict()`
+  for serialization.
+- `MCPAuditor.get_audit_report()`: returns the full audit
+  (score, max_score, summary, per-rule results) as a dictionary.
+
+### Changed
+
+- The CLI now uses argparse: `mcpscore --help` works, and usage errors keep
+  exit code 1 (exit code 2 remains reserved for connection failures).
+- `get_audit_summary()`'s `by_severity` breakdown is keyed by severity name
+  (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`) instead of numeric value, matching
+  its documented behavior.
+- CLI logging is explicitly directed to stderr, keeping stdout clean for
+  `--json` output.
+
 ## [0.4.0] - 2026-06-10
 
 ### Added
