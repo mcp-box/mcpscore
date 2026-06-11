@@ -21,12 +21,12 @@ mcpscore https://your-server.example/mcp
 
 Every rule has a severity, and each passing rule contributes its weight to the score:
 
-| Severity | Points | Meaning |
-|----------|--------|---------|
-| CRITICAL | 5 | Spec violations that break interoperability (protocol version, server name, TLS) |
-| HIGH | 3 | Strong spec expectations (server version, valid tool schemas) |
-| MEDIUM | 2 | Recommendations that improve agent UX (titles, descriptions, error hygiene) |
-| LOW | 1 | Nice-to-haves (capability extras, transport recommendations) |
+| Severity | Points | Meaning                                                                          |
+|----------|--------|----------------------------------------------------------------------------------|
+| CRITICAL | 5      | Spec violations that break interoperability (protocol version, server name, TLS) |
+| HIGH     | 3      | Strong spec expectations (server version, valid tool schemas)                    |
+| MEDIUM   | 2      | Recommendations that improve agent UX (titles, descriptions, error hygiene)      |
+| LOW      | 1      | Nice-to-haves (capability extras, transport recommendations)                     |
 
 The final score is reported as `earned/maximum` — higher means better MCP compliance.
 
