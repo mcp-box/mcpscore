@@ -4,7 +4,7 @@
 [![Coverage](https://codecov.io/gh/mcp-box/mcpscore/graph/badge.svg)](https://codecov.io/gh/mcp-box/mcpscore)
 [![PyPI](https://img.shields.io/pypi/v/mcpscore.svg)](https://pypi.org/project/mcpscore/)
 [![Python](https://img.shields.io/pypi/pyversions/mcpscore.svg)](https://pypi.org/project/mcpscore/)
-[![License](https://img.shields.io/github/license/mcp-box/mcpscore.svg)](LICENSE)
+[![License](https://img.shields.io/github/license/mcp-box/mcpscore.svg)](https://github.com/mcp-box/mcpscore/blob/main/LICENSE)
 
 A command-line tool for auditing MCP (Model Context Protocol) servers. MCPScore connects to your server, runs a comprehensive set of validation rules against it, and produces a severity-based report showing what's compliant and what needs attention.
 
