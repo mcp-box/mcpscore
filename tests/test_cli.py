@@ -11,6 +11,8 @@ This module tests the command-line interface functionality including:
 
 from __future__ import annotations
 
+from datetime import datetime
+import json
 import logging
 import sys
 from typing import TYPE_CHECKING
@@ -19,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcpscore import MCPAuditor, MCPClient, MCPTransportType
-from mcpscore.cli import async_main, main
+from mcpscore.cli import async_main, build_parser, build_report, main
 
 if TYPE_CHECKING:
     from _pytest.logging import LogCaptureFixture
@@ -62,6 +64,7 @@ class TestMain:
         This test ensures the logging system is initialized with:
         - INFO level logging
         - Simple message format without timestamps/levels
+        - Output to stderr (keeping stdout clean for --json reports)
         """
         # Mock asyncio.run to prevent actual execution
         mock_run = MagicMock()
@@ -72,7 +75,7 @@ class TestMain:
             main()
 
             # Verify basicConfig was called with correct parameters
-            mock_basic_config.assert_called_once_with(level=logging.INFO, format="%(message)s")
+            mock_basic_config.assert_called_once_with(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 
         # Check that asyncio.run was called
         mock_run.assert_called_once()
@@ -203,7 +206,8 @@ class TestAsyncMain:
 
         assert exc_info.value.code == 1
         assert "Welcome to MCPScore!" in caplog.text
-        assert "Usage: mcpscore <server_path_or_url>" in caplog.text
+        assert "Usage error" in caplog.text
+        assert "target" in caplog.text
 
     async def test_async_main_connection_failure(
         self,
@@ -348,7 +352,7 @@ class TestLogging:
         with patch("mcpscore.cli.logging.basicConfig") as mock_basic_config:
             main()
 
-            mock_basic_config.assert_called_once_with(level=logging.INFO, format="%(message)s")
+            mock_basic_config.assert_called_once_with(level=logging.INFO, format="%(message)s", stream=sys.stderr)
             # Close the unawaited coroutine to avoid RuntimeWarning
             mock_run.call_args[0][0].close()
 
@@ -393,7 +397,7 @@ class TestErrorHandling:
             await async_main()
 
         assert exc_info.value.code == 1
-        assert "Usage: mcpscore <server_path_or_url>" in caplog.text
+        assert "Usage error" in caplog.text
 
     async def test_argv_with_only_script_name(
         self,
@@ -410,7 +414,7 @@ class TestErrorHandling:
             await async_main()
 
         assert exc_info.value.code == 1
-        assert "Usage: mcpscore <server_path_or_url>" in caplog.text
+        assert "Usage error" in caplog.text
 
     async def test_connection_failure_exits_before_audit(
         self,
@@ -530,6 +534,156 @@ class TestIntegration:
         assert hasattr(args[0], "send")  # Coroutine duck-typing
         # Close the unawaited coroutine to avoid RuntimeWarning
         args[0].close()
+
+
+class TestJSONOutput:
+    """Tests for the --json machine-readable report output."""
+
+    @pytest.fixture
+    def audit_report(self) -> dict:
+        """Audit report payload as returned by MCPAuditor.get_audit_report()."""
+        return {
+            "score": 85,
+            "max_score": 100,
+            "summary": {"total": 2, "passed": 1, "failed": 1, "by_severity": {}},
+            "results": [
+                {
+                    "rule_id": "transport_streamable_http",
+                    "rule_name": "Streamable HTTP Transport",
+                    "severity": "LOW",
+                    "severity_value": 1,
+                    "passed": True,
+                    "message": "ok",
+                    "details": None,
+                },
+            ],
+        }
+
+    async def test_json_flag_emits_report_to_stdout(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        audit_report: dict,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With --json, stdout contains exactly one parseable JSON report."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py", "--json"])
+        mock_auditor.get_audit_report = MagicMock(return_value=audit_report)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["schema_version"] == 1
+        assert report["target"] == "/path/to/server.py"
+        assert report["transport"] == "stdio"
+        assert report["score"] == 85
+        assert report["max_score"] == 100
+        assert report["results"][0]["rule_id"] == "transport_streamable_http"
+        assert "mcpscore_version" in report
+        assert "generated_at" in report
+
+    async def test_without_json_flag_stdout_is_empty(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without --json, nothing is written to stdout (logs go to stderr)."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        assert capsys.readouterr().out == ""
+        mock_auditor.get_audit_report.assert_not_called()
+
+    async def test_json_flag_with_remote_server(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        audit_report: dict,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The report carries the detected remote transport and target URL."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp", "--json"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STREAMABLE_HTTP))
+        mock_auditor.get_audit_report = MagicMock(return_value=audit_report)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == "https://example.com/mcp"
+        assert report["transport"] == "streamable-http"
+
+    def test_unknown_option_exits_with_code_1(
+        self,
+        monkeypatch: MonkeyPatch,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """Unknown CLI options are usage errors (exit code 1, not argparse's 2)."""
+        with (
+            caplog.at_level(logging.ERROR),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            build_parser().parse_args(["/path/to/server.py", "--bogus"])
+
+        assert exc_info.value.code == 1
+        assert "Usage error" in caplog.text
+
+
+class TestBuildReport:
+    """Tests for the build_report() helper."""
+
+    def test_build_report_merges_metadata_and_audit_results(self, mock_auditor: MagicMock) -> None:
+        """Report contains the metadata envelope plus the auditor's report."""
+        mock_auditor.get_audit_report = MagicMock(
+            return_value={"score": 10, "max_score": 20, "summary": {}, "results": []},
+        )
+
+        report = build_report("/srv.py", MCPTransportType.STDIO, mock_auditor)
+
+        assert report["schema_version"] == 1
+        assert report["target"] == "/srv.py"
+        assert report["transport"] == "stdio"
+        assert report["score"] == 10
+        assert report["max_score"] == 20
+        assert report["results"] == []
+        # generated_at must be a valid ISO-8601 UTC timestamp
+        assert datetime.fromisoformat(report["generated_at"]).tzinfo is not None
+
+    def test_build_report_transport_none(self, mock_auditor: MagicMock) -> None:
+        """A missing transport is serialized as null, not the string 'None'."""
+        mock_auditor.get_audit_report = MagicMock(
+            return_value={"score": 0, "max_score": 0, "summary": {}, "results": []},
+        )
+
+        report = build_report("/srv.py", None, mock_auditor)
+
+        assert report["transport"] is None
+
+    def test_build_report_is_json_serializable(self, mock_auditor: MagicMock) -> None:
+        """The report round-trips through json.dumps without a custom encoder."""
+        mock_auditor.get_audit_report = MagicMock(
+            return_value={"score": 5, "max_score": 5, "summary": {}, "results": []},
+        )
+
+        report = build_report("https://example.com/mcp", MCPTransportType.SSE, mock_auditor)
+
+        assert json.loads(json.dumps(report))["transport"] == "sse"
 
 
 class TestAsyncMainCleanup:
