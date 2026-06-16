@@ -137,7 +137,7 @@ output goes to stderr, so the JSON can be piped or redirected cleanly):
 ```json
 {
   "schema_version": 1,
-  "mcpscore_version": "0.5.1",
+  "mcpscore_version": "0.6.0",
   "generated_at": "2026-06-10T10:42:22+00:00",
   "target": "/path/to/server.py",
   "transport": "stdio",

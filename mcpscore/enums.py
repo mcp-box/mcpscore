@@ -4,6 +4,7 @@ This module defines the core enumerations used throughout the MCPScore system:
 
 - MCPTransportType: Supported transport methods for MCP communication
 - MCPProtocolVersion: Supported versions of the MCP protocol
+- ConnectionErrorReason: Why a connection attempt failed
 
 These enums provide type safety and ensure consistent usage of protocol
 versions and transport types across the audit system.
@@ -26,6 +27,39 @@ class MCPTransportType(StrEnum):
 
     WEBSOCKET = "websocket"
     """WebSocket transport for bidirectional communication."""
+
+
+class ConnectionErrorReason(StrEnum):
+    """Why a connection attempt to an MCP server failed.
+
+    Lets callers distinguish a server that is up but gated (auth) or
+    misbehaving (HTTP error) from one that is genuinely unreachable, so they
+    can show an actionable message instead of a generic "could not connect".
+    """
+
+    INVALID_URL = "invalid_url"
+    """The target was not a usable URL or server path."""
+
+    UNREACHABLE = "unreachable"
+    """DNS/TCP failure — the host could not be reached at all."""
+
+    TIMEOUT = "timeout"
+    """The server did not respond within the connection/handshake timeout."""
+
+    UNAUTHORIZED = "unauthorized"
+    """The server returned HTTP 401 — it requires authentication."""
+
+    FORBIDDEN = "forbidden"
+    """The server returned HTTP 403 — access is forbidden."""
+
+    HTTP_ERROR = "http_error"
+    """The server returned some other 4xx/5xx during the handshake."""
+
+    NOT_MCP = "not_mcp"
+    """The endpoint was reachable but did not complete an MCP handshake."""
+
+    UNKNOWN = "unknown"
+    """The attempt failed for an unclassified reason."""
 
 
 class MCPProtocolVersion(StrEnum):
