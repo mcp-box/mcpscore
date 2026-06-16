@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-16
+
+### Added
+
+- `MCPClient.last_connection_error`: after a failed connect, exposes a
+  `ConnectionFailure` describing *why* it failed — distinguishing an
+  auth-gated server (HTTP 401/403) or other HTTP error from an unreachable
+  host, a timeout, or a non-MCP endpoint, instead of a flat connection failure.
+- `ConnectionFailure` (with an actionable `.message`) and the
+  `ConnectionErrorReason` enum, both exported from `mcpscore`.
+- Connection failures now recover the HTTP status buffered in the transport's
+  teardown `ExceptionGroup`, so an authentication wall surfaces as "requires
+  authentication (HTTP 401)" rather than "not a valid MCP server". When
+  auto-detect tries multiple transports, the most informative failure is
+  reported (e.g. a Streamable HTTP 401 over an SSE 405).
+
 ## [0.5.1] - 2026-06-13
 
 - Added a [Mission doc](MISSION.md) to give more context for humans and agents.
@@ -87,6 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/mcp-box/mcpscore/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/mcp-box/mcpscore/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/mcp-box/mcpscore/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mcp-box/mcpscore/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/mcp-box/mcpscore/releases/tag/v0.3.0

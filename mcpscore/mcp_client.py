@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 import logging
 import sys
 import time
@@ -19,7 +20,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Prompt, Resource, Tool
 
-from .enums import MCPTransportType
+from .enums import ConnectionErrorReason, MCPTransportType
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -30,6 +31,98 @@ ERROR_NO_ACTIVE_SESSION = "No active session, connect to the MCP server first!"
 
 HANDSHAKE_TIMEOUT_S = 30
 """Default timeout for the MCP initialize handshake performed during connect."""
+
+
+_REASON_MESSAGES: dict[ConnectionErrorReason, str] = {
+    ConnectionErrorReason.INVALID_URL: "Invalid server URL or path.",
+    ConnectionErrorReason.UNREACHABLE: "Could not reach the server (connection refused, DNS failure, or host down).",
+    ConnectionErrorReason.TIMEOUT: "The server did not respond in time.",
+    ConnectionErrorReason.UNAUTHORIZED: (
+        "The MCP server requires authentication (HTTP 401). MCPScore can only audit publicly accessible servers."
+    ),
+    ConnectionErrorReason.FORBIDDEN: (
+        "The MCP server refused access (HTTP 403). MCPScore can only audit publicly accessible servers."
+    ),
+    ConnectionErrorReason.HTTP_ERROR: "The server returned an HTTP error during the MCP handshake.",
+    ConnectionErrorReason.NOT_MCP: (
+        "The endpoint was reachable but did not complete an MCP handshake — it may not be an MCP server."
+    ),
+    ConnectionErrorReason.UNKNOWN: "Could not connect to the MCP server.",
+}
+
+# Higher rank = more informative/actionable. When auto-detect tries multiple
+# transports and all fail, the most informative failure is the one worth
+# reporting (e.g. a streamable-HTTP 401 beats an SSE 405 from the same server).
+_REASON_RANK: dict[ConnectionErrorReason, int] = {
+    ConnectionErrorReason.UNKNOWN: 0,
+    ConnectionErrorReason.NOT_MCP: 1,
+    ConnectionErrorReason.HTTP_ERROR: 2,
+    ConnectionErrorReason.INVALID_URL: 3,
+    ConnectionErrorReason.UNREACHABLE: 4,
+    ConnectionErrorReason.TIMEOUT: 4,
+    ConnectionErrorReason.FORBIDDEN: 5,
+    ConnectionErrorReason.UNAUTHORIZED: 5,
+}
+
+
+@dataclass(frozen=True)
+class ConnectionFailure:
+    """Why the most recent connection attempt failed, with an actionable message."""
+
+    reason: ConnectionErrorReason
+    status_code: int | None = None
+
+    @property
+    def message(self) -> str:
+        base = _REASON_MESSAGES[self.reason]
+        # For an unclassified HTTP error, surface the actual status code.
+        if self.reason is ConnectionErrorReason.HTTP_ERROR and self.status_code is not None:
+            return f"The server returned HTTP {self.status_code} during the MCP handshake."
+        return base
+
+
+def reason_for_status(status_code: int) -> ConnectionErrorReason:
+    """Map an HTTP status code seen during connect to a failure reason."""
+    if status_code == 401:
+        return ConnectionErrorReason.UNAUTHORIZED
+    if status_code == 403:
+        return ConnectionErrorReason.FORBIDDEN
+    return ConnectionErrorReason.HTTP_ERROR
+
+
+def extract_http_status(exc: BaseException) -> int | None:
+    """Find an HTTP status code anywhere in an exception tree.
+
+    Transport teardown surfaces the real cause buffered inside an
+    ``ExceptionGroup`` (and possibly chained via ``__cause__``/``__context__``);
+    walk all of it to recover the status the server actually returned.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, httpx.HTTPStatusError):
+            return current.response.status_code
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+        stack.append(current.__cause__)
+        stack.append(current.__context__)
+    return None
+
+
+def _preferred_failure(
+    first: ConnectionFailure | None,
+    second: ConnectionFailure | None,
+) -> ConnectionFailure | None:
+    """Pick the more informative of two failures (see ``_REASON_RANK``)."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return second if _REASON_RANK[second.reason] > _REASON_RANK[first.reason] else first
 
 
 class MCPClient:
@@ -65,6 +158,13 @@ class MCPClient:
         self.url: str | None = None
         self.connection_time_ms: int | None = None
 
+        # Why the most recent failed connect attempt failed (None while
+        # connected or before any attempt). Lets callers report an actionable
+        # reason instead of a generic "could not connect".
+        self.last_connection_error: ConnectionFailure | None = None
+        # HTTP status recovered from a single attempt's buffered teardown error.
+        self._pending_http_status: int | None = None
+
     async def detect_and_connect(self, server_path_or_url: str) -> tuple[bool, MCPTransportType | None]:
         """Automatically detect transport type and connect to MCP server.
 
@@ -89,15 +189,21 @@ class MCPClient:
             logger.info("Attempting Streamable HTTP connection...")
             if await self.connect_to_server(MCPTransportType.STREAMABLE_HTTP, server_path_or_url):
                 return (True, MCPTransportType.STREAMABLE_HTTP)
+            http_failure = self.last_connection_error
 
             # Fall back to SSE
             logger.info("Streamable HTTP failed, trying SSE...")
             if await self.connect_to_server(MCPTransportType.SSE, server_path_or_url):
                 return (True, MCPTransportType.SSE)
 
+            # Both transports failed: report whichever failure is most
+            # informative (e.g. an auth 401 from the HTTP attempt outranks a
+            # generic 405 from the SSE fallback).
+            self.last_connection_error = _preferred_failure(http_failure, self.last_connection_error)
             return (False, None)
 
         logger.error("Invalid server path or URL: %s", server_path_or_url)
+        self._record_failure(ConnectionErrorReason.INVALID_URL)
         return (False, None)
 
     async def connect_to_server(self, transport: MCPTransportType, server_path: str) -> bool:
@@ -148,6 +254,9 @@ class MCPClient:
         exit stack and session metadata is populated.
         """
         stack = AsyncExitStack()
+        # Reset per-attempt teardown state so a stale status from a prior
+        # transport attempt can't leak into this one's classification.
+        self._pending_http_status = None
         try:
             start_time = time.perf_counter()
             streams = await stack.enter_async_context(transport_cm)
@@ -170,19 +279,53 @@ class MCPClient:
         self.transport_type = transport
         self.url = url
         self.connection_time_ms = connection_time_ms
+        self.last_connection_error = None
 
-    @staticmethod
-    async def _discard_attempt(stack: AsyncExitStack) -> None:
+    async def _discard_attempt(self, stack: AsyncExitStack) -> None:
         """Tear down a failed connection attempt without raising.
 
         Closing the transport's task group surfaces the underlying error
-        (e.g. an HTTP 4xx/5xx buffered by a background task); log it as the
-        real failure reason instead of letting it mask the connect result.
+        (e.g. an HTTP 4xx/5xx buffered by a background task). Recover any HTTP
+        status from it so the caller can classify the failure, and log the
+        real reason instead of letting teardown mask the connect result.
         """
         try:
             await stack.aclose()
         except Exception as e:  # noqa: BLE001 — teardown must not mask the connect failure
+            status = extract_http_status(e)
+            if status is not None:
+                self._pending_http_status = status
             logger.info("Connection attempt failed: %s", e)
+
+    def _record_failure(self, reason: ConnectionErrorReason, status_code: int | None = None) -> None:
+        """Record why the current connect attempt failed."""
+        self.last_connection_error = ConnectionFailure(reason=reason, status_code=status_code)
+
+    def _record_unclassified_failure(self, exc: BaseException) -> None:
+        """Classify a catch-all failure, recovering an HTTP status if one is buried in it.
+
+        A raw `ExceptionGroup` carrying an `HTTPStatusError` can reach the
+        generic handler directly (not only via teardown), so look inside it
+        before falling back to UNKNOWN.
+        """
+        status = self._pending_http_status or extract_http_status(exc)
+        if status is not None:
+            self._record_failure(reason_for_status(status), status)
+        else:
+            self._record_failure(ConnectionErrorReason.UNKNOWN)
+
+    def _record_handshake_failure(self, server_url: str) -> None:
+        """Classify a handshake failure, using any HTTP status seen in teardown.
+
+        A bare handshake failure means the transport opened but `initialize`
+        never completed. If the server returned an HTTP status (e.g. 401), the
+        endpoint is up but gated — far more useful than "not an MCP server".
+        """
+        logger.error("Not a valid MCP server (handshake failed): %s", server_url)
+        if self._pending_http_status is not None:
+            self._record_failure(reason_for_status(self._pending_http_status), self._pending_http_status)
+        else:
+            self._record_failure(ConnectionErrorReason.NOT_MCP)
 
     @staticmethod
     def _reraise_if_cancelled() -> None:
@@ -214,6 +357,7 @@ class MCPClient:
         is_js: bool = server_script_path.endswith(".js")
         if not (is_python or is_js):
             logger.error("Server script must be a .py or .js file")
+            self._record_failure(ConnectionErrorReason.INVALID_URL)
             return False
 
         # Use sys.executable for Python to ensure we use the same interpreter
@@ -229,20 +373,25 @@ class MCPClient:
             else:
                 logger.exception("Node.js not found. Please ensure Node.js is installed and on PATH.")
             logger.debug("Error details: %s", e)
+            self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except PermissionError as e:
             logger.exception("Permission denied accessing server script: %s", server_script_path)
             logger.debug("Error details: %s", e)
+            self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except TimeoutError:
             logger.error("MCP initialize handshake timed out for server: %s", server_script_path)  # noqa: TRY400
+            self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except asyncio.CancelledError:
             self._reraise_if_cancelled()
             logger.error("MCP initialize handshake failed for server: %s", server_script_path)  # noqa: TRY400
+            self._record_failure(ConnectionErrorReason.NOT_MCP)
             return False
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to connect to MCP server")
+            self._record_unclassified_failure(e)
             return False
 
     async def _connect_with_streamable_http(self, server_url: str) -> bool:
@@ -263,6 +412,7 @@ class MCPClient:
         """
         if not server_url.startswith(("http://", "https://")):
             logger.error("Invalid URL format. Must start with http:// or https://")
+            self._record_failure(ConnectionErrorReason.INVALID_URL)
             return False
 
         try:
@@ -291,24 +441,29 @@ class MCPClient:
         except httpx.ConnectError as e:
             logger.exception("Connection refused or server unreachable: %s", server_url)
             logger.debug("Error details: %s", e)
+            self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx.TimeoutException as e:
             logger.exception("Connection timeout for server: %s", server_url)
             logger.debug("Error details: %s", e)
+            self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx.HTTPStatusError as e:
             logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
             logger.debug("Error details: %s", e)
+            self._record_failure(reason_for_status(e.response.status_code), e.response.status_code)
             return False
         except TimeoutError:
             logger.error("MCP initialize handshake timed out for server: %s", server_url)  # noqa: TRY400
+            self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except asyncio.CancelledError:
             self._reraise_if_cancelled()
-            logger.error("Not a valid MCP server (handshake failed): %s", server_url)  # noqa: TRY400
+            self._record_handshake_failure(server_url)
             return False
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to connect to MCP server via Streamable HTTP")
+            self._record_unclassified_failure(e)
             return False
 
     async def _connect_with_sse(self, server_url: str) -> bool:
@@ -329,6 +484,7 @@ class MCPClient:
         """
         if not server_url.startswith(("http://", "https://")):
             logger.error("Invalid URL format. Must start with http:// or https://")
+            self._record_failure(ConnectionErrorReason.INVALID_URL)
             return False
 
         try:
@@ -365,24 +521,29 @@ class MCPClient:
         except httpx.ConnectError as e:
             logger.exception("Connection refused or server unreachable: %s", server_url)
             logger.debug("Error details: %s", e)
+            self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx.TimeoutException as e:
             logger.exception("Connection timeout for server: %s", server_url)
             logger.debug("Error details: %s", e)
+            self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx.HTTPStatusError as e:
             logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
             logger.debug("Error details: %s", e)
+            self._record_failure(reason_for_status(e.response.status_code), e.response.status_code)
             return False
         except TimeoutError:
             logger.error("MCP initialize handshake timed out for server: %s", server_url)  # noqa: TRY400
+            self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except asyncio.CancelledError:
             self._reraise_if_cancelled()
-            logger.error("Not a valid MCP server (handshake failed): %s", server_url)  # noqa: TRY400
+            self._record_handshake_failure(server_url)
             return False
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to connect to MCP server via SSE")
+            self._record_unclassified_failure(e)
             return False
 
     async def initialize(self) -> InitializeResult | None:
