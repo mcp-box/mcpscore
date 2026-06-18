@@ -46,6 +46,7 @@ from .server_info import (
     ServerVersionPresentRule,
 )
 from .tools import (
+    ToolsAnnotationsPresentRule,
     ToolsAtLeastOneRule,
     ToolsDescriptionPresentRule,
     ToolsInputSchemaValidRule,
@@ -83,6 +84,7 @@ __all__ = (
     "ServerVersionPresentRule",
     "StreamableHTTPTransportRule",
     "TLSEnabledRule",
+    "ToolsAnnotationsPresentRule",
     "ToolsAtLeastOneRule",
     "ToolsDescriptionPresentRule",
     "ToolsInputSchemaValidRule",
