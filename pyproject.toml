@@ -57,7 +57,7 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "mcp>=1.27.2",
+    "mcp>=1.28.0",
     "httpx>=0.28.1",
     "httpx-sse>=0.4.3",
 ]
@@ -78,7 +78,7 @@ dev = [
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.17",
+    "ruff>=0.15.18",
 ]
 
 [tool.pyright]
