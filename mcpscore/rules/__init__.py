@@ -29,18 +29,26 @@ from .capabilities import (
     CapabilityToolsListChangedRule,
     CapabilityToolsPresentRule,
 )
+from .prompts import (
+    PromptsArgumentsDocumentedRule,
+    PromptsDescriptionPresentRule,
+)
 from .protocol_version import (
     AllowedVersionRule,
     DeprecatedVersionRule,
     LatestVersionRule,
 )
 from .registry import RuleRegistry, create_all_rules
+from .resources import (
+    ResourcesDescriptionPresentRule,
+)
 from .security import (
     ErrorDataLeakRule,
     MalformedRequestHandlingRule,
     TLSEnabledRule,
 )
 from .server_info import (
+    ServerInstructionsPresentRule,
     ServerNamePresentRule,
     ServerTitlePresentRule,
     ServerVersionPresentRule,
@@ -76,9 +84,13 @@ __all__ = (
     "ErrorDataLeakRule",
     "LatestVersionRule",
     "MalformedRequestHandlingRule",
+    "PromptsArgumentsDocumentedRule",
+    "PromptsDescriptionPresentRule",
+    "ResourcesDescriptionPresentRule",
     "RuleRegistry",
     "RuleResult",
     "RuleSeverity",
+    "ServerInstructionsPresentRule",
     "ServerNamePresentRule",
     "ServerTitlePresentRule",
     "ServerVersionPresentRule",

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-06-19
+
+### Added
+
+Five new spec-compliance / completeness rules (all backward-compatible; they
+add to the maximum score, so servers are rewarded for more complete metadata):
+
+- `tools_annotations_present` (Features, MEDIUM): tools should declare behavior
+  annotations (`readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint`)
+  so clients can reason about a tool's effects. The display-only `title` hint
+  does not count.
+- `server_instructions_present` (Compliance, LOW): the server should provide
+  `instructions` to help clients use it.
+- `resources_description_present` (Compliance, MEDIUM): declared resources
+  should have a description.
+- `prompts_description_present` (Compliance, MEDIUM): declared prompts should
+  have a description.
+- `prompts_arguments_documented` (Compliance, LOW): every prompt argument
+  should have a description.
+
+Resources and prompts are optional capabilities, so their rules pass as
+not-applicable when a server offers none — only the quality of what is actually
+declared is graded.
+
 ## [0.6.0] - 2026-06-16
 
 ### Added
@@ -103,7 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mcp-box/mcpscore/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mcp-box/mcpscore/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/mcp-box/mcpscore/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/mcp-box/mcpscore/compare/v0.4.0...v0.5.0

@@ -2,7 +2,7 @@ from abc import abstractmethod
 
 from mcp.types import Implementation
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_server_info
+from .base import BaseRule, RuleResult, RuleSeverity, requires_fields, requires_server_info
 from .registry import register_rule
 
 
@@ -178,4 +178,52 @@ class ServerVersionPresentRule(ServerInfoBaseRule):
             passed=passed,
             message=message,
             details={"server_version": getattr(server_info, "version", None)},
+        )
+
+
+@register_rule
+class ServerInstructionsPresentRule(BaseRule):
+    """Low check: Verify the server provides `instructions`.
+
+    The `instructions` field from the initialize result tells a client (and its
+    LLM) how to use the server effectively. It is optional but recommended for
+    every server, so a missing one is a completeness gap.
+    """
+
+    group_name = "server_info"
+    group_order = 2
+    rule_id = "server_instructions_present"
+    rule_order = 4
+
+    @property
+    def rule_name(self) -> str:
+        return "Server Info - Instructions Present"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    @requires_fields("instructions")
+    def check(self, instructions: str | None) -> RuleResult:  # type: ignore[override]
+        """Low check: Verify the server provides non-empty instructions.
+
+        Args:
+            instructions: The server's instructions string, if any
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        passed = bool(instructions and instructions.strip())
+        message = (
+            "✅ Server provides instructions"
+            if passed
+            else "❌ Server does not provide instructions (optional but recommended)"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"has_instructions": passed},
         )
