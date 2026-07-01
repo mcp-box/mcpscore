@@ -474,3 +474,66 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
             message=message,
             details={"tools_with_invalid_output_schema": tools_with_invalid_output_schema},
         )
+
+
+# The behavior-describing hints from the MCP tool `annotations` object. The
+# display-only `title` hint is excluded: it conveys no execution semantics, so
+# it does not count as "annotated" for this rule.
+_TOOL_BEHAVIOR_HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+
+
+def _has_behavior_annotation(tool: Tool) -> bool:
+    """Return True if the tool declares at least one behavior hint."""
+    annotations = tool.annotations
+    if annotations is None:
+        return False
+    return any(getattr(annotations, hint, None) is not None for hint in _TOOL_BEHAVIOR_HINTS)
+
+
+@register_rule
+class ToolsAnnotationsPresentRule(ToolsBaseRule):
+    """Medium check: tools should declare behavior annotations.
+
+    MCP tool `annotations` (readOnlyHint, destructiveHint, idempotentHint,
+    openWorldHint) let clients reason about a tool's effects — e.g. warn before
+    a destructive call or skip confirmation for a read-only one. Declaring them
+    is a spec best-practice that improves how safely clients can use the server.
+    """
+
+    rule_id = "tools_annotations_present"
+    rule_order = 9
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - All tools should declare behavior annotations"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Medium check: Verify that every tool declares behavior annotations.
+
+        Args:
+            tools: The tools to validate
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        tools_without_annotations: list[str] = [tool.name for tool in tools if not _has_behavior_annotation(tool)]
+
+        passed = len(tools_without_annotations) == 0
+
+        message = (
+            "✅ All Tools declare behavior annotations"
+            if passed
+            else f"❌ Number of tools without behavior annotations: {len(tools_without_annotations)}"
+        )
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"tools_without_annotations": tools_without_annotations},
+        )

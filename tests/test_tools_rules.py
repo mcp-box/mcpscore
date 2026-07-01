@@ -16,11 +16,12 @@ And the is_valid_schema() helper function.
 
 from typing import Any
 
-from mcp.types import Tool
+from mcp.types import Tool, ToolAnnotations
 import pytest
 
 from mcpscore.rules import AuditData, RuleSeverity
 from mcpscore.rules.tools import (
+    ToolsAnnotationsPresentRule,
     ToolsAtLeastOneRule,
     ToolsBaseRule,
     ToolsDescriptionPresentRule,
@@ -707,6 +708,65 @@ class TestToolsDescriptionPresentRule:
         assert result.passed is False
         assert result.details is not None
         assert len(result.details["tools_with_empty_descriptions"]) == 1
+
+
+class TestToolsAnnotationsPresentRule:
+    """Test ToolsAnnotationsPresentRule."""
+
+    def _tool(self, name: str, annotations: ToolAnnotations | None) -> Tool:
+        return Tool(name=name, inputSchema={"type": "object"}, annotations=annotations)
+
+    def test_rule_properties(self) -> None:
+        """Test rule metadata properties."""
+        rule = ToolsAnnotationsPresentRule()
+        assert rule.rule_id == "tools_annotations_present"
+        assert rule.rule_order == 9
+        assert rule.severity == RuleSeverity.MEDIUM
+        assert "annotation" in rule.rule_name.lower()
+
+    def test_with_behavior_annotation_passes(self) -> None:
+        """Pass: tool declares a behavior hint."""
+        tool = self._tool("reader", ToolAnnotations(readOnlyHint=True))
+        result = ToolsAnnotationsPresentRule().check(AuditData(tools=[tool]))
+        assert result.passed is True
+        assert result.details is not None
+        assert result.details["tools_without_annotations"] == []
+
+    def test_without_annotations_fails(self) -> None:
+        """Fail: tool has no annotations at all."""
+        tool = self._tool("bare", None)
+        result = ToolsAnnotationsPresentRule().check(AuditData(tools=[tool]))
+        assert result.passed is False
+        assert result.details is not None
+        assert "bare" in result.details["tools_without_annotations"]
+
+    def test_empty_annotations_object_fails(self) -> None:
+        """Fail: annotations present but no behavior hint set."""
+        tool = self._tool("empty", ToolAnnotations())
+        result = ToolsAnnotationsPresentRule().check(AuditData(tools=[tool]))
+        assert result.passed is False
+
+    def test_title_only_annotation_fails(self) -> None:
+        """Fail: only the display-only title hint is set (no behavior semantics)."""
+        tool = self._tool("titled", ToolAnnotations(title="Pretty Name"))
+        result = ToolsAnnotationsPresentRule().check(AuditData(tools=[tool]))
+        assert result.passed is False
+        assert result.details is not None
+        assert "titled" in result.details["tools_without_annotations"]
+
+    def test_mixed_tools_fail(self) -> None:
+        """Fail: some tools annotated, some not."""
+        annotated = self._tool("good", ToolAnnotations(destructiveHint=True))
+        bare = self._tool("bad", None)
+        result = ToolsAnnotationsPresentRule().check(AuditData(tools=[annotated, bare]))
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["tools_without_annotations"] == ["bad"]
+
+    def test_tools_none_fails(self) -> None:
+        """Fail: tools object unavailable (handled by the base rule)."""
+        result = ToolsAnnotationsPresentRule().check(AuditData(tools=None))
+        assert result.passed is False
 
 
 # ============================================================================
