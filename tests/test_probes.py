@@ -15,6 +15,8 @@ from mcpscore.probes import (
     PROBE_IDS,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
+    PROBE_REMOVED_METHOD,
+    PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
     PROBE_UNAUTHENTICATED,
     PROBE_UNKNOWN_VERSION,
@@ -140,6 +142,8 @@ async def test_legacy_server_is_unsupported_but_observed():
         PROBE_HEADER_MISMATCH,
         PROBE_UNKNOWN_VERSION,
         PROBE_MISSING_RESOURCE,
+        PROBE_SESSION_ID_ECHO,
+        PROBE_REMOVED_METHOD,
     ):
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
 
@@ -273,3 +277,49 @@ async def test_auditor_runs_probes_for_http_url(monkeypatch):
     assert seen["url"] == URL
     assert auditor.audit_data.probes is not None
     assert auditor.audit_data.probes[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
+
+
+async def test_leaky_modern_server_is_detected():
+    """A server speaking the modern lifecycle but leaking legacy artifacts."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        request_id = body.get("id")
+        method = body["method"]
+        if method == "ping":  # removed method, still served
+            return _rpc_result(request_id, {})
+        if method == "tools/list":
+            response = _rpc_result(
+                request_id, {"resultType": "complete", "tools": [], "ttlMs": 0, "cacheScope": "public"}
+            )
+            response.headers["Mcp-Session-Id"] = "leaked-session"  # minted session id
+            return response
+        if method == "server/discover":
+            return _rpc_result(
+                request_id,
+                {"resultType": "complete", "supportedVersions": ["2026-07-28"], "ttlMs": 0, "cacheScope": "public"},
+            )
+        return _rpc_error(request_id, -32601, "Method not found", http_status=404)
+
+    results = await _run(handler)
+
+    assert results[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
+    session = results[PROBE_SESSION_ID_ECHO]
+    assert session.outcome is ProbeOutcome.UNSUPPORTED
+    assert session.details["response_session_id"] == "leaked-session"
+    removed = results[PROBE_REMOVED_METHOD]
+    assert removed.outcome is ProbeOutcome.UNSUPPORTED
+    assert removed.details["method_served"] is True
+
+
+async def test_probe_payloads_are_captured_for_data_extraction():
+    results = await _run(_modern_server_handler)
+
+    discover_payload = results[PROBE_DISCOVER].payload
+    assert discover_payload is not None
+    assert discover_payload["serverInfo"] == {"name": "modern", "version": "1.0"}
+    stateless_payload = results[PROBE_STATELESS_LIST].payload
+    assert stateless_payload is not None
+    assert stateless_payload["tools"] == []
+    # Payloads never leak into report serialization.
+    assert "payload" not in results[PROBE_DISCOVER].to_dict()

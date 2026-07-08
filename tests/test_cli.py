@@ -52,6 +52,7 @@ def mock_auditor() -> MagicMock:
     """
     auditor = MagicMock(spec=MCPAuditor)
     auditor.audit = AsyncMock(return_value=(85, 100))
+    auditor.audit_modern_only = AsyncMock(return_value=False)
     return auditor
 
 
@@ -707,3 +708,94 @@ class TestAsyncMainCleanup:
             await async_main()
 
         mock_client.cleanup.assert_called_once()
+
+
+class TestModernOnlyFallback:
+    async def test_modern_only_server_is_audited_instead_of_exit_2(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A failed legacy connection falls back to the probe-only modern audit."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://modern.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_auditor.audit_modern_only = AsyncMock(return_value=True)
+        mock_auditor.score = 10
+        mock_auditor.max_score = 97
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()  # must not raise SystemExit
+
+        mock_auditor.audit_modern_only.assert_awaited_once_with("https://modern.example/mcp")
+        assert "Modern-only MCP server detected" in caplog.text
+
+    async def test_url_without_modern_support_still_exits_2(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://legacy.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 2
+        mock_auditor.audit_modern_only.assert_awaited_once_with("https://legacy.example/mcp")
+
+    async def test_stdio_target_never_tries_modern_fallback(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 2
+        mock_auditor.audit_modern_only.assert_not_awaited()
+
+    async def test_modern_only_json_report_is_emitted(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        capsys,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://modern.example/mcp", "--json"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_auditor.audit_modern_only = AsyncMock(return_value=True)
+        mock_auditor.score = 10
+        mock_auditor.max_score = 97
+        mock_auditor.audit_data = MagicMock()
+        mock_auditor.audit_data.transport_type = MCPTransportType.STREAMABLE_HTTP
+        mock_auditor.get_audit_report.return_value = {"score": 10, "max_score": 97}
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == "https://modern.example/mcp"
+        assert report["transport"] == str(MCPTransportType.STREAMABLE_HTTP)
+        assert report["score"] == 10

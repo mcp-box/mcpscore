@@ -68,3 +68,11 @@ def test_deprecated_version_rule_fails_for_deprecated_version(monkeypatch):
     assert "deprecated" in result.message
     assert result.details is not None
     assert result.details["deprecated_versions"] == ["2024-11-05"]
+
+
+def test_latest_version_rule_passes_for_newer_draft_version():
+    """A server on a spec revision newer than the latest final one is not "behind"."""
+    rule = LatestVersionRule()
+    result = rule.check(AuditData(protocol_version="2026-07-28"))
+    assert result.passed
+    assert "newer" in result.message
