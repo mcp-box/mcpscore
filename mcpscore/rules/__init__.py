@@ -18,6 +18,7 @@ from .base import (
     BaseRule,
     RuleResult,
     RuleSeverity,
+    SkippedRule,
 )
 from .capabilities import (
     CapabilityLoggingPresentRule,
@@ -94,6 +95,7 @@ __all__ = (
     "ServerNamePresentRule",
     "ServerTitlePresentRule",
     "ServerVersionPresentRule",
+    "SkippedRule",
     "StreamableHTTPTransportRule",
     "TLSEnabledRule",
     "ToolsAnnotationsPresentRule",

@@ -6,12 +6,18 @@ from enum import IntEnum
 from functools import wraps
 from typing import TYPE_CHECKING, Any
 
+from mcpscore.spec import compare
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mcp.types import Implementation, Prompt, Resource, ServerCapabilities, Tool
 
     from ..enums import MCPTransportType
+    from ..probes import ProbeResult
+
+SKIP_REASON_NOT_APPLICABLE = "not-applicable"
+"""Skip reason for rules whose spec-version range excludes the negotiated version."""
 
 
 class RuleSeverity(IntEnum):
@@ -58,6 +64,25 @@ class RuleResult:
         }
 
 
+@dataclass(frozen=True)
+class SkippedRule:
+    """Record of a rule that was considered but not executed.
+
+    Skipped rules contribute to neither the score nor the maximum score;
+    they appear in the report so machine consumers (and snapshot tests) can
+    see the rule was considered rather than silently dropped.
+    """
+
+    rule_id: str
+    rule_name: str
+    reason: str
+    """Why the rule was skipped, e.g. SKIP_REASON_NOT_APPLICABLE."""
+
+    def to_dict(self) -> dict:
+        """Serialize this record for machine-readable reports."""
+        return {"rule_id": self.rule_id, "rule_name": self.rule_name, "reason": self.reason}
+
+
 @dataclass
 class AuditData:
     """Container for all data needed for audit rules."""
@@ -79,6 +104,10 @@ class AuditData:
     connection_time_ms: int | None = None
     server_headers: dict[str, str] | None = None
     error_response: str | None = None
+
+    # Sessionless probe observations (see mcpscore.probes), keyed by probe_id.
+    # None until the auditor's probe-collection phase has run.
+    probes: dict[str, ProbeResult] | None = None
 
 
 # Decorators to specify what data a rule needs
@@ -204,6 +233,16 @@ class BaseRule(ABC):
     """Order for rules within the same group. Lower numbers execute first.
     Rules with the same rule_order are sorted alphabetically by rule_id."""
 
+    min_spec_version: str | None = None
+    """Oldest spec version this rule applies to (inclusive), e.g. the version
+    that introduced the behavior it checks. None = applies since the first
+    spec revision."""
+
+    max_spec_version: str | None = None
+    """Newest spec version this rule applies to (inclusive), e.g. the last
+    version before the behavior it checks was removed. None = still applies
+    to the current spec."""
+
     def __init__(self, **kwargs: Any) -> None:
         super().__init__()
         # kwargs maybe used by subclasses to store additional data
@@ -218,6 +257,30 @@ class BaseRule(ABC):
 
         """
         return self.group_order * 1000 + self.rule_order
+
+    def applies_to(self, negotiated_version: str | None) -> bool:
+        """Whether this rule applies to a server on the given spec version.
+
+        A rule declares the spec-version range it is meaningful for via
+        min_spec_version/max_spec_version; outside that range the auditor
+        skips it (excluded from both score and max score) instead of failing
+        it, so servers on different spec versions get comparable scores.
+
+        Args:
+            negotiated_version: The spec version the server negotiated, or
+                None when no version is available (the rule then runs — a
+                missing version is a finding for the version rules, not a
+                reason to silently skip everything else)
+
+        Returns:
+            True if the rule should be executed against this server
+
+        """
+        if negotiated_version is None:
+            return True
+        if self.min_spec_version is not None and compare(negotiated_version, self.min_spec_version) < 0:
+            return False
+        return not (self.max_spec_version is not None and compare(negotiated_version, self.max_spec_version) > 0)
 
     @property
     @abstractmethod

@@ -21,6 +21,7 @@ from .rules import (
     BaseRule,
     RuleResult,
     RuleSeverity,
+    SkippedRule,
 )
 
 __all__ = (
@@ -34,5 +35,6 @@ __all__ = (
     "MCPTransportType",
     "RuleResult",
     "RuleSeverity",
+    "SkippedRule",
     "spec",
 )

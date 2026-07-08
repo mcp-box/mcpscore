@@ -8,7 +8,9 @@ if TYPE_CHECKING:
     from mcp.types import InitializeResult, Prompt, Resource, Tool
 
 from .mcp_client import MCPClient
-from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, create_all_rules
+from .probes import not_applicable_results, run_all_probes
+from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
+from .rules.base import SKIP_REASON_NOT_APPLICABLE
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ class MCPAuditor:
         self.max_score: int = 0
         self.rules: list[BaseRule] = list(create_all_rules())
         self.results: list[RuleResult] = []
+        self.skipped_rules: list[SkippedRule] = []
 
     async def audit(self, client: MCPClient) -> tuple[int, int]:
         """Execute the complete audit process for an MCP server.
@@ -74,17 +77,37 @@ class MCPAuditor:
                 await self._collect_resources()
             if self.audit_data.capabilities.prompts is not None:
                 await self._collect_prompts()
+        await self._collect_probes()
         self._run_all_rules()
 
         return self.score, self.max_score
 
     def _run_all_rules(self) -> None:
-        """Execute all registered audit rules and update the audit score.
+        """Execute all applicable audit rules and update the audit score.
 
         Iterates through all rules, executes each one, logs the results,
         and updates the overall audit score based on rule severity and pass/fail status.
+
+        Rules whose spec-version range excludes the server's negotiated
+        protocol version are skipped: they contribute to neither score nor
+        max_score, and are recorded in skipped_rules so the report shows they
+        were considered.
         """
         for rule in sorted(self.rules, key=lambda r: r.sort_order):
+            if not rule.applies_to(self.audit_data.protocol_version):
+                skipped = SkippedRule(
+                    rule_id=rule.rule_id,
+                    rule_name=rule.rule_name,
+                    reason=SKIP_REASON_NOT_APPLICABLE,
+                )
+                logger.info(
+                    "⏭️ Skipping rule '%s': not applicable to spec version %s",
+                    rule.rule_id,
+                    self.audit_data.protocol_version,
+                )
+                self.skipped_rules.append(skipped)
+                continue
+
             res: RuleResult = rule.check(self.audit_data)
             res.rule_id = rule.rule_id
             logger.info(res.message)
@@ -158,6 +181,21 @@ class MCPAuditor:
         finally:
             if writer is not None:
                 writer.close()
+
+    async def _collect_probes(self) -> None:
+        """Run the sessionless HTTP probes and store their observations.
+
+        Probes observe spec behaviors outside the negotiated session (e.g.
+        2026-07-28 stateless-lifecycle support) — see mcpscore.probes. They
+        are HTTP-only: stdio audits record NOT_APPLICABLE results so rules
+        can distinguish "not probed" from "not collected".
+        """
+        url = self.audit_data.url
+        if url is None or not url.startswith(("http://", "https://")):
+            self.audit_data.probes = not_applicable_results(reason="probes require an HTTP(S) transport")
+            return
+
+        self.audit_data.probes = await run_all_probes(url)
 
     async def _collect_init_result(self) -> None:
         """Collect initialization data from the MCP server.
@@ -248,6 +286,8 @@ class MCPAuditor:
             - summary: Aggregate pass/fail counts (see get_audit_summary)
             - results: Per-rule results keyed by stable rule_id
               (see RuleResult.to_dict)
+            - skipped_rules: Rules considered but not executed (with reason),
+              e.g. rules outside the server's spec-version range
 
         """
         return {
@@ -255,6 +295,7 @@ class MCPAuditor:
             "max_score": self.max_score,
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
+            "skipped_rules": [s.to_dict() for s in self.skipped_rules],
         }
 
     def get_audit_summary(self) -> dict:
@@ -265,6 +306,7 @@ class MCPAuditor:
             - total: Total number of rules executed
             - passed: Number of rules that passed
             - failed: Number of rules that failed
+            - skipped: Number of rules considered but not executed
             - by_severity: Breakdown by severity level (CRITICAL, HIGH, MEDIUM, LOW)
               with counts for total, passed, and failed rules in each category
 
@@ -273,6 +315,7 @@ class MCPAuditor:
             "total": len(self.results),
             "passed": sum(1 for r in self.results if r.passed),
             "failed": sum(1 for r in self.results if not r.passed),
+            "skipped": len(self.skipped_rules),
             "by_severity": {
                 severity.name: {
                     "total": sum(1 for r in self.results if r.severity == severity),

@@ -81,3 +81,21 @@ def as_dict(obj: Any) -> dict[str, Any] | dict | MappingProxyType[str, Any] | di
 
     # Fallback for edge cases
     return {}
+
+
+@pytest.fixture(autouse=True)
+def _no_network_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit tests hermetic: stub the auditor's sessionless probe runner.
+
+    audit() probes the target URL over HTTP; unit tests must never hit the
+    network. Probe behavior itself is tested in test_probes.py with a
+    MockTransport-backed client, and tests that need a different auditor-level
+    stub re-patch mcp_auditor.run_all_probes themselves.
+    """
+    from mcpscore import mcp_auditor
+    from mcpscore.probes import not_applicable_results
+
+    async def stubbed_run_all_probes(url: str, client: Any = None) -> dict:
+        return not_applicable_results(reason="stubbed in unit tests")
+
+    monkeypatch.setattr(mcp_auditor, "run_all_probes", stubbed_run_all_probes)
