@@ -422,6 +422,7 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "httpx-sse" },
+    { name = "jsonschema" },
     { name = "mcp" },
 ]
 
@@ -438,6 +439,7 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx-sse", specifier = ">=0.4.3" },
+    { name = "jsonschema", specifier = ">=4.21" },
     { name = "mcp", specifier = ">=1.28.0" },
 ]
 

@@ -26,6 +26,7 @@ __all__ = [
     "DRAFT",
     "LATEST",
     "SPEC_VERSIONS",
+    "Era",
     "Lifecycle",
     "SpecStatus",
     "SpecVersion",
