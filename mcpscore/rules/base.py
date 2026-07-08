@@ -19,6 +19,19 @@ if TYPE_CHECKING:
 SKIP_REASON_NOT_APPLICABLE = "not-applicable"
 """Skip reason for rules whose spec-version range excludes the negotiated version."""
 
+SKIP_REASON_REQUIRES_MODERN_SUPPORT = "requires-modern-support"
+"""Skip reason for detail readiness rules when the server shows no modern-lifecycle
+support at all — the gateway rules already carry that verdict; piling on adds noise."""
+
+SKIP_REASON_INSUFFICIENT_DATA = "insufficient-data"
+"""Skip reason when the observations a rule needs are unavailable (probe errored,
+probes not applicable to the transport, or session data missing) — the rule can
+neither pass nor fail, so it must not count against the score."""
+
+READINESS_GROUP = "readiness"
+"""Group name of readiness rules. The auditor scores this group on a separate
+readiness axis, never in the main score (see the multi-spec-version design)."""
+
 
 class RuleSeverity(IntEnum):
     """Severity levels for audit rules."""
@@ -257,6 +270,24 @@ class BaseRule(ABC):
 
         """
         return self.group_order * 1000 + self.rule_order
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Give a reason to skip this rule for this audit, or None to run it.
+
+        Unlike applies_to (a static spec-version range), this hook sees the
+        collected audit data — rules whose observations are unavailable
+        (e.g. an errored probe) or redundant (e.g. detail readiness checks on
+        a server with no modern support) return a reason string and are
+        recorded as skipped instead of failing.
+
+        Args:
+            audit_data: The collected server data for this audit
+
+        Returns:
+            A skip-reason string (see the SKIP_REASON_* constants), or None
+
+        """
+        return None
 
     def applies_to(self, negotiated_version: str | None) -> bool:
         """Whether this rule applies to a server on the given spec version.

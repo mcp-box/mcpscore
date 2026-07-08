@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from typing import ClassVar
 
-from mcpscore.spec import LATEST, allowed_versions, deprecated_versions
+from mcpscore.spec import LATEST, allowed_versions, compare, deprecated_versions
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_protocol_version
 from .registry import register_rule
@@ -127,10 +127,14 @@ class LatestVersionRule(ProtocolVersionBaseRule):
             RuleResult with the check outcome
 
         """
-        # Check if the version is the most recent final version
-        passed: bool = protocol_version == LATEST.version
-        if passed:
+        # At least the most recent final version (a newer draft is not "behind")
+        passed: bool = compare(protocol_version, LATEST.version) >= 0
+        if protocol_version == LATEST.version:
             message: str = f"✅ Protocol version '{protocol_version}' is the latest version"
+        elif passed:
+            message: str = (
+                f"✅ Protocol version '{protocol_version}' is newer than the latest final version '{LATEST.version}'"
+            )
         else:
             message: str = f"❌ Not using the latest protocol version. Current: '{protocol_version}'"
 
