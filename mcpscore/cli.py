@@ -70,6 +70,39 @@ def _mcpscore_version() -> str:
         return "unknown"
 
 
+def log_audit_outcome(auditor: MCPAuditor) -> None:
+    """Log the human-readable audit outcome: score, spec/era line, readiness line.
+
+    The main score and the readiness score are deliberately separate lines —
+    readiness for the next spec revision is informative and never part of the
+    main score (see the multi-spec-version design).
+    """
+    report = auditor.get_audit_report()
+    spec = report["spec"]
+    readiness = report["readiness"]
+
+    logger.info("")
+    logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
+    logger.info(
+        "Spec: %s negotiated (latest: %s) · era: %s",
+        spec["negotiated_version"] or "unknown",
+        spec["latest_version"],
+        spec["era"] or "unknown",
+    )
+    if readiness["max_score"] > 0:
+        logger.info(
+            "Readiness for MCP %s: %s/%s (informative — not part of the main score)",
+            spec["readiness_target"],
+            readiness["score"],
+            readiness["max_score"],
+        )
+    else:
+        logger.info(
+            "Readiness for MCP %s: not assessed (no probe observations for this transport)",
+            spec["readiness_target"],
+        )
+
+
 def build_report(target: str, transport: MCPTransportType | None, auditor: MCPAuditor) -> dict:
     """Build the machine-readable audit report emitted by --json.
 
@@ -129,7 +162,7 @@ async def async_main() -> None:
                 logger.info(
                     "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
                 )
-                logger.info("Audit finished. Final score: %s/%s", auditor.score, auditor.max_score)
+                log_audit_outcome(auditor)
                 if args.json:
                     report = build_report(args.target, auditor.audit_data.transport_type, auditor)
                     sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
@@ -142,8 +175,8 @@ async def async_main() -> None:
 
     try:
         logger.info("Starting the audit...")
-        final_score, max_score = await auditor.audit(client)
-        logger.info("Audit finished. Final score: %s/%s", final_score, max_score)
+        await auditor.audit(client)
+        log_audit_outcome(auditor)
 
         if args.json:
             report = build_report(args.target, transport, auditor)

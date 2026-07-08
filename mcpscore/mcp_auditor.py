@@ -213,8 +213,19 @@ class MCPAuditor:
 
         Rules in the READINESS_GROUP score on the separate readiness axis
         (readiness_score/readiness_max); everything else scores on the main axis.
+        A separator line is logged before the first readiness rule so the two
+        sections are visually distinct in the streamed output.
         """
+        readiness_header_emitted = False
         for rule in sorted(self.rules, key=lambda r: r.sort_order):
+            if rule.group_name == READINESS_GROUP and not readiness_header_emitted:
+                readiness_header_emitted = True
+                logger.info("")
+                logger.info(
+                    "🔭 Readiness checks for MCP %s (informative — not part of the main score):",
+                    (DRAFT or LATEST).version,
+                )
+
             skip_reason: str | None = None
             if not rule.applies_to(self.audit_data.protocol_version):
                 skip_reason = SKIP_REASON_NOT_APPLICABLE

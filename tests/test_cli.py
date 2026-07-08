@@ -53,7 +53,28 @@ def mock_auditor() -> MagicMock:
     auditor = MagicMock(spec=MCPAuditor)
     auditor.audit = AsyncMock(return_value=(85, 100))
     auditor.audit_modern_only = AsyncMock(return_value=False)
+    auditor.get_audit_report = MagicMock(return_value=_report_payload())
     return auditor
+
+
+def _report_payload(**overrides) -> dict:
+    """Complete report dict as returned by MCPAuditor.get_audit_report()."""
+    report = {
+        "score": 85,
+        "max_score": 100,
+        "summary": {"total": 2, "passed": 1, "failed": 1, "skipped": 0, "by_severity": {}},
+        "results": [],
+        "skipped_rules": [],
+        "spec": {
+            "negotiated_version": "2025-11-25",
+            "latest_version": "2025-11-25",
+            "readiness_target": "2026-07-28",
+            "era": "legacy",
+        },
+        "readiness": {"score": 3, "max_score": 13, "results": []},
+    }
+    report.update(overrides)
+    return report
 
 
 class TestMain:
@@ -264,6 +285,7 @@ class TestAsyncMain:
     ) -> None:
         """Test that audit scores are displayed correctly in logs."""
         monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_auditor.get_audit_report = MagicMock(return_value=_report_payload(score=42, max_score=75))
         mock_auditor.audit = AsyncMock(return_value=(42, 75))
 
         with (
@@ -543,11 +565,9 @@ class TestJSONOutput:
     @pytest.fixture
     def audit_report(self) -> dict:
         """Audit report payload as returned by MCPAuditor.get_audit_report()."""
-        return {
-            "score": 85,
-            "max_score": 100,
-            "summary": {"total": 2, "passed": 1, "failed": 1, "by_severity": {}},
-            "results": [
+        return _report_payload(
+            summary={"total": 2, "passed": 1, "failed": 1, "skipped": 0, "by_severity": {}},
+            results=[
                 {
                     "rule_id": "transport_streamable_http",
                     "rule_name": "Streamable HTTP Transport",
@@ -558,7 +578,7 @@ class TestJSONOutput:
                     "details": None,
                 },
             ],
-        }
+        )
 
     async def test_json_flag_emits_report_to_stdout(
         self,
@@ -605,7 +625,6 @@ class TestJSONOutput:
             await async_main()
 
         assert capsys.readouterr().out == ""
-        mock_auditor.get_audit_report.assert_not_called()
 
     async def test_json_flag_with_remote_server(
         self,
@@ -787,7 +806,7 @@ class TestModernOnlyFallback:
         mock_auditor.max_score = 97
         mock_auditor.audit_data = MagicMock()
         mock_auditor.audit_data.transport_type = MCPTransportType.STREAMABLE_HTTP
-        mock_auditor.get_audit_report.return_value = {"score": 10, "max_score": 97}
+        mock_auditor.get_audit_report.return_value = _report_payload(score=10, max_score=97)
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
