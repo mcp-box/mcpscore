@@ -29,14 +29,17 @@ from typing import Any
 
 import httpx
 
-from mcpscore.spec import DRAFT, LATEST
+from mcpscore.spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "GATEWAY_PROBE_IDS",
     "PROBE_IDS",
     "ProbeOutcome",
     "ProbeResult",
+    "detect_era",
+    "has_modern_support",
     "run_all_probes",
 ]
 
@@ -58,6 +61,16 @@ ERROR_UNSUPPORTED_PROTOCOL_VERSION = -32022
 ERROR_LEGACY_RESOURCE_NOT_FOUND = -32002
 """Legacy resource-not-found code (2025-11-25 and earlier); MUST NOT be emitted from 2026-07-28."""
 
+ERROR_METHOD_NOT_FOUND = -32601
+"""Standard JSON-RPC Method not found — required (with HTTP 404) for unknown/removed methods."""
+
+SESSION_ID_PROBE_VALUE = "mcpscore-spurious-session-id"
+"""Deliberately bogus session ID sent by the session-id-echo probe; modern servers
+must ignore it ("ignore it, and do not mint or echo session IDs")."""
+
+REMOVED_METHOD = "ping"
+"""A method removed in 2026-07-28, used to probe for leaked legacy surface."""
+
 UNKNOWN_VERSION = "2099-01-01"
 """Deliberately unsupported version used by the unknown-version probe."""
 
@@ -71,6 +84,8 @@ PROBE_HEADER_MISMATCH = "probe_header_mismatch"
 PROBE_UNKNOWN_VERSION = "probe_unknown_version"
 PROBE_MISSING_RESOURCE = "probe_missing_resource"
 PROBE_UNAUTHENTICATED = "probe_unauthenticated"
+PROBE_SESSION_ID_ECHO = "probe_session_id_echo"
+PROBE_REMOVED_METHOD = "probe_removed_method"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -80,8 +95,10 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_UNKNOWN_VERSION,
     PROBE_MISSING_RESOURCE,
     PROBE_UNAUTHENTICATED,
+    PROBE_SESSION_ID_ECHO,
+    PROBE_REMOVED_METHOD,
 )
-"""Stable identifiers of all probes, in execution order."""
+"""Stable identifiers of all probes."""
 
 
 class ProbeOutcome(StrEnum):
@@ -113,6 +130,11 @@ class ProbeResult:
     details: dict[str, Any] = field(default_factory=dict)
     """Raw observations (HTTP status, JSON-RPC error codes, result fields)
     for rules to inspect and cite in their messages."""
+
+    payload: dict[str, Any] | None = None
+    """Full result payload (e.g. the DiscoverResult, a tools list) for data
+    extraction by the modern-only audit path. Deliberately excluded from
+    to_dict — payloads can be large and belong in AuditData, not reports."""
 
     def to_dict(self) -> dict:
         """Serialize this result for machine-readable reports."""
@@ -241,7 +263,7 @@ async def _probe_discover(client: httpx.AsyncClient, url: str) -> ProbeResult:
         details["ttl_ms"] = result.get("ttlMs")
         details["cache_scope"] = result.get("cacheScope")
         details["result_type"] = result.get("resultType")
-        return ProbeResult(PROBE_DISCOVER, ProbeOutcome.SUPPORTED, details)
+        return ProbeResult(PROBE_DISCOVER, ProbeOutcome.SUPPORTED, details, payload=result)
     return ProbeResult(PROBE_DISCOVER, ProbeOutcome.UNSUPPORTED, details)
 
 
@@ -264,7 +286,7 @@ async def _probe_stateless_list(client: httpx.AsyncClient, url: str) -> ProbeRes
         details["result_type"] = result.get("resultType")
         details["ttl_ms"] = result.get("ttlMs")
         details["cache_scope"] = result.get("cacheScope")
-        return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, details)
+        return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, details, payload=result)
     return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, details)
 
 
@@ -374,6 +396,50 @@ async def _probe_unauthenticated(client: httpx.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)
 
 
+async def _probe_session_id_echo(client: httpx.AsyncClient, url: str) -> ProbeResult:
+    """Send a modern request carrying a spurious ``Mcp-Session-Id`` header.
+
+    ``Mcp-Session-Id`` is removed in 2026-07-28; servers serving modern
+    requests must "ignore it, and do not mint or echo session IDs". SUPPORTED
+    when the request is served normally with no session ID in the response —
+    echoing/minting one is leaked legacy session bookkeeping.
+    """
+    target = _target_version()
+    headers = _request_headers(target, "tools/list")
+    headers["Mcp-Session-Id"] = SESSION_ID_PROBE_VALUE
+    response = await _post(client, url, _request_body("tools/list", 8, _modern_meta(target)), headers)
+    details = _base_details(response)
+    result = response.result
+    served = result is not None and isinstance(result.get("tools"), list)
+    response_session_id = response.headers.get("mcp-session-id")
+    details["request_served"] = served
+    details["response_session_id"] = response_session_id
+    correct = served and response_session_id is None
+    outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_SESSION_ID_ECHO, outcome, details)
+
+
+async def _probe_removed_method(client: httpx.AsyncClient, url: str) -> ProbeResult:
+    """Send a modern request for a method removed in the target revision (``ping``).
+
+    Removed methods are unknown methods: the server MUST respond with HTTP 404
+    and JSON-RPC ``-32601`` (Method not found). A server that still *serves*
+    the method is leaking removed legacy surface.
+    """
+    target = _target_version()
+    response = await _post(
+        client,
+        url,
+        _request_body(REMOVED_METHOD, 9, _modern_meta(target)),
+        _request_headers(target, REMOVED_METHOD),
+    )
+    details = _base_details(response)
+    details["method_served"] = response.payload is not None and "result" in response.payload
+    correct = response.status_code == 404 and response.error_code == ERROR_METHOD_NOT_FOUND
+    outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_REMOVED_METHOD, outcome, details)
+
+
 _PROBES = {
     PROBE_DISCOVER: _probe_discover,
     PROBE_STATELESS_LIST: _probe_stateless_list,
@@ -382,12 +448,65 @@ _PROBES = {
     PROBE_UNKNOWN_VERSION: _probe_unknown_version,
     PROBE_MISSING_RESOURCE: _probe_missing_resource,
     PROBE_UNAUTHENTICATED: _probe_unauthenticated,
+    PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
+    PROBE_REMOVED_METHOD: _probe_removed_method,
 }
 
 
 def not_applicable_results(reason: str) -> dict[str, ProbeResult]:
     """NOT_APPLICABLE results for every probe (e.g. for stdio servers)."""
     return {probe_id: ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, {"reason": reason}) for probe_id in PROBE_IDS}
+
+
+GATEWAY_PROBE_IDS: tuple[str, ...] = (PROBE_DISCOVER, PROBE_STATELESS_LIST)
+"""Probes whose support indicates the server speaks the modern lifecycle at all."""
+
+
+def has_modern_support(probes: dict[str, ProbeResult] | None) -> bool:
+    """Whether the probes observed any modern-lifecycle support.
+
+    True when the server answered ``server/discover`` or a stateless request —
+    the gateway condition for the detail readiness rules.
+    """
+    if not probes:
+        return False
+    return any(
+        probes[probe_id].outcome is ProbeOutcome.SUPPORTED for probe_id in GATEWAY_PROBE_IDS if probe_id in probes
+    )
+
+
+def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResult] | None) -> Era | None:
+    """Classify which lifecycle era(s) the server supports.
+
+    Follows the spec's own client guidance: a ``DiscoverResult`` — or a
+    recognized modern JSON-RPC error such as ``-32022`` — identifies a modern
+    server; a completed legacy ``initialize`` handshake identifies a legacy
+    server; both together mean dual-era.
+
+    Args:
+        session_protocol_version: The version negotiated by the legacy SDK
+            session, or None when the handshake never completed
+        probes: Probe observations from run_all_probes, or None
+
+    Returns:
+        The observed era, or None when there is no evidence either way
+        (e.g. stdio servers, where probes do not run)
+
+    """
+    modern = has_modern_support(probes) or (
+        probes is not None
+        and PROBE_UNKNOWN_VERSION in probes
+        and probes[PROBE_UNKNOWN_VERSION].outcome is ProbeOutcome.SUPPORTED
+    )
+    legacy = session_protocol_version is not None
+
+    if modern and legacy:
+        return Era.DUAL
+    if modern:
+        return Era.MODERN
+    if legacy:
+        return Era.LEGACY
+    return None
 
 
 async def run_all_probes(url: str, client: httpx.AsyncClient | None = None) -> dict[str, ProbeResult]:

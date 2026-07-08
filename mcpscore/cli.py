@@ -106,9 +106,12 @@ async def async_main() -> None:
     6. Cleaning up resources
 
     Supports local servers (.py, .js) via STDIO and remote servers via
-    Streamable HTTP or SSE (auto-detected).
+    Streamable HTTP or SSE (auto-detected). When the legacy connection fails
+    against an HTTP(S) target, the server is checked for modern-only
+    (2026-07-28 stateless lifecycle) support and audited via probes if so.
 
-    Exits with code 1 on usage errors, or code 2 if connection fails.
+    Exits with code 1 on usage errors, or code 2 if connection fails and the
+    server shows no modern-lifecycle support either.
     """
     logger.info("Welcome to MCPScore!")
 
@@ -120,6 +123,17 @@ async def async_main() -> None:
     success, transport = await client.detect_and_connect(args.target)
 
     if not success:
+        if args.target.startswith(("http://", "https://")):
+            logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
+            if await auditor.audit_modern_only(args.target):
+                logger.info(
+                    "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
+                )
+                logger.info("Audit finished. Final score: %s/%s", auditor.score, auditor.max_score)
+                if args.json:
+                    report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                    sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                return
         logger.error("Error connecting to the MCP server: %s", args.target)
         sys.exit(2)
 

@@ -49,6 +49,19 @@ class Lifecycle(StrEnum):
     ("Modern", 2026-07-28 and later)."""
 
 
+class Era(StrEnum):
+    """Which lifecycle era(s) a server was observed to support.
+
+    Terminology from the spec's versioning page: Modern servers speak the
+    stateless 2026-07-28+ lifecycle, Legacy servers the stateful
+    initialize-handshake lifecycle, Dual-era servers both.
+    """
+
+    LEGACY = "legacy"
+    MODERN = "modern"
+    DUAL = "dual-era"
+
+
 class SpecStatus(StrEnum):
     """Publication status of a spec revision."""
 
