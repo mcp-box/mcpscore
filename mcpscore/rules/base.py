@@ -6,12 +6,31 @@ from enum import IntEnum
 from functools import wraps
 from typing import TYPE_CHECKING, Any
 
+from mcpscore.spec import compare
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mcp.types import Implementation, Prompt, Resource, ServerCapabilities, Tool
 
     from ..enums import MCPTransportType
+    from ..probes import ProbeResult
+
+SKIP_REASON_NOT_APPLICABLE = "not-applicable"
+"""Skip reason for rules whose spec-version range excludes the negotiated version."""
+
+SKIP_REASON_REQUIRES_MODERN_SUPPORT = "requires-modern-support"
+"""Skip reason for detail readiness rules when the server shows no modern-lifecycle
+support at all — the gateway rules already carry that verdict; piling on adds noise."""
+
+SKIP_REASON_INSUFFICIENT_DATA = "insufficient-data"
+"""Skip reason when the observations a rule needs are unavailable (probe errored,
+probes not applicable to the transport, or session data missing) — the rule can
+neither pass nor fail, so it must not count against the score."""
+
+READINESS_GROUP = "readiness"
+"""Group name of readiness rules. The auditor scores this group on a separate
+readiness axis, never in the main score (see the multi-spec-version design)."""
 
 
 class RuleSeverity(IntEnum):
@@ -58,6 +77,34 @@ class RuleResult:
         }
 
 
+@dataclass(frozen=True)
+class SkippedRule:
+    """Record of a rule that was considered but not executed.
+
+    Skipped rules contribute to neither the score nor the maximum score;
+    they appear in the report so machine consumers (and snapshot tests) can
+    see the rule was considered rather than silently dropped.
+    """
+
+    rule_id: str
+    rule_name: str
+    reason: str
+    """Why the rule was skipped, e.g. SKIP_REASON_NOT_APPLICABLE."""
+
+    group_name: str = "default"
+    """Group of the skipped rule — lets report consumers (and the summary)
+    attribute the skip to the right scoring axis (main vs readiness)."""
+
+    def to_dict(self) -> dict:
+        """Serialize this record for machine-readable reports."""
+        return {
+            "rule_id": self.rule_id,
+            "rule_name": self.rule_name,
+            "reason": self.reason,
+            "group_name": self.group_name,
+        }
+
+
 @dataclass
 class AuditData:
     """Container for all data needed for audit rules."""
@@ -79,6 +126,10 @@ class AuditData:
     connection_time_ms: int | None = None
     server_headers: dict[str, str] | None = None
     error_response: str | None = None
+
+    # Sessionless probe observations (see mcpscore.probes), keyed by probe_id.
+    # None until the auditor's probe-collection phase has run.
+    probes: dict[str, ProbeResult] | None = None
 
 
 # Decorators to specify what data a rule needs
@@ -204,6 +255,16 @@ class BaseRule(ABC):
     """Order for rules within the same group. Lower numbers execute first.
     Rules with the same rule_order are sorted alphabetically by rule_id."""
 
+    min_spec_version: str | None = None
+    """Oldest spec version this rule applies to (inclusive), e.g. the version
+    that introduced the behavior it checks. None = applies since the first
+    spec revision."""
+
+    max_spec_version: str | None = None
+    """Newest spec version this rule applies to (inclusive), e.g. the last
+    version before the behavior it checks was removed. None = still applies
+    to the current spec."""
+
     def __init__(self, **kwargs: Any) -> None:
         super().__init__()
         # kwargs maybe used by subclasses to store additional data
@@ -218,6 +279,48 @@ class BaseRule(ABC):
 
         """
         return self.group_order * 1000 + self.rule_order
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Give a reason to skip this rule for this audit, or None to run it.
+
+        Unlike applies_to (a static spec-version range), this hook sees the
+        collected audit data — rules whose observations are unavailable
+        (e.g. an errored probe) or redundant (e.g. detail readiness checks on
+        a server with no modern support) return a reason string and are
+        recorded as skipped instead of failing.
+
+        Args:
+            audit_data: The collected server data for this audit
+
+        Returns:
+            A skip-reason string (see the SKIP_REASON_* constants), or None
+
+        """
+        return None
+
+    def applies_to(self, negotiated_version: str | None) -> bool:
+        """Whether this rule applies to a server on the given spec version.
+
+        A rule declares the spec-version range it is meaningful for via
+        min_spec_version/max_spec_version; outside that range the auditor
+        skips it (excluded from both score and max score) instead of failing
+        it, so servers on different spec versions get comparable scores.
+
+        Args:
+            negotiated_version: The spec version the server negotiated, or
+                None when no version is available (the rule then runs — a
+                missing version is a finding for the version rules, not a
+                reason to silently skip everything else)
+
+        Returns:
+            True if the rule should be executed against this server
+
+        """
+        if negotiated_version is None:
+            return True
+        if self.min_spec_version is not None and compare(negotiated_version, self.min_spec_version) < 0:
+            return False
+        return not (self.max_spec_version is not None and compare(negotiated_version, self.max_spec_version) > 0)
 
     @property
     @abstractmethod

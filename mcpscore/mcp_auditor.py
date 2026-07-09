@@ -7,8 +7,21 @@ from urllib.parse import urlparse
 if TYPE_CHECKING:
     from mcp.types import InitializeResult, Prompt, Resource, Tool
 
+from pydantic import ValidationError
+
+from .enums import MCPTransportType
 from .mcp_client import MCPClient
-from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, create_all_rules
+from .probes import (
+    PROBE_DISCOVER,
+    PROBE_STATELESS_LIST,
+    detect_era,
+    has_modern_support,
+    not_applicable_results,
+    run_all_probes,
+)
+from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
+from .rules.base import READINESS_GROUP, SKIP_REASON_NOT_APPLICABLE
+from .spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +58,17 @@ class MCPAuditor:
         self.max_score: int = 0
         self.rules: list[BaseRule] = list(create_all_rules())
         self.results: list[RuleResult] = []
+        self.skipped_rules: list[SkippedRule] = []
+
+        # Readiness axis: rules in the READINESS_GROUP score here, never in
+        # the main score — readiness for the next spec revision is
+        # informative, not punitive (see the multi-spec-version design).
+        self.readiness_score: int = 0
+        self.readiness_max: int = 0
+        self.readiness_results: list[RuleResult] = []
+
+        self.era: Era | None = None
+        """Lifecycle era(s) the server was observed to support (set during audit)."""
 
     async def audit(self, client: MCPClient) -> tuple[int, int]:
         """Execute the complete audit process for an MCP server.
@@ -62,8 +86,7 @@ class MCPAuditor:
 
         """
         self.mcp_client = client
-        self.score = 0
-        self.max_score = 0
+        self._reset_run_state()
 
         await self._collect_transport_metadata()
         await self._collect_init_result()
@@ -74,26 +97,182 @@ class MCPAuditor:
                 await self._collect_resources()
             if self.audit_data.capabilities.prompts is not None:
                 await self._collect_prompts()
+        await self._collect_probes()
+        self.era = detect_era(self.audit_data.protocol_version, self.audit_data.probes)
         self._run_all_rules()
 
         return self.score, self.max_score
 
+    def _reset_run_state(self) -> None:
+        """Reset all per-run state so a reused auditor never leaks a prior run.
+
+        Both audit entry points call this first: scores, results, skipped
+        rules, the readiness axis, the detected era, and the collected audit
+        data are all per-run.
+        """
+        self.audit_data = AuditData()
+        self.score = 0
+        self.max_score = 0
+        self.results = []
+        self.skipped_rules = []
+        self.readiness_score = 0
+        self.readiness_max = 0
+        self.readiness_results = []
+        self.era = None
+
+    async def audit_modern_only(self, url: str) -> bool:
+        """Audit a modern-only HTTP server via probes, without a legacy session.
+
+        A server speaking only the 2026-07-28 stateless lifecycle rejects the
+        legacy initialize handshake, so the SDK session cannot connect at all.
+        This path probes the URL directly: when the server shows modern
+        support, the audit proceeds with session-equivalent data extracted
+        from probe payloads (server info and capabilities from
+        server/discover, tools from the stateless tools/list).
+
+        Args:
+            url: The MCP endpoint URL (http:// or https://)
+
+        Returns:
+            True when modern support was observed and the audit ran; False
+            when it was not (the caller should treat the original connection
+            failure as genuine)
+
+        """
+        if not url.startswith(("http://", "https://")):
+            return False
+
+        probes = await run_all_probes(url)
+        if not has_modern_support(probes):
+            return False
+
+        self._reset_run_state()
+
+        self.audit_data.probes = probes
+        self.audit_data.url = url
+        self.audit_data.transport_type = MCPTransportType.STREAMABLE_HTTP
+        if url.startswith("https://"):
+            # The probes completed over HTTPS with certificate verification
+            # (httpx default) — an invalid certificate would have failed them.
+            self.audit_data.tls_verified = True
+            self.audit_data.tls_version = await self._probe_tls_version(url)
+        else:
+            self.audit_data.tls_verified = False
+            self.audit_data.tls_version = None
+
+        self._populate_from_probe_payloads()
+        self.era = detect_era(None, probes)
+        self._run_all_rules()
+        return True
+
+    def _populate_from_probe_payloads(self) -> None:
+        """Extract session-equivalent audit data from probe payloads (best-effort).
+
+        server/discover carries serverInfo, capabilities, and instructions;
+        the stateless tools/list carries the tools. Anything that fails to
+        parse stays None — the corresponding rules then report it missing,
+        which is accurate from the client's perspective.
+        """
+        from mcp.types import Implementation, ServerCapabilities, Tool
+
+        probes = self.audit_data.probes or {}
+
+        discover = probes.get(PROBE_DISCOVER)
+        if discover is not None and discover.payload is not None:
+            payload = discover.payload
+            supported = discover.details.get("supported_versions")
+            if isinstance(supported, list) and supported and all(isinstance(v, str) for v in supported):
+                self.audit_data.protocol_version = max(supported)
+            else:
+                self.audit_data.protocol_version = (DRAFT or LATEST).version
+            self.audit_data.server_info = self._parse_payload_model(Implementation, payload.get("serverInfo"))
+            self.audit_data.capabilities = self._parse_payload_model(ServerCapabilities, payload.get("capabilities"))
+            instructions = payload.get("instructions")
+            self.audit_data.instructions = instructions if isinstance(instructions, str) else None
+        else:
+            # No discover payload, but the stateless gateway answered — the
+            # server effectively speaks the probes' target version.
+            self.audit_data.protocol_version = (DRAFT or LATEST).version
+
+        stateless = probes.get(PROBE_STATELESS_LIST)
+        if stateless is not None and stateless.payload is not None:
+            raw_tools = stateless.payload.get("tools")
+            if isinstance(raw_tools, list):
+                try:
+                    self.audit_data.tools = [Tool.model_validate(tool) for tool in raw_tools]
+                except ValidationError as e:
+                    logger.info("Could not parse tools from the stateless probe payload: %s", e)
+
+    @staticmethod
+    def _parse_payload_model(model: type, value: object):
+        """Validate a probe-payload fragment into an MCP model, or None."""
+        if not isinstance(value, dict):
+            return None
+        try:
+            return model.model_validate(value)  # type: ignore[attr-defined]
+        except ValidationError as e:
+            logger.info("Could not parse %s from probe payload: %s", model.__name__, e)
+            return None
+
     def _run_all_rules(self) -> None:
-        """Execute all registered audit rules and update the audit score.
+        """Execute all applicable audit rules and update the audit score.
 
         Iterates through all rules, executes each one, logs the results,
         and updates the overall audit score based on rule severity and pass/fail status.
+
+        Rules whose spec-version range excludes the server's negotiated
+        protocol version — or whose skip_reason reports missing/redundant
+        observations — are skipped: they contribute to neither score nor
+        max_score, and are recorded in skipped_rules so the report shows they
+        were considered.
+
+        Rules in the READINESS_GROUP score on the separate readiness axis
+        (readiness_score/readiness_max); everything else scores on the main axis.
+        A separator line is logged before the first readiness rule so the two
+        sections are visually distinct in the streamed output.
         """
+        readiness_header_emitted = False
         for rule in sorted(self.rules, key=lambda r: r.sort_order):
+            if rule.group_name == READINESS_GROUP and not readiness_header_emitted:
+                readiness_header_emitted = True
+                logger.info("")
+                logger.info(
+                    "🔭 Readiness checks for MCP %s (informative — not part of the main score):",
+                    (DRAFT or LATEST).version,
+                )
+
+            skip_reason: str | None = None
+            if not rule.applies_to(self.audit_data.protocol_version):
+                skip_reason = SKIP_REASON_NOT_APPLICABLE
+            else:
+                skip_reason = rule.skip_reason(self.audit_data)
+
+            if skip_reason is not None:
+                logger.info("⏭️ Skipping rule '%s': %s", rule.rule_id, skip_reason)
+                self.skipped_rules.append(
+                    SkippedRule(
+                        rule_id=rule.rule_id,
+                        rule_name=rule.rule_name,
+                        reason=skip_reason,
+                        group_name=rule.group_name,
+                    )
+                )
+                continue
+
             res: RuleResult = rule.check(self.audit_data)
             res.rule_id = rule.rule_id
             logger.info(res.message)
 
-            self.max_score += res.severity.value
-            if res.passed:
-                self.score += res.severity.value
-
-            self.results.append(res)
+            if rule.group_name == READINESS_GROUP:
+                self.readiness_max += res.severity.value
+                if res.passed:
+                    self.readiness_score += res.severity.value
+                self.readiness_results.append(res)
+            else:
+                self.max_score += res.severity.value
+                if res.passed:
+                    self.score += res.severity.value
+                self.results.append(res)
 
     async def _collect_transport_metadata(self) -> None:
         """Collect transport and connection metadata from the MCP client.
@@ -158,6 +337,21 @@ class MCPAuditor:
         finally:
             if writer is not None:
                 writer.close()
+
+    async def _collect_probes(self) -> None:
+        """Run the sessionless HTTP probes and store their observations.
+
+        Probes observe spec behaviors outside the negotiated session (e.g.
+        2026-07-28 stateless-lifecycle support) — see mcpscore.probes. They
+        are HTTP-only: stdio audits record NOT_APPLICABLE results so rules
+        can distinguish "not probed" from "not collected".
+        """
+        url = self.audit_data.url
+        if url is None or not url.startswith(("http://", "https://")):
+            self.audit_data.probes = not_applicable_results(reason="probes require an HTTP(S) transport")
+            return
+
+        self.audit_data.probes = await run_all_probes(url)
 
     async def _collect_init_result(self) -> None:
         """Collect initialization data from the MCP server.
@@ -248,6 +442,12 @@ class MCPAuditor:
             - summary: Aggregate pass/fail counts (see get_audit_summary)
             - results: Per-rule results keyed by stable rule_id
               (see RuleResult.to_dict)
+            - skipped_rules: Rules considered but not executed (with reason),
+              e.g. rules outside the server's spec-version range
+            - spec: Negotiated/latest/readiness-target spec versions and the
+              observed lifecycle era (legacy / modern / dual-era)
+            - readiness: Independent readiness score for the next spec
+              revision, with its per-rule results — never part of the main score
 
         """
         return {
@@ -255,6 +455,19 @@ class MCPAuditor:
             "max_score": self.max_score,
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
+            "skipped_rules": [s.to_dict() for s in self.skipped_rules],
+            "spec": {
+                "negotiated_version": self.audit_data.protocol_version,
+                "latest_version": LATEST.version,
+                "readiness_target": (DRAFT or LATEST).version,
+                "era": self.era.value if self.era is not None else None,
+            },
+            "readiness": {
+                "score": self.readiness_score,
+                "max_score": self.readiness_max,
+                "results": [res.to_dict() for res in self.readiness_results],
+                "skipped": sum(1 for s in self.skipped_rules if s.group_name == READINESS_GROUP),
+            },
         }
 
     def get_audit_summary(self) -> dict:
@@ -262,9 +475,12 @@ class MCPAuditor:
 
         Returns:
             Dictionary containing:
-            - total: Total number of rules executed
-            - passed: Number of rules that passed
-            - failed: Number of rules that failed
+            - total: Total number of main-axis rules executed
+            - passed: Number of main-axis rules that passed
+            - failed: Number of main-axis rules that failed
+            - skipped: Number of main-axis rules considered but not executed
+              (readiness-group skips are counted in the report's readiness
+              section instead, keeping the summary internally consistent)
             - by_severity: Breakdown by severity level (CRITICAL, HIGH, MEDIUM, LOW)
               with counts for total, passed, and failed rules in each category
 
@@ -273,6 +489,7 @@ class MCPAuditor:
             "total": len(self.results),
             "passed": sum(1 for r in self.results if r.passed),
             "failed": sum(1 for r in self.results if not r.passed),
+            "skipped": sum(1 for s in self.skipped_rules if s.group_name != READINESS_GROUP),
             "by_severity": {
                 severity.name: {
                     "total": sum(1 for r in self.results if r.severity == severity),

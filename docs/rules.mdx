@@ -1,0 +1,107 @@
+---
+title: "Rules Reference"
+description: "Every rule mcpscore runs — generated from the rule registry, so it cannot drift from the code."
+icon: "list-check"
+---
+
+Every rule mcpscore runs, generated from the rule registry
+(`make docs-rules`) — this page cannot drift from the code.
+
+- **Rule ID** is the stable machine contract used in JSON reports and CI.
+- **Weight** is the severity's contribution to the score when the rule passes.
+- **Applies to** is the spec-version range; outside it the rule is skipped and
+  excluded from the maximum score (see the
+  [methodology](/methodology#multi-spec-version-scoring)).
+
+## Protocol Version
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `protocol_version_allowed` | MCP Protocol Version - Allowed Versions | CRITICAL | 5 | all versions |
+| `protocol_version_not_deprecated` | MCP Protocol Version - Deprecated Version | HIGH | 3 | all versions |
+| `protocol_version_latest` | MCP Protocol Version - Latest Version | MEDIUM | 2 | all versions |
+
+## Server Info
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `server_name_present` | Server Info - Name Present | CRITICAL | 5 | all versions |
+| `server_version_present` | Server Info - Version Present | HIGH | 3 | all versions |
+| `server_title_present` | Server Info - Title Present | MEDIUM | 2 | all versions |
+| `server_instructions_present` | Server Info - Instructions Present | LOW | 1 | all versions |
+
+## Capabilities
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `capability_tools_present` | Capabilities - Tools Present | CRITICAL | 5 | all versions |
+| `capability_tools_list_changed` | Capabilities - Tools listChanged Implemented | HIGH | 3 | all versions |
+| `capability_prompts_present` | Capabilities - Prompts Present | CRITICAL | 5 | all versions |
+| `capability_prompts_list_changed` | Capabilities - Prompts listChanged Implemented | HIGH | 3 | all versions |
+| `capability_resources_present` | Capabilities - Resources Present | CRITICAL | 5 | all versions |
+| `capability_resources_list_changed` | Capabilities - Resources listChanged Implemented | HIGH | 3 | all versions |
+| `capability_resources_subscribe` | Capabilities - Resources subscribe Implemented | HIGH | 3 | all versions |
+| `capability_logging_present` | Capabilities - Logging Present | MEDIUM | 2 | all versions |
+
+## Security
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `security_tls_enabled` | HTTPS/TLS Enabled | CRITICAL | 5 | all versions |
+| `security_malformed_request_handling` | Malformed Request Handling | MEDIUM | 2 | all versions |
+| `security_error_data_leak` | No Sensitive Data in Error Messages | MEDIUM | 2 | all versions |
+
+## Tools
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `tools_at_least_one` | Tools - At least one tool must exist | CRITICAL | 5 | all versions |
+| `tools_name_present_in_all` | Tools - All tools must have a Name | CRITICAL | 5 | all versions |
+| `tools_names_unique` | Tools - All tool names must be unique | CRITICAL | 5 | all versions |
+| `tools_names_valid_format` | Tools - All tool names must follow the format | HIGH | 3 | all versions |
+| `tools_title_present_in_all` | Tools - All tools must have a Title | HIGH | 3 | all versions |
+| `tools_description_present_in_all` | Tools - All tools must have a Description | HIGH | 3 | all versions |
+| `tools_input_schema_valid` | Tools - All tools must have a valid input schema | HIGH | 3 | all versions |
+| `tools_output_schema_valid` | Tools - All tools must have a valid output schema | HIGH | 3 | all versions |
+| `tools_annotations_present` | Tools - All tools should declare behavior annotations | MEDIUM | 2 | all versions |
+
+## Transport
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `transport_streamable_http` | Streamable HTTP Transport | LOW | 1 | all versions |
+
+## Resources
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `resources_description_present` | Resources - All resources should have a description | MEDIUM | 2 | all versions |
+
+## Prompts
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `prompts_description_present` | Prompts - All prompts should have a description | MEDIUM | 2 | all versions |
+| `prompts_arguments_documented` | Prompts - All prompt arguments should be documented | LOW | 1 | all versions |
+
+## Readiness rules (separate score)
+
+These rules assess readiness for MCP **2026-07-28** on the independent readiness
+axis — they never affect the main score. See the
+[methodology](/methodology#the-readiness-score-separate-informative) for the
+normative citations behind each rule.
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `readiness_2026_server_discover` | Readiness 2026-07-28 - server/discover | CRITICAL | 5 | all versions |
+| `readiness_2026_stateless_request` | Readiness 2026-07-28 - stateless requests | CRITICAL | 5 | all versions |
+| `readiness_2026_meta_validation` | Readiness 2026-07-28 - _meta validation | HIGH | 3 | all versions |
+| `readiness_2026_header_validation` | Readiness 2026-07-28 - HTTP header validation | HIGH | 3 | all versions |
+| `readiness_2026_cache_metadata` | Readiness 2026-07-28 - caching hints | HIGH | 3 | all versions |
+| `readiness_2026_unsupported_version_error` | Readiness 2026-07-28 - unsupported-version errors | MEDIUM | 2 | all versions |
+| `readiness_2026_error_code_migration` | Readiness 2026-07-28 - error-code migration | MEDIUM | 2 | all versions |
+| `readiness_2026_result_type` | Readiness 2026-07-28 - resultType on results | MEDIUM | 2 | all versions |
+| `readiness_2026_deprecated_features` | Readiness 2026-07-28 - deprecated features | MEDIUM | 2 | all versions |
+| `readiness_2026_tool_schema_dialect` | Readiness 2026-07-28 - tool schema dialect | LOW | 1 | all versions |
+| `readiness_2026_no_session_id` | Readiness 2026-07-28 - no session IDs | HIGH | 3 | all versions |
+| `readiness_2026_removed_methods` | Readiness 2026-07-28 - removed methods | MEDIUM | 2 | all versions |

@@ -52,7 +52,29 @@ def mock_auditor() -> MagicMock:
     """
     auditor = MagicMock(spec=MCPAuditor)
     auditor.audit = AsyncMock(return_value=(85, 100))
+    auditor.audit_modern_only = AsyncMock(return_value=False)
+    auditor.get_audit_report = MagicMock(return_value=_report_payload())
     return auditor
+
+
+def _report_payload(**overrides) -> dict:
+    """Complete report dict as returned by MCPAuditor.get_audit_report()."""
+    report = {
+        "score": 85,
+        "max_score": 100,
+        "summary": {"total": 2, "passed": 1, "failed": 1, "skipped": 0, "by_severity": {}},
+        "results": [],
+        "skipped_rules": [],
+        "spec": {
+            "negotiated_version": "2025-11-25",
+            "latest_version": "2025-11-25",
+            "readiness_target": "2026-07-28",
+            "era": "legacy",
+        },
+        "readiness": {"score": 3, "max_score": 13, "results": []},
+    }
+    report.update(overrides)
+    return report
 
 
 class TestMain:
@@ -263,6 +285,7 @@ class TestAsyncMain:
     ) -> None:
         """Test that audit scores are displayed correctly in logs."""
         monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_auditor.get_audit_report = MagicMock(return_value=_report_payload(score=42, max_score=75))
         mock_auditor.audit = AsyncMock(return_value=(42, 75))
 
         with (
@@ -542,11 +565,9 @@ class TestJSONOutput:
     @pytest.fixture
     def audit_report(self) -> dict:
         """Audit report payload as returned by MCPAuditor.get_audit_report()."""
-        return {
-            "score": 85,
-            "max_score": 100,
-            "summary": {"total": 2, "passed": 1, "failed": 1, "by_severity": {}},
-            "results": [
+        return _report_payload(
+            summary={"total": 2, "passed": 1, "failed": 1, "skipped": 0, "by_severity": {}},
+            results=[
                 {
                     "rule_id": "transport_streamable_http",
                     "rule_name": "Streamable HTTP Transport",
@@ -557,7 +578,7 @@ class TestJSONOutput:
                     "details": None,
                 },
             ],
-        }
+        )
 
     async def test_json_flag_emits_report_to_stdout(
         self,
@@ -604,7 +625,6 @@ class TestJSONOutput:
             await async_main()
 
         assert capsys.readouterr().out == ""
-        mock_auditor.get_audit_report.assert_not_called()
 
     async def test_json_flag_with_remote_server(
         self,
@@ -707,3 +727,118 @@ class TestAsyncMainCleanup:
             await async_main()
 
         mock_client.cleanup.assert_called_once()
+
+
+class TestModernOnlyFallback:
+    async def test_modern_only_server_is_audited_instead_of_exit_2(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A failed legacy connection falls back to the probe-only modern audit."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://modern.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_auditor.audit_modern_only = AsyncMock(return_value=True)
+        mock_auditor.score = 10
+        mock_auditor.max_score = 97
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()  # must not raise SystemExit
+
+        mock_auditor.audit_modern_only.assert_awaited_once_with("https://modern.example/mcp")
+        assert "Modern-only MCP server detected" in caplog.text
+
+    async def test_url_without_modern_support_still_exits_2(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://legacy.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 2
+        mock_auditor.audit_modern_only.assert_awaited_once_with("https://legacy.example/mcp")
+
+    async def test_stdio_target_never_tries_modern_fallback(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 2
+        mock_auditor.audit_modern_only.assert_not_awaited()
+
+    async def test_modern_only_json_report_is_emitted(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        capsys,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://modern.example/mcp", "--json"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_auditor.audit_modern_only = AsyncMock(return_value=True)
+        mock_auditor.score = 10
+        mock_auditor.max_score = 97
+        mock_auditor.audit_data = MagicMock()
+        mock_auditor.audit_data.transport_type = MCPTransportType.STREAMABLE_HTTP
+        mock_auditor.get_audit_report.return_value = _report_payload(score=10, max_score=97)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == "https://modern.example/mcp"
+        assert report["transport"] == str(MCPTransportType.STREAMABLE_HTTP)
+        assert report["score"] == 10
+
+
+class TestLogAuditOutcome:
+    async def test_readiness_not_assessed_for_stdio(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A run with no probe observations logs the not-assessed readiness line."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(readiness={"score": 0, "max_score": 0, "results": [], "skipped": 0})
+        )
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        assert "not assessed" in caplog.text

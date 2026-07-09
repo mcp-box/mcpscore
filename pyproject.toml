@@ -60,13 +60,14 @@ dependencies = [
     "mcp>=1.28.0",
     "httpx>=0.28.1",
     "httpx-sse>=0.4.3",
+    "jsonschema>=4.21",
 ]
 
 [project.urls]
-Homepage = "https://mcpaudit.dev"
+Homepage = "https://mcpscore.dev"
 Repository = "https://github.com/mcp-box/mcpscore"
 Issues = "https://github.com/mcp-box/mcpscore/issues"
-Documentation = "https://github.com/mcp-box/mcpscore#readme"
+Documentation = "https://docs.mcpscore.dev"
 Changelog = "https://github.com/mcp-box/mcpscore/blob/main/CHANGELOG.md"
 
 [project.scripts]

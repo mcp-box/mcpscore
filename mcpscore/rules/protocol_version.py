@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from typing import ClassVar
 
-from mcpscore.enums import MCPProtocolVersion
+from mcpscore.spec import LATEST, allowed_versions, compare, deprecated_versions
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_protocol_version
 from .registry import register_rule
@@ -83,9 +83,9 @@ class AllowedVersionRule(ProtocolVersionBaseRule):
             RuleResult with the check outcome
 
         """
-        # Check if the version is in our allowed list
-        allowed_versions = [v.value for v in MCPProtocolVersion]
-        passed = protocol_version in allowed_versions
+        # Check if the version is in the spec registry's allowed list
+        allowed = allowed_versions()
+        passed = protocol_version in allowed
 
         message = (
             f"✅ Protocol version '{protocol_version}' is one of the allowed versions"
@@ -98,7 +98,7 @@ class AllowedVersionRule(ProtocolVersionBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"version": protocol_version, "allowed_versions": allowed_versions},
+            details={"version": protocol_version, "allowed_versions": allowed},
         )
 
 
@@ -127,10 +127,14 @@ class LatestVersionRule(ProtocolVersionBaseRule):
             RuleResult with the check outcome
 
         """
-        # Check if the version is the most recent version
-        passed: bool = protocol_version == MCPProtocolVersion.Latest
-        if passed:
+        # At least the most recent final version (a newer draft is not "behind")
+        passed: bool = compare(protocol_version, LATEST.version) >= 0
+        if protocol_version == LATEST.version:
             message: str = f"✅ Protocol version '{protocol_version}' is the latest version"
+        elif passed:
+            message: str = (
+                f"✅ Protocol version '{protocol_version}' is newer than the latest final version '{LATEST.version}'"
+            )
         else:
             message: str = f"❌ Not using the latest protocol version. Current: '{protocol_version}'"
 
@@ -139,7 +143,7 @@ class LatestVersionRule(ProtocolVersionBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"version": protocol_version, "latest_version": MCPProtocolVersion.Latest},
+            details={"version": protocol_version, "latest_version": LATEST.version},
         )
 
 
@@ -150,10 +154,8 @@ class DeprecatedVersionRule(ProtocolVersionBaseRule):
     rule_id = "protocol_version_not_deprecated"
     rule_order = 2
 
-    deprecated_versions: ClassVar[list[str]] = [
-        # Add versions here as the MCP spec deprecates them
-    ]
-    """Protocol versions deprecated by the MCP specification."""
+    deprecated_versions: ClassVar[list[str]] = deprecated_versions()
+    """Protocol versions deprecated by the MCP specification (from the spec registry)."""
 
     @property
     def rule_name(self) -> str:

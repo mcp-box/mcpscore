@@ -1,0 +1,156 @@
+---
+title: "Scoring Methodology"
+description: "Exactly how the mcpscore score is computed, what is and is not checked, and why — verifiable, disputable, spec-anchored."
+icon: "scale-balanced"
+---
+
+mcpscore's value rests on its score being **trustworthy**. This page explains exactly
+how the score is computed, what is and is not checked, and why — so you can verify
+every claim yourself, dispute a rule you disagree with, or propose a new one.
+
+## Principles
+
+1. **Deterministic.** No LLM judging, no API keys, no sampling. The same server state
+   always produces the same score, in seconds. This makes mcpscore usable as a CI gate
+   and its results reproducible by anyone.
+2. **Spec-anchored.** Every rule enforces something the
+   [MCP specification](https://modelcontextprotocol.io/specification) or its published
+   best practices actually says. Readiness rules cite the SEP (Specification
+   Enhancement Proposal) they enforce, and the citation is included in every result.
+3. **Fair across spec versions.** MCP is a versioned protocol; servers on different
+   revisions are scored against the revision *they* negotiated, never punished for a
+   spec they don't speak yet (see [Multi-spec-version scoring](#multi-spec-version-scoring)).
+4. **Honest about limits.** Anything mcpscore cannot verify from the outside is
+   [documented as untested](#what-mcpscore-deliberately-does-not-test), not silently
+   skipped.
+
+## The score
+
+Every rule has a severity, and each **passing** rule contributes its weight to the
+score. The final score is reported as `earned/maximum`.
+
+| Severity | Weight | Meaning |
+|----------|--------|---------|
+| CRITICAL | 5 | Spec violations that break interoperability (protocol version, server name, TLS) |
+| HIGH     | 3 | Strong spec expectations (server version, valid tool schemas) |
+| MEDIUM   | 2 | Recommendations that improve agent UX (titles, descriptions, error hygiene) |
+| LOW      | 1 | Nice-to-haves (capability extras, transport recommendations) |
+
+Only **applicable** rules count toward the maximum: a rule that cannot meaningfully
+run against your server is *skipped* and excluded from both the earned and the maximum
+score — never failed. Every skip appears in the JSON report (`skipped_rules`) with one
+of three reasons:
+
+| Skip reason | Meaning |
+|---|---|
+| `not-applicable` | The rule's spec-version range excludes the negotiated version (e.g. a rule for behavior your revision doesn't define) |
+| `insufficient-data` | The observations the rule needs are unavailable (e.g. a network probe errored, or probes don't run for this transport) — the rule can neither pass nor fail |
+| `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support — the gateway rules already carry that verdict; repeating it per detail would pile on noise |
+
+## How an audit runs
+
+1. **Connect** — stdio (local `.py`/`.js` servers), Streamable HTTP, or SSE, with
+   automatic transport detection. A connection only counts once the server completes a
+   real MCP handshake.
+2. **Collect** — protocol version, server info, capabilities, tools, resources,
+   prompts, TLS details.
+3. **Probe** (HTTP/HTTPS servers only) — a set of sessionless requests observing
+   behavior outside the negotiated session, e.g. whether the server also speaks the
+   next spec revision's stateless lifecycle. Probes are read-only by design:
+   **mcpscore never invokes `tools/call` against your server**, so an audit can never
+   trigger tool side effects.
+4. **Evaluate** — every registered rule runs against the collected data and probe
+   observations. See the [Rules Reference](/rules) for the full list.
+
+## Multi-spec-version scoring
+
+MCP publishes dated spec revisions (`2024-11-05` … `2025-11-25`, with `2026-07-28`
+in release-candidate stage), and the 2026 revision replaces the stateful `initialize`
+lifecycle with a stateless one. The spec itself describes servers as **Legacy**
+(stateful), **Modern** (stateless), or **Dual-era** (both). mcpscore treats the spec
+version as a *property of your server that it detects*, not a mode of the tool:
+
+- Your server is **scored against the spec revision it negotiated**. Rules declare the
+  version range they apply to; outside it they are skipped, keeping scores comparable
+  across servers on different revisions.
+- The report states the **era** your server was observed to support (`legacy`,
+  `modern`, or `dual-era`), following the spec's own detection guidance.
+- **Modern-only servers are fully supported**: if the legacy handshake fails but the
+  server answers stateless requests, mcpscore audits it through its probe layer
+  instead of reporting a connection failure.
+
+## The readiness score (separate, informative)
+
+Ahead of a new spec revision, mcpscore answers a second question: **"is this server
+ready for the upcoming spec?"** This is deliberately a *separate* score
+(`readiness.score / readiness.max_score` in the report), never mixed into the main
+score — a fully compliant 2025-11-25 server keeps its clean main score, and readiness
+is guidance, not punishment.
+
+Readiness rules for the **2026-07-28** revision, each anchored to normative spec
+language (MUST/MUST NOT unless noted):
+
+| Rule | Severity | Normative basis |
+|---|---|---|
+| `readiness_2026_server_discover` | CRITICAL | Servers MUST implement `server/discover` ([SEP-2567](https://modelcontextprotocol.io/specification/draft/server/discover)) |
+| `readiness_2026_stateless_request` | CRITICAL | Requests carry their context in `_meta`; the `initialize` handshake is removed ([SEP-2575](https://modelcontextprotocol.io/specification/draft/basic/index)) |
+| `readiness_2026_meta_validation` | HIGH | Requests missing required `_meta` fields MUST be rejected with `-32602` + HTTP 400 |
+| `readiness_2026_header_validation` | HIGH | Header/body mismatches MUST be rejected with `-32020` (HeaderMismatch) + HTTP 400 ([SEP-2243](https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http)) |
+| `readiness_2026_cache_metadata` | HIGH | List/discover results MUST carry `ttlMs >= 0` and `cacheScope` ([SEP-2549](https://modelcontextprotocol.io/specification/draft/server/utilities/caching)) |
+| `readiness_2026_unsupported_version_error` | MEDIUM | Unknown protocol versions MUST be rejected with `-32022` naming the supported versions |
+| `readiness_2026_error_code_migration` | MEDIUM | Missing resources yield `-32602`; the legacy `-32002` MUST NOT be emitted ([SEP-2164](https://modelcontextprotocol.io/specification/draft/changelog)) |
+| `readiness_2026_result_type` | MEDIUM | All results carry the `resultType` discriminator ([SEP-2322](https://modelcontextprotocol.io/specification/draft/basic/patterns/mrtr)) |
+| `readiness_2026_deprecated_features` | MEDIUM | Features deprecated in 2026-07-28 (logging; SHOULD NOT adopt) ([SEP-2577](https://modelcontextprotocol.io/specification/draft/deprecated)) |
+| `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([SEP-2106](https://modelcontextprotocol.io/specification/draft/basic/index)) |
+| `readiness_2026_no_session_id` | HIGH | No `Mcp-Session-Id` minted or echoed on modern requests — leaked legacy session bookkeeping |
+| `readiness_2026_removed_methods` | MEDIUM | Removed methods (e.g. `ping`) rejected with 404 + `-32601`, not served — leaked legacy surface |
+
+Two things worth knowing about how these run:
+
+- The last two are **legacy-leakage checks**: they only run when your server *shows*
+  modern support, because a legacy-only server keeping sessions is correct behavior,
+  not leakage. A dual-era server (serving both lifecycles) is spec-legal and scores
+  normally — what's flagged is legacy artifacts inside *modern* interactions.
+- When the 2026-07-28 revision goes final and adoption normalizes, these rules migrate
+  into the main score for servers that negotiate it — **their `rule_id`s never
+  change**, so CI integrations and report consumers are unaffected.
+
+<Note>
+**Draft-spec citations** — the 2026-07-28 revision is final-pending (release candidate
+locked 2026-05-21). All citations above will be re-verified against the dated spec
+URLs when the revision is published, before the corresponding mcpscore release.
+</Note>
+
+## What mcpscore deliberately does not test
+
+Honesty about limits is part of the methodology. The following are currently out of
+scope, either because they are not externally observable or because testing them
+safely from the outside is not yet possible:
+
+- **True statelessness** (no hidden cross-request state) — only probabilistically
+  testable; the spec itself concedes this.
+- **`requestState` integrity enforcement** (MRTR) — only tamper-rejection is
+  observable, and active tampering probes are deferred.
+- **`subscriptions/listen` behavior** and SSE stream semantics.
+- **Tasks and MCP Apps extensions** — they version independently of the core spec.
+- **Client-side OAuth obligations** (issuer validation, credential binding, scope
+  accumulation) — not observable from a server audit.
+- **Tool behavior** — mcpscore never calls your tools, so it cannot judge what they
+  *do*, only how they are described and typed.
+
+## Stability contract
+
+- **`rule_id` is stable.** Display names and messages may be reworded; the `rule_id`
+  in the JSON report is a machine contract and never changes meaning.
+- **The JSON report schema is versioned** (`schema_version`), bumped only on
+  backwards-incompatible changes. New fields are added additively.
+- Rule additions and severity changes are documented in the
+  [changelog](https://github.com/mcp-box/mcpscore/blob/main/CHANGELOG.md).
+
+## Disagree with a rule?
+
+The methodology is open by design. If a rule seems wrong for your server, open an
+issue with the `rule_id` and the spec text you believe contradicts it — rules are
+required to be defensible by citation, and we treat a rule that can't be defended as a
+bug. To propose a new rule, see
+[CONTRIBUTING](https://github.com/mcp-box/mcpscore/blob/main/CONTRIBUTING.md).

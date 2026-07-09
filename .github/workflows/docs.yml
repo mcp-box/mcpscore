@@ -1,0 +1,44 @@
+name: Docs
+
+# Deployment is handled by the Mintlify GitHub App (serves the docs/ directory
+# on pushes to main). This workflow only validates: the generated rules
+# reference must match the rule registry, and the site must have no broken links.
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "scripts/generate_rules_doc.py"
+      - "mcpscore/rules/**"
+      - "mcpscore/spec.py"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "scripts/generate_rules_doc.py"
+      - "mcpscore/rules/**"
+      - "mcpscore/spec.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          python-version: "3.13"
+      - run: uv sync --all-groups
+      - name: Rules reference must match the rule registry
+        run: |
+          uv run python scripts/generate_rules_doc.py
+          git diff --exit-code docs/rules.mdx
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Check for broken links
+        working-directory: docs
+        run: npx --yes mint broken-links

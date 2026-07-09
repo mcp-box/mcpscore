@@ -70,6 +70,39 @@ def _mcpscore_version() -> str:
         return "unknown"
 
 
+def log_audit_outcome(auditor: MCPAuditor) -> None:
+    """Log the human-readable audit outcome: score, spec/era line, readiness line.
+
+    The main score and the readiness score are deliberately separate lines —
+    readiness for the next spec revision is informative and never part of the
+    main score (see the multi-spec-version design).
+    """
+    report = auditor.get_audit_report()
+    spec = report["spec"]
+    readiness = report["readiness"]
+
+    logger.info("")
+    logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
+    logger.info(
+        "Spec: %s negotiated (latest: %s) · era: %s",
+        spec["negotiated_version"] or "unknown",
+        spec["latest_version"],
+        spec["era"] or "unknown",
+    )
+    if readiness["max_score"] > 0:
+        logger.info(
+            "Readiness for MCP %s: %s/%s (informative — not part of the main score)",
+            spec["readiness_target"],
+            readiness["score"],
+            readiness["max_score"],
+        )
+    else:
+        logger.info(
+            "Readiness for MCP %s: not assessed (no probe observations for this transport)",
+            spec["readiness_target"],
+        )
+
+
 def build_report(target: str, transport: MCPTransportType | None, auditor: MCPAuditor) -> dict:
     """Build the machine-readable audit report emitted by --json.
 
@@ -106,9 +139,12 @@ async def async_main() -> None:
     6. Cleaning up resources
 
     Supports local servers (.py, .js) via STDIO and remote servers via
-    Streamable HTTP or SSE (auto-detected).
+    Streamable HTTP or SSE (auto-detected). When the legacy connection fails
+    against an HTTP(S) target, the server is checked for modern-only
+    (2026-07-28 stateless lifecycle) support and audited via probes if so.
 
-    Exits with code 1 on usage errors, or code 2 if connection fails.
+    Exits with code 1 on usage errors, or code 2 if connection fails and the
+    server shows no modern-lifecycle support either.
     """
     logger.info("Welcome to MCPScore!")
 
@@ -120,6 +156,17 @@ async def async_main() -> None:
     success, transport = await client.detect_and_connect(args.target)
 
     if not success:
+        if args.target.startswith(("http://", "https://")):
+            logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
+            if await auditor.audit_modern_only(args.target):
+                logger.info(
+                    "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
+                )
+                log_audit_outcome(auditor)
+                if args.json:
+                    report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                    sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                return
         logger.error("Error connecting to the MCP server: %s", args.target)
         sys.exit(2)
 
@@ -128,8 +175,8 @@ async def async_main() -> None:
 
     try:
         logger.info("Starting the audit...")
-        final_score, max_score = await auditor.audit(client)
-        logger.info("Audit finished. Final score: %s/%s", final_score, max_score)
+        await auditor.audit(client)
+        log_audit_outcome(auditor)
 
         if args.json:
             report = build_report(args.target, transport, auditor)
