@@ -28,6 +28,18 @@ testcov: ## Run tests with coverage report
 	uv run pytest --cov --cov-report=html --cov-report=term-missing
 	@echo "Coverage report: htmlcov/index.html"
 
+.PHONY: docs-rules
+docs-rules: ## Regenerate docs/rules.mdx from the rule registry
+	uv run python scripts/generate_rules_doc.py
+
+.PHONY: docs-serve
+docs-serve: docs-rules ## Serve the documentation locally (Mintlify, needs Node)
+	cd docs && npx mint dev
+
+.PHONY: docs-check
+docs-check: docs-rules ## Validate the documentation (broken links)
+	cd docs && npx mint broken-links
+
 .PHONY: all
 all: lint typecheck testcov ## Run all checks (mirrors CI)
 

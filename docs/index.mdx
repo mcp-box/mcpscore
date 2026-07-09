@@ -1,0 +1,81 @@
+---
+title: "mcpscore"
+description: "Lighthouse for MCP — audit any MCP server and get a scored, actionable report in seconds."
+icon: "gauge-high"
+---
+
+**Lighthouse for MCP** — audit any [Model Context Protocol](https://modelcontextprotocol.io)
+server and get a scored, actionable report in seconds.
+
+<CodeGroup>
+
+```bash uvx (no install)
+uvx mcpscore https://your-server.example/mcp
+```
+
+```bash uv
+uv tool install mcpscore
+mcpscore https://your-server.example/mcp
+```
+
+```bash pip
+pip install mcpscore
+mcpscore https://your-server.example/mcp
+```
+
+</CodeGroup>
+
+MCP servers that violate the spec fail silently in the worst place: inside someone
+else's AI agent. A missing tool description, an outdated protocol version, or an
+unencrypted endpoint won't crash your server — it will just make agents pick the wrong
+tool, drop your server from their registry, or leak traffic. mcpscore catches these
+issues before your users do.
+
+## What you get
+
+- **A severity-weighted score** across protocol compliance, server metadata,
+  capabilities, tools, security, and transport — deterministic, no API keys, CI-ready.
+- **A readiness score for the next spec revision** (2026-07-28, stateless lifecycle) —
+  separate from your main score, so it informs without punishing.
+- **Actionable messages** — every failed check says what to fix, and every rule is
+  anchored to the spec (see the [methodology](/methodology)).
+
+## Quick start
+
+```bash
+# Local servers (stdio)
+mcpscore path/to/server.py
+mcpscore path/to/server.js
+
+# Remote servers (Streamable HTTP / SSE, auto-detected —
+# including modern-only servers on the 2026 stateless lifecycle)
+mcpscore https://example.com/mcp
+
+# Machine-readable report for CI
+mcpscore https://example.com/mcp --json > report.json
+```
+
+Example output tail:
+
+```
+Audit finished. Final score: 88/97
+Spec: 2025-11-25 negotiated (latest: 2025-11-25) · era: legacy
+Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score)
+```
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Scoring Methodology" icon="scale-balanced" href="/methodology">
+    How the score works, and why you can trust it
+  </Card>
+  <Card title="Rules Reference" icon="list-check" href="/rules">
+    Every rule, its severity, and when it applies
+  </Card>
+  <Card title="GitHub" icon="github" href="https://github.com/mcp-box/mcpscore">
+    Source, issues, and contributing
+  </Card>
+  <Card title="PyPI" icon="python" href="https://pypi.org/project/mcpscore/">
+    uv tool install mcpscore · pip install mcpscore
+  </Card>
+</CardGroup>

@@ -64,10 +64,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://mcpaudit.dev"
+Homepage = "https://mcpscore.dev"
 Repository = "https://github.com/mcp-box/mcpscore"
 Issues = "https://github.com/mcp-box/mcpscore/issues"
-Documentation = "https://github.com/mcp-box/mcpscore#readme"
+Documentation = "https://docs.mcpscore.dev"
 Changelog = "https://github.com/mcp-box/mcpscore/blob/main/CHANGELOG.md"
 
 [project.scripts]

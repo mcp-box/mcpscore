@@ -17,6 +17,10 @@ pip install mcpscore
 mcpscore https://your-server.example/mcp
 ```
 
+**Documentation**: [docs.mcpscore.dev](https://docs.mcpscore.dev) — including the full
+[scoring methodology](https://docs.mcpscore.dev/methodology/) and
+[rules reference](https://docs.mcpscore.dev/rules/).
+
 ## How scoring works
 
 Every rule has a severity, and each passing rule contributes its weight to the score:

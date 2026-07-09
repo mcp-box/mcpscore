@@ -1,0 +1,49 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "mcpscore",
+  "description": "Lighthouse for MCP — audit any MCP server and get a scored, actionable report in seconds.",
+  "colors": {
+    "primary": "#0D9373",
+    "light": "#2EBD85",
+    "dark": "#0D9373"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": ["index"]
+      },
+      {
+        "group": "Scoring",
+        "pages": ["methodology", "rules"]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "PyPI",
+        "href": "https://pypi.org/project/mcpscore/"
+      }
+    ],
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/mcp-box/mcpscore"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/mcp-box/mcpscore"
+    }
+  },
+  "contextual": {
+    "options": ["copy", "view"]
+  },
+  "seo": {
+    "metatags": {
+      "og:site_name": "mcpscore"
+    }
+  }
+}
