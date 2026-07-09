@@ -57,7 +57,7 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "mcp>=1.28.0",
+    "mcp>=1.28.1",
     "httpx>=0.28.1",
     "httpx-sse>=0.4.3",
     "jsonschema>=4.21",
@@ -75,11 +75,11 @@ mcpscore = "mcpscore.cli:main"
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.410",
-    "pytest>=9.1.0",
+    "pyright>=1.1.411",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.18",
+    "ruff>=0.15.20",
 ]
 
 [tool.pyright]
