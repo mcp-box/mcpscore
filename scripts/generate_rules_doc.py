@@ -68,7 +68,8 @@ def generate() -> str:
                 f"| {int(rule.severity)} | {_applies_to(rule)} |\n"
             )
         lines.append("\n")
-    return "".join(lines)
+    # Single trailing newline at EOF (keeps the end-of-file-fixer hook happy).
+    return "".join(lines).rstrip("\n") + "\n"
 
 
 if __name__ == "__main__":
