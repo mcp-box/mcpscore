@@ -91,9 +91,18 @@ class SkippedRule:
     reason: str
     """Why the rule was skipped, e.g. SKIP_REASON_NOT_APPLICABLE."""
 
+    group_name: str = "default"
+    """Group of the skipped rule — lets report consumers (and the summary)
+    attribute the skip to the right scoring axis (main vs readiness)."""
+
     def to_dict(self) -> dict:
         """Serialize this record for machine-readable reports."""
-        return {"rule_id": self.rule_id, "rule_name": self.rule_name, "reason": self.reason}
+        return {
+            "rule_id": self.rule_id,
+            "rule_name": self.rule_name,
+            "reason": self.reason,
+            "group_name": self.group_name,
+        }
 
 
 @dataclass

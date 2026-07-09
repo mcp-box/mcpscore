@@ -86,8 +86,7 @@ class MCPAuditor:
 
         """
         self.mcp_client = client
-        self.score = 0
-        self.max_score = 0
+        self._reset_run_state()
 
         await self._collect_transport_metadata()
         await self._collect_init_result()
@@ -103,6 +102,23 @@ class MCPAuditor:
         self._run_all_rules()
 
         return self.score, self.max_score
+
+    def _reset_run_state(self) -> None:
+        """Reset all per-run state so a reused auditor never leaks a prior run.
+
+        Both audit entry points call this first: scores, results, skipped
+        rules, the readiness axis, the detected era, and the collected audit
+        data are all per-run.
+        """
+        self.audit_data = AuditData()
+        self.score = 0
+        self.max_score = 0
+        self.results = []
+        self.skipped_rules = []
+        self.readiness_score = 0
+        self.readiness_max = 0
+        self.readiness_results = []
+        self.era = None
 
     async def audit_modern_only(self, url: str) -> bool:
         """Audit a modern-only HTTP server via probes, without a legacy session.
@@ -126,12 +142,11 @@ class MCPAuditor:
         if not url.startswith(("http://", "https://")):
             return False
 
-        self.score = 0
-        self.max_score = 0
-
         probes = await run_all_probes(url)
         if not has_modern_support(probes):
             return False
+
+        self._reset_run_state()
 
         self.audit_data.probes = probes
         self.audit_data.url = url
@@ -235,7 +250,12 @@ class MCPAuditor:
             if skip_reason is not None:
                 logger.info("⏭️ Skipping rule '%s': %s", rule.rule_id, skip_reason)
                 self.skipped_rules.append(
-                    SkippedRule(rule_id=rule.rule_id, rule_name=rule.rule_name, reason=skip_reason)
+                    SkippedRule(
+                        rule_id=rule.rule_id,
+                        rule_name=rule.rule_name,
+                        reason=skip_reason,
+                        group_name=rule.group_name,
+                    )
                 )
                 continue
 
@@ -446,6 +466,7 @@ class MCPAuditor:
                 "score": self.readiness_score,
                 "max_score": self.readiness_max,
                 "results": [res.to_dict() for res in self.readiness_results],
+                "skipped": sum(1 for s in self.skipped_rules if s.group_name == READINESS_GROUP),
             },
         }
 
@@ -454,10 +475,12 @@ class MCPAuditor:
 
         Returns:
             Dictionary containing:
-            - total: Total number of rules executed
-            - passed: Number of rules that passed
-            - failed: Number of rules that failed
-            - skipped: Number of rules considered but not executed
+            - total: Total number of main-axis rules executed
+            - passed: Number of main-axis rules that passed
+            - failed: Number of main-axis rules that failed
+            - skipped: Number of main-axis rules considered but not executed
+              (readiness-group skips are counted in the report's readiness
+              section instead, keeping the summary internally consistent)
             - by_severity: Breakdown by severity level (CRITICAL, HIGH, MEDIUM, LOW)
               with counts for total, passed, and failed rules in each category
 
@@ -466,7 +489,7 @@ class MCPAuditor:
             "total": len(self.results),
             "passed": sum(1 for r in self.results if r.passed),
             "failed": sum(1 for r in self.results if not r.passed),
-            "skipped": len(self.skipped_rules),
+            "skipped": sum(1 for s in self.skipped_rules if s.group_name != READINESS_GROUP),
             "by_severity": {
                 severity.name: {
                     "total": sum(1 for r in self.results if r.severity == severity),

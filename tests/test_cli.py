@@ -818,3 +818,27 @@ class TestModernOnlyFallback:
         assert report["target"] == "https://modern.example/mcp"
         assert report["transport"] == str(MCPTransportType.STREAMABLE_HTTP)
         assert report["score"] == 10
+
+
+class TestLogAuditOutcome:
+    async def test_readiness_not_assessed_for_stdio(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A run with no probe observations logs the not-assessed readiness line."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(readiness={"score": 0, "max_score": 0, "results": [], "skipped": 0})
+        )
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        assert "not assessed" in caplog.text

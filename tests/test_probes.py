@@ -323,3 +323,55 @@ async def test_probe_payloads_are_captured_for_data_extraction():
     assert stateless_payload["tools"] == []
     # Payloads never leak into report serialization.
     assert "payload" not in results[PROBE_DISCOVER].to_dict()
+
+
+async def test_sse_response_without_data_line_is_unsupported():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text="event: ping\n\n")
+
+    results = await _run(handler)
+    assert results[PROBE_DISCOVER].outcome is ProbeOutcome.UNSUPPORTED
+
+
+async def test_error_without_message_field_is_handled():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32600}})
+
+    results = await _run(handler)
+    details = results[PROBE_DISCOVER].details
+    assert details["error_code"] == -32600
+    assert "error_message" not in details
+
+
+async def test_unknown_version_error_with_non_dict_data():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        return httpx.Response(
+            400,
+            json={
+                "jsonrpc": "2.0",
+                "id": body.get("id"),
+                "error": {"code": ERROR_UNSUPPORTED_PROTOCOL_VERSION, "message": "nope", "data": "not-a-dict"},
+            },
+        )
+
+    results = await _run(handler)
+    unknown = results[PROBE_UNKNOWN_VERSION]
+    assert unknown.outcome is ProbeOutcome.SUPPORTED
+    assert "supported" not in unknown.details
+
+
+async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    def make_stub(probe_id: str):
+        async def stub(client: httpx.AsyncClient, url: str) -> ProbeResult:
+            return ProbeResult(probe_id, ProbeOutcome.SUPPORTED, {"stubbed": True})
+
+        return stub
+
+    monkeypatch.setattr(probes_module, "_PROBES", {pid: make_stub(pid) for pid in PROBE_IDS})
+
+    results = await run_all_probes(URL)  # no client injected -> own-client branch
+
+    assert set(results) == set(PROBE_IDS)

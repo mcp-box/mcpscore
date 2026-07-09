@@ -144,3 +144,113 @@ async def test_missing_discover_payload_falls_back_to_target_version(stub_probes
     assert await auditor.audit_modern_only(URL) is True
     assert auditor.audit_data.protocol_version == "2026-07-28"
     assert auditor.audit_data.tools is not None  # still parsed from the stateless payload
+
+
+async def test_invalid_supported_versions_falls_back_to_target(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    results = _modern_probe_results()
+    results[PROBE_DISCOVER] = ProbeResult(
+        PROBE_DISCOVER,
+        ProbeOutcome.SUPPORTED,
+        {"supported_versions": "not-a-list"},
+        payload={"resultType": "complete", "serverInfo": {"name": "x", "version": "1"}},
+    )
+    stub_probes(results)
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+    assert auditor.audit_data.protocol_version == "2026-07-28"
+
+
+async def test_non_list_tools_payload_is_ignored(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    results = _modern_probe_results()
+    results[PROBE_STATELESS_LIST] = ProbeResult(
+        PROBE_STATELESS_LIST,
+        ProbeOutcome.SUPPORTED,
+        {"result_type": "complete"},
+        payload={"resultType": "complete", "tools": "not-a-list"},
+    )
+    stub_probes(results)
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+    assert auditor.audit_data.tools is None
+
+
+async def test_invalid_tool_entries_degrade_to_none(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    results = _modern_probe_results()
+    results[PROBE_STATELESS_LIST] = ProbeResult(
+        PROBE_STATELESS_LIST,
+        ProbeOutcome.SUPPORTED,
+        {"result_type": "complete"},
+        payload={"resultType": "complete", "tools": [{"description": "missing name and inputSchema"}]},
+    )
+    stub_probes(results)
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+    assert auditor.audit_data.tools is None
+
+
+async def test_stateless_probe_without_payload_leaves_tools_none(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    results = _modern_probe_results()
+    results[PROBE_STATELESS_LIST] = ProbeResult(
+        PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {"result_type": "complete"}
+    )
+    stub_probes(results)
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+    assert auditor.audit_data.tools is None
+
+
+class TestAuditorReuseDoesNotLeakState:
+    """Regression tests for per-run state reset (PR #21 review)."""
+
+    async def test_two_modern_only_runs_produce_identical_state(self, stub_probes, monkeypatch: pytest.MonkeyPatch):
+        stub_probes(_modern_probe_results())
+        monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+        auditor = MCPAuditor()
+        assert await auditor.audit_modern_only(URL) is True
+        first = (
+            auditor.score,
+            auditor.max_score,
+            len(auditor.results),
+            len(auditor.skipped_rules),
+            auditor.readiness_score,
+            auditor.readiness_max,
+            len(auditor.readiness_results),
+        )
+
+        assert await auditor.audit_modern_only(URL) is True
+        second = (
+            auditor.score,
+            auditor.max_score,
+            len(auditor.results),
+            len(auditor.skipped_rules),
+            auditor.readiness_score,
+            auditor.readiness_max,
+            len(auditor.readiness_results),
+        )
+
+        assert first == second
+
+    async def test_failed_modern_only_run_preserves_previous_results(
+        self, stub_probes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A False return (no modern support) must not wipe a prior audit's state."""
+        stub_probes(_modern_probe_results())
+        monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+        auditor = MCPAuditor()
+        assert await auditor.audit_modern_only(URL) is True
+        results_before = len(auditor.results)
+
+        stub_probes(not_applicable_results(reason="gone"))
+        assert await auditor.audit_modern_only(URL) is False
+
+        assert len(auditor.results) == results_before

@@ -113,7 +113,12 @@ class TestAuditorSkipsNonApplicableRules:
         report = auditor.get_audit_report()
         assert report["results"] == []
         assert report["skipped_rules"] == [
-            {"rule_id": "modern_only", "rule_name": "versioned", "reason": SKIP_REASON_NOT_APPLICABLE}
+            {
+                "rule_id": "modern_only",
+                "rule_name": "versioned",
+                "reason": SKIP_REASON_NOT_APPLICABLE,
+                "group_name": "default",
+            }
         ]
         assert report["summary"]["skipped"] == 1
         assert report["summary"]["total"] == 0

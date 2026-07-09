@@ -396,3 +396,61 @@ class TestLegacyLeakageRules:
         result = RemovedMethodsReadinessRule().check(AuditData(probes=probes))
         assert not result.passed
         assert "-32601" in result.message
+
+
+class TestUncoveredBranches:
+    def test_meta_validation_fail_message(self):
+        probes = modern_probes(
+            probe_malformed_meta=ProbeResult(PROBE_MALFORMED_META, ProbeOutcome.UNSUPPORTED, {"http_status": 200})
+        )
+        result = MetaValidationReadinessRule().check(AuditData(probes=probes))
+        assert not result.passed
+        assert "-32602" in result.message
+
+    def test_unsupported_version_error_fail_message(self):
+        probes = modern_probes(
+            probe_unknown_version=ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.UNSUPPORTED, {"http_status": 200})
+        )
+        result = UnsupportedVersionErrorReadinessRule().check(AuditData(probes=probes))
+        assert not result.passed
+        assert "-32022" in result.message
+
+    def test_error_code_migration_reports_unexpected_code(self):
+        probes = modern_probes(
+            probe_missing_resource=ProbeResult(
+                PROBE_MISSING_RESOURCE,
+                ProbeOutcome.UNSUPPORTED,
+                {"error_code": -32000, "legacy_code_emitted": False},
+            )
+        )
+        result = ErrorCodeMigrationReadinessRule().check(AuditData(probes=probes))
+        assert not result.passed
+        assert "-32000" in result.message
+
+    def test_cache_metadata_skips_without_any_probe_data(self):
+        assert CacheMetadataReadinessRule().skip_reason(AuditData(probes=None)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_cache_metadata_skips_when_gateways_errored(self):
+        probes = {
+            PROBE_DISCOVER: ProbeResult(PROBE_DISCOVER, ProbeOutcome.ERROR, {"exception": "ConnectError"}),
+            PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.NOT_APPLICABLE, {}),
+        }
+        rule = CacheMetadataReadinessRule()
+        assert rule.skip_reason(AuditData(probes=probes)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_result_type_skips_without_any_probe_data(self):
+        assert ResultTypeReadinessRule().skip_reason(AuditData(probes=None)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_network_ref_found_inside_schema_lists(self):
+        schema = {
+            "type": "object",
+            "properties": {"a": {"anyOf": [{"type": "string"}, {"$ref": "https://evil.example/x.json"}]}},
+        }
+        result = ToolSchemaDialectReadinessRule().check(AuditData(tools=[_tool(name="listy", input_schema=schema)]))
+        assert not result.passed
+        assert any("network $ref" in p for p in result.details["offending_tools"]["listy"])
+
+    def test_non_dict_input_schema_is_ignored(self):
+        tool = _tool(name="odd")
+        tool.inputSchema = None
+        assert ToolSchemaDialectReadinessRule().check(AuditData(tools=[tool])).passed
