@@ -142,7 +142,8 @@ def wait_for_pypi(version: str) -> None:
                     print(f"\nSmoke test:\n  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp")
                     return
         except urllib.error.HTTPError:
-            pass
+            # Expected while the new release is propagating on PyPI (often 404); retry until timeout.
+            continue
         time.sleep(10)
     fail(
         f"PyPI did not report {version} within {PYPI_WAIT_SECONDS}s — "
