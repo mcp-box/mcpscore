@@ -17,7 +17,7 @@ packages = ["mcpscore"]
 
 [project]
 name = "mcpscore"
-version = "0.7.0"
+version = "0.8.0"
 description = "CLI tool to analyze your MCP server and get a comprehensive report on its quality"
 authors = [{ name = "Alex Akimov"}]
 license = "MIT"
@@ -112,6 +112,11 @@ testpaths = ["tests"]
 addopts = ["--strict-config", "--strict-markers"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# Warnings are errors: an upstream deprecation must be handled when it appears,
+# not discovered after removal. Add scoped, documented ignores here as needed.
+filterwarnings = [
+    "error",
+]
 
 [tool.coverage.run]
 source = ["mcpscore"]

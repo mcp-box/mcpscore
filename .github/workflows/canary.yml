@@ -1,0 +1,47 @@
+name: Canary
+
+# Daily run against the newest resolvable dependencies, so upstream breakage
+# (MCP SDK, httpx, pydantic, ...) is caught before users hit it. A second lane
+# tracks the mcp 2.x betas ahead of the 2026-07-28 spec-final SDK release; it
+# is advisory (continue-on-error) until mcpscore targets SDK v2.
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-deps:
+    name: Latest dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          python-version: "3.13"
+      - name: Upgrade to newest resolvable dependencies
+        run: uv sync --all-groups --upgrade
+      - run: uv run pyright mcpscore/
+      - run: uv run pytest -q
+
+  mcp-sdk-v2-beta:
+    name: mcp SDK 2.x beta (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          python-version: "3.13"
+      - run: uv sync --all-groups
+      - name: Force the mcp 2.x pre-release
+        run: uv pip install --prerelease=allow "mcp>=2.0.0b1"
+      - name: Report installed mcp version
+        run: uv run python -c "from importlib.metadata import version; print('mcp', version('mcp'))"
+      - run: uv run pytest -q
