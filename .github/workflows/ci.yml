@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --all-groups
-      - run: uv run pyright mcpscore/
+      - run: uv run pyright mcpscore/ scripts/
 
   test:
     name: Test / ${{ matrix.os }} / py${{ matrix.python-version }}

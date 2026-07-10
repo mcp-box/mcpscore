@@ -24,6 +24,7 @@ Requires: git, gh (authenticated). No third-party Python dependencies.
 
 import argparse
 import json
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -33,7 +34,6 @@ import tomllib
 from typing import NoReturn
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 REPO = "mcp-box/mcpscore"
 ROOT = Path(__file__).parent.parent
@@ -113,7 +113,10 @@ def check_tag_absent(version: str) -> None:
 
 def check_ci_green(sha: str) -> None:
     raw = run(
-        "gh", "api", f"repos/{REPO}/commits/{sha}/check-runs", "--jq",
+        "gh",
+        "api",
+        f"repos/{REPO}/commits/{sha}/check-runs",
+        "--jq",
         "[.check_runs[] | {name, status, conclusion, started_at, completed_at}]",
     )
     runs = json.loads(raw)
@@ -142,11 +145,18 @@ def create_release(version: str, notes: str, target: str) -> None:
         notes_file = f.name
     try:
         run(
-            "gh", "release", "create", f"v{version}",
-            "--repo", REPO,
-            "--target", target,
-            "--title", f"v{version}",
-            "--notes-file", notes_file,
+            "gh",
+            "release",
+            "create",
+            f"v{version}",
+            "--repo",
+            REPO,
+            "--target",
+            target,
+            "--title",
+            f"v{version}",
+            "--notes-file",
+            notes_file,
             "--latest",
         )
     finally:

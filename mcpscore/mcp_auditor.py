@@ -209,7 +209,7 @@ class MCPAuditor:
         if not isinstance(value, dict):
             return None
         try:
-            return model.model_validate(value)  # type: ignore[attr-defined]
+            return model.model_validate(value)
         except ValidationError as e:
             logger.info("Could not parse %s from probe payload: %s", model.__name__, e)
             return None

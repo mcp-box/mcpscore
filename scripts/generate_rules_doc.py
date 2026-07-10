@@ -62,11 +62,11 @@ def generate() -> str:
             lines.append(f"## {group_name.replace('_', ' ').title()}\n\n")
         lines.append("| Rule ID | Name | Severity | Weight | Applies to |\n")
         lines.append("|---|---|---|---|---|\n")
-        for rule in rules:
-            lines.append(
-                f"| `{rule.rule_id}` | {rule.rule_name} | {rule.severity.name} "
-                f"| {int(rule.severity)} | {_applies_to(rule)} |\n"
-            )
+        lines.extend(
+            f"| `{rule.rule_id}` | {rule.rule_name} | {rule.severity.name} "
+            f"| {int(rule.severity)} | {_applies_to(rule)} |\n"
+            for rule in rules
+        )
         lines.append("\n")
     # Single trailing newline at EOF (keeps the end-of-file-fixer hook happy).
     return "".join(lines).rstrip("\n") + "\n"
