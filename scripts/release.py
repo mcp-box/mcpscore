@@ -38,6 +38,7 @@ from pathlib import Path
 REPO = "mcp-box/mcpscore"
 ROOT = Path(__file__).parent.parent
 PYPI_WAIT_SECONDS = 300
+PYPI_REQUEST_TIMEOUT_SECONDS = 15
 
 
 def run(*args: str, capture: bool = True) -> str:
@@ -146,16 +147,22 @@ def wait_for_pypi(version: str) -> None:
     print(f"… waiting for mcpscore {version} on PyPI (up to {PYPI_WAIT_SECONDS}s)")
     deadline = time.monotonic() + PYPI_WAIT_SECONDS
     while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
-            with urllib.request.urlopen(url) as response:  # noqa: S310 — fixed https URL
+            with urllib.request.urlopen(  # noqa: S310 — fixed https URL
+                url,
+                timeout=min(PYPI_REQUEST_TIMEOUT_SECONDS, remaining),
+            ) as response:
                 if response.getcode() == 200:
                     ok(f"mcpscore {version} is live on PyPI")
                     print(f"\nSmoke test:\n  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp")
                     return
-        except urllib.error.URLError:
+        except (TimeoutError, urllib.error.URLError):
             # Expected while PyPI propagates or during transient network errors; retry until timeout.
             pass
-        time.sleep(10)
+        time.sleep(min(10, max(0, deadline - time.monotonic())))
     fail(
         f"PyPI did not report {version} within {PYPI_WAIT_SECONDS}s — "
         f"check the workflow: https://github.com/{REPO}/actions/workflows/publish.yml"
@@ -185,6 +192,10 @@ def main() -> None:
     if answer.strip().lower() != "y":
         print("aborted")
         sys.exit(1)
+
+    head = check_git_state()
+    check_tag_absent(version)
+    check_ci_green(head)
 
     create_release(version, notes, head)
     wait_for_pypi(version)
