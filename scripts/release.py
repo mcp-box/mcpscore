@@ -104,11 +104,21 @@ def check_tag_absent(version: str) -> None:
 def check_ci_green(sha: str) -> None:
     raw = run(
         "gh", "api", f"repos/{REPO}/commits/{sha}/check-runs", "--jq",
-        "[.check_runs[] | {name, status, conclusion}]",
+        "[.check_runs[] | {name, status, conclusion, started_at, completed_at}]",
     )
     runs = json.loads(raw)
     if not runs:
         fail("no CI check runs found for HEAD — has CI finished?")
+
+    latest_runs = {}
+    for run in runs:
+        timestamp = run["completed_at"] or run["started_at"] or ""
+        latest = latest_runs.get(run["name"])
+        latest_timestamp = (latest["completed_at"] or latest["started_at"] or "") if latest else ""
+        if latest is None or timestamp > latest_timestamp:
+            latest_runs[run["name"]] = run
+
+    runs = list(latest_runs.values())
     bad = [r for r in runs if r["status"] != "completed" or r["conclusion"] not in ("success", "skipped", "neutral")]
     if bad:
         details = ", ".join(f"{r['name']}: {r['conclusion'] or r['status']}" for r in bad)
@@ -116,13 +126,14 @@ def check_ci_green(sha: str) -> None:
     ok(f"CI green for HEAD ({len(runs)} checks)")
 
 
-def create_release(version: str, notes: str) -> None:
+def create_release(version: str, notes: str, target: str) -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
         f.write(notes + "\n")
         notes_file = f.name
     run(
         "gh", "release", "create", f"v{version}",
         "--repo", REPO,
+        "--target", target,
         "--title", f"v{version}",
         "--notes-file", notes_file,
         "--latest",
@@ -137,13 +148,13 @@ def wait_for_pypi(version: str) -> None:
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url) as response:  # noqa: S310 — fixed https URL
-                if response.status == 200:
+                if response.getcode() == 200:
                     ok(f"mcpscore {version} is live on PyPI")
                     print(f"\nSmoke test:\n  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp")
                     return
-        except urllib.error.HTTPError:
-            # Expected while the new release is propagating on PyPI (often 404); retry until timeout.
-            continue
+        except urllib.error.URLError:
+            # Expected while PyPI propagates or during transient network errors; retry until timeout.
+            pass
         time.sleep(10)
     fail(
         f"PyPI did not report {version} within {PYPI_WAIT_SECONDS}s — "
@@ -175,7 +186,7 @@ def main() -> None:
         print("aborted")
         sys.exit(1)
 
-    create_release(version, notes)
+    create_release(version, notes, head)
     wait_for_pypi(version)
 
 
