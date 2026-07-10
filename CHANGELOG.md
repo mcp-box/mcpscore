@@ -5,7 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.0] - 2026-06-19
+## [0.8.0] - 2026-07-10
+
+**Preview of MCP 2026-07-28 support.** This release audits servers on every spec
+revision — including the upcoming stateless lifecycle — and reports how ready a
+server is for the next revision. The 2026-07-28 spec is a release candidate until
+2026-07-28: readiness rules target the RC and their details may change until the
+revision is final.
+
+### Added
+
+**Multi-spec-version engine**
+
+- `mcpscore.spec`: a registry of all MCP spec revisions (2024-11-05 → 2026-07-28
+  draft) — lifecycle model, publication status, deprecated features, required
+  request headers, JSON Schema dialect defaults. Adding a future revision is one
+  registry entry; older revisions are never rewritten.
+- Rules can declare the spec-version range they apply to
+  (`min_spec_version`/`max_spec_version`); outside it they are **skipped** and
+  excluded from both earned and maximum score — never failed. Skips appear in the
+  report under `skipped_rules` with a reason (`not-applicable`,
+  `insufficient-data`, or `requires-modern-support`) and the rule's group.
+- Era detection: the report states whether the server was observed to be
+  `legacy` (stateful), `modern` (stateless 2026-07-28), or `dual-era`, following
+  the spec's own detection guidance.
+
+**Sessionless probe layer**
+
+- Nine read-only HTTP probes observe behavior outside the negotiated session
+  (`server/discover`, stateless requests, `_meta` header validation, error-code
+  shapes, unauthenticated behavior, session-ID echo, removed methods). Probes
+  never invoke `tools/call` — an audit can never trigger tool side effects.
+- Probe outcomes are data, never errors: network failures degrade the dependent
+  rules to "could not verify" (skipped) instead of failing the server.
+
+**2026-07-28 readiness pack (preview)** — 12 rules scored on an independent
+readiness axis (`readiness.score`/`readiness.max_score` in the report), never
+mixed into the main score. Includes two legacy-leakage checks that only run
+against servers with modern support (`readiness_2026_no_session_id`,
+`readiness_2026_removed_methods`). Every rule cites the SEP it enforces.
+
+**Modern-only server support**
+
+- If the legacy `initialize` handshake fails against an HTTP(S) target but the
+  server answers 2026-style stateless requests, mcpscore audits it via probes
+  (server info, capabilities, and tools extracted from `server/discover` and
+  `tools/list` payloads) instead of reporting a connection failure. Exit code 2
+  now means "no legacy *and* no modern support".
+
+**Report and CLI**
+
+- JSON report additions (all backward-compatible): `spec` block
+  (negotiated/latest/readiness-target versions + era), `readiness` section
+  (score, results, skipped count), `skipped_rules`, and `summary.skipped`
+  (main-axis only, keeping the summary internally consistent).
+- CLI output gains a readiness section separator, and a closing summary with the
+  spec/era line and the separate readiness score.
+- Documentation site (Mintlify): scoring methodology with per-rule spec
+  citations, and a rules reference generated from the rule registry.
+
+### Changed
+
+- `protocol_version_latest` now passes for servers on a revision *newer* than
+  the latest final one (e.g. the 2026-07-28 RC) instead of flagging them as
+  behind.
+- Protocol-version rules read allowed/deprecated/latest versions from the spec
+  registry instead of hardcoded lists (no behavior change).
+- New runtime dependency: `jsonschema>=4.21` (JSON Schema 2020-12 validation in
+  the readiness pack).
+
+### Known preview caveats
+
+- `protocol_version_allowed` fails for servers speaking *only* the 2026-07-28
+  draft (it is not a final revision yet); this resolves in 1.0.0 when the spec
+  is published and the registry marks it current.
+- Probes are HTTP(S)-only in this release; stdio servers get
+  `insufficient-data` skips for probe-backed readiness rules.
+
+## [0.7.0] - 2026-07-01
 
 ### Added
 
