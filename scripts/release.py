@@ -42,7 +42,13 @@ PYPI_REQUEST_TIMEOUT_SECONDS = 15
 
 
 def run(*args: str, capture: bool = True) -> str:
-    result = subprocess.run(args, capture_output=capture, text=True, check=True)
+    try:
+        result = subprocess.run(args, capture_output=capture, text=True, check=True)
+    except FileNotFoundError:
+        fail(f"required tool not found: {args[0]} — install it and retry")
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        fail(f"command failed: {' '.join(args)}\n  {stderr or e}")
     return (result.stdout or "").strip()
 
 
@@ -99,6 +105,9 @@ def check_tag_absent(version: str) -> None:
     )
     if result.returncode == 0:
         fail(f"tag v{version} already exists on the remote")
+    stderr = (result.stderr or "") + (result.stdout or "")
+    if "404" not in stderr and "Not Found" not in stderr:
+        fail(f"could not verify tag v{version} (gh api error, not a 404):\n  {stderr.strip()}")
     ok(f"tag v{version} is unused")
 
 
@@ -112,12 +121,12 @@ def check_ci_green(sha: str) -> None:
         fail("no CI check runs found for HEAD — has CI finished?")
 
     latest_runs = {}
-    for run in runs:
-        timestamp = run["completed_at"] or run["started_at"] or ""
-        latest = latest_runs.get(run["name"])
+    for check in runs:
+        timestamp = check["completed_at"] or check["started_at"] or ""
+        latest = latest_runs.get(check["name"])
         latest_timestamp = (latest["completed_at"] or latest["started_at"] or "") if latest else ""
         if latest is None or timestamp > latest_timestamp:
-            latest_runs[run["name"]] = run
+            latest_runs[check["name"]] = check
 
     runs = list(latest_runs.values())
     bad = [r for r in runs if r["status"] != "completed" or r["conclusion"] not in ("success", "skipped", "neutral")]
@@ -131,14 +140,17 @@ def create_release(version: str, notes: str, target: str) -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
         f.write(notes + "\n")
         notes_file = f.name
-    run(
-        "gh", "release", "create", f"v{version}",
-        "--repo", REPO,
-        "--target", target,
-        "--title", f"v{version}",
-        "--notes-file", notes_file,
-        "--latest",
-    )
+    try:
+        run(
+            "gh", "release", "create", f"v{version}",
+            "--repo", REPO,
+            "--target", target,
+            "--title", f"v{version}",
+            "--notes-file", notes_file,
+            "--latest",
+        )
+    finally:
+        Path(notes_file).unlink(missing_ok=True)
     ok(f"GitHub Release v{version} created — publish workflow triggered")
 
 
