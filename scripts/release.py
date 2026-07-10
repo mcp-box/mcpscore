@@ -36,14 +36,20 @@ import urllib.error
 import urllib.request
 
 REPO = "mcp-box/mcpscore"
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).resolve().parent.parent
 PYPI_WAIT_SECONDS = 300
 PYPI_REQUEST_TIMEOUT_SECONDS = 15
 
 
 def run(*args: str, capture: bool = True) -> str:
     try:
-        result = subprocess.run(args, capture_output=capture, text=True, check=True)
+        result = subprocess.run(
+            args,
+            capture_output=capture,
+            text=True,
+            check=True,
+            cwd=ROOT,
+        )
     except FileNotFoundError:
         fail(f"required tool not found: {args[0]} — install it and retry")
     except subprocess.CalledProcessError as e:
