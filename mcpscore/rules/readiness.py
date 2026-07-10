@@ -394,7 +394,7 @@ class ResultTypeReadinessRule(ReadinessBaseRule):
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Apply the same gating as the cache-metadata rule (needs a modern result)."""
-        return CacheMetadataReadinessRule.skip_reason(self, audit_data)  # type: ignore[arg-type]
+        return CacheMetadataReadinessRule.skip_reason(self, audit_data)
 
     def check(self, audit_data: AuditData) -> RuleResult:
         probes = audit_data.probes or {}

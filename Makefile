@@ -17,7 +17,7 @@ lint: ## Lint code (no auto-fix)
 
 .PHONY: typecheck
 typecheck: ## Type check with pyright
-	uv run pyright mcpscore/
+	uv run pyright mcpscore/ scripts/
 
 .PHONY: test
 test: ## Run tests
@@ -39,6 +39,14 @@ docs-serve: docs-rules ## Serve the documentation locally (Mintlify, needs Node)
 .PHONY: docs-check
 docs-check: docs-rules ## Validate the documentation (broken links)
 	cd docs && npx mint broken-links
+
+.PHONY: release
+release: ## Cut a release: create the GitHub Release that publishes to PyPI
+	uv run python scripts/release.py
+
+.PHONY: release-dry-run
+release-dry-run: ## Run all release checks without creating anything
+	uv run python scripts/release.py --dry-run
 
 .PHONY: all
 all: lint typecheck testcov ## Run all checks (mirrors CI)
