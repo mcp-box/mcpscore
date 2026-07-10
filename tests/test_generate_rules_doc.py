@@ -37,5 +37,5 @@ def test_single_trailing_newline():
 
 def test_committed_reference_matches_the_registry():
     """docs/rules.mdx must be regenerated whenever the registry changes."""
-    committed = (Path(__file__).parent.parent / "docs" / "rules.mdx").read_text()
+    committed = (Path(__file__).parent.parent / "docs" / "rules.mdx").read_text(encoding="utf-8")
     assert committed == generate_rules_doc.generate()

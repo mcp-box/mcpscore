@@ -74,5 +74,5 @@ def generate() -> str:
 
 if __name__ == "__main__":
     output = Path(__file__).parent.parent / "docs" / "rules.mdx"
-    output.write_text(generate())
+    output.write_text(generate(), encoding="utf-8")
     print(f"Wrote {output}")

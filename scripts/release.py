@@ -82,7 +82,7 @@ def check_git_state() -> str:
 
 def check_changelog(version: str) -> str:
     """Verify the CHANGELOG section and link block, and return the section body."""
-    changelog = (ROOT / "CHANGELOG.md").read_text()
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     match = re.search(
         rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
         changelog,
@@ -140,7 +140,7 @@ def check_ci_green(sha: str) -> None:
 
 
 def create_release(version: str, notes: str, target: str) -> None:
-    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:
         f.write(notes + "\n")
         notes_file = f.name
     try:
