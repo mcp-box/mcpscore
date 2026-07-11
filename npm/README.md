@@ -4,12 +4,12 @@
 server and get a scored, actionable report in seconds.
 
 ```bash
-npx mcpscore https://your-server.example/mcp
+npx @mcp-box/mcpscore https://your-server.example/mcp
 ```
 
 This npm package is a thin wrapper around the Python
 [mcpscore](https://pypi.org/project/mcpscore/) CLI, pinned to the matching
-version — `npx mcpscore` and `uvx mcpscore` behave identically. It requires
+version — `npx @mcp-box/mcpscore` and `uvx mcpscore` behave identically. It requires
 [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) on your PATH
 (no packages are installed into your environment).
 

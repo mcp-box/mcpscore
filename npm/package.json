@@ -1,5 +1,5 @@
 {
-  "name": "mcpscore",
+  "name": "@mcp-box/mcpscore",
   "version": "0.8.0",
   "description": "Lighthouse for MCP — audit any MCP server and get a scored, actionable report in seconds. Node wrapper for the Python mcpscore CLI.",
   "bin": {
