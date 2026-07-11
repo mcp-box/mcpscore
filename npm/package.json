@@ -1,0 +1,41 @@
+{
+  "name": "mcpscore",
+  "version": "0.8.0",
+  "description": "Lighthouse for MCP — audit any MCP server and get a scored, actionable report in seconds. Node wrapper for the Python mcpscore CLI.",
+  "bin": {
+    "mcpscore": "bin/mcpscore.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "author": "Alex Akimov",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcp-box/mcpscore.git",
+    "directory": "npm"
+  },
+  "homepage": "https://mcpscore.dev",
+  "bugs": "https://github.com/mcp-box/mcpscore/issues",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "audit",
+    "quality",
+    "lint",
+    "cli",
+    "score",
+    "compliance",
+    "developer-tools"
+  ],
+  "mcpscore": {
+    "pythonVersion": "0.8.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

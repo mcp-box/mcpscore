@@ -1,0 +1,32 @@
+name: Publish npm
+
+# Publishes the npm wrapper (npm/) with OIDC Trusted Publishing + provenance.
+# Manual dispatch: the wrapper versions independently of the Python package
+# (it pins the Python version via package.json -> mcpscore.pythonVersion).
+#
+# One-time setup before this workflow can run: publish the first version
+# manually (`cd npm && npm publish --access public`), then on npmjs.com →
+# package Settings → Publishing access, add this repo + workflow file as a
+# Trusted Publisher.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish with provenance
+        working-directory: npm
+        run: npm publish --access public --provenance
