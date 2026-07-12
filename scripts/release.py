@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Cut a release: create the GitHub Release that triggers PyPI publishing.
+"""Cut a release: create the GitHub Release that publishes to PyPI and npm.
 
 Usage:
-    uv run python scripts/release.py [--dry-run]
+    uv run python scripts/release.py [--dry-run] [--yes]
     make release          # same, with confirmation prompt
     make release-dry-run  # checks only, creates nothing
 
 The version to release is read from pyproject.toml. The script verifies the
 repo is actually releasable, extracts the CHANGELOG section as the release
-notes, and creates the GitHub Release (tag v<version>) — which triggers
-.github/workflows/publish.yml to build and publish to PyPI via Trusted
-Publishing. It then waits until the version is live on PyPI.
+notes, and creates the GitHub Release (tag v<version>) — which triggers both
+.github/workflows/publish.yml (PyPI) and publish-npm.yml (npm) via Trusted
+Publishing. It then waits until the version is live on both registries.
 
 Checks performed before anything is created:
   1. on `main`, clean working tree, local HEAD == origin/main
   2. CHANGELOG.md has a `## [<version>]` section AND the `[<version>]:`
      compare link at the bottom (the link block is easy to forget)
-  3. tag v<version> does not already exist on the remote
-  4. CI is green for HEAD
+  3. the npm wrapper (npm/package.json) version and its pinned Python version
+     both match pyproject.toml (so the wrapper never ships stale)
+  4. tag v<version> does not already exist on the remote
+  5. CI is green for HEAD
 
 Requires: git, gh (authenticated). No third-party Python dependencies.
 """
@@ -36,9 +38,10 @@ import urllib.error
 import urllib.request
 
 REPO = "mcp-box/mcpscore"
+NPM_PACKAGE = "@mcp-box/mcpscore"
 ROOT = Path(__file__).resolve().parent.parent
-PYPI_WAIT_SECONDS = 300
-PYPI_REQUEST_TIMEOUT_SECONDS = 15
+REGISTRY_WAIT_SECONDS = 300
+REGISTRY_REQUEST_TIMEOUT_SECONDS = 15
 
 
 def run(*args: str, capture: bool = True) -> str:
@@ -100,6 +103,24 @@ def check_changelog(version: str) -> str:
         fail(f"CHANGELOG.md is missing the '[{version}]: ...' compare link at the bottom")
     ok(f"CHANGELOG has the [{version}] section and compare link")
     return match.group(1).strip()
+
+
+def check_npm_version_sync(version: str) -> None:
+    """Verify the npm wrapper's version and its Python pin both match the release.
+
+    The wrapper is a thin shim over the Python CLI; if either its own version
+    or the mcpscore.pythonVersion it installs drifts from pyproject, `npx`
+    users get a different tool than `uvx` users. Fail fast rather than ship
+    that skew.
+    """
+    package_json = json.loads((ROOT / "npm" / "package.json").read_text(encoding="utf-8"))
+    wrapper_version = package_json.get("version")
+    pinned_python = package_json.get("mcpscore", {}).get("pythonVersion")
+    if wrapper_version != version:
+        fail(f"npm/package.json version is {wrapper_version}, expected {version} — bump the wrapper")
+    if pinned_python != version:
+        fail(f"npm/package.json mcpscore.pythonVersion is {pinned_python}, expected {version} — bump the pin")
+    ok(f"npm wrapper version and Python pin both match {version}")
 
 
 def check_tag_absent(version: str) -> None:
@@ -170,45 +191,80 @@ def create_release(version: str, notes: str, target: str) -> None:
     ok(f"GitHub Release v{version} created — publish workflow triggered")
 
 
-def wait_for_pypi(version: str) -> None:
-    url = f"https://pypi.org/pypi/mcpscore/{version}/json"
-    print(f"… waiting for mcpscore {version} on PyPI (up to {PYPI_WAIT_SECONDS}s)")
-    deadline = time.monotonic() + PYPI_WAIT_SECONDS
+def wait_for_registry(registry: str, url: str, workflow: str) -> None:
+    """Poll a registry until it reports the version, or fail after the deadline.
+
+    Args:
+        registry: Human name for messages (e.g. "PyPI", "npm").
+        url: Version endpoint that returns HTTP 200 once the version is live.
+        workflow: Publish workflow filename, cited if the wait times out.
+
+    """
+    print(f"… waiting for {registry} to report the release (up to {REGISTRY_WAIT_SECONDS}s)")
+    deadline = time.monotonic() + REGISTRY_WAIT_SECONDS
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         try:
-            with urllib.request.urlopen(  # noqa: S310 — fixed https URL
+            with urllib.request.urlopen(  # noqa: S310 — fixed https registry URL
                 url,
-                timeout=min(PYPI_REQUEST_TIMEOUT_SECONDS, remaining),
+                timeout=min(REGISTRY_REQUEST_TIMEOUT_SECONDS, remaining),
             ) as response:
                 if response.getcode() == 200:
-                    ok(f"mcpscore {version} is live on PyPI")
-                    print(f"\nSmoke test:\n  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp")
+                    ok(f"live on {registry}")
                     return
         except (TimeoutError, urllib.error.URLError):
-            # Expected while PyPI propagates or during transient network errors; retry until timeout.
+            # Expected while the registry propagates or on transient network errors; retry until timeout.
             pass
         time.sleep(min(10, max(0, deadline - time.monotonic())))
     fail(
-        f"PyPI did not report {version} within {PYPI_WAIT_SECONDS}s — "
-        f"check the workflow: https://github.com/{REPO}/actions/workflows/publish.yml"
+        f"{registry} did not report the release within {REGISTRY_WAIT_SECONDS}s — "
+        f"check the workflow: https://github.com/{REPO}/actions/workflows/{workflow}"
     )
+
+
+def wait_for_publish(version: str) -> None:
+    """Wait for the release to appear on both PyPI and npm, then print a smoke test."""
+    wait_for_registry("PyPI", f"https://pypi.org/pypi/mcpscore/{version}/json", "publish.yml")
+    wait_for_registry("npm", f"https://registry.npmjs.org/{NPM_PACKAGE}/{version}", "publish-npm.yml")
+    print(
+        f"\nSmoke test:\n"
+        f"  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp\n"
+        f"  npx {NPM_PACKAGE}@{version} https://mcp.deepwiki.com/mcp"
+    )
+
+
+def _run_preflight(version: str) -> tuple[str, str]:
+    """Run every releasable-state check; return (head sha, release notes)."""
+    head = check_git_state()
+    notes = check_changelog(version)
+    check_npm_version_sync(version)
+    check_tag_absent(version)
+    check_ci_green(head)
+    return head, notes
+
+
+def _confirm(version: str) -> bool:
+    """Prompt for release confirmation; a closed stdin (EOF) counts as 'no'."""
+    try:
+        answer = input(f"Create GitHub Release v{version} and publish to PyPI + npm? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print("\naborted (no confirmation)")
+        return False
+    return answer.strip().lower() == "y"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="run all checks, create nothing")
+    parser.add_argument("--yes", action="store_true", help="skip the confirmation prompt (for non-interactive use)")
     args = parser.parse_args()
 
     version = read_version()
     print(f"Releasing mcpscore {version}\n")
 
-    head = check_git_state()
-    notes = check_changelog(version)
-    check_tag_absent(version)
-    check_ci_green(head)
+    head, notes = _run_preflight(version)
 
     print(f"\n--- release notes (from CHANGELOG) ---\n{notes}\n--------------------------------------\n")
 
@@ -216,17 +272,14 @@ def main() -> None:
         ok(f"dry run: all checks passed — would create release v{version}")
         return
 
-    answer = input(f"Create GitHub Release v{version} and publish to PyPI? [y/N] ")
-    if answer.strip().lower() != "y":
-        print("aborted")
+    if not args.yes and not _confirm(version):
         sys.exit(1)
 
-    head = check_git_state()
-    check_tag_absent(version)
-    check_ci_green(head)
+    # Re-check the fast-moving state in case main advanced during the prompt.
+    head, notes = _run_preflight(version)
 
     create_release(version, notes, head)
-    wait_for_pypi(version)
+    wait_for_publish(version)
 
 
 if __name__ == "__main__":
