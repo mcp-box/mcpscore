@@ -113,7 +113,13 @@ def check_npm_version_sync(version: str) -> None:
     users get a different tool than `uvx` users. Fail fast rather than ship
     that skew.
     """
-    package_json = json.loads((ROOT / "npm" / "package.json").read_text(encoding="utf-8"))
+    path = ROOT / "npm" / "package.json"
+    try:
+        package_json = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        fail(f"npm wrapper manifest not found: {path}")
+    except json.JSONDecodeError as e:
+        fail(f"npm/package.json is not valid JSON: {e}")
     wrapper_version = package_json.get("version")
     pinned_python = package_json.get("mcpscore", {}).get("pythonVersion")
     if wrapper_version != version:
@@ -219,15 +225,17 @@ def wait_for_registry(registry: str, url: str, workflow: str) -> None:
             pass
         time.sleep(min(10, max(0, deadline - time.monotonic())))
     fail(
-        f"{registry} did not report the release within {REGISTRY_WAIT_SECONDS}s — "
+        f"{registry} did not report the release within {REGISTRY_WAIT_SECONDS}s ({url}) — "
         f"check the workflow: https://github.com/{REPO}/actions/workflows/{workflow}"
     )
 
 
 def wait_for_publish(version: str) -> None:
     """Wait for the release to appear on both PyPI and npm, then print a smoke test."""
+    # npm requires the scope slash URL-encoded (%2F) — canonical registry form.
+    npm_path = NPM_PACKAGE.replace("/", "%2F")
     wait_for_registry("PyPI", f"https://pypi.org/pypi/mcpscore/{version}/json", "publish.yml")
-    wait_for_registry("npm", f"https://registry.npmjs.org/{NPM_PACKAGE}/{version}", "publish-npm.yml")
+    wait_for_registry("npm", f"https://registry.npmjs.org/{npm_path}/{version}", "publish-npm.yml")
     print(
         f"\nSmoke test:\n"
         f"  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp\n"

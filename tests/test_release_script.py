@@ -215,6 +215,16 @@ class TestCheckNpmVersionSync:
         with pytest.raises(SystemExit):
             release.check_npm_version_sync("1.2.3")
 
+    def test_fails_when_manifest_missing(self, repo: Path):
+        (repo / "npm" / "package.json").unlink()
+        with pytest.raises(SystemExit):
+            release.check_npm_version_sync("1.2.3")
+
+    def test_fails_on_invalid_json(self, repo: Path):
+        (repo / "npm" / "package.json").write_text("{ not valid json")
+        with pytest.raises(SystemExit):
+            release.check_npm_version_sync("1.2.3")
+
 
 class TestWaitForRegistry:
     def test_returns_once_registry_reports_the_version(self, monkeypatch: pytest.MonkeyPatch):
