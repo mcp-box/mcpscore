@@ -53,6 +53,20 @@ jobs:
           min-score: 80
 ```
 
+`pull-requests: write` is the permission GitHub's token uses to comment on a pull
+request — the same scope every PR-comment action uses. (The comment goes through
+the issue-comments API, but the token's `pull-requests` scope is what authorizes
+it for a PR.)
+
+<Note>
+On pull requests **from a fork**, GitHub gives the workflow token read-only
+access, so the comment can't be posted. The audit and the score gate still run
+normally — only the comment is skipped. To comment on fork PRs, run the audit in
+a `pull_request_target` workflow, and review the
+[security implications](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/)
+of doing so first.
+</Note>
+
 ### Audit a local server from the repo
 
 For a server that lives in the repository, check out the code and point `target`
