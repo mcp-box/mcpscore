@@ -18,7 +18,7 @@ import release
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the script at a temporary repo root with a valid CHANGELOG."""
+    """Point the script at a temporary repo root with a valid CHANGELOG and npm wrapper."""
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "mcpscore"\nversion = "1.2.3"\n')
     (tmp_path / "CHANGELOG.md").write_text(
         "# Changelog\n\n"
@@ -26,6 +26,10 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "## [1.2.2] - 2026-07-01\n\nOlder notes.\n\n"
         "[1.2.3]: https://github.com/mcp-box/mcpscore/compare/v1.2.2...v1.2.3\n"
         "[1.2.2]: https://github.com/mcp-box/mcpscore/releases/tag/v1.2.2\n"
+    )
+    (tmp_path / "npm").mkdir()
+    (tmp_path / "npm" / "package.json").write_text(
+        '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.3"}}'
     )
     monkeypatch.setattr(release, "ROOT", tmp_path)
     return tmp_path
@@ -193,23 +197,52 @@ class TestCreateRelease:
         assert not seen["notes_path"].exists()
 
 
-class TestWaitForPypi:
-    def test_returns_once_pypi_reports_the_version(self, monkeypatch: pytest.MonkeyPatch):
+class TestCheckNpmVersionSync:
+    def test_passes_when_wrapper_and_pin_match(self, repo: Path):
+        release.check_npm_version_sync("1.2.3")  # must not raise
+
+    def test_fails_on_wrapper_version_drift(self, repo: Path):
+        (repo / "npm" / "package.json").write_text(
+            '{"name": "@mcp-box/mcpscore", "version": "1.2.2", "mcpscore": {"pythonVersion": "1.2.3"}}'
+        )
+        with pytest.raises(SystemExit):
+            release.check_npm_version_sync("1.2.3")
+
+    def test_fails_on_python_pin_drift(self, repo: Path):
+        (repo / "npm" / "package.json").write_text(
+            '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.2"}}'
+        )
+        with pytest.raises(SystemExit):
+            release.check_npm_version_sync("1.2.3")
+
+    def test_fails_when_manifest_missing(self, repo: Path):
+        (repo / "npm" / "package.json").unlink()
+        with pytest.raises(SystemExit):
+            release.check_npm_version_sync("1.2.3")
+
+    def test_fails_on_invalid_json(self, repo: Path):
+        (repo / "npm" / "package.json").write_text("{ not valid json")
+        with pytest.raises(SystemExit):
+            release.check_npm_version_sync("1.2.3")
+
+
+class TestWaitForRegistry:
+    def test_returns_once_registry_reports_the_version(self, monkeypatch: pytest.MonkeyPatch):
         class FakeResponse:
             def __enter__(self):
                 return self
 
-            def __exit__(self, *args):
+            def __exit__(self, *_args):
                 return False
 
             def getcode(self):
                 return 200
 
         monkeypatch.setattr(release.urllib.request, "urlopen", lambda _url, **_kwargs: FakeResponse())
-        release.wait_for_pypi("1.2.3")  # must not raise
+        release.wait_for_registry("PyPI", "https://example/x", "publish.yml")  # must not raise
 
     def test_times_out_when_version_never_appears(self, monkeypatch: pytest.MonkeyPatch):
-        def always_missing(url, timeout):
+        def always_missing(_url, timeout=None):
             raise urllib.error.URLError("boom")
 
         clock = iter(range(0, 10_000, 60))
@@ -217,7 +250,13 @@ class TestWaitForPypi:
         monkeypatch.setattr(release.time, "monotonic", lambda: next(clock))
         monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
         with pytest.raises(SystemExit):
-            release.wait_for_pypi("1.2.3")
+            release.wait_for_registry("npm", "https://example/x", "publish-npm.yml")
+
+    def test_wait_for_publish_polls_both_registries(self, monkeypatch: pytest.MonkeyPatch):
+        polled: list[str] = []
+        monkeypatch.setattr(release, "wait_for_registry", lambda name, _url, _workflow: polled.append(name))
+        release.wait_for_publish("1.2.3")
+        assert polled == ["PyPI", "npm"]
 
 
 class TestMainDryRun:
@@ -229,14 +268,47 @@ class TestMainDryRun:
         monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
         monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
 
-        def must_not_be_called(*args, **kwargs):
+        def must_not_be_called(*_args, **_kwargs):
             pytest.fail("create_release must not run in --dry-run")
 
         monkeypatch.setattr(release, "create_release", must_not_be_called)
-        monkeypatch.setattr(release, "wait_for_pypi", must_not_be_called)
+        monkeypatch.setattr(release, "wait_for_publish", must_not_be_called)
 
         release.main()
 
         out = capsys.readouterr().out
         assert "dry run: all checks passed" in out
-        assert "The notes body." in out
+        assert "npm wrapper version and Python pin both match" in out
+
+    def test_yes_flag_skips_prompt_and_publishes(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        monkeypatch.setattr(sys, "argv", ["release.py", "--yes"])
+        monkeypatch.setattr(release, "check_git_state", lambda: "abc123")
+        monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
+        monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
+
+        created: list[str] = []
+        monkeypatch.setattr(release, "create_release", lambda _version, _notes, target: created.append(target))
+        monkeypatch.setattr(release, "wait_for_publish", lambda _version: None)
+
+        def no_prompt(*_args, **_kwargs):
+            pytest.fail("--yes must not prompt")
+
+        monkeypatch.setattr("builtins.input", no_prompt)
+
+        release.main()
+        assert created == ["abc123"]
+
+    def test_eof_at_prompt_aborts_cleanly(self, repo: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "argv", ["release.py"])
+        monkeypatch.setattr(release, "check_git_state", lambda: "abc123")
+        monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
+        monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
+
+        def raise_eof(_prompt):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", raise_eof)
+        with pytest.raises(SystemExit):
+            release.main()
