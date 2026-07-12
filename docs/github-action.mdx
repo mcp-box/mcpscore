@@ -1,0 +1,157 @@
+---
+title: "GitHub Action"
+description: "Audit your MCP server on every pull request — gate the build on a score threshold and get the report as a PR comment."
+icon: "github"
+---
+
+Run mcpscore in CI with the official
+[**mcpscore-action**](https://github.com/mcp-box/mcpscore-action). It audits your
+MCP server on every pull request, **fails the build** if quality drops below a
+threshold you set, and posts the report as a **pull-request comment**.
+
+```yaml
+- uses: mcp-box/mcpscore-action@v1
+  with:
+    target: https://your-server.example/mcp
+    min-score: 80
+```
+
+## Why run it in CI
+
+A local `mcpscore` check is a snapshot; CI makes quality a **standard you can't
+regress past**:
+
+- **Catch regressions before merge.** A refactor that drops a tool description or
+  breaks a schema shows up as a failing check on the PR — not in production,
+  inside someone else's agent.
+- **A visible quality bar.** The score and its trend live on the PR, so reviewers
+  and contributors see the impact of a change without running anything.
+- **Readiness tracking for the next spec.** The action reports the separate
+  [readiness score](/methodology#the-readiness-score-separate-informative) for the
+  upcoming MCP revision, so you know where you stand well before it lands.
+- **Deterministic and fast.** No API keys, no LLM calls — the same server state
+  always produces the same result, in seconds.
+
+## Quick start
+
+Gate a pull request on quality. The `pull-requests: write` permission lets the
+action post its comment.
+
+```yaml
+name: MCP quality
+on: [pull_request]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: mcp-box/mcpscore-action@v1
+        with:
+          target: https://your-server.example/mcp
+          min-score: 80
+```
+
+### Audit a local server from the repo
+
+For a server that lives in the repository, check out the code and point `target`
+at the entry file:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: mcp-box/mcpscore-action@v1
+  with:
+    target: ./server.py
+    min-score: 85
+```
+
+### Also require readiness for the upcoming spec
+
+```yaml
+- uses: mcp-box/mcpscore-action@v1
+  with:
+    target: https://your-server.example/mcp
+    min-score: 85
+    min-readiness: 50   # fail if less than 50% ready for MCP 2026-07-28
+```
+
+<Note>
+The readiness gate only applies when the server was actually assessed for
+readiness. A stdio server audited without probes reports no readiness score, and
+`min-readiness` is skipped rather than failing the build.
+</Note>
+
+### Use the outputs in later steps
+
+Every number is exposed as a step output:
+
+```yaml
+- id: mcp
+  uses: mcp-box/mcpscore-action@v1
+  with:
+    target: https://your-server.example/mcp
+- run: echo "Scored ${{ steps.mcp.outputs.percentage }}% (era ${{ steps.mcp.outputs.era }})"
+```
+
+## What you get on the PR
+
+The action posts one comment and updates it in place on every re-run — no
+comment spam. It contains the overall score, a pass/fail breakdown by severity,
+the negotiated spec version and era, the separate readiness score, and a
+collapsible list of every failed check by `rule_id` (so a fix is one lookup in
+the [rules reference](/rules) away). The same report is written to the run's job
+summary.
+
+## Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `target` | — (required) | MCP server URL, or a local `.py` / `.js` path |
+| `version` | latest | mcpscore version to run (e.g. `0.8.0`) |
+| `min-score` | none | Fail if the main score percentage (0–100) is below this |
+| `min-readiness` | none | Fail if the readiness percentage (0–100) is below this |
+| `comment` | `true` | Post / update the report comment on the pull request |
+| `args` | — | Extra arguments passed to the mcpscore CLI |
+| `report-path` | `mcpscore-report.json` | Where the JSON report is written |
+| `github-token` | `github.token` | Token for the PR comment (needs `pull-requests: write`) |
+
+## Outputs
+
+| Output | Description |
+|---|---|
+| `score` / `max-score` / `percentage` | Main score |
+| `readiness-score` / `readiness-max` / `readiness-percentage` | Next-spec readiness score |
+| `era` | `legacy`, `modern`, or `dual-era` |
+| `negotiated-version` | Spec version the server negotiated |
+
+## Pinning the version
+
+`@v1` follows the latest v1 release, so you get fixes automatically. For fully
+reproducible runs, pin the action to a commit SHA and pin `version` to a specific
+mcpscore release:
+
+```yaml
+- uses: mcp-box/mcpscore-action@<commit-sha>  # v1.x.y
+  with:
+    target: https://your-server.example/mcp
+    version: "0.8.0"
+    min-score: 80
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Scoring Methodology" icon="scale-balanced" href="/methodology">
+    How the score works, and why the readiness axis is separate
+  </Card>
+  <Card title="Rules Reference" icon="list-check" href="/rules">
+    Every rule the action can flag, by `rule_id`
+  </Card>
+  <Card title="Action source" icon="github" href="https://github.com/mcp-box/mcpscore-action">
+    mcp-box/mcpscore-action on GitHub
+  </Card>
+  <Card title="mcpscore CLI" icon="terminal" href="/">
+    Run the same audit locally
+  </Card>
+</CardGroup>
