@@ -19,3 +19,32 @@
   format). Docstrings: imperative first line, ≤120-char lines.
 - Do not commit to `main`; work on a branch. Do not add strategy or planning documents
   to this repository — it is public.
+
+## Gotchas (learned the hard way)
+
+- **Imports inside the package**: `reportImportCycles` is on, so `from mcpscore import spec`
+  inside `mcpscore/rules/` is flagged as a cycle through `__init__.py` even though it runs.
+  Import submodules directly (`from mcpscore.spec import ...`), matching the existing
+  `from mcpscore.enums import ...` pattern.
+- **Unit tests must stay hermetic**: any new network phase in `MCPAuditor.audit()` silently
+  makes tests using `https://example.com` URLs hit the live network. Tripwire: a sudden
+  pytest wall-time jump (0.6s → 5s+) is a network leak until proven otherwise. Fix pattern:
+  autouse conftest fixture stubbing the runner at the consuming module's attribute
+  (`monkeypatch.setattr(mcp_auditor, "run_all_probes", ...)`); tests needing real probe
+  behavior re-patch or inject an `httpx.MockTransport` client.
+- **`MagicMock(spec=SomeClass)` exposes only class-level attributes** — instance attributes
+  assigned in `__init__` (e.g. `MCPAuditor.audit_data`) raise `AttributeError`; assign them
+  on the mock explicitly. Corollary: adding a method to a spec'd class makes existing mocks
+  auto-create it returning a truthy `MagicMock` — check tests whose behavior that flips.
+- **Always pass `encoding="utf-8"`** to `read_text`/`write_text`/temp files — Windows
+  defaults to the locale codepage and the 3-OS CI matrix exists to catch exactly this.
+- **Rule details vs payload**: large payloads (tools lists, DiscoverResult) go in
+  `ProbeResult.payload`, excluded from `to_dict()`. Spreading `**probe.details` into rule
+  results puts everything in the JSON report — keep `details` small.
+- **Spec citations**: don't trust secondary sources — the MCP blog's own RC summary was
+  wrong twice vs the spec text, and error codes were renumbered after the RC lock. Cite the
+  spec section each rule enforces and re-verify citations against the dated spec URL when a
+  revision goes final.
+- **Zero-behavior-change refactors need a live invariant**: re-audit the same live server
+  (`uv run mcpscore https://mcp.deepwiki.com/mcp`) before and after; the score must be
+  identical.
