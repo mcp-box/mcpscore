@@ -3,7 +3,9 @@ name: Canary
 # Daily run against the newest resolvable dependencies, so upstream breakage
 # (MCP SDK, httpx, pydantic, ...) is caught before users hit it. A second lane
 # tracks the mcp 2.x betas ahead of the 2026-07-28 spec-final SDK release; it
-# is advisory (continue-on-error) until mcpscore targets SDK v2.
+# is advisory (continue-on-error) until mcpscore targets SDK v2. A third lane
+# runs the latest zizmor (CI pins it) so new workflow audits surface here
+# instead of failing unrelated PRs.
 on:
   schedule:
     - cron: "0 5 * * *"
@@ -27,6 +29,19 @@ jobs:
         run: uv sync --all-groups --upgrade
       - run: uv run pyright mcpscore/
       - run: uv run pytest -q
+
+  zizmor-latest:
+    name: Latest zizmor workflow audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - name: Audit workflows with the latest zizmor
+        run: uvx zizmor --no-progress .github/workflows/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   mcp-sdk-v2-beta:
     name: mcp SDK 2.x beta (advisory)

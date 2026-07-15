@@ -76,6 +76,8 @@ jobs:
         with:
           python-version: "3.13"
       - name: Audit workflows with zizmor
-        run: uvx zizmor --no-progress .github/workflows/
+        # Pinned so new zizmor audits can't fail PRs on unchanged code; the canary
+        # workflow runs the latest zizmor to surface new findings on a schedule.
+        run: uvx zizmor==1.27.0 --no-progress .github/workflows/
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
