@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from mcp_types import ResourcesCapability
 from pydantic import BaseModel
 
@@ -73,3 +75,28 @@ def test_capabilities_feature_rules(capabilities_full, capabilities_missing):
     for rule in feature_rules:
         assert rule.check(AuditData(capabilities=capabilities_full)).passed
         assert not rule.check(AuditData(capabilities=capabilities_missing)).passed
+
+
+def test_capabilities_feature_rules_declared_but_disabled(capabilities_full):
+    """A capability that is declared but has the feature flag off must fail with 'not supported'.
+
+    Distinct from the capability being absent: this exercises the middle arm
+    (present, flag false) of each feature rule.
+    """
+    caps = replace(
+        capabilities_full,
+        tools=replace(capabilities_full.tools, list_changed=False),
+        prompts=replace(capabilities_full.prompts, list_changed=False),
+        resources=replace(capabilities_full.resources, list_changed=False, subscribe=False),
+    )
+    feature_rules = [
+        CapabilityToolsListChangedRule(),
+        CapabilityPromptsListChangedRule(),
+        CapabilityResourcesListChangedRule(),
+        CapabilityResourcesSubscribeRule(),
+    ]
+
+    for rule in feature_rules:
+        result = rule.check(AuditData(capabilities=caps))
+        assert result.passed is False
+        assert "not supported" in result.message
