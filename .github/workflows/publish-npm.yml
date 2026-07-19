@@ -13,6 +13,10 @@ permissions: {}
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # PyPI pre-releases (PEP 440 versions like 1.1.0b1) are not valid npm
+    # semver and ship without the npm wrapper — skip npm for GitHub Releases
+    # marked "pre-release". Manual dispatch still always publishes.
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
     permissions:
       contents: read
       id-token: write
@@ -27,6 +31,12 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+      # Node 22 bundles npm 10.x, but OIDC Trusted Publishing needs npm >=
+      # 11.5.1. Without it, npm authenticates with setup-node's placeholder
+      # token and the registry rejects the publish with E404. Exact-pinned
+      # official npm package — deterministic, no lockfile to install from.
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g npm@11.18.0  # zizmor: ignore[adhoc-packages]
       - name: Publish with provenance
         working-directory: npm
         run: npm publish --access public --provenance

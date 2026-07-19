@@ -13,11 +13,14 @@ notes, and creates the GitHub Release (tag v<version>) — which triggers both
 Publishing. It then waits until the version is live on both registries.
 
 Checks performed before anything is created:
-  1. on `main`, clean working tree, local HEAD == origin/main
+  1. on `main` (pre-releases may run from a feature branch), clean working
+     tree, local HEAD in sync with its origin branch
   2. CHANGELOG.md has a `## [<version>]` section AND the `[<version>]:`
      compare link at the bottom (the link block is easy to forget)
   3. the npm wrapper (npm/package.json) version and its pinned Python version
-     both match pyproject.toml (so the wrapper never ships stale)
+     both match pyproject.toml (so the wrapper never ships stale) — skipped
+     for PEP 440 pre-releases (e.g. 1.1.0b1), which publish to PyPI only: the
+     GitHub Release is marked pre-release and publish-npm.yml skips those
   4. tag v<version> does not already exist on the remote
   5. CI is green for HEAD
 
@@ -75,17 +78,35 @@ def read_version() -> str:
         return tomllib.load(f)["project"]["version"]
 
 
-def check_git_state() -> str:
+def is_prerelease(version: str) -> bool:
+    """Whether the version is a PEP 440 pre-release (e.g. 1.1.0b1).
+
+    Pre-releases publish to PyPI only: their versions are not valid npm
+    semver, so the npm wrapper sits releases like these out entirely — no
+    version-sync check, a GitHub Release marked pre-release (which
+    publish-npm.yml skips), and no npm registry wait.
+    """
+    return re.search(r"\d(a|b|rc)\d+$", version) is not None
+
+
+def check_git_state(prerelease: bool = False) -> str:
+    """Verify the repo is releasable; return HEAD's sha.
+
+    Stable releases must come from `main`. Pre-releases may release from a
+    feature branch (e.g. a beta cut from an unmerged SDK-migration branch,
+    keeping `main` on the stable line) — the branch must still be clean,
+    pushed, and in sync with its origin counterpart.
+    """
     branch = run("git", "branch", "--show-current")
-    if branch != "main":
+    if branch != "main" and not prerelease:
         fail(f"must release from main (currently on '{branch}')")
     if run("git", "status", "--porcelain"):
         fail("working tree is not clean")
     head = run("git", "rev-parse", "HEAD")
-    remote_head = run("gh", "api", f"repos/{REPO}/commits/main", "--jq", ".sha")
+    remote_head = run("gh", "api", f"repos/{REPO}/commits/{branch}", "--jq", ".sha")
     if head != remote_head:
-        fail(f"local main ({head[:9]}) != origin/main ({remote_head[:9]}) — push or pull first")
-    ok(f"on main, clean, in sync with origin ({head[:9]})")
+        fail(f"local {branch} ({head[:9]}) != origin/{branch} ({remote_head[:9]}) — push or pull first")
+    ok(f"on {branch}, clean, in sync with origin ({head[:9]})")
     return head
 
 
@@ -176,6 +197,9 @@ def create_release(version: str, notes: str, target: str) -> None:
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:
         f.write(notes + "\n")
         notes_file = f.name
+    # A pre-release must never become the repo's "latest" release, and the
+    # --prerelease flag is what publish-npm.yml keys off to skip npm.
+    flag = "--prerelease" if is_prerelease(version) else "--latest"
     try:
         run(
             "gh",
@@ -190,7 +214,7 @@ def create_release(version: str, notes: str, target: str) -> None:
             f"v{version}",
             "--notes-file",
             notes_file,
-            "--latest",
+            flag,
         )
     finally:
         Path(notes_file).unlink(missing_ok=True)
@@ -231,10 +255,14 @@ def wait_for_registry(registry: str, url: str, workflow: str) -> None:
 
 
 def wait_for_publish(version: str) -> None:
-    """Wait for the release to appear on both PyPI and npm, then print a smoke test."""
+    """Wait for the release to appear on each targeted registry, then print a smoke test."""
+    wait_for_registry("PyPI", f"https://pypi.org/pypi/mcpscore/{version}/json", "publish.yml")
+    if is_prerelease(version):
+        ok("npm skipped (pre-release publishes to PyPI only)")
+        print(f"\nSmoke test:\n  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp")
+        return
     # npm requires the scope slash URL-encoded (%2F) — canonical registry form.
     npm_path = NPM_PACKAGE.replace("/", "%2F")
-    wait_for_registry("PyPI", f"https://pypi.org/pypi/mcpscore/{version}/json", "publish.yml")
     wait_for_registry("npm", f"https://registry.npmjs.org/{npm_path}/{version}", "publish-npm.yml")
     print(
         f"\nSmoke test:\n"
@@ -245,9 +273,12 @@ def wait_for_publish(version: str) -> None:
 
 def _run_preflight(version: str) -> tuple[str, str]:
     """Run every releasable-state check; return (head sha, release notes)."""
-    head = check_git_state()
+    head = check_git_state(prerelease=is_prerelease(version))
     notes = check_changelog(version)
-    check_npm_version_sync(version)
+    if is_prerelease(version):
+        ok(f"npm version sync skipped ({version} is a pre-release — PyPI only)")
+    else:
+        check_npm_version_sync(version)
     check_tag_absent(version)
     check_ci_green(head)
     return head, notes
@@ -255,8 +286,9 @@ def _run_preflight(version: str) -> tuple[str, str]:
 
 def _confirm(version: str) -> bool:
     """Prompt for release confirmation; a closed stdin (EOF) counts as 'no'."""
+    registries = "PyPI only (pre-release)" if is_prerelease(version) else "PyPI + npm"
     try:
-        answer = input(f"Create GitHub Release v{version} and publish to PyPI + npm? [y/N] ")
+        answer = input(f"Create GitHub Release v{version} and publish to {registries}? [y/N] ")
     except (EOFError, KeyboardInterrupt):
         print("\naborted (no confirmation)")
         return False

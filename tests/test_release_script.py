@@ -79,6 +79,32 @@ class TestCheckGitState:
         with pytest.raises(SystemExit):
             release.check_git_state()
 
+    def test_prerelease_allowed_off_main(self, monkeypatch: pytest.MonkeyPatch):
+        """A pre-release may run from a feature branch, synced against its own origin ref."""
+        self._stub_run(
+            monkeypatch,
+            {
+                "git branch --show-current": "feat/sdk-v2",
+                "git status --porcelain": "",
+                "git rev-parse HEAD": "abc123",
+                f"gh api repos/{release.REPO}/commits/feat/sdk-v2 --jq .sha": "abc123",
+            },
+        )
+        assert release.check_git_state(prerelease=True) == "abc123"
+
+    def test_prerelease_off_main_still_requires_sync(self, monkeypatch: pytest.MonkeyPatch):
+        self._stub_run(
+            monkeypatch,
+            {
+                "git branch --show-current": "feat/sdk-v2",
+                "git status --porcelain": "",
+                "git rev-parse HEAD": "abc123",
+                f"gh api repos/{release.REPO}/commits/feat/sdk-v2 --jq .sha": "def456",
+            },
+        )
+        with pytest.raises(SystemExit):
+            release.check_git_state(prerelease=True)
+
     def test_fails_on_dirty_tree(self, monkeypatch: pytest.MonkeyPatch):
         self._stub_run(
             monkeypatch,
@@ -264,7 +290,7 @@ class TestMainDryRun:
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
         monkeypatch.setattr(sys, "argv", ["release.py", "--dry-run"])
-        monkeypatch.setattr(release, "check_git_state", lambda: "abc123")
+        monkeypatch.setattr(release, "check_git_state", lambda **_kwargs: "abc123")
         monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
         monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
 
@@ -284,7 +310,7 @@ class TestMainDryRun:
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
         monkeypatch.setattr(sys, "argv", ["release.py", "--yes"])
-        monkeypatch.setattr(release, "check_git_state", lambda: "abc123")
+        monkeypatch.setattr(release, "check_git_state", lambda **_kwargs: "abc123")
         monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
         monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
 
@@ -302,7 +328,7 @@ class TestMainDryRun:
 
     def test_eof_at_prompt_aborts_cleanly(self, repo: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "argv", ["release.py"])
-        monkeypatch.setattr(release, "check_git_state", lambda: "abc123")
+        monkeypatch.setattr(release, "check_git_state", lambda **_kwargs: "abc123")
         monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
         monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
 
