@@ -33,9 +33,10 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       # Node 22 bundles npm 10.x, but OIDC Trusted Publishing needs npm >=
       # 11.5.1. Without it, npm authenticates with setup-node's placeholder
-      # token and the registry rejects the publish with E404.
+      # token and the registry rejects the publish with E404. Exact-pinned
+      # official npm package — deterministic, no lockfile to install from.
       - name: Upgrade npm for Trusted Publishing
-        run: npm install -g npm@11
+        run: npm install -g npm@11.18.0  # zizmor: ignore[adhoc-packages]
       - name: Publish with provenance
         working-directory: npm
         run: npm publish --access public --provenance
