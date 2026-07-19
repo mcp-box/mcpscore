@@ -263,7 +263,10 @@ def wait_for_publish(version: str) -> None:
     wait_for_registry("PyPI", f"https://pypi.org/pypi/mcpscore/{version}/json", "publish.yml")
     if is_prerelease(version):
         ok("npm skipped (pre-release publishes to PyPI only)")
-        print(f"\nSmoke test:\n  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp")
+        # --prerelease=allow: uv's pre-release exception covers only direct
+        # requirements, and this package's SDK pin (mcp==2.0.0bN) is transitive
+        # from uvx's point of view.
+        print(f"\nSmoke test:\n  uvx --prerelease=allow mcpscore=={version} https://mcp.deepwiki.com/mcp")
         return
     # npm requires the scope slash URL-encoded (%2F) — canonical registry form.
     npm_path = NPM_PACKAGE.replace("/", "%2F")
