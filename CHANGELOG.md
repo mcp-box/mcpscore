@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**Auth-posture rules** — the first rules that score auth-gated servers (which
+previously could not be audited at all). All observations are read-only; the
+rules skip as not-applicable for servers that serve anonymous requests:
+
+- New probe `probe_auth_metadata`: fetches RFC 9728 protected resource
+  metadata from its well-known locations (path-aware form first, then
+  origin root).
+- `auth_www_authenticate` (Security, HIGH): 401 responses must carry a
+  `WWW-Authenticate` challenge.
+- `auth_protected_resource_metadata` (Security, HIGH): the RFC 9728 metadata
+  document exists and its `resource` names this server.
+- `auth_authorization_servers_https` (Security, HIGH): the metadata lists at
+  least one authorization server and every entry uses HTTPS (skipped when the
+  metadata document is absent — that is the previous rule's finding).
+
+**Metadata completeness and consistency rules** (2025-11-25 fields; skipped
+for servers on older spec revisions):
+
+- `server_websiteurl_present` (Server Info, LOW): `serverInfo.websiteUrl`
+  is present.
+- `server_icons_present` (Server Info, LOW): the server declares icons and
+  every icon `src` is an `https://` or `data:` URI.
+- `tools_execution_consistent` (Tools, MEDIUM): tools declaring
+  task-augmented execution (`execution.taskSupport` of `optional`/`required`)
+  require the server to declare the `tasks` capability.
+
+Spec citations for the auth rules reference the MCP Authorization spec and
+RFC 9728; re-verify against the dated spec URL at the 2026-07-28 release.
+
 ## [1.1.0b1] - 2026-07-19
 
 **Pre-release: engine migrated to MCP Python SDK v2 (beta).** Published as a

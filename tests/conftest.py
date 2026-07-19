@@ -33,6 +33,7 @@ class FakeServerCapabilities:
     prompts: FakePromptsCaps | None = None
     resources: FakeResourcesCaps | None = None
     logging: FakeLoggingCaps | None = None
+    tasks: Any | None = None
 
 
 @dataclass
@@ -40,6 +41,8 @@ class FakeImplementation:
     name: str | None = None
     title: str | None = None
     version: str | None = None
+    website_url: str | None = None
+    icons: list[Any] | None = None
 
 
 @pytest.fixture

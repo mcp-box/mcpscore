@@ -227,3 +227,105 @@ class ServerInstructionsPresentRule(BaseRule):
             message=message,
             details={"has_instructions": passed},
         )
+
+
+@register_rule
+class ServerWebsiteUrlPresentRule(ServerInfoBaseRule):
+    """Low check: Verify that serverInfo.websiteUrl is present.
+
+    The ``websiteUrl`` field (2025-11-25) gives clients and registries a
+    human-facing home for the server; a missing one is a completeness gap.
+    """
+
+    rule_id = "server_websiteurl_present"
+    rule_order = 5
+    min_spec_version = "2025-11-25"
+
+    @property
+    def rule_name(self) -> str:
+        return "Server Info - Website URL Present"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_server_info(self, server_info: Implementation) -> RuleResult:
+        """Low check: Verify that serverInfo.websiteUrl is present.
+
+        Args:
+            server_info: Server implementation info to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        website_url = getattr(server_info, "website_url", None)
+        if website_url:
+            passed = True
+            message = f"✅ Server website URL is present: '{website_url}'"
+        else:
+            passed = False
+            message = "❌ Server website URL (websiteUrl) is not present in server info"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"website_url": website_url},
+        )
+
+
+@register_rule
+class ServerIconsPresentRule(ServerInfoBaseRule):
+    """Low check: Verify that serverInfo declares valid icons.
+
+    Icons (2025-11-25) are what registries and client directories render next
+    to the server's name; each declared icon must carry a usable ``src``
+    (an https:// or data: URI) — declaring none, or declaring broken ones,
+    lists the server worse than its peers.
+    """
+
+    rule_id = "server_icons_present"
+    rule_order = 6
+    min_spec_version = "2025-11-25"
+
+    @property
+    def rule_name(self) -> str:
+        return "Server Info - Icons Present and Valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_server_info(self, server_info: Implementation) -> RuleResult:
+        """Low check: Verify that serverInfo declares icons with valid sources.
+
+        Args:
+            server_info: Server implementation info to check
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        icons = getattr(server_info, "icons", None) or []
+        invalid = [
+            icon.src for icon in icons if not (isinstance(icon.src, str) and icon.src.startswith(("https://", "data:")))
+        ]
+        if not icons:
+            passed = False
+            message = "❌ Server declares no icons in server info"
+        elif invalid:
+            passed = False
+            message = f"❌ Number of icons without a valid https/data src: {len(invalid)}"
+        else:
+            passed = True
+            message = f"✅ Server declares {len(icons)} icon(s) with valid sources"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"icon_count": len(icons), "invalid_srcs": invalid},
+        )

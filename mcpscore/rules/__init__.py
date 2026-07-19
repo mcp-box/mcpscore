@@ -13,6 +13,11 @@ The rule system is designed to be extensible, allowing easy addition of new
 audit checks by implementing the BaseRule interface.
 """
 
+from .auth import (
+    AuthAuthorizationServersHttpsRule,
+    AuthProtectedResourceMetadataRule,
+    AuthWwwAuthenticateRule,
+)
 from .base import (
     AuditData,
     BaseRule,
@@ -63,15 +68,18 @@ from .security import (
     TLSEnabledRule,
 )
 from .server_info import (
+    ServerIconsPresentRule,
     ServerInstructionsPresentRule,
     ServerNamePresentRule,
     ServerTitlePresentRule,
     ServerVersionPresentRule,
+    ServerWebsiteUrlPresentRule,
 )
 from .tools import (
     ToolsAnnotationsPresentRule,
     ToolsAtLeastOneRule,
     ToolsDescriptionPresentRule,
+    ToolsExecutionConsistentRule,
     ToolsInputSchemaValidRule,
     ToolsNamePresentRule,
     ToolsNamesUniqueRule,
@@ -86,6 +94,9 @@ from .transport import (
 __all__ = (
     "AllowedVersionRule",
     "AuditData",
+    "AuthAuthorizationServersHttpsRule",
+    "AuthProtectedResourceMetadataRule",
+    "AuthWwwAuthenticateRule",
     "BaseRule",
     "CacheMetadataReadinessRule",
     "CapabilityLoggingPresentRule",
@@ -114,10 +125,12 @@ __all__ = (
     "RuleResult",
     "RuleSeverity",
     "ServerDiscoverReadinessRule",
+    "ServerIconsPresentRule",
     "ServerInstructionsPresentRule",
     "ServerNamePresentRule",
     "ServerTitlePresentRule",
     "ServerVersionPresentRule",
+    "ServerWebsiteUrlPresentRule",
     "SkippedRule",
     "StatelessRequestReadinessRule",
     "StreamableHTTPTransportRule",
@@ -126,6 +139,7 @@ __all__ = (
     "ToolsAnnotationsPresentRule",
     "ToolsAtLeastOneRule",
     "ToolsDescriptionPresentRule",
+    "ToolsExecutionConsistentRule",
     "ToolsInputSchemaValidRule",
     "ToolsNamePresentRule",
     "ToolsNamesUniqueRule",

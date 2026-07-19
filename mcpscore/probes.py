@@ -26,6 +26,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx2
 
@@ -86,6 +87,7 @@ PROBE_MISSING_RESOURCE = "probe_missing_resource"
 PROBE_UNAUTHENTICATED = "probe_unauthenticated"
 PROBE_SESSION_ID_ECHO = "probe_session_id_echo"
 PROBE_REMOVED_METHOD = "probe_removed_method"
+PROBE_AUTH_METADATA = "probe_auth_metadata"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -97,6 +99,7 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_UNAUTHENTICATED,
     PROBE_SESSION_ID_ECHO,
     PROBE_REMOVED_METHOD,
+    PROBE_AUTH_METADATA,
 )
 """Stable identifiers of all probes."""
 
@@ -396,6 +399,51 @@ async def _probe_unauthenticated(client: httpx2.AsyncClient, url: str) -> ProbeR
     return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)
 
 
+def _well_known_urls(url: str) -> list[str]:
+    """RFC 9728 §3 well-known locations for a protected resource URL.
+
+    For a resource with a path component the path-aware form (path appended
+    after the well-known prefix) is tried first, then the origin-root form.
+    """
+    parts = urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    path = parts.path.rstrip("/")
+    candidates = []
+    if path:
+        candidates.append(f"{origin}/.well-known/oauth-protected-resource{path}")
+    candidates.append(f"{origin}/.well-known/oauth-protected-resource")
+    return candidates
+
+
+async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+    """Fetch RFC 9728 protected resource metadata from its well-known locations.
+
+    Observation probe feeding the auth-posture rules: SUPPORTED when a
+    well-known location returns HTTP 200 with a JSON object carrying the
+    REQUIRED ``resource`` field (RFC 9728 §2); details record what was found
+    where. Servers without authentication commonly 404 here — the dependent
+    rules skip unless the endpoint demanded auth in the first place.
+    """
+    details: dict[str, Any] = {"urls_tried": []}
+    for candidate in _well_known_urls(url):
+        details["urls_tried"].append(candidate)
+        response = await client.get(candidate, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
+        details["http_status"] = response.status_code
+        if response.status_code != 200:
+            continue
+        try:
+            metadata = response.json()
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(metadata, dict) and isinstance(metadata.get("resource"), str):
+            servers = metadata.get("authorization_servers")
+            details["metadata_url"] = candidate
+            details["resource"] = metadata["resource"]
+            details["authorization_servers"] = servers if isinstance(servers, list) else None
+            return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
+    return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.UNSUPPORTED, details)
+
+
 async def _probe_session_id_echo(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request carrying a spurious ``Mcp-Session-Id`` header.
 
@@ -450,6 +498,7 @@ _PROBES = {
     PROBE_UNAUTHENTICATED: _probe_unauthenticated,
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_REMOVED_METHOD: _probe_removed_method,
+    PROBE_AUTH_METADATA: _probe_auth_metadata,
 }
 
 

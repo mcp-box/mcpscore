@@ -5,7 +5,7 @@ from typing import Any
 
 from mcp_types import Tool
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_tools
+from .base import BaseRule, RuleResult, RuleSeverity, requires_fields, requires_tools
 from .registry import register_rule
 
 
@@ -536,4 +536,66 @@ class ToolsAnnotationsPresentRule(ToolsBaseRule):
             passed=passed,
             message=message,
             details={"tools_without_annotations": tools_without_annotations},
+        )
+
+
+@register_rule
+class ToolsExecutionConsistentRule(BaseRule):
+    """Medium check: task-augmented tools require the ``tasks`` capability.
+
+    A tool whose ``execution.taskSupport`` is ``optional`` or ``required``
+    (2025-11-25 experimental tasks) promises task-augmented execution — a
+    server making that promise without declaring the ``tasks`` capability
+    gives clients contradictory metadata.
+    """
+
+    group_name = "tools"
+    group_order = 4
+    rule_id = "tools_execution_consistent"
+    rule_order = 10
+    min_spec_version = "2025-11-25"
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Task Execution Backed by Tasks Capability"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    @requires_fields("tools", "capabilities")
+    def check(self, tools: list[Tool] | None, capabilities: Any | None) -> RuleResult:  # type: ignore[override]
+        """Medium check: tools declaring task execution align with capabilities.
+
+        Args:
+            tools: The server's declared tools
+            capabilities: The server's declared capabilities
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        task_tools = [
+            tool.name
+            for tool in (tools or [])
+            if tool.execution is not None and tool.execution.task_support in ("optional", "required")
+        ]
+        has_tasks_capability = getattr(capabilities, "tasks", None) is not None
+
+        if not task_tools:
+            passed = True
+            message = "✅ No tools declare task-augmented execution"
+        elif has_tasks_capability:
+            passed = True
+            message = f"✅ All {len(task_tools)} task-augmented tool(s) are backed by the tasks capability"
+        else:
+            passed = False
+            message = f"❌ Number of tools declaring task execution without a tasks capability: {len(task_tools)}"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"task_tools": task_tools, "tasks_capability": has_tasks_capability},
         )

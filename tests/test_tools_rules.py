@@ -16,7 +16,7 @@ And the is_valid_schema() helper function.
 
 from typing import Any
 
-from mcp_types import Tool, ToolAnnotations
+from mcp_types import Tool, ToolAnnotations, ToolExecution
 import pytest
 
 from mcpscore.rules import AuditData, RuleSeverity
@@ -25,6 +25,7 @@ from mcpscore.rules.tools import (
     ToolsAtLeastOneRule,
     ToolsBaseRule,
     ToolsDescriptionPresentRule,
+    ToolsExecutionConsistentRule,
     ToolsInputSchemaValidRule,
     ToolsNamePresentRule,
     ToolsNamesUniqueRule,
@@ -887,3 +888,36 @@ class TestToolsOutputSchemaValidRule:
         assert result.passed is False
         assert result.details is not None
         assert len(result.details["tools_with_invalid_output_schema"]) == 1
+
+
+class TestToolsExecutionConsistentRule:
+    def _tool(self, name: str, task_support: str | None) -> Tool:
+        execution = ToolExecution(task_support=task_support) if task_support is not None else None
+        return Tool(name=name, input_schema={"type": "object"}, execution=execution)
+
+    def test_no_task_tools_passes(self):
+        rule = ToolsExecutionConsistentRule()
+        tools = [self._tool("plain", None), self._tool("forbidden", "forbidden")]
+        result = rule.check(AuditData(tools=tools))
+        assert result.passed is True
+
+    def test_task_tools_with_tasks_capability_pass(self, capabilities_full):
+        from dataclasses import replace
+
+        rule = ToolsExecutionConsistentRule()
+        tools = [self._tool("runner", "optional"), self._tool("batch", "required")]
+        caps = replace(capabilities_full, tasks=object())
+        result = rule.check(AuditData(tools=tools, capabilities=caps))
+        assert result.passed is True
+
+    def test_task_tools_without_tasks_capability_fail(self, capabilities_full):
+        rule = ToolsExecutionConsistentRule()
+        tools = [self._tool("runner", "optional")]
+        result = rule.check(AuditData(tools=tools, capabilities=capabilities_full))
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["task_tools"] == ["runner"]
+
+    def test_no_tools_at_all_passes(self):
+        result = ToolsExecutionConsistentRule().check(AuditData())
+        assert result.passed is True

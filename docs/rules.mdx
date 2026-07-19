@@ -29,6 +29,8 @@ Every rule mcpscore runs, generated from the rule registry
 | `server_version_present` | Server Info - Version Present | HIGH | 3 | all versions |
 | `server_title_present` | Server Info - Title Present | MEDIUM | 2 | all versions |
 | `server_instructions_present` | Server Info - Instructions Present | LOW | 1 | all versions |
+| `server_websiteurl_present` | Server Info - Website URL Present | LOW | 1 | 2025-11-25 – … |
+| `server_icons_present` | Server Info - Icons Present and Valid | LOW | 1 | 2025-11-25 – … |
 
 ## Capabilities
 
@@ -50,6 +52,9 @@ Every rule mcpscore runs, generated from the rule registry
 | `security_tls_enabled` | HTTPS/TLS Enabled | CRITICAL | 5 | all versions |
 | `security_malformed_request_handling` | Malformed Request Handling | MEDIUM | 2 | all versions |
 | `security_error_data_leak` | No Sensitive Data in Error Messages | MEDIUM | 2 | all versions |
+| `auth_www_authenticate` | Auth - 401 Carries WWW-Authenticate | HIGH | 3 | 2025-06-18 – … |
+| `auth_protected_resource_metadata` | Auth - Protected Resource Metadata | HIGH | 3 | 2025-06-18 – … |
+| `auth_authorization_servers_https` | Auth - Authorization Servers Present and HTTPS | HIGH | 3 | 2025-06-18 – … |
 
 ## Tools
 
@@ -64,6 +69,7 @@ Every rule mcpscore runs, generated from the rule registry
 | `tools_input_schema_valid` | Tools - All tools must have a valid input schema | HIGH | 3 | all versions |
 | `tools_output_schema_valid` | Tools - All tools must have a valid output schema | HIGH | 3 | all versions |
 | `tools_annotations_present` | Tools - All tools should declare behavior annotations | MEDIUM | 2 | all versions |
+| `tools_execution_consistent` | Tools - Task Execution Backed by Tasks Capability | MEDIUM | 2 | 2025-11-25 – … |
 
 ## Transport
 

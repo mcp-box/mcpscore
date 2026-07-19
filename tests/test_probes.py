@@ -10,6 +10,7 @@ from mcpscore.probes import (
     ERROR_LEGACY_RESOURCE_NOT_FOUND,
     ERROR_UNSUPPORTED_PROTOCOL_VERSION,
     META_PREFIX,
+    PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
@@ -22,6 +23,7 @@ from mcpscore.probes import (
     PROBE_UNKNOWN_VERSION,
     ProbeOutcome,
     ProbeResult,
+    _well_known_urls,
     not_applicable_results,
     run_all_probes,
 )
@@ -43,8 +45,16 @@ def _rpc_result(request_id, result: dict):
     return httpx2.Response(200, json={"jsonrpc": "2.0", "id": request_id, "result": result})
 
 
+AUTH_SERVERS = ["https://auth.example"]
+
+
 def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
     """Simulate a server implementing the 2026-07-28 behaviors the probes check."""
+    if request.method == "GET":
+        # RFC 9728 path-aware well-known location for URL's /mcp path.
+        if request.url.path == "/.well-known/oauth-protected-resource/mcp":
+            return httpx2.Response(200, json={"resource": URL, "authorization_servers": AUTH_SERVERS})
+        return httpx2.Response(404)
     body = json.loads(request.content)
     request_id = body.get("id")
     method = body["method"]
@@ -92,6 +102,8 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
 
 def _legacy_server_handler(request: httpx2.Request) -> httpx2.Response:
     """Simulate a stateful 2025-11-25 server: no session → everything is an error."""
+    if request.method == "GET":
+        return httpx2.Response(404)
     body = json.loads(request.content)
     if body["method"] == "resources/read":
         return _rpc_error(body.get("id"), ERROR_LEGACY_RESOURCE_NOT_FOUND, "Resource not found", http_status=200)
@@ -154,6 +166,73 @@ async def test_legacy_server_is_unsupported_but_observed():
     # The legacy resource-not-found code is recorded for the migration rule.
     assert results[PROBE_MISSING_RESOURCE].details["error_code"] == ERROR_LEGACY_RESOURCE_NOT_FOUND
     assert results[PROBE_MISSING_RESOURCE].details["legacy_code_emitted"] is True
+
+    # No well-known metadata anywhere → UNSUPPORTED, with both locations tried.
+    auth = results[PROBE_AUTH_METADATA]
+    assert auth.outcome is ProbeOutcome.UNSUPPORTED
+    assert len(auth.details["urls_tried"]) == 2
+
+
+class TestWellKnownUrls:
+    def test_path_aware_form_first_then_root(self):
+        assert _well_known_urls("https://server.example/mcp") == [
+            "https://server.example/.well-known/oauth-protected-resource/mcp",
+            "https://server.example/.well-known/oauth-protected-resource",
+        ]
+
+    def test_root_resource_has_single_location(self):
+        assert _well_known_urls("https://server.example") == [
+            "https://server.example/.well-known/oauth-protected-resource",
+        ]
+
+    def test_trailing_slash_is_normalized(self):
+        assert _well_known_urls("https://server.example/mcp/") == [
+            "https://server.example/.well-known/oauth-protected-resource/mcp",
+            "https://server.example/.well-known/oauth-protected-resource",
+        ]
+
+
+class TestAuthMetadataProbe:
+    async def test_modern_server_serves_path_aware_metadata(self):
+        results = await _run(_modern_server_handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.SUPPORTED
+        assert auth.details["metadata_url"].endswith("/oauth-protected-resource/mcp")
+        assert auth.details["resource"] == URL
+        assert auth.details["authorization_servers"] == AUTH_SERVERS
+        assert auth.payload == {"resource": URL, "authorization_servers": AUTH_SERVERS}
+
+    async def test_falls_back_to_origin_root_location(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET" and request.url.path == "/.well-known/oauth-protected-resource":
+                return httpx2.Response(200, json={"resource": URL})
+            if request.method == "GET":
+                return httpx2.Response(404)
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.SUPPORTED
+        assert auth.details["metadata_url"] == "https://server.example/.well-known/oauth-protected-resource"
+        assert auth.details["authorization_servers"] is None
+
+    async def test_invalid_json_is_unsupported(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                return httpx2.Response(200, text="<html>not metadata</html>")
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+        assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.UNSUPPORTED
+
+    async def test_metadata_without_resource_field_is_unsupported(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                return httpx2.Response(200, json={"authorization_servers": AUTH_SERVERS})
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+        assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.UNSUPPORTED
 
 
 async def test_network_failure_yields_error_outcomes_not_exceptions():
