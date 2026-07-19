@@ -2,7 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 from mcpscore.enums import MCPTransportType
@@ -59,7 +59,7 @@ class TestMCPClientSSE:
 
         with patch("mcpscore.mcp_client.sse_client") as mock_client:
             # Simulate connection error
-            mock_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
+            mock_client.return_value.__aenter__.side_effect = httpx2.ConnectError("Connection refused")
 
             result = await mcp_client.connect_to_server(MCPTransportType.SSE, server_url)
 
@@ -71,7 +71,7 @@ class TestMCPClientSSE:
 
         with patch("mcpscore.mcp_client.sse_client") as mock_client:
             # Simulate timeout
-            mock_client.return_value.__aenter__.side_effect = httpx.TimeoutException("Request timed out")
+            mock_client.return_value.__aenter__.side_effect = httpx2.TimeoutException("Request timed out")
 
             result = await mcp_client.connect_to_server(MCPTransportType.SSE, server_url)
 
@@ -85,7 +85,7 @@ class TestMCPClientSSE:
             # Simulate 500 error
             mock_response = MagicMock()
             mock_response.status_code = 500
-            http_error = httpx.HTTPStatusError("Internal Server Error", request=MagicMock(), response=mock_response)
+            http_error = httpx2.HTTPStatusError("Internal Server Error", request=MagicMock(), response=mock_response)
             mock_client.return_value.__aenter__.side_effect = http_error
 
             result = await mcp_client.connect_to_server(MCPTransportType.SSE, server_url)
@@ -158,7 +158,7 @@ class TestMCPClientSSE:
                 # Verify that httpx_client_factory parameter is passed
                 assert "httpx_client_factory" in kwargs
                 client_factory = kwargs["httpx_client_factory"]
-                # Test the factory returns an httpx.AsyncClient
+                # Test the factory returns an httpx2.AsyncClient
                 client = client_factory()
                 assert client is not None
                 mock_context = MagicMock()

@@ -82,8 +82,8 @@ async def test_auditor_collects_data_and_scores():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = type(
                 "Caps",
                 (),
@@ -120,8 +120,8 @@ async def test_auditor_with_tools_capability():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             # Tools capability is present (empty dict signals capability exists)
             self.capabilities = type(
                 "Caps",
@@ -156,8 +156,8 @@ async def test_auditor_with_resources_capability():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             # Resources capability is present
             self.capabilities = type(
                 "Caps",
@@ -192,8 +192,8 @@ async def test_auditor_with_prompts_capability():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             # Prompts capability is present
             self.capabilities = type(
                 "Caps",
@@ -228,8 +228,8 @@ async def test_auditor_with_all_capabilities():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             # All capabilities present
             self.capabilities = type(
                 "Caps",
@@ -279,8 +279,8 @@ async def test_auditor_with_no_capabilities():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None  # No capabilities
             self.instructions = None
 
@@ -309,8 +309,8 @@ async def test_auditor_https_tls_detection():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None
             self.instructions = None
 
@@ -337,8 +337,8 @@ async def test_auditor_http_no_tls():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None
             self.instructions = None
 
@@ -362,8 +362,8 @@ async def test_auditor_stdio_no_tls_detection():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None
             self.instructions = None
 
@@ -617,8 +617,8 @@ async def test_auditor_transport_metadata_collection():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None
             self.instructions = None
 

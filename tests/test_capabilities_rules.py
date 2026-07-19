@@ -35,7 +35,7 @@ def test_capabilities_presence_rules(capabilities_full, capabilities_missing):
 def test_capabilities_feature_rules(capabilities_full, capabilities_missing):
     """Test that capability feature rules correctly validate advanced capabilities.
 
-    This test verifies that rules for listChanged and subscribe features
+    This test verifies that rules for list_changed and subscribe features
     properly detect when these advanced capabilities are supported or missing
     in the server's capability declaration.
     """

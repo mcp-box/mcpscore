@@ -2,7 +2,7 @@
 
 import json
 
-import httpx
+import httpx2
 
 from mcpscore.probes import (
     ERROR_HEADER_MISMATCH,
@@ -33,17 +33,17 @@ def _rpc_error(request_id, code: int, message: str, data: dict | None = None, ht
     error: dict = {"code": code, "message": message}
     if data is not None:
         error["data"] = data
-    return httpx.Response(
+    return httpx2.Response(
         http_status,
         json={"jsonrpc": "2.0", "id": request_id, "error": error},
     )
 
 
 def _rpc_result(request_id, result: dict):
-    return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id, "result": result})
+    return httpx2.Response(200, json={"jsonrpc": "2.0", "id": request_id, "result": result})
 
 
-def _modern_server_handler(request: httpx.Request) -> httpx.Response:
+def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
     """Simulate a server implementing the 2026-07-28 behaviors the probes check."""
     body = json.loads(request.content)
     request_id = body.get("id")
@@ -90,19 +90,19 @@ def _modern_server_handler(request: httpx.Request) -> httpx.Response:
     return _rpc_error(request_id, -32601, "Method not found", http_status=404)
 
 
-def _legacy_server_handler(request: httpx.Request) -> httpx.Response:
+def _legacy_server_handler(request: httpx2.Request) -> httpx2.Response:
     """Simulate a stateful 2025-11-25 server: no session → everything is an error."""
     body = json.loads(request.content)
     if body["method"] == "resources/read":
         return _rpc_error(body.get("id"), ERROR_LEGACY_RESOURCE_NOT_FOUND, "Resource not found", http_status=200)
-    return httpx.Response(
+    return httpx2.Response(
         400,
         json={"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32600, "message": "Bad Request: no session"}},
     )
 
 
-def _client(handler) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+def _client(handler) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
 
 
 async def _run(handler) -> dict[str, ProbeResult]:
@@ -157,8 +157,8 @@ async def test_legacy_server_is_unsupported_but_observed():
 
 
 async def test_network_failure_yields_error_outcomes_not_exceptions():
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused")
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("connection refused")
 
     results = await _run(handler)
 
@@ -168,8 +168,8 @@ async def test_network_failure_yields_error_outcomes_not_exceptions():
 
 
 async def test_non_mcp_endpoint_is_unsupported():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text="<html>not an MCP server</html>")
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, text="<html>not an MCP server</html>")
 
     results = await _run(handler)
 
@@ -178,10 +178,10 @@ async def test_non_mcp_endpoint_is_unsupported():
 
 
 async def test_sse_response_body_is_parsed():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
         if body["method"] != "server/discover" or request.headers.get("Mcp-Method") != "server/discover":
-            return httpx.Response(
+            return httpx2.Response(
                 400, json={"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32600, "message": "bad"}}
             )
         message = {
@@ -194,7 +194,7 @@ async def test_sse_response_body_is_parsed():
                 "cacheScope": "private",
             },
         }
-        return httpx.Response(
+        return httpx2.Response(
             200,
             headers={"content-type": "text/event-stream"},
             text=f"event: message\ndata: {json.dumps(message)}\n\n",
@@ -208,8 +208,8 @@ async def test_sse_response_body_is_parsed():
 
 
 async def test_unauthenticated_probe_records_challenge():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             401,
             headers={
                 "WWW-Authenticate": 'Bearer resource_metadata="https://server.example/.well-known/oauth-protected-resource"'
@@ -282,7 +282,7 @@ async def test_auditor_runs_probes_for_http_url(monkeypatch):
 async def test_leaky_modern_server_is_detected():
     """A server speaking the modern lifecycle but leaking legacy artifacts."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
         request_id = body.get("id")
         method = body["method"]
@@ -326,16 +326,16 @@ async def test_probe_payloads_are_captured_for_data_extraction():
 
 
 async def test_sse_response_without_data_line_is_unsupported():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text="event: ping\n\n")
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text="event: ping\n\n")
 
     results = await _run(handler)
     assert results[PROBE_DISCOVER].outcome is ProbeOutcome.UNSUPPORTED
 
 
 async def test_error_without_message_field_is_handled():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32600}})
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(400, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32600}})
 
     results = await _run(handler)
     details = results[PROBE_DISCOVER].details
@@ -344,9 +344,9 @@ async def test_error_without_message_field_is_handled():
 
 
 async def test_unknown_version_error_with_non_dict_data():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
-        return httpx.Response(
+        return httpx2.Response(
             400,
             json={
                 "jsonrpc": "2.0",
@@ -365,7 +365,7 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
     from mcpscore import probes as probes_module
 
     def make_stub(probe_id: str):
-        async def stub(client: httpx.AsyncClient, url: str) -> ProbeResult:
+        async def stub(client: httpx2.AsyncClient, url: str) -> ProbeResult:
             return ProbeResult(probe_id, ProbeOutcome.SUPPORTED, {"stubbed": True})
 
         return stub

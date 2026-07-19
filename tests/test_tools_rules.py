@@ -16,7 +16,7 @@ And the is_valid_schema() helper function.
 
 from typing import Any
 
-from mcp.types import Tool, ToolAnnotations
+from mcp_types import Tool, ToolAnnotations
 import pytest
 
 from mcpscore.rules import AuditData, RuleSeverity
@@ -61,7 +61,7 @@ def valid_tool() -> Tool:
         name="test_tool",
         title="Test Tool",
         description="A test tool for validation",
-        inputSchema={
+        input_schema={
             "type": "object",
             "title": "Input Schema",
             "properties": {
@@ -69,7 +69,7 @@ def valid_tool() -> Tool:
             },
             "required": ["param1"],
         },
-        outputSchema={
+        output_schema={
             "type": "object",
             "title": "Output Schema",
             "properties": {
@@ -87,7 +87,7 @@ def tool_with_empty_name() -> Tool:
         name="",
         title="Empty Name Tool",
         description="Tool with empty name",
-        inputSchema={
+        input_schema={
             "type": "object",
             "title": "Input",
             "properties": {},
@@ -103,7 +103,7 @@ def tool_with_invalid_name() -> Tool:
         name="invalid@name#with$special%chars",
         title="Invalid Name Tool",
         description="Tool with invalid name format",
-        inputSchema={
+        input_schema={
             "type": "object",
             "title": "Input",
             "properties": {},
@@ -119,7 +119,7 @@ def tool_with_long_name() -> Tool:
         name="a" * 129,  # 129 characters
         title="Long Name Tool",
         description="Tool with too long name",
-        inputSchema={
+        input_schema={
             "type": "object",
             "title": "Input",
             "properties": {},
@@ -135,7 +135,7 @@ def tool_with_empty_title() -> Tool:
         name="valid_name",
         title="",
         description="Tool with empty title",
-        inputSchema={
+        input_schema={
             "type": "object",
             "title": "Input",
             "properties": {},
@@ -151,7 +151,7 @@ def tool_with_empty_description() -> Tool:
         name="valid_name",
         title="Valid Title",
         description="",
-        inputSchema={
+        input_schema={
             "type": "object",
             "title": "Input",
             "properties": {},
@@ -167,7 +167,7 @@ def tool_with_invalid_input_schema() -> Tool:
         name="valid_name",
         title="Valid Title",
         description="Valid Description",
-        inputSchema={
+        input_schema={
             "type": "string",  # Wrong type - should be "object"
             "title": "Invalid",
             "properties": {},
@@ -183,13 +183,13 @@ def tool_with_invalid_output_schema() -> Tool:
         name="valid_name",
         title="Valid Title",
         description="Valid Description",
-        inputSchema={
+        input_schema={
             "type": "object",
             "title": "Valid Input",
             "properties": {},
             "required": [],
         },
-        outputSchema={
+        output_schema={
             "type": "array",  # Wrong type
             "title": "Invalid Output",
         },
@@ -507,8 +507,8 @@ class TestToolsNamesUniqueRule:
     def test_with_unique_names(self, valid_tool: Tool) -> None:
         """Pass: All tool names are unique."""
         rule = ToolsNamesUniqueRule()
-        tool1 = Tool(name="tool1", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
-        tool2 = Tool(name="tool2", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool1 = Tool(name="tool1", input_schema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool2 = Tool(name="tool2", input_schema={"type": "object", "title": "T", "properties": {}, "required": []})
         result = rule.check(AuditData(tools=[tool1, tool2]))
         assert result.passed is True
         assert result.details is not None
@@ -517,8 +517,8 @@ class TestToolsNamesUniqueRule:
     def test_with_duplicate_names(self, valid_tool: Tool) -> None:
         """Fail: Tools have duplicate names."""
         rule = ToolsNamesUniqueRule()
-        tool1 = Tool(name="duplicate", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
-        tool2 = Tool(name="duplicate", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool1 = Tool(name="duplicate", input_schema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool2 = Tool(name="duplicate", input_schema={"type": "object", "title": "T", "properties": {}, "required": []})
         result = rule.check(AuditData(tools=[tool1, tool2]))
         assert result.passed is False
         assert result.details is not None
@@ -529,11 +529,11 @@ class TestToolsNamesUniqueRule:
         """Fail: Multiple sets of duplicate names."""
         rule = ToolsNamesUniqueRule()
         tools = [
-            Tool(name="dup1", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []}),
-            Tool(name="dup1", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []}),
-            Tool(name="dup2", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []}),
-            Tool(name="dup2", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []}),
-            Tool(name="unique", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []}),
+            Tool(name="dup1", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}),
+            Tool(name="dup1", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}),
+            Tool(name="dup2", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}),
+            Tool(name="dup2", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}),
+            Tool(name="unique", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}),
         ]
         result = rule.check(AuditData(tools=tools))
         assert result.passed is False
@@ -570,35 +570,41 @@ class TestToolsNamesValidFormatRule:
     def test_with_alphanumeric_name(self) -> None:
         """Pass: Tool name with alphanumeric characters."""
         rule = ToolsNamesValidFormatRule()
-        tool = Tool(name="tool123", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool = Tool(name="tool123", input_schema={"type": "object", "title": "T", "properties": {}, "required": []})
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is True
 
     def test_with_underscore_name(self) -> None:
         """Pass: Tool name with underscores."""
         rule = ToolsNamesValidFormatRule()
-        tool = Tool(name="my_tool_name", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool = Tool(
+            name="my_tool_name", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}
+        )
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is True
 
     def test_with_dash_name(self) -> None:
         """Pass: Tool name with dashes."""
         rule = ToolsNamesValidFormatRule()
-        tool = Tool(name="my-tool-name", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool = Tool(
+            name="my-tool-name", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}
+        )
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is True
 
     def test_with_dot_name(self) -> None:
         """Pass: Tool name with dots."""
         rule = ToolsNamesValidFormatRule()
-        tool = Tool(name="my.tool.name", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool = Tool(
+            name="my.tool.name", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}
+        )
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is True
 
     def test_with_max_length_name(self) -> None:
         """Pass: Tool name with 128 characters (max allowed)."""
         rule = ToolsNamesValidFormatRule()
-        tool = Tool(name="a" * 128, inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool = Tool(name="a" * 128, input_schema={"type": "object", "title": "T", "properties": {}, "required": []})
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is True
 
@@ -621,7 +627,9 @@ class TestToolsNamesValidFormatRule:
     def test_with_space_in_name(self) -> None:
         """Fail: Tool name contains spaces."""
         rule = ToolsNamesValidFormatRule()
-        tool = Tool(name="my tool name", inputSchema={"type": "object", "title": "T", "properties": {}, "required": []})
+        tool = Tool(
+            name="my tool name", input_schema={"type": "object", "title": "T", "properties": {}, "required": []}
+        )
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is False
         assert result.details is not None
@@ -714,7 +722,7 @@ class TestToolsAnnotationsPresentRule:
     """Test ToolsAnnotationsPresentRule."""
 
     def _tool(self, name: str, annotations: ToolAnnotations | None) -> Tool:
-        return Tool(name=name, inputSchema={"type": "object"}, annotations=annotations)
+        return Tool(name=name, input_schema={"type": "object"}, annotations=annotations)
 
     def test_rule_properties(self) -> None:
         """Test rule metadata properties."""
@@ -806,7 +814,7 @@ class TestToolsInputSchemaValidRule:
         rule = ToolsInputSchemaValidRule()
         tool = Tool(
             name="test",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {"name": "not-a-mapping"},  # property def must be a dict
             },
@@ -817,7 +825,7 @@ class TestToolsInputSchemaValidRule:
     def test_zero_argument_tool_passes(self) -> None:
         """Pass: a zero-argument tool with a minimal schema is valid."""
         rule = ToolsInputSchemaValidRule()
-        tool = Tool(name="test", inputSchema={"type": "object", "properties": {}})
+        tool = Tool(name="test", input_schema={"type": "object", "properties": {}})
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is True
 
@@ -859,13 +867,13 @@ class TestToolsOutputSchemaValidRule:
         rule = ToolsOutputSchemaValidRule()
         tool = Tool(
             name="test",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "title": "Input",
                 "properties": {},
                 "required": [],
             },
-            outputSchema=None,
+            output_schema=None,
         )
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is True

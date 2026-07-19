@@ -8,7 +8,7 @@ message instead of a flat "could not connect".
 from contextlib import AsyncExitStack
 from unittest.mock import MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 from mcpscore.enums import ConnectionErrorReason, MCPTransportType
@@ -21,10 +21,10 @@ from mcpscore.mcp_client import (
 )
 
 
-def _http_status_error(status_code: int) -> httpx.HTTPStatusError:
+def _http_status_error(status_code: int) -> httpx2.HTTPStatusError:
     response = MagicMock()
     response.status_code = status_code
-    return httpx.HTTPStatusError("boom", request=MagicMock(), response=response)
+    return httpx2.HTTPStatusError("boom", request=MagicMock(), response=response)
 
 
 class TestReasonForStatus:
@@ -110,7 +110,7 @@ class TestConnectRecordsFailure:
 
     async def test_connect_error_is_unreachable(self, mcp_client):
         with patch("mcpscore.mcp_client.streamable_http_client") as mock_client:
-            mock_client.return_value.__aenter__.side_effect = httpx.ConnectError("refused")
+            mock_client.return_value.__aenter__.side_effect = httpx2.ConnectError("refused")
 
             result = await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, "https://example.com/mcp")
 

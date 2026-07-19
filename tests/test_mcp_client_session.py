@@ -3,8 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 from mcp import InitializeResult, ListPromptsResult, ListResourcesResult, ListToolsResult
-from mcp.types import Prompt, Resource, Tool
-from pydantic import AnyUrl
+from mcp_types import Prompt, Resource, Tool
 import pytest
 
 from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
@@ -71,8 +70,8 @@ class TestMCPClientSessionOperations:
     async def test_list_tools_success(self, mock_connected_client):
         """Test successful list_tools."""
         mock_tools = [
-            Tool(name="tool1", description="Test tool 1", inputSchema={"type": "object"}),
-            Tool(name="tool2", description="Test tool 2", inputSchema={"type": "object"}),
+            Tool(name="tool1", description="Test tool 1", input_schema={"type": "object"}),
+            Tool(name="tool2", description="Test tool 2", input_schema={"type": "object"}),
         ]
         mock_result = ListToolsResult(tools=mock_tools)
         mock_connected_client.session.list_tools.return_value = mock_result
@@ -103,8 +102,8 @@ class TestMCPClientSessionOperations:
     async def test_list_resources_success(self, mock_connected_client):
         """Test successful list_resources."""
         mock_resources = [
-            Resource(uri=AnyUrl("file:///test1.txt"), name="Test Resource 1", mimeType="text/plain"),
-            Resource(uri=AnyUrl("file:///test2.txt"), name="Test Resource 2", mimeType="text/plain"),
+            Resource(uri="file:///test1.txt", name="Test Resource 1", mime_type="text/plain"),
+            Resource(uri="file:///test2.txt", name="Test Resource 2", mime_type="text/plain"),
         ]
         mock_result = ListResourcesResult(resources=mock_resources)
         mock_connected_client.session.list_resources.return_value = mock_result

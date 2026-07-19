@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
-    from mcp.types import InitializeResult, Prompt, Resource, Tool
+    from mcp_types import InitializeResult, Prompt, Resource, Tool
 
 from pydantic import ValidationError
 
@@ -173,7 +173,7 @@ class MCPAuditor:
         parse stays None — the corresponding rules then report it missing,
         which is accurate from the client's perspective.
         """
-        from mcp.types import Implementation, ServerCapabilities, Tool
+        from mcp_types import Implementation, ServerCapabilities, Tool
 
         probes = self.audit_data.probes or {}
 
@@ -370,8 +370,8 @@ class MCPAuditor:
             logger.error("No Init Result to audit")
             return
         else:
-            self.audit_data.protocol_version = str(init_result.protocolVersion)
-            self.audit_data.server_info = init_result.serverInfo
+            self.audit_data.protocol_version = str(init_result.protocol_version)
+            self.audit_data.server_info = init_result.server_info
             self.audit_data.capabilities = init_result.capabilities
             self.audit_data.instructions = init_result.instructions
 

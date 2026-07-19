@@ -1,6 +1,6 @@
 """Tests for prompt-quality rules."""
 
-from mcp.types import Prompt, PromptArgument
+from mcp_types import Prompt, PromptArgument
 
 from mcpscore.rules import (
     AuditData,

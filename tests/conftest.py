@@ -8,17 +8,17 @@ import pytest
 
 @dataclass
 class FakeToolsCaps:
-    listChanged: bool = False  # noqa: N815
+    list_changed: bool = False
 
 
 @dataclass
 class FakePromptsCaps:
-    listChanged: bool = False  # noqa: N815
+    list_changed: bool = False
 
 
 @dataclass
 class FakeResourcesCaps:
-    listChanged: bool = False  # noqa: N815
+    list_changed: bool = False
     subscribe: bool = False
 
 
@@ -45,9 +45,9 @@ class FakeImplementation:
 @pytest.fixture
 def capabilities_full() -> FakeServerCapabilities:
     return FakeServerCapabilities(
-        tools=FakeToolsCaps(listChanged=True),
-        prompts=FakePromptsCaps(listChanged=True),
-        resources=FakeResourcesCaps(listChanged=True, subscribe=True),
+        tools=FakeToolsCaps(list_changed=True),
+        prompts=FakePromptsCaps(list_changed=True),
+        resources=FakeResourcesCaps(list_changed=True, subscribe=True),
         logging=FakeLoggingCaps(enabled=True),
     )
 

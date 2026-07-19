@@ -1,9 +1,22 @@
 from abc import abstractmethod
 
-from mcp.types import ServerCapabilities
+from mcp_types import ServerCapabilities
+from pydantic import BaseModel
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_capabilities
 from .registry import register_rule
+
+
+def _wire_str(capability: object | None) -> str | None:
+    """Render a capability model using MCP wire field names (spec casing).
+
+    Report messages and details are public output and must show the spec's
+    field names (e.g. ``listChanged``), not the SDK's Python attribute names.
+    """
+    if not isinstance(capability, BaseModel):
+        return None if capability is None else str(capability)
+    fields = type(capability).model_fields
+    return " ".join(f"{field.alias or name}={getattr(capability, name)}" for name, field in fields.items())
 
 
 class CapabilityBaseRule(BaseRule):
@@ -95,7 +108,7 @@ class CapabilityToolsPresentRule(CapabilityBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"capability_tools": getattr(capabilities, "tools", None)},
+            details={"capability_tools": _wire_str(getattr(capabilities, "tools", None))},
         )
 
 
@@ -127,19 +140,19 @@ class CapabilityToolsListChangedRule(CapabilityBaseRule):
         if not hasattr(capabilities, "tools") or not capabilities.tools:
             passed = False
             message = "❌ Tools is not present in capabilities"
-        elif not capabilities.tools.listChanged:
+        elif not capabilities.tools.list_changed:
             passed = False
             message = "❌ listChanged is not supported by Tools"
         else:
             passed = True
-            message = f"✅ Tools support listChanged: '{capabilities.tools}'"
+            message = f"✅ Tools support listChanged: '{_wire_str(capabilities.tools)}'"
 
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"capability_tools": getattr(capabilities, "tools", None)},
+            details={"capability_tools": _wire_str(getattr(capabilities, "tools", None))},
         )
 
 
@@ -180,7 +193,7 @@ class CapabilityPromptsPresentRule(CapabilityBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"capability_prompts": getattr(capabilities, "prompts", None)},
+            details={"capability_prompts": _wire_str(getattr(capabilities, "prompts", None))},
         )
 
 
@@ -212,19 +225,19 @@ class CapabilityPromptsListChangedRule(CapabilityBaseRule):
         if not hasattr(capabilities, "prompts") or not capabilities.prompts:
             passed = False
             message = "❌ Prompts is not present in capabilities"
-        elif not capabilities.prompts.listChanged:
+        elif not capabilities.prompts.list_changed:
             passed = False
             message = "❌ listChanged is not supported by Prompts"
         else:
             passed = True
-            message = f"✅ Prompts support listChanged: '{capabilities.prompts}'"
+            message = f"✅ Prompts support listChanged: '{_wire_str(capabilities.prompts)}'"
 
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"capability_prompts": getattr(capabilities, "prompts", None)},
+            details={"capability_prompts": _wire_str(getattr(capabilities, "prompts", None))},
         )
 
 
@@ -265,7 +278,7 @@ class CapabilityResourcesPresentRule(CapabilityBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"capability_resources": getattr(capabilities, "resources", None)},
+            details={"capability_resources": _wire_str(getattr(capabilities, "resources", None))},
         )
 
 
@@ -297,19 +310,19 @@ class CapabilityResourcesListChangedRule(CapabilityBaseRule):
         if not hasattr(capabilities, "resources") or not capabilities.resources:
             passed = False
             message = "❌ Resources is not present in capabilities"
-        elif not capabilities.resources.listChanged:
+        elif not capabilities.resources.list_changed:
             passed = False
             message = "❌ listChanged is not supported by Resources"
         else:
             passed = True
-            message = f"✅ Resources support listChanged: '{capabilities.resources}'"
+            message = f"✅ Resources support listChanged: '{_wire_str(capabilities.resources)}'"
 
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"capability_resources": getattr(capabilities, "resources", None)},
+            details={"capability_resources": _wire_str(getattr(capabilities, "resources", None))},
         )
 
 
@@ -346,14 +359,14 @@ class CapabilityResourcesSubscribeRule(CapabilityBaseRule):
             message = "❌ subscribe is not supported by Resources"
         else:
             passed = True
-            message = f"✅ Resources support subscribe: '{capabilities.resources}'"
+            message = f"✅ Resources support subscribe: '{_wire_str(capabilities.resources)}'"
 
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"capability_resources": getattr(capabilities, "resources", None)},
+            details={"capability_resources": _wire_str(getattr(capabilities, "resources", None))},
         )
 
 
@@ -387,12 +400,12 @@ class CapabilityLoggingPresentRule(CapabilityBaseRule):
             message = "❌ Logging is not present in capabilities"
         else:
             passed = True
-            message = f"✅ Logging capability is present: '{capabilities.logging}'"
+            message = f"✅ Logging capability is present: '{_wire_str(capabilities.logging)}'"
 
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"capability_logging": getattr(capabilities, "logging", None)},
+            details={"capability_logging": _wire_str(getattr(capabilities, "logging", None))},
         )

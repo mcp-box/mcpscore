@@ -1,6 +1,6 @@
 from abc import abstractmethod
 
-from mcp.types import Implementation
+from mcp_types import Implementation
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_fields, requires_server_info
 from .registry import register_rule

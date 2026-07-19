@@ -11,7 +11,7 @@ from mcpscore.spec import compare
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcp.types import Implementation, Prompt, Resource, ServerCapabilities, Tool
+    from mcp_types import Implementation, Prompt, Resource, ServerCapabilities, Tool
 
     from ..enums import MCPTransportType
     from ..probes import ProbeResult

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0b1] - Unreleased
+
+**Pre-release: engine migrated to MCP Python SDK v2 (beta).** Published as a
+PyPI pre-release only — plain `pip install mcpscore` keeps resolving the stable
+0.x line until SDK 2.0 goes stable. Audit output is unchanged: the same live
+server audited before and after the migration produces an identical report
+(score and all rule results).
+
+### Changed
+
+- Migrated from MCP Python SDK v1 to `mcp==2.0.0b2` (exact pin — SDK
+  pre-releases may break each other, so each mcpscore beta pins the SDK beta it
+  was verified against).
+- HTTP stack switched from `httpx`/`httpx-sse` to `httpx2` (the SDK v2 HTTP
+  client) for both the MCP transports and the readiness probes. TLS is now
+  validated against the OS trust store (via `truststore`) instead of certifi's
+  bundle.
+- Report messages and details keep the MCP spec's wire field names (e.g.
+  `listChanged`) even though SDK v2 renamed Python attributes to snake_case —
+  the report schema is a public contract and does not follow SDK naming.
+
+### Removed
+
+- The `mcp>=1.28.1,<2` / `httpx>=0.28.1,<1` bounds added in 0.9.0 (this
+  line tracks SDK v2 directly; the bounds remain correct for the stable 0.x
+  line).
+
+## [0.9.0] - Unreleased
+
 ### Changed
 
 - Bounded runtime dependencies below their upcoming majors (`mcp>=1.28.1,<2`,
@@ -214,7 +243,9 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b1...HEAD
+[1.1.0b1]: https://github.com/mcp-box/mcpscore/compare/v0.9.0...v1.1.0b1
+[0.9.0]: https://github.com/mcp-box/mcpscore/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mcp-box/mcpscore/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mcp-box/mcpscore/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mcp-box/mcpscore/compare/v0.5.1...v0.6.0

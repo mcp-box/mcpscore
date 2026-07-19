@@ -1,6 +1,6 @@
 """Tests for resource-quality rules."""
 
-from mcp.types import Resource
+from mcp_types import Resource
 
 from mcpscore.rules import AuditData, ResourcesDescriptionPresentRule, RuleSeverity
 

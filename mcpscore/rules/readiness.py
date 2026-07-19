@@ -536,10 +536,10 @@ class ToolSchemaDialectReadinessRule(ReadinessBaseRule):
         offending: dict[str, list[str]] = {}
         for tool in audit_data.tools or []:
             problems: list[str] = []
-            input_schema = getattr(tool, "inputSchema", None)
+            input_schema = getattr(tool, "input_schema", None)
             if isinstance(input_schema, dict):
                 problems.extend(self._schema_problems(input_schema))
-            output_schema = getattr(tool, "outputSchema", None)
+            output_schema = getattr(tool, "output_schema", None)
             if isinstance(output_schema, dict):
                 problems.extend(self._schema_problems(output_schema))
             if problems:

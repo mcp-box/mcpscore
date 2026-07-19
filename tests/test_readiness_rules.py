@@ -227,8 +227,8 @@ class TestDeprecatedFeaturesRule:
 def _tool(name: str = "tool", input_schema: dict | None = None, output_schema: dict | None = None):
     return SimpleNamespace(
         name=name,
-        inputSchema=input_schema if input_schema is not None else {"type": "object", "properties": {}},
-        outputSchema=output_schema,
+        input_schema=input_schema if input_schema is not None else {"type": "object", "properties": {}},
+        output_schema=output_schema,
     )
 
 

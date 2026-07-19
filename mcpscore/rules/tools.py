@@ -3,7 +3,7 @@ from collections import Counter
 import re
 from typing import Any
 
-from mcp.types import Tool
+from mcp_types import Tool
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_tools
 from .registry import register_rule
@@ -408,7 +408,7 @@ class ToolsInputSchemaValidRule(ToolsBaseRule):
 
         """
         tools_with_invalid_input_schema: list[str] = [
-            tool.name for tool in tools if not is_valid_schema(tool.inputSchema)
+            tool.name for tool in tools if not is_valid_schema(tool.input_schema)
         ]
 
         passed = len(tools_with_invalid_input_schema) == 0
@@ -457,7 +457,7 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
 
         """
         tools_with_invalid_output_schema: list[str] = [
-            tool.name for tool in tools if tool.outputSchema is not None and not is_valid_schema(tool.outputSchema)
+            tool.name for tool in tools if tool.output_schema is not None and not is_valid_schema(tool.output_schema)
         ]
 
         passed = len(tools_with_invalid_output_schema) == 0
@@ -479,7 +479,7 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
 # The behavior-describing hints from the MCP tool `annotations` object. The
 # display-only `title` hint is excluded: it conveys no execution semantics, so
 # it does not count as "annotated" for this rule.
-_TOOL_BEHAVIOR_HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+_TOOL_BEHAVIOR_HINTS = ("read_only_hint", "destructive_hint", "idempotent_hint", "open_world_hint")
 
 
 def _has_behavior_annotation(tool: Tool) -> bool:

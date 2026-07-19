@@ -27,7 +27,7 @@ import json
 import logging
 from typing import Any
 
-import httpx
+import httpx2
 
 from mcpscore.spec import DRAFT, LATEST, Era
 
@@ -207,7 +207,7 @@ def _request_headers(protocol_version: str, method: str, name: str | None = None
     return headers
 
 
-def _parse_payload(response: httpx.Response) -> dict[str, Any] | None:
+def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
     """Extract the JSON-RPC message from a JSON or SSE response body."""
     content_type = response.headers.get("content-type", "")
     try:
@@ -223,7 +223,7 @@ def _parse_payload(response: httpx.Response) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-async def _post(client: httpx.AsyncClient, url: str, body: dict, headers: dict[str, str]) -> _ProbeResponse:
+async def _post(client: httpx2.AsyncClient, url: str, body: dict, headers: dict[str, str]) -> _ProbeResponse:
     response = await client.post(url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
     return _ProbeResponse(
         status_code=response.status_code,
@@ -242,7 +242,7 @@ def _base_details(response: _ProbeResponse) -> dict[str, Any]:
     return details
 
 
-async def _probe_discover(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_discover(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """``server/discover`` — mandatory for modern servers (SEP-2567).
 
     SUPPORTED when the server returns a DiscoverResult carrying
@@ -267,7 +267,7 @@ async def _probe_discover(client: httpx.AsyncClient, url: str) -> ProbeResult:
     return ProbeResult(PROBE_DISCOVER, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_stateless_list(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_stateless_list(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Modern ``tools/list`` with required ``_meta``, no prior ``initialize`` (SEP-2575).
 
     SUPPORTED when the server returns a tools result; details record
@@ -290,7 +290,7 @@ async def _probe_stateless_list(client: httpx.AsyncClient, url: str) -> ProbeRes
     return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_malformed_meta(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_malformed_meta(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request missing a required ``_meta`` field.
 
     The spec: a request missing any required field MUST be rejected with
@@ -312,7 +312,7 @@ async def _probe_malformed_meta(client: httpx.AsyncClient, url: str) -> ProbeRes
     return ProbeResult(PROBE_MALFORMED_META, outcome, details)
 
 
-async def _probe_header_mismatch(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_header_mismatch(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a request whose ``Mcp-Method`` header contradicts the body method (SEP-2243).
 
     Servers MUST reject header/body mismatches with HTTP 400 and JSON-RPC
@@ -333,7 +333,7 @@ async def _probe_header_mismatch(client: httpx.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_HEADER_MISMATCH, outcome, details)
 
 
-async def _probe_unknown_version(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request naming a fabricated protocol version.
 
     Modern servers MUST reject it with ``-32022`` (UnsupportedProtocolVersion)
@@ -356,7 +356,7 @@ async def _probe_unknown_version(client: httpx.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_missing_resource(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_missing_resource(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """``resources/read`` for a deliberately nonexistent URI (SEP-2164).
 
     From 2026-07-28 the missing-resource error is standard ``-32602``; the
@@ -377,7 +377,7 @@ async def _probe_missing_resource(client: httpx.AsyncClient, url: str) -> ProbeR
     return ProbeResult(PROBE_MISSING_RESOURCE, outcome, details)
 
 
-async def _probe_unauthenticated(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_unauthenticated(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """One unauthenticated request, recording status and ``WWW-Authenticate``.
 
     This is a pure observation probe (it feeds the auth-posture rules):
@@ -396,7 +396,7 @@ async def _probe_unauthenticated(client: httpx.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)
 
 
-async def _probe_session_id_echo(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_session_id_echo(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request carrying a spurious ``Mcp-Session-Id`` header.
 
     ``Mcp-Session-Id`` is removed in 2026-07-28; servers serving modern
@@ -419,7 +419,7 @@ async def _probe_session_id_echo(client: httpx.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_SESSION_ID_ECHO, outcome, details)
 
 
-async def _probe_removed_method(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_removed_method(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request for a method removed in the target revision (``ping``).
 
     Removed methods are unknown methods: the server MUST respond with HTTP 404
@@ -509,7 +509,7 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
     return None
 
 
-async def run_all_probes(url: str, client: httpx.AsyncClient | None = None) -> dict[str, ProbeResult]:
+async def run_all_probes(url: str, client: httpx2.AsyncClient | None = None) -> dict[str, ProbeResult]:
     """Run every probe against an HTTP(S) MCP endpoint.
 
     Probes run concurrently; a probe that fails at the network level yields
@@ -527,18 +527,18 @@ async def run_all_probes(url: str, client: httpx.AsyncClient | None = None) -> d
 
     """
 
-    async def run_one(probe_id: str, http_client: httpx.AsyncClient) -> ProbeResult:
+    async def run_one(probe_id: str, http_client: httpx2.AsyncClient) -> ProbeResult:
         try:
             return await _PROBES[probe_id](http_client, url)
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             logger.info("Probe %s failed against %s: %s", probe_id, url, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
 
-    async def run_with(http_client: httpx.AsyncClient) -> dict[str, ProbeResult]:
+    async def run_with(http_client: httpx2.AsyncClient) -> dict[str, ProbeResult]:
         results = await asyncio.gather(*(run_one(probe_id, http_client) for probe_id in PROBE_IDS))
         return {result.probe_id: result for result in results}
 
     if client is not None:
         return await run_with(client)
-    async with httpx.AsyncClient(follow_redirects=True) as own_client:
+    async with httpx2.AsyncClient(follow_redirects=True) as own_client:
         return await run_with(own_client)
