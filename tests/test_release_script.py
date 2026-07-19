@@ -54,6 +54,14 @@ class TestCheckChangelog:
         with pytest.raises(SystemExit):
             release.check_changelog("1.2.3")
 
+    def test_fails_on_unresolved_conflict_markers(self, repo: Path):
+        """A half-resolved merge must not pass preflight even when section and link greps succeed."""
+        changelog = repo / "CHANGELOG.md"
+        conflict = "<<<<<<< HEAD\n[a]: https://x/compare/a...b\n=======\n[b]: https://x\n>>>>>>> origin/main\n"
+        changelog.write_text(changelog.read_text() + conflict)
+        with pytest.raises(SystemExit):
+            release.check_changelog("1.2.3")
+
 
 class TestCheckGitState:
     def _stub_run(self, monkeypatch: pytest.MonkeyPatch, responses: dict[str, str]) -> None:

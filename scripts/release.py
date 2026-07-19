@@ -113,6 +113,10 @@ def check_git_state(prerelease: bool = False) -> str:
 def check_changelog(version: str) -> str:
     """Verify the CHANGELOG section and link block, and return the section body."""
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    # A half-resolved merge ships raw conflict text in a release-facing file,
+    # and the section/link greps below can still pass around it.
+    if re.search(r"^(<{7} |={7}$|>{7} )", changelog, flags=re.MULTILINE):
+        fail("CHANGELOG.md contains unresolved merge conflict markers")
     match = re.search(
         rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
         changelog,
