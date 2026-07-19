@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Bounded runtime dependencies below their upcoming majors (`mcp>=1.28.1,<2`,
+  `httpx>=0.28.1,<1`). MCP Python SDK 2.0 (a breaking rework that replaces
+  `httpx` with the separate `httpx2` package) is expected to go stable alongside
+  the 2026-07-28 spec release; without the bound, fresh installs would resolve to
+  it and break. Migration to SDK v2 is planned separately.
+
 ## [0.8.0] - 2026-07-10
 
 **Preview of MCP 2026-07-28 support.** This release audits servers on every spec

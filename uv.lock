@@ -437,10 +437,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "httpx-sse", specifier = ">=0.4.3" },
     { name = "jsonschema", specifier = ">=4.21" },
-    { name = "mcp", specifier = ">=1.28.1" },
+    { name = "mcp", specifier = ">=1.28.1,<2" },
 ]
 
 [package.metadata.requires-dev]
