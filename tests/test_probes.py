@@ -343,7 +343,7 @@ async def test_auditor_runs_probes_for_http_url(monkeypatch):
 
     seen: dict = {}
 
-    async def fake_run_all_probes(url: str, client=None):
+    async def fake_run_all_probes(url: str, client=None, headers=None):
         seen["url"] = url
         return {PROBE_DISCOVER: ProbeResult(PROBE_DISCOVER, ProbeOutcome.SUPPORTED, {})}
 

@@ -138,11 +138,15 @@ class MCPClient:
     transports, with automatic transport detection.
     """
 
-    def __init__(self, timeout: int | None = None) -> None:
+    def __init__(self, timeout: int | None = None, headers: dict[str, str] | None = None) -> None:
         """Initialize a new MCP client instance.
 
         Args:
             timeout: Connection timeout in seconds (None for no timeout)
+            headers: Extra HTTP headers sent on every request to an HTTP(S)
+                server, e.g. ``{"Authorization": "Bearer …"}`` to audit an
+                auth-gated server. Ignored for stdio transports. Values are
+                sensitive and are never logged or included in the report.
 
         Sets up the client with an empty session and async exit stack for resource management.
 
@@ -151,6 +155,7 @@ class MCPClient:
         self.session: ClientSession | None = None
         self.exit_stack: AsyncExitStack = AsyncExitStack()
         self.timeout: int | None = timeout
+        self.headers: dict[str, str] | None = headers or None
         self._init_result: InitializeResult | None = None
 
         # Transport metadata (populated after connection)
@@ -425,6 +430,7 @@ class MCPClient:
                     pool=5.0,  # Pool timeout: 5 seconds
                 ),
                 follow_redirects=True,
+                headers=self.headers,
                 limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
             )
 
@@ -497,6 +503,7 @@ class MCPClient:
                     pool=5.0,  # Pool timeout: 5 seconds
                 ),
                 follow_redirects=True,
+                headers=self.headers,
                 limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
             )
 

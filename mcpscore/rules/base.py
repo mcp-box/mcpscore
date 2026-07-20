@@ -131,6 +131,12 @@ class AuditData:
     # None until the auditor's probe-collection phase has run.
     probes: dict[str, ProbeResult] | None = None
 
+    # Partial audit: no server session was available (e.g. an auth-gated
+    # server), so only probe-derived rules were scored and session-dependent
+    # rules skipped as insufficient-data. False for a normal full audit.
+    partial: bool = False
+    partial_reason: str | None = None
+
 
 # Decorators to specify what data a rule needs
 def requires_protocol_version(func: Callable) -> Callable:

@@ -558,7 +558,11 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
     return None
 
 
-async def run_all_probes(url: str, client: httpx2.AsyncClient | None = None) -> dict[str, ProbeResult]:
+async def run_all_probes(
+    url: str,
+    client: httpx2.AsyncClient | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict[str, ProbeResult]:
     """Run every probe against an HTTP(S) MCP endpoint.
 
     Probes run concurrently; a probe that fails at the network level yields
@@ -570,6 +574,9 @@ async def run_all_probes(url: str, client: httpx2.AsyncClient | None = None) -> 
         client: Optional preconfigured httpx client (tests inject a
             MockTransport-backed one); a short-lived client is created
             otherwise
+        headers: Extra HTTP headers (e.g. an ``Authorization`` bearer) merged
+            into the short-lived client's defaults. Ignored when ``client`` is
+            supplied (the caller configures it). Sensitive — never logged.
 
     Returns:
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
@@ -589,5 +596,5 @@ async def run_all_probes(url: str, client: httpx2.AsyncClient | None = None) -> 
 
     if client is not None:
         return await run_with(client)
-    async with httpx2.AsyncClient(follow_redirects=True) as own_client:
+    async with httpx2.AsyncClient(follow_redirects=True, headers=headers) as own_client:
         return await run_with(own_client)

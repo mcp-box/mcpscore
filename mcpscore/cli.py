@@ -8,10 +8,12 @@ from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 import json
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, NoReturn
 
 from mcpscore import MCPAuditor, MCPClient
+from mcpscore.enums import ConnectionErrorReason
 
 if TYPE_CHECKING:
     from mcpscore import MCPTransportType
@@ -59,7 +61,70 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit a machine-readable JSON report to stdout (logs go to stderr)",
     )
+    parser.add_argument(
+        "--header",
+        action="append",
+        metavar="'Name: Value'",
+        help=(
+            "Extra HTTP header sent to the server, e.g. --header 'Authorization: Bearer <token>' "
+            "to audit an auth-gated server. Repeatable. Header values are never logged or reported."
+        ),
+    )
+    parser.add_argument(
+        "--token",
+        metavar="TOKEN",
+        help=(
+            "Convenience for --header 'Authorization: Bearer <TOKEN>'. "
+            "Defaults to the MCPSCORE_TOKEN environment variable (keeps tokens out of shell history)."
+        ),
+    )
     return parser
+
+
+def parse_header(raw: str) -> tuple[str, str]:
+    """Parse a ``Name: Value`` header string into a (name, value) pair.
+
+    Args:
+        raw: A header in ``Name: Value`` form.
+
+    Returns:
+        The (name, value) tuple, both stripped.
+
+    Raises:
+        ValueError: If there is no colon separating name and value.
+
+    """
+    name, sep, value = raw.partition(":")
+    if not sep or not name.strip():
+        raise ValueError(f"invalid header (expected 'Name: Value'): {raw!r}")
+    return name.strip(), value.strip()
+
+
+def collect_headers(args: argparse.Namespace) -> dict[str, str]:
+    """Build the request-header dict from --header, --token, and MCPSCORE_TOKEN.
+
+    Precedence: explicit --header entries first, then a bearer from --token or
+    the MCPSCORE_TOKEN env var (an explicit Authorization header is not
+    overwritten).
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        A header dict (possibly empty).
+
+    Raises:
+        ValueError: If a --header value is malformed.
+
+    """
+    headers: dict[str, str] = {}
+    for raw in args.header or []:
+        name, value = parse_header(raw)
+        headers[name] = value
+    token = args.token or os.environ.get("MCPSCORE_TOKEN")
+    if token and not any(name.lower() == "authorization" for name in headers):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _mcpscore_version() -> str:
@@ -82,6 +147,9 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
     readiness = report["readiness"]
 
     logger.info("")
+    if report["partial"]:
+        logger.info("⚠️  Partial audit (%s).", report["partial_reason"])
+        logger.info("Only the auth, TLS, and transport surface was scored — not comparable to a full audit.")
     logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
     logger.info(
         "Spec: %s negotiated (latest: %s) · era: %s",
@@ -150,8 +218,17 @@ async def async_main() -> None:
 
     args = build_parser().parse_args()
 
-    client: MCPClient = MCPClient()
-    auditor: MCPAuditor = MCPAuditor()
+    try:
+        headers = collect_headers(args)
+    except ValueError as e:
+        logger.error("Usage error: %s", e)  # noqa: TRY400 — usage error, not an exception to trace
+        sys.exit(1)
+
+    if headers:
+        logger.info("Using %d custom header(s) for authentication.", len(headers))
+
+    client: MCPClient = MCPClient(headers=headers or None)
+    auditor: MCPAuditor = MCPAuditor(headers=headers or None)
 
     success, transport = await client.detect_and_connect(args.target)
 
@@ -162,6 +239,20 @@ async def async_main() -> None:
                 logger.info(
                     "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
                 )
+                log_audit_outcome(auditor)
+                if args.json:
+                    report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                    sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                return
+
+            failure = client.last_connection_error
+            if failure is not None and failure.reason in (
+                ConnectionErrorReason.UNAUTHORIZED,
+                ConnectionErrorReason.FORBIDDEN,
+            ):
+                logger.info("Server requires authentication — running a partial audit of the observable surface.")
+                logger.info("(Pass a token with --token or --header to audit behind the gate.)")
+                await auditor.audit_partial(args.target, reason=failure.message)
                 log_audit_outcome(auditor)
                 if args.json:
                     report = build_report(args.target, auditor.audit_data.transport_type, auditor)

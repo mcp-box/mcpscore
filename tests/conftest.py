@@ -98,7 +98,7 @@ def _no_network_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     from mcpscore import mcp_auditor
     from mcpscore.probes import not_applicable_results
 
-    async def stubbed_run_all_probes(url: str, client: Any = None) -> dict:
+    async def stubbed_run_all_probes(url: str, client: Any = None, headers: Any = None) -> dict:
         return not_applicable_results(reason="stubbed in unit tests")
 
     monkeypatch.setattr(mcp_auditor, "run_all_probes", stubbed_run_all_probes)

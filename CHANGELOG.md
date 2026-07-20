@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Authenticated and partial audits of auth-gated servers** — production MCP
+servers behind OAuth 2.x can now be audited:
+
+- `--token <TOKEN>` sends `Authorization: Bearer <TOKEN>`; `--header 'Name: Value'`
+  (repeatable) sends arbitrary headers for API-key or custom-auth servers. Both
+  also read from the `MCPSCORE_TOKEN` environment variable (CI-friendly). Header
+  and token values are never logged or written to the report — only an
+  `authenticated` boolean is recorded.
+- **Partial audit**: an auth-gated (HTTP 401/403) server audited *without* a
+  token no longer exits with an error. Instead the observable surface — the
+  auth-posture rules, TLS, and transport — is scored, session-dependent rules
+  are skipped as `insufficient-data`, and the report is flagged `partial` (with
+  `partial_reason`). A partial score is not comparable to a full audit's.
+- Report gains `authenticated`, `partial`, and `partial_reason` fields.
+
 **Auth-posture rules** — the first rules that score auth-gated servers (which
 previously could not be audited at all). All observations are read-only; the
 rules skip as not-applicable for servers that serve anonymous requests:
