@@ -50,6 +50,11 @@ PROBE_TIMEOUT_S = 10.0
 META_PREFIX = "io.modelcontextprotocol/"
 """Prefix of the reserved ``_meta`` keys carrying per-request context (2026-07-28)."""
 
+AUTH_GATED_STATUSES = frozenset({401, 403})
+"""HTTP statuses that mark an access-controlled server whose auth posture the
+auth-posture rules examine. Kept in sync with the CLI's partial-audit trigger
+(ConnectionErrorReason.UNAUTHORIZED / FORBIDDEN)."""
+
 ERROR_HEADER_MISMATCH = -32020
 """JSON-RPC error code for HTTP header/body mismatches (2026-07-28)."""
 
@@ -226,8 +231,24 @@ def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-async def _post(client: httpx2.AsyncClient, url: str, body: dict, headers: dict[str, str]) -> _ProbeResponse:
-    response = await client.post(url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
+async def _post(
+    client: httpx2.AsyncClient,
+    url: str,
+    body: dict,
+    headers: dict[str, str],
+    *,
+    anonymous: bool = False,
+) -> _ProbeResponse:
+    """POST a probe request, optionally stripping the caller's Authorization.
+
+    When ``anonymous``, remove any caller-supplied ``Authorization`` header so
+    the probe observes the server's unauthenticated behavior even when a token
+    was provided via --token/--header.
+    """
+    request = client.build_request("POST", url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
+    if anonymous:
+        request.headers.pop("Authorization", None)
+    response = await client.send(request)
     return _ProbeResponse(
         status_code=response.status_code,
         headers=dict(response.headers),
@@ -393,6 +414,7 @@ async def _probe_unauthenticated(client: httpx2.AsyncClient, url: str) -> ProbeR
         url,
         _request_body("tools/list", 7, _modern_meta(target)),
         _request_headers(target, "tools/list"),
+        anonymous=True,
     )
     details = _base_details(response)
     details["www_authenticate"] = response.headers.get("www-authenticate")
@@ -427,7 +449,13 @@ async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeRes
     details: dict[str, Any] = {"urls_tried": []}
     for candidate in _well_known_urls(url):
         details["urls_tried"].append(candidate)
-        response = await client.get(candidate, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
+        # The protected-resource metadata is a public well-known document;
+        # fetch it without any caller-supplied Authorization header.
+        request = client.build_request(
+            "GET", candidate, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S
+        )
+        request.headers.pop("Authorization", None)
+        response = await client.send(request)
         details["http_status"] = response.status_code
         if response.status_code != 200:
             continue

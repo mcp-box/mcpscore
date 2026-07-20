@@ -454,3 +454,44 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
     results = await run_all_probes(URL)  # no client injected -> own-client branch
 
     assert set(results) == set(PROBE_IDS)
+
+
+class TestAnonymousProbes:
+    """The unauthenticated and metadata probes must not send a caller's bearer."""
+
+    async def test_unauthenticated_probe_strips_authorization(self):
+        from mcpscore.probes import _probe_unauthenticated
+
+        seen_auth: dict[str, str | None] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen_auth["post"] = request.headers.get("Authorization")
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}, json={})
+
+        # Client carries a default bearer, as if --token was passed.
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            result = await _probe_unauthenticated(client, URL)
+
+        # The probe reached the server without the bearer, so it saw the 401 challenge.
+        assert seen_auth["post"] is None
+        assert result.details["http_status"] == 401
+        assert result.details["www_authenticate"] == "Bearer"
+
+    async def test_auth_metadata_probe_strips_authorization(self):
+        seen_auth: dict[str, str | None] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                seen_auth["get"] = request.headers.get("Authorization")
+                return httpx2.Response(200, json={"resource": URL})
+            return httpx2.Response(401)
+
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            results = await run_all_probes(URL, client=client)
+
+        assert seen_auth["get"] is None
+        assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.SUPPORTED

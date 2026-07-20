@@ -66,6 +66,11 @@ class TestSkipGating:
         for rule_cls in ALL_RULES:
             assert rule_cls().skip_reason(_data(_unauth(), _metadata())) is None
 
+    def test_rules_run_for_403_gated_servers(self):
+        """A 403 challenge is an access-controlled server too — rules run (matches partial trigger)."""
+        for rule_cls in ALL_RULES:
+            assert rule_cls().skip_reason(_data(_unauth(status=403), _metadata())) is None
+
     def test_metadata_rules_skip_without_the_metadata_probe(self):
         data = _data(_unauth())
         assert AuthProtectedResourceMetadataRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA

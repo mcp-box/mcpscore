@@ -954,6 +954,10 @@ class TestAuthCliFlow:
             await async_main()
 
         mock_auditor.audit_partial.assert_awaited_once()
+        # The reason describes the completed partial audit, not a hard failure.
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        assert "requires authentication" in reason
+        assert "HTTP 401" in reason
         assert "Partial audit" in caplog.text
 
     async def test_non_auth_failure_still_exits_2(

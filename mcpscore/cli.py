@@ -252,7 +252,12 @@ async def async_main() -> None:
             ):
                 logger.info("Server requires authentication — running a partial audit of the observable surface.")
                 logger.info("(Pass a token with --token or --header to audit behind the gate.)")
-                await auditor.audit_partial(args.target, reason=failure.message)
+                status = failure.status_code or (401 if failure.reason is ConnectionErrorReason.UNAUTHORIZED else 403)
+                partial_reason = (
+                    f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
+                    "only — pass a token to audit behind the gate."
+                )
+                await auditor.audit_partial(args.target, reason=partial_reason)
                 log_audit_outcome(auditor)
                 if args.json:
                     report = build_report(args.target, auditor.audit_data.transport_type, auditor)

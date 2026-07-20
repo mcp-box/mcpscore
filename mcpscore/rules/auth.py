@@ -16,7 +16,7 @@ authorization server.
 
 from typing import ClassVar
 
-from ..probes import PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED, ProbeOutcome, ProbeResult
+from ..probes import AUTH_GATED_STATUSES, PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED, ProbeOutcome, ProbeResult
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
     SKIP_REASON_NOT_APPLICABLE,
@@ -46,13 +46,17 @@ class AuthPostureBaseRule(BaseRule):
     """Probes whose observations this rule needs; unavailable → skip."""
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip unless an unauthenticated request was actually challenged with 401."""
+        """Skip unless an unauthenticated request was challenged (HTTP 401/403).
+
+        A server that serves anonymous requests (any other status) has no auth
+        posture to grade, so the rules skip as not-applicable.
+        """
         probes = audit_data.probes or {}
         for probe_id in self.required_probe_ids:
             result = probes.get(probe_id)
             if result is None or result.outcome in (ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE):
                 return SKIP_REASON_INSUFFICIENT_DATA
-        if probes[PROBE_UNAUTHENTICATED].details.get("http_status") != 401:
+        if probes[PROBE_UNAUTHENTICATED].details.get("http_status") not in AUTH_GATED_STATUSES:
             return SKIP_REASON_NOT_APPLICABLE
         return None
 
