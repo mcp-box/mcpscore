@@ -26,7 +26,7 @@ def _unauth(status: int = 401, www_authenticate: str | None = 'Bearer resource_m
 def _metadata(
     outcome: ProbeOutcome = ProbeOutcome.SUPPORTED,
     resource: str = URL,
-    servers: list[str] | None = None,
+    servers: list | None = None,
 ) -> ProbeResult:
     details = {"urls_tried": [METADATA_URL], "http_status": 200}
     if outcome is ProbeOutcome.SUPPORTED:
@@ -133,4 +133,12 @@ class TestAuthorizationServersHttps:
         result = AuthAuthorizationServersHttpsRule().check(data)
         assert result.passed is False
         assert result.details is not None
-        assert result.details["insecure"] == ["http://insecure.example"]
+        assert result.details["invalid"] == ["http://insecure.example"]
+
+    def test_non_string_entries_fail(self):
+        """A non-empty list with no valid HTTPS strings must not pass (regression: it did)."""
+        data = _data(_unauth(), _metadata(servers=[None, 123]))
+        result = AuthAuthorizationServersHttpsRule().check(data)
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["invalid"] == [None, 123]

@@ -209,13 +209,15 @@ class AuthAuthorizationServersHttpsRule(AuthPostureBaseRule):
 
         """
         servers = self._probe(audit_data, PROBE_AUTH_METADATA).details.get("authorization_servers") or []
-        insecure = [server for server in servers if isinstance(server, str) and not server.startswith("https://")]
+        # An entry is valid only if it is a string on HTTPS; anything else
+        # (plain HTTP, null, a number) is a malformed entry, not a pass.
+        invalid = [server for server in servers if not (isinstance(server, str) and server.startswith("https://"))]
         if not servers:
             passed = False
             message = "❌ Protected resource metadata lists no authorization servers to authenticate against"
-        elif insecure:
+        elif invalid:
             passed = False
-            message = f"❌ Number of authorization servers not using HTTPS: {len(insecure)}"
+            message = f"❌ Number of authorization servers not on HTTPS or malformed: {len(invalid)}"
         else:
             passed = True
             message = f"✅ All {len(servers)} authorization server(s) use HTTPS"
@@ -224,5 +226,5 @@ class AuthAuthorizationServersHttpsRule(AuthPostureBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": _AUTH_BASIS, "authorization_servers": servers, "insecure": insecure},
+            details={"basis": _AUTH_BASIS, "authorization_servers": servers, "invalid": invalid},
         )

@@ -5,7 +5,15 @@ from typing import Any
 
 from mcp_types import Tool
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_fields, requires_tools
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+    requires_tools,
+)
 from .registry import register_rule
 
 
@@ -554,6 +562,19 @@ class ToolsExecutionConsistentRule(BaseRule):
     rule_id = "tools_execution_consistent"
     rule_order = 10
     min_spec_version = "2025-11-25"
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the tools list is unavailable despite a declared tools capability.
+
+        A failed ``tools/list`` (tools is None while the server declared the
+        tools capability) means this rule cannot judge consistency — the peer
+        tools rules already report the missing list, so re-passing here on an
+        empty fallback would be a false green.
+        """
+        declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
+        if declares_tools and audit_data.tools is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
 
     @property
     def rule_name(self) -> str:

@@ -20,6 +20,7 @@ from mcp_types import Tool, ToolAnnotations, ToolExecution
 import pytest
 
 from mcpscore.rules import AuditData, RuleSeverity
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 from mcpscore.rules.tools import (
     ToolsAnnotationsPresentRule,
     ToolsAtLeastOneRule,
@@ -919,5 +920,13 @@ class TestToolsExecutionConsistentRule:
         assert result.details["task_tools"] == ["runner"]
 
     def test_no_tools_at_all_passes(self):
-        result = ToolsExecutionConsistentRule().check(AuditData())
-        assert result.passed is True
+        """No tools capability declared → nothing to check → runs and passes."""
+        rule = ToolsExecutionConsistentRule()
+        assert rule.skip_reason(AuditData()) is None
+        assert rule.check(AuditData()).passed is True
+
+    def test_skips_when_tools_unavailable_despite_capability(self, capabilities_full):
+        """A failed tools/list (tools None, capability declared) skips rather than false-passing."""
+        rule = ToolsExecutionConsistentRule()
+        data = AuditData(tools=None, capabilities=capabilities_full)
+        assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
