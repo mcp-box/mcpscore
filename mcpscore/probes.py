@@ -35,6 +35,7 @@ from mcpscore.spec import DRAFT, LATEST, Era
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AUTH_GATED_STATUSES",
     "GATEWAY_PROBE_IDS",
     "PROBE_IDS",
     "ProbeOutcome",

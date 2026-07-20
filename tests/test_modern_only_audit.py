@@ -301,7 +301,7 @@ async def test_audit_partial_scores_auth_and_skips_session(stub_probes, monkeypa
     assert report["partial_reason"] == "requires auth (HTTP 401)"
 
     scored = {r["rule_id"] for r in report["results"]}
-    # Auth-posture + TLS + transport rules run on probe/transport data.
+    # Auth-posture and TLS rules run on probe/transport data.
     assert "auth_www_authenticate" in scored
     assert "auth_protected_resource_metadata" in scored
     assert "security_tls_enabled" in scored
@@ -310,6 +310,16 @@ async def test_audit_partial_scores_auth_and_skips_session(stub_probes, monkeypa
     assert skipped.get("tools_at_least_one") == "insufficient-data"
     assert skipped.get("server_name_present") == "insufficient-data"
     assert skipped.get("capability_tools_present") == "insufficient-data"
+    # No transport was established, so the transport rule cannot claim a pass.
+    assert "transport_streamable_http" not in scored
+    assert skipped.get("transport_streamable_http") == "insufficient-data"
+    # error_response is never collected, so its rules must not auto-pass here.
+    assert "security_malformed_request_handling" not in scored
+    assert "security_error_data_leak" not in scored
+    assert skipped.get("security_malformed_request_handling") == "insufficient-data"
+    assert skipped.get("security_error_data_leak") == "insufficient-data"
+    # Transport left unverified in the audit data.
+    assert auditor.audit_data.transport_type is None
 
 
 async def test_audit_partial_threads_headers_to_probes(monkeypatch: pytest.MonkeyPatch):

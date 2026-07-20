@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0b2] - 2026-07-20
+
+**Pre-release: auth-gated audits and new rules on the SDK v2 line.** Published
+as a PyPI pre-release only (`uvx --prerelease=allow mcpscore==1.1.0b2 …`); plain
+`pip install mcpscore` keeps resolving the stable 0.x line.
+
 ### Added
 
 **Authenticated and partial audits of auth-gated servers** — production MCP
@@ -289,7 +295,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b2...HEAD
+[1.1.0b2]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b1...v1.1.0b2
 [1.1.0b1]: https://github.com/mcp-box/mcpscore/compare/v0.9.0...v1.1.0b1
 [0.9.0]: https://github.com/mcp-box/mcpscore/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mcp-box/mcpscore/compare/v0.7.0...v0.8.0

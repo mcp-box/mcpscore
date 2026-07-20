@@ -1,5 +1,5 @@
 from ..enums import MCPTransportType
-from .base import BaseRule, RuleResult, RuleSeverity, requires_fields
+from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
 from .registry import register_rule
 
 
@@ -18,6 +18,17 @@ class StreamableHTTPTransportRule(BaseRule):
     group_name = "transport"
     group_order = 5
     rule_order = 1
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip in a partial audit where no transport was established.
+
+        A partial audit reaches the server only over raw probe requests; it
+        never confirms which MCP transport the server speaks, so the rule
+        cannot judge (transport_type is None) and must not claim a pass.
+        """
+        if audit_data.partial and audit_data.transport_type is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
 
     @property
     def rule_name(self) -> str:

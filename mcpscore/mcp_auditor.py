@@ -28,13 +28,6 @@ logger = logging.getLogger(__name__)
 TLS_PROBE_TIMEOUT_S = 10
 """Timeout for probing the negotiated TLS version of an HTTPS server."""
 
-_SESSION_FIELDS = frozenset(
-    {"protocol_version", "server_info", "capabilities", "tools", "resources", "prompts", "instructions"}
-)
-"""AuditData fields that come from a server session (vs. probe/transport data).
-A partial audit lacks all of these, so rules depending solely on them are
-skipped rather than failed (see _skipped_for_partial)."""
-
 
 class MCPAuditor:
     """Orchestrates the MCP server audit process.
@@ -208,7 +201,9 @@ class MCPAuditor:
         self.audit_data.partial = True
         self.audit_data.partial_reason = reason
         self.audit_data.url = url
-        self.audit_data.transport_type = MCPTransportType.STREAMABLE_HTTP
+        # No session connected, so the transport is not verified — leave it
+        # None. The transport rule skips rather than claiming a transport we
+        # could not confirm (see StreamableHTTPTransportRule.skip_reason).
         self.audit_data.probes = await run_all_probes(url, headers=self.headers)
         if url.startswith("https://"):
             # The probes reached the server over HTTPS with certificate
@@ -276,18 +271,19 @@ class MCPAuditor:
     def _skipped_for_partial(self, rule: BaseRule) -> bool:
         """Whether a rule must be skipped in a partial audit (no server session).
 
-        In a partial audit only probe-derived rules can run. A rule is skipped
-        when it depends *solely* on session-derived data (via its @requires_*
-        decorator) and all of that data is absent — so it cannot judge and must
-        not fail the server for a missing observation. Rules needing probe- or
-        transport-derived data (url, tls, probes) or the full AuditData run
-        normally; their own logic/skip_reason handles missing pieces.
+        A partial audit never established a session, so any rule whose every
+        ``@requires_*`` field went uncollected (all ``None``) cannot judge and
+        must be skipped as insufficient-data — otherwise it would pass or fail
+        the server on absent data (e.g. the error-response rules auto-pass on a
+        missing observation, inflating the partial score). Rules that still
+        have data to work with (e.g. TLS, which has the url) run normally, and
+        full-data rules (auth-posture) gate themselves via skip_reason.
         """
         if not self.audit_data.partial:
             return False
         requires = getattr(rule.check, "_requires", None)
         names: tuple[str, ...] = (requires,) if isinstance(requires, str) else tuple(requires or ())
-        if not names or not all(name in _SESSION_FIELDS for name in names):
+        if not names or "full_data" in names:
             return False
         return all(getattr(self.audit_data, name, None) is None for name in names)
 
