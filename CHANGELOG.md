@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**Deeper auth-posture rules** — the auth-discovery probe now follows the chain
+from the RFC 9728 protected-resource metadata to the first authorization
+server's RFC 8414 metadata, enabling five new credential-free rules that score
+a gated server's authorization surface:
+
+- `auth_server_metadata_pkce` (Security, HIGH): the authorization server
+  advertises PKCE with S256 (`code_challenge_methods_supported`), as required
+  by the OAuth security BCP (RFC 9700) and the MCP authorization spec.
+- `auth_server_metadata_present` (Security, HIGH): the authorization server's
+  RFC 8414 metadata is reachable and advertises the authorization and token
+  endpoints (OpenID `/.well-known/openid-configuration` is accepted as a
+  fallback location).
+- `auth_challenge_references_metadata` (Security, MEDIUM): the 401
+  `WWW-Authenticate` header carries a `resource_metadata` parameter that points
+  at the protected-resource metadata (RFC 9728 §5.1).
+- `auth_metadata_https` (Security, MEDIUM): the protected-resource metadata URL
+  and its `resource` identifier use HTTPS.
+- `auth_scopes_advertised` (Security, LOW): the metadata advertises
+  `scopes_supported` so clients can request least privilege.
+
+Like the existing auth-posture rules, all five run credential-free (including
+in a partial audit of a gated server) and skip rather than fail when the
+document they need is unreachable, avoiding double-counting one defect.
+
+### Fixed
+
+- The unauthenticated auth-posture probe no longer crashes against a server
+  that returns a 401 with an RFC 6750 OAuth error body (a JSON object whose
+  `error` field is a string like `"invalid_token"`, not a JSON-RPC error
+  object). Such a body is now correctly treated as having no JSON-RPC error,
+  so the auth-posture rules score normally instead of the probe erroring out.
+
 ## [1.1.0b2] - 2026-07-20
 
 **Pre-release: auth-gated audits and new rules on the SDK v2 line.** Published

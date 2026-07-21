@@ -216,6 +216,61 @@ class TestAuthMetadataProbe:
         assert auth.details["metadata_url"] == "https://server.example/.well-known/oauth-protected-resource"
         assert auth.details["authorization_servers"] is None
 
+    async def test_walks_to_authorization_server_metadata(self):
+        """PRM → first authorization server's RFC 8414 metadata (endpoints + PKCE)."""
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            if request.url.host == "auth.example" and path == "/.well-known/oauth-authorization-server":
+                return httpx2.Response(
+                    200,
+                    json={
+                        "issuer": "https://auth.example",
+                        "authorization_endpoint": "https://auth.example/authorize",
+                        "token_endpoint": "https://auth.example/token",
+                        "code_challenge_methods_supported": ["S256"],
+                    },
+                )
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        d = results[PROBE_AUTH_METADATA].details
+        assert d["auth_server_metadata_present"] is True
+        assert d["auth_server_has_endpoints"] is True
+        assert d["auth_server_pkce_s256"] is True
+        assert d["auth_server_issuer"] == "https://auth.example"
+
+    async def test_authorization_server_without_pkce(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            if request.url.host == "auth.example":
+                # OIDC fallback path, no PKCE advertised.
+                if path == "/.well-known/openid-configuration":
+                    return httpx2.Response(
+                        200,
+                        json={
+                            "issuer": "https://auth.example",
+                            "authorization_endpoint": "https://auth.example/authorize",
+                            "token_endpoint": "https://auth.example/token",
+                        },
+                    )
+                return httpx2.Response(404)
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        d = results[PROBE_AUTH_METADATA].details
+        assert d["auth_server_metadata_present"] is True  # found via OIDC fallback
+        assert d["auth_server_has_endpoints"] is True
+        assert d["auth_server_pkce_s256"] is False
+
     async def test_invalid_json_is_unsupported(self):
         def handler(request: httpx2.Request) -> httpx2.Response:
             if request.method == "GET":
@@ -478,6 +533,30 @@ class TestAnonymousProbes:
         assert seen_auth["post"] is None
         assert result.details["http_status"] == 401
         assert result.details["www_authenticate"] == "Bearer"
+
+    async def test_unauthenticated_probe_survives_oauth_error_body(self):
+        """An RFC 6750 401 body must not crash the probe.
+
+        Its ``error`` field is a string (``"invalid_token"``), not a JSON-RPC
+        error object.
+        """
+        from mcpscore.probes import _probe_unauthenticated
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(
+                401,
+                headers={"WWW-Authenticate": "Bearer"},
+                json={"error": "invalid_token", "error_description": "Authentication required"},
+            )
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            result = await _probe_unauthenticated(client, URL)
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["http_status"] == 401
+        assert result.details["www_authenticate"] == "Bearer"
+        # The string "error" is not a JSON-RPC error object, so no error_code.
+        assert "error_code" not in result.details
 
     async def test_auth_metadata_probe_strips_authorization(self):
         seen_auth: dict[str, str | None] = {}

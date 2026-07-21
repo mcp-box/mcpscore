@@ -162,7 +162,14 @@ class _ProbeResponse:
 
     @property
     def error(self) -> dict[str, Any] | None:
-        return self.payload.get("error") if isinstance(self.payload, dict) else None
+        # Only a JSON-RPC error *object* counts. A non-dict "error" (e.g. an
+        # OAuth/RFC 6750 body's string `"error": "invalid_token"` on a 401)
+        # must not be treated as one — error_code/_base_details call .get() on
+        # it, which would raise AttributeError on a string.
+        if not isinstance(self.payload, dict):
+            return None
+        error = self.payload.get("error")
+        return error if isinstance(error, dict) else None
 
     @property
     def error_code(self) -> int | None:
@@ -438,37 +445,93 @@ def _well_known_urls(url: str) -> list[str]:
     return candidates
 
 
+async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int, dict[str, Any] | None]:
+    """GET a public well-known JSON document, stripping any caller Authorization.
+
+    Returns (http_status, parsed_dict_or_None). Auth-discovery documents (RFC
+    9728, RFC 8414) are public; the caller's bearer must not be sent.
+    """
+    request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
+    request.headers.pop("Authorization", None)
+    response = await client.send(request)
+    if response.status_code != 200:
+        return response.status_code, None
+    try:
+        parsed = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return response.status_code, None
+    return response.status_code, parsed if isinstance(parsed, dict) else None
+
+
+def _is_http_url(value: object) -> bool:
+    """Whether a value is an http(s) URL string."""
+    return isinstance(value, str) and value.startswith(("https://", "http://"))
+
+
+def _auth_server_metadata_urls(issuer: str) -> list[str]:
+    """RFC 8414 / OIDC well-known locations for an authorization server issuer."""
+    base = issuer.rstrip("/")
+    return [
+        f"{base}/.well-known/oauth-authorization-server",
+        f"{base}/.well-known/openid-configuration",
+    ]
+
+
+async def _fetch_auth_server_metadata(client: httpx2.AsyncClient, issuer: str, details: dict[str, Any]) -> None:
+    """Fetch the authorization server's RFC 8414 metadata; record posture in details.
+
+    Records whether the metadata document was found, whether it advertises the
+    required authorization/token endpoints, and whether it advertises PKCE with
+    S256 (`code_challenge_methods_supported`) — the OAuth security BCP (RFC
+    9700) / MCP-auth requirement.
+    """
+    details["auth_server_issuer"] = issuer
+    details["auth_server_metadata_present"] = False
+    for candidate in _auth_server_metadata_urls(issuer):
+        _status, metadata = await _get_json_anonymous(client, candidate)
+        if metadata is None:
+            continue
+        methods = metadata.get("code_challenge_methods_supported")
+        details["auth_server_metadata_url"] = candidate
+        details["auth_server_metadata_present"] = True
+        details["auth_server_has_endpoints"] = isinstance(metadata.get("authorization_endpoint"), str) and isinstance(
+            metadata.get("token_endpoint"), str
+        )
+        details["auth_server_pkce_s256"] = isinstance(methods, list) and "S256" in methods
+        return
+
+
 async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeResult:
-    """Fetch RFC 9728 protected resource metadata from its well-known locations.
+    """Fetch the auth-discovery chain (RFC 9728 PRM → RFC 8414 AS metadata).
 
     Observation probe feeding the auth-posture rules: SUPPORTED when a
     well-known location returns HTTP 200 with a JSON object carrying the
     REQUIRED ``resource`` field (RFC 9728 §2); details record what was found
-    where. Servers without authentication commonly 404 here — the dependent
-    rules skip unless the endpoint demanded auth in the first place.
+    where, plus the authorization server's endpoint/PKCE posture. Servers
+    without authentication commonly 404 here — the dependent rules skip unless
+    the endpoint demanded auth in the first place.
     """
     details: dict[str, Any] = {"urls_tried": []}
     for candidate in _well_known_urls(url):
         details["urls_tried"].append(candidate)
-        # The protected-resource metadata is a public well-known document;
-        # fetch it without any caller-supplied Authorization header.
-        request = client.build_request(
-            "GET", candidate, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S
-        )
-        request.headers.pop("Authorization", None)
-        response = await client.send(request)
-        details["http_status"] = response.status_code
-        if response.status_code != 200:
+        status, metadata = await _get_json_anonymous(client, candidate)
+        details["http_status"] = status
+        if metadata is None:
             continue
-        try:
-            metadata = response.json()
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(metadata, dict) and isinstance(metadata.get("resource"), str):
+        if isinstance(metadata.get("resource"), str):
             servers = metadata.get("authorization_servers")
+            servers = servers if isinstance(servers, list) else None
             details["metadata_url"] = candidate
             details["resource"] = metadata["resource"]
-            details["authorization_servers"] = servers if isinstance(servers, list) else None
+            details["authorization_servers"] = servers
+            details["scopes_supported"] = metadata.get("scopes_supported")
+            # Walk to the first authorization server's RFC 8414 metadata. The
+            # document is public and fetched anonymously; whether the AS URL is
+            # HTTPS is scored separately by auth_authorization_servers_https, so
+            # observe http too rather than skipping the metadata check entirely.
+            first = next((s for s in (servers or []) if _is_http_url(s)), None)
+            if first is not None:
+                await _fetch_auth_server_metadata(client, first, details)
             return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
     return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.UNSUPPORTED, details)
 

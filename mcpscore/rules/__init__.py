@@ -15,7 +15,12 @@ audit checks by implementing the BaseRule interface.
 
 from .auth import (
     AuthAuthorizationServersHttpsRule,
+    AuthChallengeReferencesMetadataRule,
+    AuthMetadataHttpsRule,
     AuthProtectedResourceMetadataRule,
+    AuthScopesAdvertisedRule,
+    AuthServerMetadataPresentRule,
+    AuthServerPkceRule,
     AuthWwwAuthenticateRule,
 )
 from .base import (
@@ -95,7 +100,12 @@ __all__ = (
     "AllowedVersionRule",
     "AuditData",
     "AuthAuthorizationServersHttpsRule",
+    "AuthChallengeReferencesMetadataRule",
+    "AuthMetadataHttpsRule",
     "AuthProtectedResourceMetadataRule",
+    "AuthScopesAdvertisedRule",
+    "AuthServerMetadataPresentRule",
+    "AuthServerPkceRule",
     "AuthWwwAuthenticateRule",
     "BaseRule",
     "CacheMetadataReadinessRule",

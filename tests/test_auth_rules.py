@@ -4,7 +4,12 @@ from mcpscore.probes import PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED, ProbeOut
 from mcpscore.rules import AuditData
 from mcpscore.rules.auth import (
     AuthAuthorizationServersHttpsRule,
+    AuthChallengeReferencesMetadataRule,
+    AuthMetadataHttpsRule,
     AuthProtectedResourceMetadataRule,
+    AuthScopesAdvertisedRule,
+    AuthServerMetadataPresentRule,
+    AuthServerPkceRule,
     AuthWwwAuthenticateRule,
 )
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
@@ -27,15 +32,31 @@ def _metadata(
     outcome: ProbeOutcome = ProbeOutcome.SUPPORTED,
     resource: str = URL,
     servers: list | None = None,
+    **extra: object,
 ) -> ProbeResult:
-    details = {"urls_tried": [METADATA_URL], "http_status": 200}
+    details: dict = {"urls_tried": [METADATA_URL], "http_status": 200}
     if outcome is ProbeOutcome.SUPPORTED:
         details |= {
             "metadata_url": METADATA_URL,
             "resource": resource,
             "authorization_servers": servers,
         }
+        details |= extra
     return ProbeResult(PROBE_AUTH_METADATA, outcome, details)
+
+
+def _full_metadata(**extra: object) -> ProbeResult:
+    """Build a good-posture metadata probe: HTTPS servers, AS metadata, scopes, PKCE."""
+    base: dict = {
+        "servers": ["https://auth.example"],
+        "scopes_supported": ["read", "write"],
+        "auth_server_issuer": "https://auth.example",
+        "auth_server_metadata_present": True,
+        "auth_server_has_endpoints": True,
+        "auth_server_pkce_s256": True,
+    }
+    base |= extra
+    return _metadata(**base)
 
 
 def _data(unauth: ProbeResult | None, metadata: ProbeResult | None = None) -> AuditData:
@@ -147,3 +168,91 @@ class TestAuthorizationServersHttps:
         assert result.passed is False
         assert result.details is not None
         assert result.details["invalid"] == [None, 123]
+
+
+class TestChallengeReferencesMetadata:
+    def test_passes_when_challenge_points_at_metadata(self):
+        unauth = _unauth(www_authenticate=f'Bearer resource_metadata="{METADATA_URL}"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is True
+
+    def test_fails_without_resource_metadata_param(self):
+        unauth = _unauth(www_authenticate='Bearer realm="mcp"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is False
+
+    def test_fails_on_cross_origin_reference(self):
+        unauth = _unauth(www_authenticate='Bearer resource_metadata="https://evil.example/.well-known/x"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is False
+        assert "not on this server's origin" in result.message
+
+    def test_passes_on_same_origin_different_path(self):
+        # Root PRM form in the header while the probe discovered the path-aware
+        # form — both valid RFC 9728 locations on the same origin.
+        unauth = _unauth(
+            www_authenticate='Bearer resource_metadata="https://server.example/.well-known/oauth-protected-resource"'
+        )
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is True
+
+    def test_skips_when_no_challenge_header(self):
+        # No metadata probe needed: this rule requires only the unauthenticated probe.
+        data = _data(_unauth(www_authenticate=None))
+        assert AuthChallengeReferencesMetadataRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestMetadataHttps:
+    def test_passes_for_https(self):
+        result = AuthMetadataHttpsRule().check(_data(_unauth(), _full_metadata()))
+        assert result.passed is True
+
+    def test_fails_for_http_resource(self):
+        meta = _full_metadata(resource="http://server.example/mcp")
+        result = AuthMetadataHttpsRule().check(_data(_unauth(), meta))
+        assert result.passed is False
+
+
+class TestScopesAdvertised:
+    def test_passes_with_scopes(self):
+        result = AuthScopesAdvertisedRule().check(_data(_unauth(), _full_metadata()))
+        assert result.passed is True
+
+    def test_fails_without_scopes(self):
+        result = AuthScopesAdvertisedRule().check(_data(_unauth(), _full_metadata(scopes_supported=None)))
+        assert result.passed is False
+
+
+class TestAuthServerMetadataPresent:
+    def test_passes_with_endpoints(self):
+        result = AuthServerMetadataPresentRule().check(_data(_unauth(), _full_metadata()))
+        assert result.passed is True
+
+    def test_fails_when_absent(self):
+        meta = _full_metadata(auth_server_metadata_present=False, auth_server_has_endpoints=False)
+        result = AuthServerMetadataPresentRule().check(_data(_unauth(), meta))
+        assert result.passed is False
+
+    def test_fails_without_endpoints(self):
+        meta = _full_metadata(auth_server_has_endpoints=False)
+        result = AuthServerMetadataPresentRule().check(_data(_unauth(), meta))
+        assert result.passed is False
+        assert "endpoint" in result.message
+
+    def test_skips_when_no_authorization_server(self):
+        meta = _full_metadata(servers=[], auth_server_issuer=None)
+        assert AuthServerMetadataPresentRule().skip_reason(_data(_unauth(), meta)) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestAuthServerPkce:
+    def test_passes_with_s256(self):
+        result = AuthServerPkceRule().check(_data(_unauth(), _full_metadata()))
+        assert result.passed is True
+
+    def test_fails_without_s256(self):
+        result = AuthServerPkceRule().check(_data(_unauth(), _full_metadata(auth_server_pkce_s256=False)))
+        assert result.passed is False
+
+    def test_skips_when_no_as_metadata(self):
+        meta = _full_metadata(auth_server_metadata_present=False)
+        assert AuthServerPkceRule().skip_reason(_data(_unauth(), meta)) == SKIP_REASON_INSUFFICIENT_DATA
