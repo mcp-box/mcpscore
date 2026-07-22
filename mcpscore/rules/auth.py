@@ -2,9 +2,9 @@
 
 These rules score how an auth-gated server presents its authorization
 surface — the one part of an authenticated server mcpscore can audit without
-credentials. They gate on the unauthenticated probe observing HTTP 401: a
-server that serves anonymous requests has no auth posture to grade, and the
-rules skip as not-applicable rather than handing out free points.
+credentials. They gate on the unauthenticated probe observing HTTP 401 or
+403: a server that serves anonymous requests has no auth posture to grade,
+and the rules skip as not-applicable rather than handing out free points.
 
 Normative basis (cited per rule, re-verify at spec-final): the MCP
 Authorization spec (2025-06-18 and later) makes MCP servers OAuth 2.0
@@ -77,25 +77,26 @@ class AuthPostureBaseRule(BaseRule):
 
 @register_rule
 class AuthWwwAuthenticateRule(AuthPostureBaseRule):
-    """High check: a 401 response carries a ``WWW-Authenticate`` challenge."""
+    """High check: a gated (401/403) response carries a ``WWW-Authenticate`` challenge."""
 
     rule_id = "auth_www_authenticate"
     rule_order = 4
 
     @property
     def rule_name(self) -> str:
-        return "Auth - 401 Carries WWW-Authenticate"
+        return "Auth - WWW-Authenticate Challenge"
 
     @property
     def severity(self) -> RuleSeverity:
         return RuleSeverity.HIGH
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """High check: the 401 challenge includes a WWW-Authenticate header.
+        """High check: the auth challenge includes a WWW-Authenticate header.
 
         The Authorization spec requires servers to use ``WWW-Authenticate`` on
         401 responses to point clients at the resource metadata; without it a
-        client cannot discover how to authenticate.
+        client cannot discover how to authenticate. The rule also runs for
+        403-gated servers, so messages report the observed status.
 
         Args:
             audit_data: The collected server data for this audit
@@ -104,12 +105,14 @@ class AuthWwwAuthenticateRule(AuthPostureBaseRule):
             RuleResult with the check outcome
 
         """
-        challenge = self._probe(audit_data, PROBE_UNAUTHENTICATED).details.get("www_authenticate")
+        probe = self._probe(audit_data, PROBE_UNAUTHENTICATED)
+        status = probe.details.get("http_status")
+        challenge = probe.details.get("www_authenticate")
         passed = isinstance(challenge, str) and bool(challenge.strip())
         message = (
-            f"✅ 401 responses carry a WWW-Authenticate challenge: '{challenge}'"
+            f"✅ HTTP {status} responses carry a WWW-Authenticate challenge: '{challenge}'"
             if passed
-            else "❌ 401 responses lack the WWW-Authenticate header clients need to discover how to authenticate"
+            else f"❌ HTTP {status} responses lack the WWW-Authenticate header needed to discover how to authenticate"
         )
         return RuleResult(
             rule_name=self.rule_name,
@@ -281,7 +284,7 @@ def _parse_www_authenticate_param(header: str, param: str) -> str | None:
 
 @register_rule
 class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
-    """Medium check: the 401 challenge points clients at the resource metadata."""
+    """Medium check: the auth challenge points clients at the resource metadata."""
 
     rule_id = "auth_challenge_references_metadata"
     rule_order = 7
@@ -317,7 +320,9 @@ class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
             RuleResult with the check outcome
 
         """
-        challenge = str(self._probe(audit_data, PROBE_UNAUTHENTICATED).details.get("www_authenticate"))
+        probe = self._probe(audit_data, PROBE_UNAUTHENTICATED)
+        status = probe.details.get("http_status")
+        challenge = str(probe.details.get("www_authenticate"))
         referenced = _parse_www_authenticate_param(challenge, "resource_metadata")
         # RFC 9728 serves the metadata from the resource's own origin; the exact
         # path (root vs path-aware form) is a legitimate server choice, so we
@@ -325,13 +330,13 @@ class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
         # flag (it points clients at someone else's metadata).
         if referenced is None:
             passed = False
-            message = "❌ The 401 challenge has no resource_metadata parameter for discovering the metadata"
+            message = f"❌ The HTTP {status} challenge has no resource_metadata parameter for discovering the metadata"
         elif audit_data.url is not None and _origin(referenced) != _origin(audit_data.url):
             passed = False
             message = f"❌ The challenge's resource_metadata '{referenced}' is not on this server's origin"
         else:
             passed = True
-            message = f"✅ The 401 challenge references the resource metadata: '{referenced}'"
+            message = f"✅ The HTTP {status} challenge references the resource metadata: '{referenced}'"
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,

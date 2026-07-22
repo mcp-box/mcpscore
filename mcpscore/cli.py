@@ -250,13 +250,23 @@ async def async_main() -> None:
                 ConnectionErrorReason.UNAUTHORIZED,
                 ConnectionErrorReason.FORBIDDEN,
             ):
-                logger.info("Server requires authentication — running a partial audit of the observable surface.")
-                logger.info("(Pass a token with --token or --header to audit behind the gate.)")
                 status = failure.status_code or (401 if failure.reason is ConnectionErrorReason.UNAUTHORIZED else 403)
-                partial_reason = (
-                    f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
-                    "only — pass a token to audit behind the gate."
-                )
+                if headers:
+                    logger.info(
+                        "Server rejected the provided credentials — running a partial audit of the observable surface."
+                    )
+                    logger.info("(Check that the --token/--header credentials are valid for this server.)")
+                    partial_reason = (
+                        f"Server rejected the provided credentials (HTTP {status}); scored the unauthenticated "
+                        "surface only — check that the token or headers are valid for this server."
+                    )
+                else:
+                    logger.info("Server requires authentication — running a partial audit of the observable surface.")
+                    logger.info("(Pass a token with --token or --header to audit behind the gate.)")
+                    partial_reason = (
+                        f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
+                        "only — pass a token to audit behind the gate."
+                    )
                 await auditor.audit_partial(args.target, reason=partial_reason)
                 log_audit_outcome(auditor)
                 if args.json:

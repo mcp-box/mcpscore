@@ -39,6 +39,14 @@ document they need is unreachable, avoiding double-counting one defect.
 
 ### Fixed
 
+- Auth-posture messages no longer hard-code "401": the WWW-Authenticate and
+  challenge-metadata rules report the observed HTTP status (401 or 403), and
+  `auth_www_authenticate`'s display name is now "Auth - WWW-Authenticate
+  Challenge" (rule_id unchanged).
+- A partial audit now distinguishes missing credentials from rejected ones:
+  when `--token`/`--header` were provided and the server still answered
+  401/403, the log and `partial_reason` say the credentials were rejected and
+  suggest verifying them, instead of advising to pass a token.
 - The unauthenticated auth-posture probe no longer crashes against a server
   that returns a 401 with an RFC 6750 OAuth error body (a JSON object whose
   `error` field is a string like `"invalid_token"`, not a JSON-RPC error

@@ -960,6 +960,41 @@ class TestAuthCliFlow:
         assert "HTTP 401" in reason
         assert "Partial audit" in caplog.text
 
+    async def test_rejected_credentials_get_verify_guidance(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp", "--token", "expired"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(score=19, max_score=19, partial=True, partial_reason="rejected")
+        )
+        mock_auditor.audit_data = MagicMock(transport_type=MCPTransportType.STREAMABLE_HTTP)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        # Credentials were supplied and refused: the guidance must say so
+        # instead of advising the user to pass a token they already passed.
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        assert "rejected the provided credentials" in reason
+        assert "HTTP 401" in reason
+        assert "pass a token" not in reason
+        assert "rejected the provided credentials" in caplog.text
+
     async def test_non_auth_failure_still_exits_2(
         self,
         monkeypatch: MonkeyPatch,
