@@ -66,8 +66,8 @@ document they need is unreachable, avoiding double-counting one defect.
   Challenge" (rule_id unchanged).
 - A partial audit now distinguishes missing credentials from rejected ones:
   when an Authorization credential was sent (`--token` or an explicit
-  `Authorization` header — the same predicate as the report's `authenticated`
-  flag) and the server still answered 401/403, the log and `partial_reason`
+  non-blank `Authorization` header — the same predicate as the report's
+  `authenticated` flag) and the server still answered 401/403, the log and `partial_reason`
   say the credentials were rejected and suggest verifying them, instead of
   advising to pass a token. Non-auth custom headers (e.g. tracing) get the
   missing-credential guidance.

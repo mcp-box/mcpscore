@@ -30,13 +30,14 @@ TLS_PROBE_TIMEOUT_S = 10
 
 
 def has_authorization_credential(headers: dict[str, str] | None) -> bool:
-    """Whether the header set carries an Authorization credential.
+    """Whether the header set carries a non-blank Authorization credential.
 
     The single predicate behind both the report's ``authenticated`` flag and
     the CLI's rejected-credentials messaging — other custom headers (tracing,
-    API keys we cannot classify) never count as an auth credential.
+    API keys we cannot classify) never count as an auth credential, and a
+    blank value (e.g. ``--header 'Authorization:'``) is no credential either.
     """
-    return any(name.lower() == "authorization" for name in (headers or {}))
+    return any(name.lower() == "authorization" and value.strip() for name, value in (headers or {}).items())
 
 
 class MCPAuditor:
