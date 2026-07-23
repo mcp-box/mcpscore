@@ -91,6 +91,12 @@ class TestCheckGitState:
         with pytest.raises(SystemExit):
             release.check_git_state()
 
+    def test_fails_on_detached_head_even_for_prereleases(self, monkeypatch: pytest.MonkeyPatch):
+        """No branch name (detached HEAD) → fail fast, not a malformed gh api call."""
+        self._stub_run(monkeypatch, {"git branch --show-current": ""})
+        with pytest.raises(SystemExit):
+            release.check_git_state(prerelease=True)
+
     def test_prerelease_allowed_off_main(self, monkeypatch: pytest.MonkeyPatch):
         """A pre-release may run from a feature branch, synced against its own origin ref."""
         self._stub_run(

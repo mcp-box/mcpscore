@@ -98,6 +98,8 @@ def check_git_state(prerelease: bool = False) -> str:
     pushed, and in sync with its origin counterpart.
     """
     branch = run("git", "branch", "--show-current")
+    if not branch:
+        fail("detached HEAD — check out a branch to release from")
     if branch != "main" and not prerelease:
         fail(f"must release from main (currently on '{branch}')")
     if run("git", "status", "--porcelain"):
