@@ -3,9 +3,17 @@ from collections import Counter
 import re
 from typing import Any
 
-from mcp.types import Tool
+from mcp_types import Tool
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_tools
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+    requires_tools,
+)
 from .registry import register_rule
 
 
@@ -408,7 +416,7 @@ class ToolsInputSchemaValidRule(ToolsBaseRule):
 
         """
         tools_with_invalid_input_schema: list[str] = [
-            tool.name for tool in tools if not is_valid_schema(tool.inputSchema)
+            tool.name for tool in tools if not is_valid_schema(tool.input_schema)
         ]
 
         passed = len(tools_with_invalid_input_schema) == 0
@@ -457,7 +465,7 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
 
         """
         tools_with_invalid_output_schema: list[str] = [
-            tool.name for tool in tools if tool.outputSchema is not None and not is_valid_schema(tool.outputSchema)
+            tool.name for tool in tools if tool.output_schema is not None and not is_valid_schema(tool.output_schema)
         ]
 
         passed = len(tools_with_invalid_output_schema) == 0
@@ -479,7 +487,7 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
 # The behavior-describing hints from the MCP tool `annotations` object. The
 # display-only `title` hint is excluded: it conveys no execution semantics, so
 # it does not count as "annotated" for this rule.
-_TOOL_BEHAVIOR_HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+_TOOL_BEHAVIOR_HINTS = ("read_only_hint", "destructive_hint", "idempotent_hint", "open_world_hint")
 
 
 def _has_behavior_annotation(tool: Tool) -> bool:
@@ -536,4 +544,79 @@ class ToolsAnnotationsPresentRule(ToolsBaseRule):
             passed=passed,
             message=message,
             details={"tools_without_annotations": tools_without_annotations},
+        )
+
+
+@register_rule
+class ToolsExecutionConsistentRule(BaseRule):
+    """Medium check: task-augmented tools require the ``tasks`` capability.
+
+    A tool whose ``execution.taskSupport`` is ``optional`` or ``required``
+    (2025-11-25 experimental tasks) promises task-augmented execution — a
+    server making that promise without declaring the ``tasks`` capability
+    gives clients contradictory metadata.
+    """
+
+    group_name = "tools"
+    group_order = 4
+    rule_id = "tools_execution_consistent"
+    rule_order = 10
+    min_spec_version = "2025-11-25"
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the tools list is unavailable despite a declared tools capability.
+
+        A failed ``tools/list`` (tools is None while the server declared the
+        tools capability) means this rule cannot judge consistency — the peer
+        tools rules already report the missing list, so re-passing here on an
+        empty fallback would be a false green.
+        """
+        declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
+        if declares_tools and audit_data.tools is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Task Execution Backed by Tasks Capability"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    @requires_fields("tools", "capabilities")
+    def check(self, tools: list[Tool] | None, capabilities: Any | None) -> RuleResult:  # type: ignore[override]
+        """Medium check: tools declaring task execution align with capabilities.
+
+        Args:
+            tools: The server's declared tools
+            capabilities: The server's declared capabilities
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        task_tools = [
+            tool.name
+            for tool in (tools or [])
+            if tool.execution is not None and tool.execution.task_support in ("optional", "required")
+        ]
+        has_tasks_capability = getattr(capabilities, "tasks", None) is not None
+
+        if not task_tools:
+            passed = True
+            message = "✅ No tools declare task-augmented execution"
+        elif has_tasks_capability:
+            passed = True
+            message = f"✅ All {len(task_tools)} task-augmented tool(s) are backed by the tasks capability"
+        else:
+            passed = False
+            message = f"❌ Number of tools declaring task execution without a tasks capability: {len(task_tools)}"
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"task_tools": task_tools, "tasks_capability": has_tasks_capability},
         )

@@ -39,6 +39,9 @@ def mock_client() -> MagicMock:
     client = MagicMock(spec=MCPClient)
     client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STDIO))
     client.cleanup = AsyncMock()
+    # Instance attribute (set in __init__) — spec'd mocks don't expose it, so
+    # assign explicitly; the partial-audit branch reads it on connect failure.
+    client.last_connection_error = None
     return client
 
 
@@ -62,6 +65,9 @@ def _report_payload(**overrides) -> dict:
     report = {
         "score": 85,
         "max_score": 100,
+        "authenticated": False,
+        "partial": False,
+        "partial_reason": None,
         "summary": {"total": 2, "passed": 1, "failed": 1, "skipped": 0, "by_severity": {}},
         "results": [],
         "skipped_rules": [],
@@ -253,7 +259,8 @@ class TestAsyncMain:
         assert exc_info.value.code == 2
         assert "Error connecting to the MCP server: /path/to/server.py" in caplog.text
         mock_auditor.audit.assert_not_called()
-        mock_client.cleanup.assert_not_called()
+        # Even a failed connection can leave resources on the exit stack.
+        mock_client.cleanup.assert_awaited_once()
 
     async def test_async_main_with_different_server_path(
         self,
@@ -480,7 +487,8 @@ class TestErrorHandling:
         assert exc_info.value.code == 2
         assert "Error connecting to the MCP server: https://example.com/mcp" in caplog.text
         mock_auditor.audit.assert_not_called()
-        mock_client.cleanup.assert_not_called()
+        # Even a failed connection can leave resources on the exit stack.
+        mock_client.cleanup.assert_awaited_once()
 
 
 class TestMainGuard:
@@ -842,3 +850,292 @@ class TestLogAuditOutcome:
             await async_main()
 
         assert "not assessed" in caplog.text
+
+
+class TestCollectHeaders:
+    """Tests for --header / --token / MCPSCORE_TOKEN parsing."""
+
+    def test_parse_header_splits_on_first_colon(self) -> None:
+        from mcpscore.cli import parse_header
+
+        assert parse_header("Authorization: Bearer abc") == ("Authorization", "Bearer abc")
+        assert parse_header("X-Trace: a:b:c") == ("X-Trace", "a:b:c")
+
+    def test_parse_header_rejects_missing_colon(self) -> None:
+        from mcpscore.cli import parse_header
+
+        with pytest.raises(ValueError, match="invalid header"):
+            parse_header("nocolon")
+
+    def test_header_error_never_echoes_the_value(self) -> None:
+        from mcpscore.cli import build_parser, collect_headers
+
+        # A missing colon can mean the whole argument is a mistyped secret
+        # (e.g. "Authorization Bearer <token>"); the error text is logged, so
+        # it must identify the bad argument by position, never by content.
+        args = build_parser().parse_args(["https://x", "--header", "X-A: 1", "--header", "Authorization supersecret"])
+        with pytest.raises(ValueError, match="--header #2") as exc:
+            collect_headers(args)
+        assert "supersecret" not in str(exc.value)
+
+    def test_collect_headers_empty(self) -> None:
+        from mcpscore.cli import build_parser, collect_headers
+
+        args = build_parser().parse_args(["https://x"])
+        assert collect_headers(args) == {}
+
+    def test_collect_headers_repeatable_and_token(self, monkeypatch: MonkeyPatch) -> None:
+        from mcpscore.cli import build_parser, collect_headers
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        args = build_parser().parse_args(["https://x", "--header", "X-A: 1", "--header", "X-B: 2", "--token", "tok"])
+        assert collect_headers(args) == {"X-A": "1", "X-B": "2", "Authorization": "Bearer tok"}
+
+    def test_explicit_authorization_header_wins_over_token(self, monkeypatch: MonkeyPatch) -> None:
+        from mcpscore.cli import build_parser, collect_headers
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        args = build_parser().parse_args(["https://x", "--header", "Authorization: Custom z", "--token", "tok"])
+        assert collect_headers(args) == {"Authorization": "Custom z"}
+
+    def test_token_falls_back_to_env(self, monkeypatch: MonkeyPatch) -> None:
+        from mcpscore.cli import build_parser, collect_headers
+
+        monkeypatch.setenv("MCPSCORE_TOKEN", "envtok")
+        args = build_parser().parse_args(["https://x"])
+        assert collect_headers(args) == {"Authorization": "Bearer envtok"}
+
+
+class TestAuthCliFlow:
+    """Tests for the auth-header and partial-audit CLI wiring."""
+
+    async def test_headers_passed_to_client_and_auditor(
+        self, monkeypatch: MonkeyPatch, mock_client: MagicMock, mock_auditor: MagicMock
+    ) -> None:
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--token", "secret"])
+        captured = {}
+
+        def capture_client(**kwargs):
+            captured["client_headers"] = kwargs.get("headers")
+            return mock_client
+
+        def capture_auditor(**kwargs):
+            captured["auditor_headers"] = kwargs.get("headers")
+            return mock_auditor
+
+        mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STREAMABLE_HTTP))
+        with (
+            patch("mcpscore.cli.MCPClient", side_effect=capture_client),
+            patch("mcpscore.cli.MCPAuditor", side_effect=capture_auditor),
+        ):
+            await async_main()
+
+        assert captured["client_headers"] == {"Authorization": "Bearer secret"}
+        assert captured["auditor_headers"] == {"Authorization": "Bearer secret"}
+
+    async def test_bad_header_exits_1(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--header", "nocolon"])
+        with pytest.raises(SystemExit) as exc:
+            await async_main()
+        assert exc.value.code == 1
+
+    async def test_401_triggers_partial_audit(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(score=19, max_score=19, partial=True, partial_reason="requires auth")
+        )
+        mock_auditor.audit_data = MagicMock(transport_type=MCPTransportType.STREAMABLE_HTTP)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        mock_auditor.audit_partial.assert_awaited_once()
+        # The reason describes the completed partial audit, not a hard failure.
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        assert "requires authentication" in reason
+        assert "HTTP 401" in reason
+        assert "Partial audit" in caplog.text
+
+    async def test_client_cleanup_runs_on_every_exit_path(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """Early returns (modern-only, partial) and exit-2 must still close the client.
+
+        Failed detection attempts can leave resources on the client's exit
+        stack, so cleanup() has to run no matter how async_main() exits.
+        """
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.cleanup = AsyncMock()
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(return_value=_report_payload(score=1, max_score=1))
+        mock_auditor.audit_data = MagicMock(transport_type=None)
+
+        scenarios = [
+            # (audit_modern_only result, connection failure, expects SystemExit)
+            (True, None, False),  # modern-only early return
+            (False, ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED), False),  # partial early return
+            (False, ConnectionFailure(reason=ConnectionErrorReason.UNREACHABLE), True),  # exit 2
+        ]
+        for modern, failure, exits in scenarios:
+            mock_client.cleanup.reset_mock()
+            mock_client.last_connection_error = failure
+            mock_auditor.audit_modern_only = AsyncMock(return_value=modern)
+            monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x.example/mcp"])
+            with (
+                patch("mcpscore.cli.MCPClient", return_value=mock_client),
+                patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            ):
+                if exits:
+                    with pytest.raises(SystemExit):
+                        await async_main()
+                else:
+                    await async_main()
+            mock_client.cleanup.assert_awaited_once()
+
+    async def test_partial_audit_emits_json_report(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        capsys,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp", "--json"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(score=19, max_score=19, partial=True, partial_reason="requires auth")
+        )
+        mock_auditor.audit_data = MagicMock(transport_type=None)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == "https://gated.example/mcp"
+        assert report["partial"] is True
+        assert report["partial_reason"] == "requires auth"
+
+    async def test_rejected_credentials_get_verify_guidance(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp", "--token", "expired"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(score=19, max_score=19, partial=True, partial_reason="rejected")
+        )
+        mock_auditor.audit_data = MagicMock(transport_type=MCPTransportType.STREAMABLE_HTTP)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        # Credentials were supplied and refused: the guidance must say so
+        # instead of advising the user to pass a token they already passed.
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        assert "rejected the provided credentials" in reason
+        assert "HTTP 401" in reason
+        assert "pass a token" not in reason
+        assert "rejected the provided credentials" in caplog.text
+
+    async def test_non_auth_headers_get_missing_credential_guidance(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A tracing header is not a credential — a 401 means auth is missing, not rejected.
+
+        Keys off the same predicate as the report's authenticated flag, so the
+        log and the report never contradict each other.
+        """
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp", "--header", "X-Trace-Id: abc"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(score=19, max_score=19, partial=True, partial_reason="requires auth")
+        )
+        mock_auditor.audit_data = MagicMock(transport_type=MCPTransportType.STREAMABLE_HTTP)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        assert "requires authentication" in reason
+        assert "pass a token" in reason
+        assert "rejected" not in reason
+        assert "rejected" not in caplog.text
+
+    async def test_non_auth_failure_still_exits_2(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://down.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.UNREACHABLE)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit) as exc,
+        ):
+            await async_main()
+
+        assert exc.value.code == 2
+        mock_auditor.audit_partial.assert_not_called()

@@ -19,17 +19,18 @@ import release
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the script at a temporary repo root with a valid CHANGELOG and npm wrapper."""
-    (tmp_path / "pyproject.toml").write_text('[project]\nname = "mcpscore"\nversion = "1.2.3"\n')
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "mcpscore"\nversion = "1.2.3"\n', encoding="utf-8")
     (tmp_path / "CHANGELOG.md").write_text(
         "# Changelog\n\n"
         "## [1.2.3] - 2026-07-10\n\nThe notes body.\n\n"
         "## [1.2.2] - 2026-07-01\n\nOlder notes.\n\n"
         "[1.2.3]: https://github.com/mcp-box/mcpscore/compare/v1.2.2...v1.2.3\n"
-        "[1.2.2]: https://github.com/mcp-box/mcpscore/releases/tag/v1.2.2\n"
+        "[1.2.2]: https://github.com/mcp-box/mcpscore/releases/tag/v1.2.2\n",
+        encoding="utf-8",
     )
     (tmp_path / "npm").mkdir()
     (tmp_path / "npm" / "package.json").write_text(
-        '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.3"}}'
+        '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.3"}}', encoding="utf-8"
     )
     monkeypatch.setattr(release, "ROOT", tmp_path)
     return tmp_path
@@ -50,7 +51,18 @@ class TestCheckChangelog:
 
     def test_fails_without_the_compare_link(self, repo: Path):
         changelog = repo / "CHANGELOG.md"
-        changelog.write_text(changelog.read_text().replace("[1.2.3]: https://", "[nope]: https://"))
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace("[1.2.3]: https://", "[nope]: https://"),
+            encoding="utf-8",
+        )
+        with pytest.raises(SystemExit):
+            release.check_changelog("1.2.3")
+
+    def test_fails_on_unresolved_conflict_markers(self, repo: Path):
+        """A half-resolved merge must not pass preflight even when section and link greps succeed."""
+        changelog = repo / "CHANGELOG.md"
+        conflict = "<<<<<<< HEAD\n[a]: https://x/compare/a...b\n=======\n[b]: https://x\n>>>>>>> origin/main\n"
+        changelog.write_text(changelog.read_text(encoding="utf-8") + conflict, encoding="utf-8")
         with pytest.raises(SystemExit):
             release.check_changelog("1.2.3")
 
@@ -78,6 +90,38 @@ class TestCheckGitState:
         self._stub_run(monkeypatch, {"git branch --show-current": "feature"})
         with pytest.raises(SystemExit):
             release.check_git_state()
+
+    def test_fails_on_detached_head_even_for_prereleases(self, monkeypatch: pytest.MonkeyPatch):
+        """No branch name (detached HEAD) → fail fast, not a malformed gh api call."""
+        self._stub_run(monkeypatch, {"git branch --show-current": ""})
+        with pytest.raises(SystemExit):
+            release.check_git_state(prerelease=True)
+
+    def test_prerelease_allowed_off_main(self, monkeypatch: pytest.MonkeyPatch):
+        """A pre-release may run from a feature branch, synced against its own origin ref."""
+        self._stub_run(
+            monkeypatch,
+            {
+                "git branch --show-current": "feat/sdk-v2",
+                "git status --porcelain": "",
+                "git rev-parse HEAD": "abc123",
+                f"gh api repos/{release.REPO}/commits/feat/sdk-v2 --jq .sha": "abc123",
+            },
+        )
+        assert release.check_git_state(prerelease=True) == "abc123"
+
+    def test_prerelease_off_main_still_requires_sync(self, monkeypatch: pytest.MonkeyPatch):
+        self._stub_run(
+            monkeypatch,
+            {
+                "git branch --show-current": "feat/sdk-v2",
+                "git status --porcelain": "",
+                "git rev-parse HEAD": "abc123",
+                f"gh api repos/{release.REPO}/commits/feat/sdk-v2 --jq .sha": "def456",
+            },
+        )
+        with pytest.raises(SystemExit):
+            release.check_git_state(prerelease=True)
 
     def test_fails_on_dirty_tree(self, monkeypatch: pytest.MonkeyPatch):
         self._stub_run(
@@ -165,6 +209,27 @@ class TestCheckCiGreen:
         with pytest.raises(SystemExit):
             release.check_ci_green("abc123")
 
+    def test_review_bots_are_not_ci_gates(self, monkeypatch: pytest.MonkeyPatch):
+        """An in-progress Copilot/Bugbot review must not block a release."""
+        copilot = {
+            "name": "copilot-pull-request-reviewer",
+            "status": "in_progress",
+            "conclusion": None,
+            "started_at": "2026-07-10T10:00:00Z",
+            "completed_at": None,
+        }
+        self._stub_checks(
+            monkeypatch,
+            [self._run("lint", "success", "2026-07-10T10:00:00Z"), copilot],
+        )
+        release.check_ci_green("abc123")  # must not raise
+
+    def test_only_review_bot_checks_counts_as_no_ci(self, monkeypatch: pytest.MonkeyPatch):
+        """With nothing but bot reviews on the commit, real CI has not run."""
+        self._stub_checks(monkeypatch, [self._run("Cursor Bugbot", "neutral", "2026-07-10T10:00:00Z")])
+        with pytest.raises(SystemExit):
+            release.check_ci_green("abc123")
+
 
 class TestCreateRelease:
     def test_passes_validated_target_and_cleans_up_notes_file(self, monkeypatch: pytest.MonkeyPatch):
@@ -203,14 +268,16 @@ class TestCheckNpmVersionSync:
 
     def test_fails_on_wrapper_version_drift(self, repo: Path):
         (repo / "npm" / "package.json").write_text(
-            '{"name": "@mcp-box/mcpscore", "version": "1.2.2", "mcpscore": {"pythonVersion": "1.2.3"}}'
+            '{"name": "@mcp-box/mcpscore", "version": "1.2.2", "mcpscore": {"pythonVersion": "1.2.3"}}',
+            encoding="utf-8",
         )
         with pytest.raises(SystemExit):
             release.check_npm_version_sync("1.2.3")
 
     def test_fails_on_python_pin_drift(self, repo: Path):
         (repo / "npm" / "package.json").write_text(
-            '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.2"}}'
+            '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.2"}}',
+            encoding="utf-8",
         )
         with pytest.raises(SystemExit):
             release.check_npm_version_sync("1.2.3")
@@ -221,7 +288,7 @@ class TestCheckNpmVersionSync:
             release.check_npm_version_sync("1.2.3")
 
     def test_fails_on_invalid_json(self, repo: Path):
-        (repo / "npm" / "package.json").write_text("{ not valid json")
+        (repo / "npm" / "package.json").write_text("{ not valid json", encoding="utf-8")
         with pytest.raises(SystemExit):
             release.check_npm_version_sync("1.2.3")
 
@@ -264,7 +331,7 @@ class TestMainDryRun:
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
         monkeypatch.setattr(sys, "argv", ["release.py", "--dry-run"])
-        monkeypatch.setattr(release, "check_git_state", lambda: "abc123")
+        monkeypatch.setattr(release, "check_git_state", lambda **_kwargs: "abc123")
         monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
         monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
 
@@ -284,7 +351,7 @@ class TestMainDryRun:
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
         monkeypatch.setattr(sys, "argv", ["release.py", "--yes"])
-        monkeypatch.setattr(release, "check_git_state", lambda: "abc123")
+        monkeypatch.setattr(release, "check_git_state", lambda **_kwargs: "abc123")
         monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
         monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
 
@@ -302,7 +369,7 @@ class TestMainDryRun:
 
     def test_eof_at_prompt_aborts_cleanly(self, repo: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "argv", ["release.py"])
-        monkeypatch.setattr(release, "check_git_state", lambda: "abc123")
+        monkeypatch.setattr(release, "check_git_state", lambda **_kwargs: "abc123")
         monkeypatch.setattr(release, "check_tag_absent", lambda _version: None)
         monkeypatch.setattr(release, "check_ci_green", lambda _sha: None)
 

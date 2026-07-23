@@ -2,7 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 from mcpscore.enums import MCPTransportType
@@ -64,7 +64,7 @@ class TestMCPClientHTTP:
 
         with patch("mcpscore.mcp_client.streamable_http_client") as mock_client:
             # Simulate connection error
-            mock_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
+            mock_client.return_value.__aenter__.side_effect = httpx2.ConnectError("Connection refused")
 
             result = await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, server_url)
 
@@ -76,7 +76,7 @@ class TestMCPClientHTTP:
 
         with patch("mcpscore.mcp_client.streamable_http_client") as mock_client:
             # Simulate timeout
-            mock_client.return_value.__aenter__.side_effect = httpx.TimeoutException("Request timed out")
+            mock_client.return_value.__aenter__.side_effect = httpx2.TimeoutException("Request timed out")
 
             result = await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, server_url)
 
@@ -90,7 +90,7 @@ class TestMCPClientHTTP:
             # Simulate 404 error
             mock_response = MagicMock()
             mock_response.status_code = 404
-            http_error = httpx.HTTPStatusError("Not Found", request=MagicMock(), response=mock_response)
+            http_error = httpx2.HTTPStatusError("Not Found", request=MagicMock(), response=mock_response)
             mock_client.return_value.__aenter__.side_effect = http_error
 
             result = await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, server_url)
@@ -136,7 +136,7 @@ class TestMCPClientHTTP:
             patch("mcpscore.mcp_client.ClientSession", return_value=mock_session),
         ):
             # HTTP fails
-            mock_http_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
+            mock_http_client.return_value.__aenter__.side_effect = httpx2.ConnectError("Connection refused")
 
             # SSE succeeds
             mock_sse_client.return_value.__aenter__.return_value = (mock_read_stream, mock_write_stream)
@@ -173,8 +173,8 @@ class TestMCPClientHTTP:
             patch("mcpscore.mcp_client.sse_client") as mock_sse_client,
         ):
             # Both fail
-            mock_http_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
-            mock_sse_client.return_value.__aenter__.side_effect = httpx.ConnectError("Connection refused")
+            mock_http_client.return_value.__aenter__.side_effect = httpx2.ConnectError("Connection refused")
+            mock_sse_client.return_value.__aenter__.side_effect = httpx2.ConnectError("Connection refused")
 
             success, transport = await mcp_client.detect_and_connect(server_url)
 

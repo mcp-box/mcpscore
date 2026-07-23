@@ -13,7 +13,8 @@ notes, and creates the GitHub Release (tag v<version>) — which triggers both
 Publishing. It then waits until the version is live on both registries.
 
 Checks performed before anything is created:
-  1. on `main`, clean working tree, local HEAD == origin/main
+  1. on `main` (pre-releases may run from a feature branch), clean working
+     tree, local HEAD in sync with its origin branch
   2. CHANGELOG.md has a `## [<version>]` section AND the `[<version>]:`
      compare link at the bottom (the link block is easy to forget)
   3. the npm wrapper (npm/package.json) version and its pinned Python version
@@ -88,23 +89,36 @@ def is_prerelease(version: str) -> bool:
     return re.search(r"\d(a|b|rc)\d+$", version) is not None
 
 
-def check_git_state() -> str:
+def check_git_state(prerelease: bool = False) -> str:
+    """Verify the repo is releasable; return HEAD's sha.
+
+    Stable releases must come from `main`. Pre-releases may release from a
+    feature branch (e.g. a beta cut from an unmerged SDK-migration branch,
+    keeping `main` on the stable line) — the branch must still be clean,
+    pushed, and in sync with its origin counterpart.
+    """
     branch = run("git", "branch", "--show-current")
-    if branch != "main":
+    if not branch:
+        fail("detached HEAD — check out a branch to release from")
+    if branch != "main" and not prerelease:
         fail(f"must release from main (currently on '{branch}')")
     if run("git", "status", "--porcelain"):
         fail("working tree is not clean")
     head = run("git", "rev-parse", "HEAD")
-    remote_head = run("gh", "api", f"repos/{REPO}/commits/main", "--jq", ".sha")
+    remote_head = run("gh", "api", f"repos/{REPO}/commits/{branch}", "--jq", ".sha")
     if head != remote_head:
-        fail(f"local main ({head[:9]}) != origin/main ({remote_head[:9]}) — push or pull first")
-    ok(f"on main, clean, in sync with origin ({head[:9]})")
+        fail(f"local {branch} ({head[:9]}) != origin/{branch} ({remote_head[:9]}) — push or pull first")
+    ok(f"on {branch}, clean, in sync with origin ({head[:9]})")
     return head
 
 
 def check_changelog(version: str) -> str:
     """Verify the CHANGELOG section and link block, and return the section body."""
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    # A half-resolved merge ships raw conflict text in a release-facing file,
+    # and the section/link greps below can still pass around it.
+    if re.search(r"^(<{7} |={7}$|>{7} )", changelog, flags=re.MULTILINE):
+        fail("CHANGELOG.md contains unresolved merge conflict markers")
     match = re.search(
         rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
         changelog,
@@ -157,6 +171,12 @@ def check_tag_absent(version: str) -> None:
     ok(f"tag v{version} is unused")
 
 
+REVIEW_BOT_CHECKS = frozenset({"copilot-pull-request-reviewer", "Cursor Bugbot"})
+"""Check runs registered by code-review bots. They are reviews, not CI gates —
+they re-enter in_progress on every push, so counting them would make a release
+racy against the bots' review latency."""
+
+
 def check_ci_green(sha: str) -> None:
     raw = run(
         "gh",
@@ -165,7 +185,7 @@ def check_ci_green(sha: str) -> None:
         "--jq",
         "[.check_runs[] | {name, status, conclusion, started_at, completed_at}]",
     )
-    runs = json.loads(raw)
+    runs = [r for r in json.loads(raw) if r["name"] not in REVIEW_BOT_CHECKS]
     if not runs:
         fail("no CI check runs found for HEAD — has CI finished?")
 
@@ -251,7 +271,10 @@ def wait_for_publish(version: str) -> None:
     wait_for_registry("PyPI", f"https://pypi.org/pypi/mcpscore/{version}/json", "publish.yml")
     if is_prerelease(version):
         ok("npm skipped (pre-release publishes to PyPI only)")
-        print(f"\nSmoke test:\n  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp")
+        # --prerelease=allow: uv's pre-release exception covers only direct
+        # requirements, and this package's SDK pin (mcp==2.0.0bN) is transitive
+        # from uvx's point of view.
+        print(f"\nSmoke test:\n  uvx --prerelease=allow mcpscore=={version} https://mcp.deepwiki.com/mcp")
         return
     # npm requires the scope slash URL-encoded (%2F) — canonical registry form.
     npm_path = NPM_PACKAGE.replace("/", "%2F")
@@ -265,7 +288,7 @@ def wait_for_publish(version: str) -> None:
 
 def _run_preflight(version: str) -> tuple[str, str]:
     """Run every releasable-state check; return (head sha, release notes)."""
-    head = check_git_state()
+    head = check_git_state(prerelease=is_prerelease(version))
     notes = check_changelog(version)
     if is_prerelease(version):
         ok(f"npm version sync skipped ({version} is a pre-release — PyPI only)")

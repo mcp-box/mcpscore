@@ -56,7 +56,7 @@ def stub_probes(monkeypatch: pytest.MonkeyPatch):
     """Point the auditor's probe runner at canned results."""
 
     def install(results: dict[str, ProbeResult]) -> None:
-        async def fake_run_all_probes(url: str, client=None) -> dict[str, ProbeResult]:
+        async def fake_run_all_probes(url: str, client=None, headers=None) -> dict[str, ProbeResult]:
             return results
 
         monkeypatch.setattr(mcp_auditor, "run_all_probes", fake_run_all_probes)
@@ -254,3 +254,105 @@ class TestAuditorReuseDoesNotLeakState:
         assert await auditor.audit_modern_only(URL) is False
 
         assert len(auditor.results) == results_before
+
+
+# --- Partial audit (auth-gated servers) --------------------------------------
+
+from mcpscore.probes import PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED  # noqa: E402
+
+
+def _auth_gated_probe_results() -> dict[str, ProbeResult]:
+    """Probe results for a well-behaved auth-gated server: 401 + RFC 9728 metadata."""
+    results = not_applicable_results(reason="unset")
+    results[PROBE_UNAUTHENTICATED] = ProbeResult(
+        PROBE_UNAUTHENTICATED,
+        ProbeOutcome.SUPPORTED,
+        {"http_status": 401, "www_authenticate": 'Bearer resource_metadata="..."'},
+    )
+    results[PROBE_AUTH_METADATA] = ProbeResult(
+        PROBE_AUTH_METADATA,
+        ProbeOutcome.SUPPORTED,
+        {
+            "urls_tried": ["https://gated.example/.well-known/oauth-protected-resource/mcp"],
+            "metadata_url": "https://gated.example/.well-known/oauth-protected-resource/mcp",
+            "resource": "https://gated.example/mcp",
+            "authorization_servers": ["https://auth.example"],
+        },
+    )
+    return results
+
+
+GATED_URL = "https://gated.example/mcp"
+
+
+async def test_audit_partial_returns_false_for_non_url():
+    assert await MCPAuditor().audit_partial("/path/to/server.py", reason="x") is False
+
+
+async def test_audit_partial_scores_auth_and_skips_session(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    stub_probes(_auth_gated_probe_results())
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_partial(GATED_URL, reason="requires auth (HTTP 401)") is True
+
+    report = auditor.get_audit_report()
+    assert report["partial"] is True
+    assert report["partial_reason"] == "requires auth (HTTP 401)"
+
+    scored = {r["rule_id"] for r in report["results"]}
+    # Auth-posture and TLS rules run on probe/transport data.
+    assert "auth_www_authenticate" in scored
+    assert "auth_protected_resource_metadata" in scored
+    assert "security_tls_enabled" in scored
+    # Session-dependent rules skip as insufficient-data, never fail.
+    skipped = {s["rule_id"]: s["reason"] for s in report["skipped_rules"]}
+    assert skipped.get("tools_at_least_one") == "insufficient-data"
+    assert skipped.get("server_name_present") == "insufficient-data"
+    assert skipped.get("capability_tools_present") == "insufficient-data"
+    # No transport was established, so the transport rule cannot claim a pass.
+    assert "transport_streamable_http" not in scored
+    assert skipped.get("transport_streamable_http") == "insufficient-data"
+    # error_response is never collected, so its rules must not auto-pass here.
+    assert "security_malformed_request_handling" not in scored
+    assert "security_error_data_leak" not in scored
+    assert skipped.get("security_malformed_request_handling") == "insufficient-data"
+    assert skipped.get("security_error_data_leak") == "insufficient-data"
+    # Transport left unverified in the audit data.
+    assert auditor.audit_data.transport_type is None
+
+
+async def test_audit_partial_threads_headers_to_probes(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    async def fake_run_all_probes(url: str, client=None, headers=None) -> dict[str, ProbeResult]:
+        captured["headers"] = headers
+        return _auth_gated_probe_results()
+
+    monkeypatch.setattr(mcp_auditor, "run_all_probes", fake_run_all_probes)
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor(headers={"Authorization": "Bearer tok"})
+    await auditor.audit_partial(GATED_URL, reason="auth")
+    assert captured["headers"] == {"Authorization": "Bearer tok"}
+    assert auditor.get_audit_report()["authenticated"] is True
+
+
+async def test_non_authorization_headers_do_not_mark_authenticated(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    """A tracing/custom header is not a credential — the report must not claim auth."""
+    stub_probes(_auth_gated_probe_results())
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor(headers={"X-Trace-Id": "abc123"})
+    await auditor.audit_partial(GATED_URL, reason="auth")
+    assert auditor.get_audit_report()["authenticated"] is False
+
+
+async def test_audit_partial_over_http_records_unverified_tls(stub_probes):
+    """A plain-http target cannot verify TLS; the report must not claim it did."""
+    stub_probes(_auth_gated_probe_results())
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_partial("http://server.example/mcp", reason="auth") is True
+    assert auditor.audit_data.tls_verified is False
+    assert auditor.audit_data.tls_version is None

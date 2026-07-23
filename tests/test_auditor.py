@@ -3,7 +3,20 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from mcpscore import MCPAuditor, MCPClient
+from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.rules import AuditData, BaseRule, RuleResult, RuleSeverity
+
+
+def test_has_authorization_credential():
+    """Only a non-blank Authorization value counts as a credential."""
+    assert has_authorization_credential({"Authorization": "Bearer tok"}) is True
+    assert has_authorization_credential({"authorization": "Basic abc"}) is True
+    # Blank or whitespace values are not credentials (e.g. --header 'Authorization:').
+    assert has_authorization_credential({"Authorization": ""}) is False
+    assert has_authorization_credential({"Authorization": "   "}) is False
+    assert has_authorization_credential({"X-Trace-Id": "abc"}) is False
+    assert has_authorization_credential({}) is False
+    assert has_authorization_credential(None) is False
 
 
 class DummyClient(MCPClient):
@@ -82,8 +95,8 @@ async def test_auditor_collects_data_and_scores():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = type(
                 "Caps",
                 (),
@@ -120,8 +133,8 @@ async def test_auditor_with_tools_capability():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             # Tools capability is present (empty dict signals capability exists)
             self.capabilities = type(
                 "Caps",
@@ -156,8 +169,8 @@ async def test_auditor_with_resources_capability():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             # Resources capability is present
             self.capabilities = type(
                 "Caps",
@@ -192,8 +205,8 @@ async def test_auditor_with_prompts_capability():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             # Prompts capability is present
             self.capabilities = type(
                 "Caps",
@@ -228,8 +241,8 @@ async def test_auditor_with_all_capabilities():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             # All capabilities present
             self.capabilities = type(
                 "Caps",
@@ -279,8 +292,8 @@ async def test_auditor_with_no_capabilities():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None  # No capabilities
             self.instructions = None
 
@@ -309,8 +322,8 @@ async def test_auditor_https_tls_detection():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None
             self.instructions = None
 
@@ -337,8 +350,8 @@ async def test_auditor_http_no_tls():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None
             self.instructions = None
 
@@ -362,8 +375,8 @@ async def test_auditor_stdio_no_tls_detection():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None
             self.instructions = None
 
@@ -617,8 +630,8 @@ async def test_auditor_transport_metadata_collection():
     class InitResult:
         def __init__(self) -> None:
             super().__init__()
-            self.protocolVersion = "2025-06-18"
-            self.serverInfo = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
+            self.protocol_version = "2025-06-18"
+            self.server_info = type("Impl", (), {"name": "n", "title": "t", "version": "1"})()
             self.capabilities = None
             self.instructions = None
 

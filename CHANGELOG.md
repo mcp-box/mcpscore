@@ -5,7 +5,156 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0b3] - 2026-07-22
+
+**Pre-release: deeper auth-posture rules on the SDK v2 line.** Published as a
+PyPI pre-release only (`uvx --prerelease=allow mcpscore==1.1.0b3 …`); plain
+`pip install mcpscore` keeps resolving the stable 0.x line.
+
+### Added
+
+**Deeper auth-posture rules** — the auth-discovery probe now follows the chain
+from the RFC 9728 protected-resource metadata to the first authorization
+server's RFC 8414 metadata, enabling five new credential-free rules that score
+a gated server's authorization surface:
+
+- `auth_server_metadata_pkce` (Security, HIGH): the authorization server
+  advertises PKCE with S256 (`code_challenge_methods_supported`), as required
+  by the OAuth security BCP (RFC 9700) and the MCP authorization spec.
+- `auth_server_metadata_present` (Security, HIGH): the authorization server's
+  RFC 8414 metadata is reachable and advertises the authorization and token
+  endpoints (OpenID `/.well-known/openid-configuration` is accepted as a
+  fallback location).
+- `auth_challenge_references_metadata` (Security, MEDIUM): the 401
+  `WWW-Authenticate` header carries a `resource_metadata` parameter that points
+  at the protected-resource metadata (RFC 9728 §5.1).
+- `auth_metadata_https` (Security, MEDIUM): the protected-resource metadata URL
+  and its `resource` identifier use HTTPS.
+- `auth_scopes_advertised` (Security, LOW): the metadata advertises
+  `scopes_supported` so clients can request least privilege.
+
+Like the existing auth-posture rules, all five run credential-free (including
+in a partial audit of a gated server) and skip rather than fail when the
+document they need is unreachable, avoiding double-counting one defect.
+
+### Fixed
+
+- **Anonymous probes no longer carry any caller-supplied headers.** The
+  unauthenticated-behavior probe and the auth-metadata discovery fetches now
+  run on a separate HTTP client with none of the `--header` values (previously
+  only `Authorization` was stripped): a non-Authorization credential such as an
+  API key or cookie could defeat the unauthenticated observation, and RFC 8414
+  discovery can leave the server's origin for the authorization server's — no
+  caller credential belongs on those requests.
+- A malformed `--header` value (e.g. a missing colon) is no longer echoed in
+  the error message, which is logged — the value may be a mistyped secret. The
+  error now identifies the bad argument by position (`--header #2: …`).
+- The "custom header(s)" log line no longer says "for authentication" —
+  `--header` is also valid for non-auth headers.
+- The report's `authenticated` flag is now set only when an Authorization
+  credential was sent (`--token` or an explicit `Authorization` header) —
+  previously any custom header marked the audit authenticated.
+- The auth-posture rules' `details["basis"]` now carries a per-rule,
+  section-level citation (e.g. `RFC 9728 §5.1`) instead of one broad string
+  shared across rules, matching the readiness rules' per-rule SEP citations.
+- The CLI now releases client resources on every exit path: the modern-only
+  and partial-audit early returns and the connection-failure exit previously
+  bypassed the cleanup that closes the client's exit stack.
+- Auth-posture messages no longer hard-code "401": the WWW-Authenticate and
+  challenge-metadata rules report the observed HTTP status (401 or 403), and
+  `auth_www_authenticate`'s display name is now "Auth - WWW-Authenticate
+  Challenge" (rule_id unchanged).
+- A partial audit now distinguishes missing credentials from rejected ones:
+  when an Authorization credential was sent (`--token` or an explicit
+  non-blank `Authorization` header — the same predicate as the report's
+  `authenticated` flag) and the server still answered 401/403, the log and `partial_reason`
+  say the credentials were rejected and suggest verifying them, instead of
+  advising to pass a token. Non-auth custom headers (e.g. tracing) get the
+  missing-credential guidance.
+- The unauthenticated auth-posture probe no longer crashes against a server
+  that returns a 401 with an RFC 6750 OAuth error body (a JSON object whose
+  `error` field is a string like `"invalid_token"`, not a JSON-RPC error
+  object). Such a body is now correctly treated as having no JSON-RPC error,
+  so the auth-posture rules score normally instead of the probe erroring out.
+
+## [1.1.0b2] - 2026-07-20
+
+**Pre-release: auth-gated audits and new rules on the SDK v2 line.** Published
+as a PyPI pre-release only (`uvx --prerelease=allow mcpscore==1.1.0b2 …`); plain
+`pip install mcpscore` keeps resolving the stable 0.x line.
+
+### Added
+
+**Authenticated and partial audits of auth-gated servers** — production MCP
+servers behind OAuth 2.x can now be audited:
+
+- `--token <TOKEN>` sends `Authorization: Bearer <TOKEN>`; `--header 'Name: Value'`
+  (repeatable) sends arbitrary headers for API-key or custom-auth servers. Both
+  also read from the `MCPSCORE_TOKEN` environment variable (CI-friendly). Header
+  and token values are never logged or written to the report — only an
+  `authenticated` boolean is recorded.
+- **Partial audit**: an auth-gated (HTTP 401/403) server audited *without* a
+  token no longer exits with an error. Instead the observable surface — the
+  auth-posture rules, TLS, and transport — is scored, session-dependent rules
+  are skipped as `insufficient-data`, and the report is flagged `partial` (with
+  `partial_reason`). A partial score is not comparable to a full audit's.
+- Report gains `authenticated`, `partial`, and `partial_reason` fields.
+
+**Auth-posture rules** — the first rules that score auth-gated servers (which
+previously could not be audited at all). All observations are read-only; the
+rules skip as not-applicable for servers that serve anonymous requests:
+
+- New probe `probe_auth_metadata`: fetches RFC 9728 protected resource
+  metadata from its well-known locations (path-aware form first, then
+  origin root).
+- `auth_www_authenticate` (Security, HIGH): 401 responses must carry a
+  `WWW-Authenticate` challenge.
+- `auth_protected_resource_metadata` (Security, HIGH): the RFC 9728 metadata
+  document exists and its `resource` names this server.
+- `auth_authorization_servers_https` (Security, HIGH): the metadata lists at
+  least one authorization server and every entry uses HTTPS (skipped when the
+  metadata document is absent — that is the previous rule's finding).
+
+**Metadata completeness and consistency rules** (2025-11-25 fields; skipped
+for servers on older spec revisions):
+
+- `server_websiteurl_present` (Server Info, LOW): `serverInfo.websiteUrl`
+  is present.
+- `server_icons_present` (Server Info, LOW): the server declares icons and
+  every icon `src` is an `https://` or `data:` URI.
+- `tools_execution_consistent` (Tools, MEDIUM): tools declaring
+  task-augmented execution (`execution.taskSupport` of `optional`/`required`)
+  require the server to declare the `tasks` capability.
+
+Spec citations for the auth rules reference the MCP Authorization spec and
+RFC 9728; re-verify against the dated spec URL at the 2026-07-28 release.
+
+## [1.1.0b1] - 2026-07-19
+
+**Pre-release: engine migrated to MCP Python SDK v2 (beta).** Published as a
+PyPI pre-release only — plain `pip install mcpscore` keeps resolving the stable
+0.x line until SDK 2.0 goes stable. Audit output is unchanged: the same live
+server audited before and after the migration produces an identical report
+(score and all rule results).
+
+### Changed
+
+- Migrated from MCP Python SDK v1 to `mcp==2.0.0b2` (exact pin — SDK
+  pre-releases may break each other, so each mcpscore beta pins the SDK beta it
+  was verified against).
+- HTTP stack switched from `httpx`/`httpx-sse` to `httpx2` (the SDK v2 HTTP
+  client) for both the MCP transports and the readiness probes. TLS is now
+  validated against the OS trust store (via `truststore`) instead of certifi's
+  bundle.
+- Report messages and details keep the MCP spec's wire field names (e.g.
+  `listChanged`) even though SDK v2 renamed Python attributes to snake_case —
+  the report schema is a public contract and does not follow SDK naming.
+
+### Removed
+
+- The `mcp>=1.28.1,<2` / `httpx>=0.28.1,<1` bounds added in 0.9.0 (this
+  line tracks SDK v2 directly; the bounds remain correct for the stable 0.x
+  line).
 
 ## [0.9.0] - 2026-07-19
 
@@ -216,7 +365,10 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b3...HEAD
+[1.1.0b3]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b2...v1.1.0b3
+[1.1.0b2]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b1...v1.1.0b2
+[1.1.0b1]: https://github.com/mcp-box/mcpscore/compare/v0.9.0...v1.1.0b1
 [0.9.0]: https://github.com/mcp-box/mcpscore/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mcp-box/mcpscore/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mcp-box/mcpscore/compare/v0.6.0...v0.7.0

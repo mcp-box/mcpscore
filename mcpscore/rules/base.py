@@ -11,7 +11,7 @@ from mcpscore.spec import compare
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcp.types import Implementation, Prompt, Resource, ServerCapabilities, Tool
+    from mcp_types import Implementation, Prompt, Resource, ServerCapabilities, Tool
 
     from ..enums import MCPTransportType
     from ..probes import ProbeResult
@@ -130,6 +130,12 @@ class AuditData:
     # Sessionless probe observations (see mcpscore.probes), keyed by probe_id.
     # None until the auditor's probe-collection phase has run.
     probes: dict[str, ProbeResult] | None = None
+
+    # Partial audit: no server session was available (e.g. an auth-gated
+    # server), so only probe-derived rules were scored and session-dependent
+    # rules skipped as insufficient-data. False for a normal full audit.
+    partial: bool = False
+    partial_reason: str | None = None
 
 
 # Decorators to specify what data a rule needs

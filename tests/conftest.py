@@ -8,17 +8,17 @@ import pytest
 
 @dataclass
 class FakeToolsCaps:
-    listChanged: bool = False  # noqa: N815
+    list_changed: bool = False
 
 
 @dataclass
 class FakePromptsCaps:
-    listChanged: bool = False  # noqa: N815
+    list_changed: bool = False
 
 
 @dataclass
 class FakeResourcesCaps:
-    listChanged: bool = False  # noqa: N815
+    list_changed: bool = False
     subscribe: bool = False
 
 
@@ -33,6 +33,7 @@ class FakeServerCapabilities:
     prompts: FakePromptsCaps | None = None
     resources: FakeResourcesCaps | None = None
     logging: FakeLoggingCaps | None = None
+    tasks: Any | None = None
 
 
 @dataclass
@@ -40,14 +41,16 @@ class FakeImplementation:
     name: str | None = None
     title: str | None = None
     version: str | None = None
+    website_url: str | None = None
+    icons: list[Any] | None = None
 
 
 @pytest.fixture
 def capabilities_full() -> FakeServerCapabilities:
     return FakeServerCapabilities(
-        tools=FakeToolsCaps(listChanged=True),
-        prompts=FakePromptsCaps(listChanged=True),
-        resources=FakeResourcesCaps(listChanged=True, subscribe=True),
+        tools=FakeToolsCaps(list_changed=True),
+        prompts=FakePromptsCaps(list_changed=True),
+        resources=FakeResourcesCaps(list_changed=True, subscribe=True),
         logging=FakeLoggingCaps(enabled=True),
     )
 
@@ -95,7 +98,7 @@ def _no_network_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     from mcpscore import mcp_auditor
     from mcpscore.probes import not_applicable_results
 
-    async def stubbed_run_all_probes(url: str, client: Any = None) -> dict:
+    async def stubbed_run_all_probes(url: str, client: Any = None, headers: Any = None) -> dict:
         return not_applicable_results(reason="stubbed in unit tests")
 
     monkeypatch.setattr(mcp_auditor, "run_all_probes", stubbed_run_all_probes)

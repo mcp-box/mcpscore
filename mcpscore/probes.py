@@ -25,15 +25,20 @@ from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
+if TYPE_CHECKING:
+    from collections.abc import Callable
+from urllib.parse import urlsplit
+
+import httpx2
 
 from mcpscore.spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AUTH_GATED_STATUSES",
     "GATEWAY_PROBE_IDS",
     "PROBE_IDS",
     "ProbeOutcome",
@@ -48,6 +53,11 @@ PROBE_TIMEOUT_S = 10.0
 
 META_PREFIX = "io.modelcontextprotocol/"
 """Prefix of the reserved ``_meta`` keys carrying per-request context (2026-07-28)."""
+
+AUTH_GATED_STATUSES = frozenset({401, 403})
+"""HTTP statuses that mark an access-controlled server whose auth posture the
+auth-posture rules examine. Kept in sync with the CLI's partial-audit trigger
+(ConnectionErrorReason.UNAUTHORIZED / FORBIDDEN)."""
 
 ERROR_HEADER_MISMATCH = -32020
 """JSON-RPC error code for HTTP header/body mismatches (2026-07-28)."""
@@ -86,6 +96,7 @@ PROBE_MISSING_RESOURCE = "probe_missing_resource"
 PROBE_UNAUTHENTICATED = "probe_unauthenticated"
 PROBE_SESSION_ID_ECHO = "probe_session_id_echo"
 PROBE_REMOVED_METHOD = "probe_removed_method"
+PROBE_AUTH_METADATA = "probe_auth_metadata"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -97,8 +108,18 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_UNAUTHENTICATED,
     PROBE_SESSION_ID_ECHO,
     PROBE_REMOVED_METHOD,
+    PROBE_AUTH_METADATA,
 )
 """Stable identifiers of all probes."""
+
+_ANONYMOUS_PROBE_IDS = frozenset({PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA})
+"""Probes that must see the server as an unauthenticated client does.
+
+These run on a client that carries none of the caller's headers: --header may
+hold non-Authorization credentials (API keys, cookies) that would defeat the
+unauthenticated observation, and auth-metadata discovery (RFC 8414) can leave
+the server's origin for the authorization server's.
+"""
 
 
 class ProbeOutcome(StrEnum):
@@ -153,7 +174,14 @@ class _ProbeResponse:
 
     @property
     def error(self) -> dict[str, Any] | None:
-        return self.payload.get("error") if isinstance(self.payload, dict) else None
+        # Only a JSON-RPC error *object* counts. A non-dict "error" (e.g. an
+        # OAuth/RFC 6750 body's string `"error": "invalid_token"` on a 401)
+        # must not be treated as one — error_code/_base_details call .get() on
+        # it, which would raise AttributeError on a string.
+        if not isinstance(self.payload, dict):
+            return None
+        error = self.payload.get("error")
+        return error if isinstance(error, dict) else None
 
     @property
     def error_code(self) -> int | None:
@@ -207,7 +235,7 @@ def _request_headers(protocol_version: str, method: str, name: str | None = None
     return headers
 
 
-def _parse_payload(response: httpx.Response) -> dict[str, Any] | None:
+def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
     """Extract the JSON-RPC message from a JSON or SSE response body."""
     content_type = response.headers.get("content-type", "")
     try:
@@ -223,8 +251,27 @@ def _parse_payload(response: httpx.Response) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-async def _post(client: httpx.AsyncClient, url: str, body: dict, headers: dict[str, str]) -> _ProbeResponse:
-    response = await client.post(url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
+async def _post(
+    client: httpx2.AsyncClient,
+    url: str,
+    body: dict,
+    headers: dict[str, str],
+    *,
+    anonymous: bool = False,
+) -> _ProbeResponse:
+    """POST a probe request, optionally stripping the caller's Authorization.
+
+    When ``anonymous``, remove any caller-supplied ``Authorization`` header so
+    the probe observes the server's unauthenticated behavior even when a token
+    was provided via --token/--header. When ``run_all_probes`` created the
+    clients itself, anonymous probes additionally run on a client that carries
+    no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop here also
+    covers caller-injected clients whose defaults it cannot control.
+    """
+    request = client.build_request("POST", url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
+    if anonymous:
+        request.headers.pop("Authorization", None)
+    response = await client.send(request)
     return _ProbeResponse(
         status_code=response.status_code,
         headers=dict(response.headers),
@@ -242,7 +289,7 @@ def _base_details(response: _ProbeResponse) -> dict[str, Any]:
     return details
 
 
-async def _probe_discover(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_discover(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """``server/discover`` — mandatory for modern servers (SEP-2567).
 
     SUPPORTED when the server returns a DiscoverResult carrying
@@ -267,7 +314,7 @@ async def _probe_discover(client: httpx.AsyncClient, url: str) -> ProbeResult:
     return ProbeResult(PROBE_DISCOVER, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_stateless_list(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_stateless_list(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Modern ``tools/list`` with required ``_meta``, no prior ``initialize`` (SEP-2575).
 
     SUPPORTED when the server returns a tools result; details record
@@ -290,7 +337,7 @@ async def _probe_stateless_list(client: httpx.AsyncClient, url: str) -> ProbeRes
     return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_malformed_meta(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_malformed_meta(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request missing a required ``_meta`` field.
 
     The spec: a request missing any required field MUST be rejected with
@@ -312,7 +359,7 @@ async def _probe_malformed_meta(client: httpx.AsyncClient, url: str) -> ProbeRes
     return ProbeResult(PROBE_MALFORMED_META, outcome, details)
 
 
-async def _probe_header_mismatch(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_header_mismatch(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a request whose ``Mcp-Method`` header contradicts the body method (SEP-2243).
 
     Servers MUST reject header/body mismatches with HTTP 400 and JSON-RPC
@@ -333,7 +380,7 @@ async def _probe_header_mismatch(client: httpx.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_HEADER_MISMATCH, outcome, details)
 
 
-async def _probe_unknown_version(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request naming a fabricated protocol version.
 
     Modern servers MUST reject it with ``-32022`` (UnsupportedProtocolVersion)
@@ -356,7 +403,7 @@ async def _probe_unknown_version(client: httpx.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_missing_resource(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_missing_resource(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """``resources/read`` for a deliberately nonexistent URI (SEP-2164).
 
     From 2026-07-28 the missing-resource error is standard ``-32602``; the
@@ -377,7 +424,7 @@ async def _probe_missing_resource(client: httpx.AsyncClient, url: str) -> ProbeR
     return ProbeResult(PROBE_MISSING_RESOURCE, outcome, details)
 
 
-async def _probe_unauthenticated(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_unauthenticated(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """One unauthenticated request, recording status and ``WWW-Authenticate``.
 
     This is a pure observation probe (it feeds the auth-posture rules):
@@ -390,13 +437,125 @@ async def _probe_unauthenticated(client: httpx.AsyncClient, url: str) -> ProbeRe
         url,
         _request_body("tools/list", 7, _modern_meta(target)),
         _request_headers(target, "tools/list"),
+        anonymous=True,
     )
     details = _base_details(response)
     details["www_authenticate"] = response.headers.get("www-authenticate")
     return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)
 
 
-async def _probe_session_id_echo(client: httpx.AsyncClient, url: str) -> ProbeResult:
+def _well_known_urls(url: str) -> list[str]:
+    """RFC 9728 §3 well-known locations for a protected resource URL.
+
+    For a resource with a path component the path-aware form (path appended
+    after the well-known prefix) is tried first, then the origin-root form.
+    """
+    parts = urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    path = parts.path.rstrip("/")
+    candidates = []
+    if path:
+        candidates.append(f"{origin}/.well-known/oauth-protected-resource{path}")
+    candidates.append(f"{origin}/.well-known/oauth-protected-resource")
+    return candidates
+
+
+async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int, dict[str, Any] | None]:
+    """GET a public well-known JSON document, stripping any caller Authorization.
+
+    Returns (http_status, parsed_dict_or_None). Auth-discovery documents (RFC
+    9728, RFC 8414) are public — and RFC 8414 discovery can leave the server's
+    origin for the authorization server's — so no caller credential may be
+    sent. When ``run_all_probes`` created the clients, these fetches already
+    run on a header-free client (``_ANONYMOUS_PROBE_IDS``); the pop here also
+    covers caller-injected clients.
+    """
+    request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
+    request.headers.pop("Authorization", None)
+    response = await client.send(request)
+    if response.status_code != 200:
+        return response.status_code, None
+    try:
+        parsed = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return response.status_code, None
+    return response.status_code, parsed if isinstance(parsed, dict) else None
+
+
+def _is_http_url(value: object) -> bool:
+    """Whether a value is an http(s) URL string."""
+    return isinstance(value, str) and value.startswith(("https://", "http://"))
+
+
+def _auth_server_metadata_urls(issuer: str) -> list[str]:
+    """RFC 8414 / OIDC well-known locations for an authorization server issuer."""
+    base = issuer.rstrip("/")
+    return [
+        f"{base}/.well-known/oauth-authorization-server",
+        f"{base}/.well-known/openid-configuration",
+    ]
+
+
+async def _fetch_auth_server_metadata(client: httpx2.AsyncClient, issuer: str, details: dict[str, Any]) -> None:
+    """Fetch the authorization server's RFC 8414 metadata; record posture in details.
+
+    Records whether the metadata document was found, whether it advertises the
+    required authorization/token endpoints, and whether it advertises PKCE with
+    S256 (`code_challenge_methods_supported`) — the OAuth security BCP (RFC
+    9700) / MCP-auth requirement.
+    """
+    details["auth_server_issuer"] = issuer
+    details["auth_server_metadata_present"] = False
+    for candidate in _auth_server_metadata_urls(issuer):
+        _status, metadata = await _get_json_anonymous(client, candidate)
+        if metadata is None:
+            continue
+        methods = metadata.get("code_challenge_methods_supported")
+        details["auth_server_metadata_url"] = candidate
+        details["auth_server_metadata_present"] = True
+        details["auth_server_has_endpoints"] = isinstance(metadata.get("authorization_endpoint"), str) and isinstance(
+            metadata.get("token_endpoint"), str
+        )
+        details["auth_server_pkce_s256"] = isinstance(methods, list) and "S256" in methods
+        return
+
+
+async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+    """Fetch the auth-discovery chain (RFC 9728 PRM → RFC 8414 AS metadata).
+
+    Observation probe feeding the auth-posture rules: SUPPORTED when a
+    well-known location returns HTTP 200 with a JSON object carrying the
+    REQUIRED ``resource`` field (RFC 9728 §2); details record what was found
+    where, plus the authorization server's endpoint/PKCE posture. Servers
+    without authentication commonly 404 here — the dependent rules skip unless
+    the endpoint demanded auth in the first place.
+    """
+    details: dict[str, Any] = {"urls_tried": []}
+    for candidate in _well_known_urls(url):
+        details["urls_tried"].append(candidate)
+        status, metadata = await _get_json_anonymous(client, candidate)
+        details["http_status"] = status
+        if metadata is None:
+            continue
+        if isinstance(metadata.get("resource"), str):
+            servers = metadata.get("authorization_servers")
+            servers = servers if isinstance(servers, list) else None
+            details["metadata_url"] = candidate
+            details["resource"] = metadata["resource"]
+            details["authorization_servers"] = servers
+            details["scopes_supported"] = metadata.get("scopes_supported")
+            # Walk to the first authorization server's RFC 8414 metadata. The
+            # document is public and fetched anonymously; whether the AS URL is
+            # HTTPS is scored separately by auth_authorization_servers_https, so
+            # observe http too rather than skipping the metadata check entirely.
+            first = next((s for s in (servers or []) if _is_http_url(s)), None)
+            if first is not None:
+                await _fetch_auth_server_metadata(client, first, details)
+            return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
+    return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.UNSUPPORTED, details)
+
+
+async def _probe_session_id_echo(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request carrying a spurious ``Mcp-Session-Id`` header.
 
     ``Mcp-Session-Id`` is removed in 2026-07-28; servers serving modern
@@ -419,7 +578,7 @@ async def _probe_session_id_echo(client: httpx.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_SESSION_ID_ECHO, outcome, details)
 
 
-async def _probe_removed_method(client: httpx.AsyncClient, url: str) -> ProbeResult:
+async def _probe_removed_method(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     """Send a modern request for a method removed in the target revision (``ping``).
 
     Removed methods are unknown methods: the server MUST respond with HTTP 404
@@ -450,6 +609,7 @@ _PROBES = {
     PROBE_UNAUTHENTICATED: _probe_unauthenticated,
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_REMOVED_METHOD: _probe_removed_method,
+    PROBE_AUTH_METADATA: _probe_auth_metadata,
 }
 
 
@@ -509,7 +669,11 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
     return None
 
 
-async def run_all_probes(url: str, client: httpx.AsyncClient | None = None) -> dict[str, ProbeResult]:
+async def run_all_probes(
+    url: str,
+    client: httpx2.AsyncClient | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict[str, ProbeResult]:
     """Run every probe against an HTTP(S) MCP endpoint.
 
     Probes run concurrently; a probe that fails at the network level yields
@@ -519,26 +683,35 @@ async def run_all_probes(url: str, client: httpx.AsyncClient | None = None) -> d
     Args:
         url: The MCP endpoint URL (http:// or https://)
         client: Optional preconfigured httpx client (tests inject a
-            MockTransport-backed one); a short-lived client is created
-            otherwise
+            MockTransport-backed one); short-lived clients are created
+            otherwise. An injected client is used for every probe, including
+            the anonymous ones — the caller configures its headers.
+        headers: Extra HTTP headers (e.g. an ``Authorization`` bearer) merged
+            into the short-lived authenticated client's defaults; probes in
+            ``_ANONYMOUS_PROBE_IDS`` run on a separate client that carries
+            none of them. Ignored when ``client`` is supplied. Sensitive —
+            never logged.
 
     Returns:
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
 
     """
 
-    async def run_one(probe_id: str, http_client: httpx.AsyncClient) -> ProbeResult:
+    async def run_one(probe_id: str, http_client: httpx2.AsyncClient) -> ProbeResult:
         try:
             return await _PROBES[probe_id](http_client, url)
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             logger.info("Probe %s failed against %s: %s", probe_id, url, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
 
-    async def run_with(http_client: httpx.AsyncClient) -> dict[str, ProbeResult]:
-        results = await asyncio.gather(*(run_one(probe_id, http_client) for probe_id in PROBE_IDS))
+    async def run_with(select: Callable[[str], httpx2.AsyncClient]) -> dict[str, ProbeResult]:
+        results = await asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in PROBE_IDS))
         return {result.probe_id: result for result in results}
 
     if client is not None:
-        return await run_with(client)
-    async with httpx.AsyncClient(follow_redirects=True) as own_client:
-        return await run_with(own_client)
+        return await run_with(lambda _probe_id: client)
+    async with (
+        httpx2.AsyncClient(follow_redirects=True, headers=headers) as own_client,
+        httpx2.AsyncClient(follow_redirects=True) as anon_client,
+    ):
+        return await run_with(lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client)

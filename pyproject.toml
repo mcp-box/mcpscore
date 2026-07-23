@@ -17,7 +17,7 @@ packages = ["mcpscore"]
 
 [project]
 name = "mcpscore"
-version = "0.9.0"
+version = "1.1.0b3"
 description = "CLI tool to analyze your MCP server and get a comprehensive report on its quality"
 authors = [{ name = "Alex Akimov"}]
 license = "MIT"
@@ -57,9 +57,8 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "mcp>=1.28.1,<2",
-    "httpx>=0.28.1,<1",
-    "httpx-sse>=0.4.3",
+    "mcp==2.0.0b2",
+    "httpx2>=2.5.0",
     "jsonschema>=4.21",
 ]
 
@@ -81,6 +80,11 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.20",
 ]
+
+[tool.uv]
+# mcp 2.0.0b2 pins the transitive mcp-types==2.0.0b2; uv only auto-allows
+# pre-releases for direct dependencies, so transitive betas need this.
+prerelease = "allow"
 
 [tool.pyright]
 reportMissingImports = true

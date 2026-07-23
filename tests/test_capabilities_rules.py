@@ -1,3 +1,8 @@
+from dataclasses import replace
+
+from mcp_types import ResourcesCapability
+from pydantic import BaseModel
+
 from mcpscore.rules import (
     AuditData,
     CapabilityLoggingPresentRule,
@@ -10,7 +15,28 @@ from mcpscore.rules.capabilities import (
     CapabilityResourcesSubscribeRule,
     CapabilityToolsListChangedRule,
     CapabilityToolsPresentRule,
+    _wire_str,
 )
+
+
+class TestWireStr:
+    """The report must always show MCP wire field names, never SDK attribute names."""
+
+    def test_none_stays_none(self):
+        assert _wire_str(None) is None
+
+    def test_non_model_falls_back_to_str(self):
+        assert _wire_str("already a string") == "already a string"
+
+    def test_model_renders_wire_aliases(self):
+        capability = ResourcesCapability(subscribe=False, list_changed=True)
+        assert _wire_str(capability) == "subscribe=False listChanged=True"
+
+    def test_field_without_alias_uses_python_name(self):
+        class Plain(BaseModel):
+            flag: bool = True
+
+        assert _wire_str(Plain()) == "flag=True"
 
 
 def test_capabilities_presence_rules(capabilities_full, capabilities_missing):
@@ -35,7 +61,7 @@ def test_capabilities_presence_rules(capabilities_full, capabilities_missing):
 def test_capabilities_feature_rules(capabilities_full, capabilities_missing):
     """Test that capability feature rules correctly validate advanced capabilities.
 
-    This test verifies that rules for listChanged and subscribe features
+    This test verifies that rules for list_changed and subscribe features
     properly detect when these advanced capabilities are supported or missing
     in the server's capability declaration.
     """
@@ -49,3 +75,28 @@ def test_capabilities_feature_rules(capabilities_full, capabilities_missing):
     for rule in feature_rules:
         assert rule.check(AuditData(capabilities=capabilities_full)).passed
         assert not rule.check(AuditData(capabilities=capabilities_missing)).passed
+
+
+def test_capabilities_feature_rules_declared_but_disabled(capabilities_full):
+    """A capability that is declared but has the feature flag off must fail with 'not supported'.
+
+    Distinct from the capability being absent: this exercises the middle arm
+    (present, flag false) of each feature rule.
+    """
+    caps = replace(
+        capabilities_full,
+        tools=replace(capabilities_full.tools, list_changed=False),
+        prompts=replace(capabilities_full.prompts, list_changed=False),
+        resources=replace(capabilities_full.resources, list_changed=False, subscribe=False),
+    )
+    feature_rules = [
+        CapabilityToolsListChangedRule(),
+        CapabilityPromptsListChangedRule(),
+        CapabilityResourcesListChangedRule(),
+        CapabilityResourcesSubscribeRule(),
+    ]
+
+    for rule in feature_rules:
+        result = rule.check(AuditData(capabilities=caps))
+        assert result.passed is False
+        assert "not supported" in result.message

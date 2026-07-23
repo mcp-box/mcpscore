@@ -2,7 +2,7 @@
 
 import json
 
-import httpx
+import httpx2
 
 from mcpscore.probes import (
     ERROR_HEADER_MISMATCH,
@@ -10,6 +10,7 @@ from mcpscore.probes import (
     ERROR_LEGACY_RESOURCE_NOT_FOUND,
     ERROR_UNSUPPORTED_PROTOCOL_VERSION,
     META_PREFIX,
+    PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
@@ -22,6 +23,7 @@ from mcpscore.probes import (
     PROBE_UNKNOWN_VERSION,
     ProbeOutcome,
     ProbeResult,
+    _well_known_urls,
     not_applicable_results,
     run_all_probes,
 )
@@ -33,18 +35,26 @@ def _rpc_error(request_id, code: int, message: str, data: dict | None = None, ht
     error: dict = {"code": code, "message": message}
     if data is not None:
         error["data"] = data
-    return httpx.Response(
+    return httpx2.Response(
         http_status,
         json={"jsonrpc": "2.0", "id": request_id, "error": error},
     )
 
 
 def _rpc_result(request_id, result: dict):
-    return httpx.Response(200, json={"jsonrpc": "2.0", "id": request_id, "result": result})
+    return httpx2.Response(200, json={"jsonrpc": "2.0", "id": request_id, "result": result})
 
 
-def _modern_server_handler(request: httpx.Request) -> httpx.Response:
+AUTH_SERVERS = ["https://auth.example"]
+
+
+def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
     """Simulate a server implementing the 2026-07-28 behaviors the probes check."""
+    if request.method == "GET":
+        # RFC 9728 path-aware well-known location for URL's /mcp path.
+        if request.url.path == "/.well-known/oauth-protected-resource/mcp":
+            return httpx2.Response(200, json={"resource": URL, "authorization_servers": AUTH_SERVERS})
+        return httpx2.Response(404)
     body = json.loads(request.content)
     request_id = body.get("id")
     method = body["method"]
@@ -90,19 +100,21 @@ def _modern_server_handler(request: httpx.Request) -> httpx.Response:
     return _rpc_error(request_id, -32601, "Method not found", http_status=404)
 
 
-def _legacy_server_handler(request: httpx.Request) -> httpx.Response:
+def _legacy_server_handler(request: httpx2.Request) -> httpx2.Response:
     """Simulate a stateful 2025-11-25 server: no session → everything is an error."""
+    if request.method == "GET":
+        return httpx2.Response(404)
     body = json.loads(request.content)
     if body["method"] == "resources/read":
         return _rpc_error(body.get("id"), ERROR_LEGACY_RESOURCE_NOT_FOUND, "Resource not found", http_status=200)
-    return httpx.Response(
+    return httpx2.Response(
         400,
         json={"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32600, "message": "Bad Request: no session"}},
     )
 
 
-def _client(handler) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+def _client(handler) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
 
 
 async def _run(handler) -> dict[str, ProbeResult]:
@@ -155,10 +167,132 @@ async def test_legacy_server_is_unsupported_but_observed():
     assert results[PROBE_MISSING_RESOURCE].details["error_code"] == ERROR_LEGACY_RESOURCE_NOT_FOUND
     assert results[PROBE_MISSING_RESOURCE].details["legacy_code_emitted"] is True
 
+    # No well-known metadata anywhere → UNSUPPORTED, with both locations tried.
+    auth = results[PROBE_AUTH_METADATA]
+    assert auth.outcome is ProbeOutcome.UNSUPPORTED
+    assert len(auth.details["urls_tried"]) == 2
+
+
+class TestWellKnownUrls:
+    def test_path_aware_form_first_then_root(self):
+        assert _well_known_urls("https://server.example/mcp") == [
+            "https://server.example/.well-known/oauth-protected-resource/mcp",
+            "https://server.example/.well-known/oauth-protected-resource",
+        ]
+
+    def test_root_resource_has_single_location(self):
+        assert _well_known_urls("https://server.example") == [
+            "https://server.example/.well-known/oauth-protected-resource",
+        ]
+
+    def test_trailing_slash_is_normalized(self):
+        assert _well_known_urls("https://server.example/mcp/") == [
+            "https://server.example/.well-known/oauth-protected-resource/mcp",
+            "https://server.example/.well-known/oauth-protected-resource",
+        ]
+
+
+class TestAuthMetadataProbe:
+    async def test_modern_server_serves_path_aware_metadata(self):
+        results = await _run(_modern_server_handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.SUPPORTED
+        assert auth.details["metadata_url"].endswith("/oauth-protected-resource/mcp")
+        assert auth.details["resource"] == URL
+        assert auth.details["authorization_servers"] == AUTH_SERVERS
+        assert auth.payload == {"resource": URL, "authorization_servers": AUTH_SERVERS}
+
+    async def test_falls_back_to_origin_root_location(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET" and request.url.path == "/.well-known/oauth-protected-resource":
+                return httpx2.Response(200, json={"resource": URL})
+            if request.method == "GET":
+                return httpx2.Response(404)
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.SUPPORTED
+        assert auth.details["metadata_url"] == "https://server.example/.well-known/oauth-protected-resource"
+        assert auth.details["authorization_servers"] is None
+
+    async def test_walks_to_authorization_server_metadata(self):
+        """PRM → first authorization server's RFC 8414 metadata (endpoints + PKCE)."""
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            if request.url.host == "auth.example" and path == "/.well-known/oauth-authorization-server":
+                return httpx2.Response(
+                    200,
+                    json={
+                        "issuer": "https://auth.example",
+                        "authorization_endpoint": "https://auth.example/authorize",
+                        "token_endpoint": "https://auth.example/token",
+                        "code_challenge_methods_supported": ["S256"],
+                    },
+                )
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        d = results[PROBE_AUTH_METADATA].details
+        assert d["auth_server_metadata_present"] is True
+        assert d["auth_server_has_endpoints"] is True
+        assert d["auth_server_pkce_s256"] is True
+        assert d["auth_server_issuer"] == "https://auth.example"
+
+    async def test_authorization_server_without_pkce(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            if request.url.host == "auth.example":
+                # OIDC fallback path, no PKCE advertised.
+                if path == "/.well-known/openid-configuration":
+                    return httpx2.Response(
+                        200,
+                        json={
+                            "issuer": "https://auth.example",
+                            "authorization_endpoint": "https://auth.example/authorize",
+                            "token_endpoint": "https://auth.example/token",
+                        },
+                    )
+                return httpx2.Response(404)
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        d = results[PROBE_AUTH_METADATA].details
+        assert d["auth_server_metadata_present"] is True  # found via OIDC fallback
+        assert d["auth_server_has_endpoints"] is True
+        assert d["auth_server_pkce_s256"] is False
+
+    async def test_invalid_json_is_unsupported(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                return httpx2.Response(200, text="<html>not metadata</html>")
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+        assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.UNSUPPORTED
+
+    async def test_metadata_without_resource_field_is_unsupported(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                return httpx2.Response(200, json={"authorization_servers": AUTH_SERVERS})
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+        assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.UNSUPPORTED
+
 
 async def test_network_failure_yields_error_outcomes_not_exceptions():
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused")
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("connection refused")
 
     results = await _run(handler)
 
@@ -168,8 +302,8 @@ async def test_network_failure_yields_error_outcomes_not_exceptions():
 
 
 async def test_non_mcp_endpoint_is_unsupported():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text="<html>not an MCP server</html>")
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, text="<html>not an MCP server</html>")
 
     results = await _run(handler)
 
@@ -178,10 +312,10 @@ async def test_non_mcp_endpoint_is_unsupported():
 
 
 async def test_sse_response_body_is_parsed():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
         if body["method"] != "server/discover" or request.headers.get("Mcp-Method") != "server/discover":
-            return httpx.Response(
+            return httpx2.Response(
                 400, json={"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32600, "message": "bad"}}
             )
         message = {
@@ -194,7 +328,7 @@ async def test_sse_response_body_is_parsed():
                 "cacheScope": "private",
             },
         }
-        return httpx.Response(
+        return httpx2.Response(
             200,
             headers={"content-type": "text/event-stream"},
             text=f"event: message\ndata: {json.dumps(message)}\n\n",
@@ -208,8 +342,8 @@ async def test_sse_response_body_is_parsed():
 
 
 async def test_unauthenticated_probe_records_challenge():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             401,
             headers={
                 "WWW-Authenticate": 'Bearer resource_metadata="https://server.example/.well-known/oauth-protected-resource"'
@@ -264,7 +398,7 @@ async def test_auditor_runs_probes_for_http_url(monkeypatch):
 
     seen: dict = {}
 
-    async def fake_run_all_probes(url: str, client=None):
+    async def fake_run_all_probes(url: str, client=None, headers=None):
         seen["url"] = url
         return {PROBE_DISCOVER: ProbeResult(PROBE_DISCOVER, ProbeOutcome.SUPPORTED, {})}
 
@@ -282,7 +416,7 @@ async def test_auditor_runs_probes_for_http_url(monkeypatch):
 async def test_leaky_modern_server_is_detected():
     """A server speaking the modern lifecycle but leaking legacy artifacts."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
         request_id = body.get("id")
         method = body["method"]
@@ -326,16 +460,16 @@ async def test_probe_payloads_are_captured_for_data_extraction():
 
 
 async def test_sse_response_without_data_line_is_unsupported():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text="event: ping\n\n")
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text="event: ping\n\n")
 
     results = await _run(handler)
     assert results[PROBE_DISCOVER].outcome is ProbeOutcome.UNSUPPORTED
 
 
 async def test_error_without_message_field_is_handled():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32600}})
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(400, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32600}})
 
     results = await _run(handler)
     details = results[PROBE_DISCOVER].details
@@ -344,9 +478,9 @@ async def test_error_without_message_field_is_handled():
 
 
 async def test_unknown_version_error_with_non_dict_data():
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
-        return httpx.Response(
+        return httpx2.Response(
             400,
             json={
                 "jsonrpc": "2.0",
@@ -365,7 +499,7 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
     from mcpscore import probes as probes_module
 
     def make_stub(probe_id: str):
-        async def stub(client: httpx.AsyncClient, url: str) -> ProbeResult:
+        async def stub(client: httpx2.AsyncClient, url: str) -> ProbeResult:
             return ProbeResult(probe_id, ProbeOutcome.SUPPORTED, {"stubbed": True})
 
         return stub
@@ -375,3 +509,107 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
     results = await run_all_probes(URL)  # no client injected -> own-client branch
 
     assert set(results) == set(PROBE_IDS)
+
+
+class TestAnonymousProbes:
+    """The unauthenticated and metadata probes must not send a caller's bearer."""
+
+    async def test_own_client_path_keeps_all_caller_headers_off_anonymous_probes(self, monkeypatch):
+        """Anonymous probes run on a client with no caller headers at all.
+
+        --header can carry non-Authorization credentials (API keys, cookies);
+        they must not reach the unauthenticated probe or the auth-discovery
+        fetches — the latter can leave the server's origin entirely.
+        """
+        requests_log: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            requests_log.append(request)
+            if request.url.path.startswith("/.well-known/"):
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://as.example"]})
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}, json={})
+
+        transport = httpx2.MockTransport(handler)
+        real_async_client = httpx2.AsyncClient
+
+        def patched_client(**kwargs):
+            kwargs.setdefault("transport", transport)
+            return real_async_client(**kwargs)
+
+        monkeypatch.setattr(httpx2, "AsyncClient", patched_client)
+
+        await run_all_probes(URL, headers={"X-Api-Key": "sekret", "Authorization": "Bearer tok"})
+
+        wellknown = [r for r in requests_log if r.url.path.startswith("/.well-known/")]
+        assert wellknown, "auth-metadata discovery should have run"
+        for request in wellknown:
+            assert "X-Api-Key" not in request.headers
+            assert "Authorization" not in request.headers
+        # The unauthenticated probe's request reached the server with neither header.
+        assert any(
+            r.url.path == "/mcp" and "X-Api-Key" not in r.headers and "Authorization" not in r.headers
+            for r in requests_log
+        )
+        # Authenticated probes still carry the caller's headers.
+        assert any(r.headers.get("X-Api-Key") == "sekret" for r in requests_log)
+
+    async def test_unauthenticated_probe_strips_authorization(self):
+        from mcpscore.probes import _probe_unauthenticated
+
+        seen_auth: dict[str, str | None] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen_auth["post"] = request.headers.get("Authorization")
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}, json={})
+
+        # Client carries a default bearer, as if --token was passed.
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            result = await _probe_unauthenticated(client, URL)
+
+        # The probe reached the server without the bearer, so it saw the 401 challenge.
+        assert seen_auth["post"] is None
+        assert result.details["http_status"] == 401
+        assert result.details["www_authenticate"] == "Bearer"
+
+    async def test_unauthenticated_probe_survives_oauth_error_body(self):
+        """An RFC 6750 401 body must not crash the probe.
+
+        Its ``error`` field is a string (``"invalid_token"``), not a JSON-RPC
+        error object.
+        """
+        from mcpscore.probes import _probe_unauthenticated
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(
+                401,
+                headers={"WWW-Authenticate": "Bearer"},
+                json={"error": "invalid_token", "error_description": "Authentication required"},
+            )
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            result = await _probe_unauthenticated(client, URL)
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["http_status"] == 401
+        assert result.details["www_authenticate"] == "Bearer"
+        # The string "error" is not a JSON-RPC error object, so no error_code.
+        assert "error_code" not in result.details
+
+    async def test_auth_metadata_probe_strips_authorization(self):
+        seen_auth: dict[str, str | None] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                seen_auth["get"] = request.headers.get("Authorization")
+                return httpx2.Response(200, json={"resource": URL})
+            return httpx2.Response(401)
+
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            results = await run_all_probes(URL, client=client)
+
+        assert seen_auth["get"] is None
+        assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.SUPPORTED

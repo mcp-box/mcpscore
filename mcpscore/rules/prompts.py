@@ -1,6 +1,6 @@
 from abc import abstractmethod
 
-from mcp.types import Prompt
+from mcp_types import Prompt
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_fields
 from .registry import register_rule

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
-    from mcp.types import InitializeResult, Prompt, Resource, Tool
+    from mcp_types import InitializeResult, Prompt, Resource, Tool
 
 from pydantic import ValidationError
 
@@ -20,13 +20,24 @@ from .probes import (
     run_all_probes,
 )
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
-from .rules.base import READINESS_GROUP, SKIP_REASON_NOT_APPLICABLE
+from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from .spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
 
 TLS_PROBE_TIMEOUT_S = 10
 """Timeout for probing the negotiated TLS version of an HTTPS server."""
+
+
+def has_authorization_credential(headers: dict[str, str] | None) -> bool:
+    """Whether the header set carries a non-blank Authorization credential.
+
+    The single predicate behind both the report's ``authenticated`` flag and
+    the CLI's rejected-credentials messaging — other custom headers (tracing,
+    API keys we cannot classify) never count as an auth credential, and a
+    blank value (e.g. ``--header 'Authorization:'``) is no credential either.
+    """
+    return any(name.lower() == "authorization" and value.strip() for name, value in (headers or {}).items())
 
 
 class MCPAuditor:
@@ -42,16 +53,25 @@ class MCPAuditor:
     aspects of MCP compliance and contributes to an overall audit score.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, headers: dict[str, str] | None = None) -> None:
         """Initialize a new MCPAuditor instance.
+
+        Args:
+            headers: Extra HTTP headers for the sessionless probe phase, e.g.
+                an ``Authorization`` bearer to probe an auth-gated server.
+                Should match the headers passed to the MCPClient. Sensitive —
+                never logged or included in the report (only the boolean
+                ``authenticated`` flag is reported).
 
         Sets up the auditor with:
         - Empty audit data container
         - All registered audit rules
         - Zero initial score
         - Empty results list
+
         """
         super().__init__()
+        self.headers: dict[str, str] | None = headers or None
         self.mcp_client: MCPClient | None = None
         self.audit_data: AuditData = AuditData()
         self.score: int = 0
@@ -142,7 +162,7 @@ class MCPAuditor:
         if not url.startswith(("http://", "https://")):
             return False
 
-        probes = await run_all_probes(url)
+        probes = await run_all_probes(url, headers=self.headers)
         if not has_modern_support(probes):
             return False
 
@@ -165,6 +185,51 @@ class MCPAuditor:
         self._run_all_rules()
         return True
 
+    async def audit_partial(self, url: str, reason: str) -> bool:
+        """Run a partial audit of an HTTP server without a server session.
+
+        For a server that could not be connected to and shows no modern
+        support (typically because it is auth-gated), this still scores the
+        rules observable without a session: the auth-posture, TLS, transport,
+        and discovery rules. Session-dependent rules (server info,
+        capabilities, tools, resources, prompts) are skipped as
+        insufficient-data rather than failed — the report is marked partial and
+        its score is NOT comparable to a full audit's.
+
+        Args:
+            url: The MCP endpoint URL (http:// or https://)
+            reason: Human-readable reason the full audit was not possible
+                (e.g. the connection failure message), recorded in the report.
+
+        Returns:
+            True when the partial audit ran; False for a non-HTTP url.
+
+        """
+        if not url.startswith(("http://", "https://")):
+            return False
+
+        self._reset_run_state()
+        self.audit_data.partial = True
+        self.audit_data.partial_reason = reason
+        self.audit_data.url = url
+        # No session connected, so the transport is not verified — leave it
+        # None. The transport rule skips rather than claiming a transport we
+        # could not confirm (see StreamableHTTPTransportRule.skip_reason).
+        self.audit_data.probes = await run_all_probes(url, headers=self.headers)
+        if url.startswith("https://"):
+            # The probes reached the server over HTTPS with certificate
+            # verification (httpx default), so TLS is verified even though no
+            # MCP session was established.
+            self.audit_data.tls_verified = True
+            self.audit_data.tls_version = await self._probe_tls_version(url)
+        else:
+            self.audit_data.tls_verified = False
+            self.audit_data.tls_version = None
+
+        self.era = detect_era(None, self.audit_data.probes)
+        self._run_all_rules()
+        return True
+
     def _populate_from_probe_payloads(self) -> None:
         """Extract session-equivalent audit data from probe payloads (best-effort).
 
@@ -173,7 +238,7 @@ class MCPAuditor:
         parse stays None — the corresponding rules then report it missing,
         which is accurate from the client's perspective.
         """
-        from mcp.types import Implementation, ServerCapabilities, Tool
+        from mcp_types import Implementation, ServerCapabilities, Tool
 
         probes = self.audit_data.probes or {}
 
@@ -214,6 +279,25 @@ class MCPAuditor:
             logger.info("Could not parse %s from probe payload: %s", model.__name__, e)
             return None
 
+    def _skipped_for_partial(self, rule: BaseRule) -> bool:
+        """Whether a rule must be skipped in a partial audit (no server session).
+
+        A partial audit never established a session, so any rule whose every
+        ``@requires_*`` field went uncollected (all ``None``) cannot judge and
+        must be skipped as insufficient-data — otherwise it would pass or fail
+        the server on absent data (e.g. the error-response rules auto-pass on a
+        missing observation, inflating the partial score). Rules that still
+        have data to work with (e.g. TLS, which has the url) run normally, and
+        full-data rules (auth-posture) gate themselves via skip_reason.
+        """
+        if not self.audit_data.partial:
+            return False
+        requires = getattr(rule.check, "_requires", None)
+        names: tuple[str, ...] = (requires,) if isinstance(requires, str) else tuple(requires or ())
+        if not names or "full_data" in names:
+            return False
+        return all(getattr(self.audit_data, name, None) is None for name in names)
+
     def _run_all_rules(self) -> None:
         """Execute all applicable audit rules and update the audit score.
 
@@ -244,6 +328,8 @@ class MCPAuditor:
             skip_reason: str | None = None
             if not rule.applies_to(self.audit_data.protocol_version):
                 skip_reason = SKIP_REASON_NOT_APPLICABLE
+            elif self._skipped_for_partial(rule):
+                skip_reason = SKIP_REASON_INSUFFICIENT_DATA
             else:
                 skip_reason = rule.skip_reason(self.audit_data)
 
@@ -351,7 +437,7 @@ class MCPAuditor:
             self.audit_data.probes = not_applicable_results(reason="probes require an HTTP(S) transport")
             return
 
-        self.audit_data.probes = await run_all_probes(url)
+        self.audit_data.probes = await run_all_probes(url, headers=self.headers)
 
     async def _collect_init_result(self) -> None:
         """Collect initialization data from the MCP server.
@@ -370,8 +456,8 @@ class MCPAuditor:
             logger.error("No Init Result to audit")
             return
         else:
-            self.audit_data.protocol_version = str(init_result.protocolVersion)
-            self.audit_data.server_info = init_result.serverInfo
+            self.audit_data.protocol_version = str(init_result.protocol_version)
+            self.audit_data.server_info = init_result.server_info
             self.audit_data.capabilities = init_result.capabilities
             self.audit_data.instructions = init_result.instructions
 
@@ -453,6 +539,17 @@ class MCPAuditor:
         return {
             "score": self.score,
             "max_score": self.max_score,
+            # True when the audit sent an Authorization credential (--token or
+            # an explicit Authorization --header). Other custom headers (e.g.
+            # tracing) do not mark the audit authenticated. Only the flag is
+            # reported — header values are never included.
+            "authenticated": has_authorization_credential(self.headers),
+            # A partial audit ran without a server session (e.g. an auth-gated
+            # server): only probe-derived rules scored; session-dependent rules
+            # were skipped as insufficient-data. The score is NOT comparable to
+            # a full audit's — partial_reason says why.
+            "partial": self.audit_data.partial,
+            "partial_reason": self.audit_data.partial_reason,
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
             "skipped_rules": [s.to_dict() for s in self.skipped_rules],

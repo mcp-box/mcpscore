@@ -6,7 +6,7 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
-import httpx
+import httpx2
 from mcp import (
     ClientSession,
     InitializeResult,
@@ -18,7 +18,7 @@ from mcp import (
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import Prompt, Resource, Tool
+from mcp_types import Prompt, Resource, Tool
 
 from .enums import ConnectionErrorReason, MCPTransportType
 
@@ -104,7 +104,7 @@ def extract_http_status(exc: BaseException) -> int | None:
         if current is None or id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, httpx.HTTPStatusError):
+        if isinstance(current, httpx2.HTTPStatusError):
             return current.response.status_code
         if isinstance(current, BaseExceptionGroup):
             stack.extend(current.exceptions)
@@ -138,11 +138,15 @@ class MCPClient:
     transports, with automatic transport detection.
     """
 
-    def __init__(self, timeout: int | None = None) -> None:
+    def __init__(self, timeout: int | None = None, headers: dict[str, str] | None = None) -> None:
         """Initialize a new MCP client instance.
 
         Args:
             timeout: Connection timeout in seconds (None for no timeout)
+            headers: Extra HTTP headers sent on every request to an HTTP(S)
+                server, e.g. ``{"Authorization": "Bearer …"}`` to audit an
+                auth-gated server. Ignored for stdio transports. Values are
+                sensitive and are never logged or included in the report.
 
         Sets up the client with an empty session and async exit stack for resource management.
 
@@ -151,6 +155,7 @@ class MCPClient:
         self.session: ClientSession | None = None
         self.exit_stack: AsyncExitStack = AsyncExitStack()
         self.timeout: int | None = timeout
+        self.headers: dict[str, str] | None = headers or None
         self._init_result: InitializeResult | None = None
 
         # Transport metadata (populated after connection)
@@ -417,15 +422,16 @@ class MCPClient:
 
         try:
             # Configure HTTP client with timeouts and retries
-            client = httpx.AsyncClient(
-                timeout=httpx.Timeout(
+            client = httpx2.AsyncClient(
+                timeout=httpx2.Timeout(
                     connect=15.0,  # Connection timeout: 15 seconds
                     read=60.0,  # Read timeout: 60 seconds
                     write=30.0,  # Write timeout: 30 seconds
                     pool=5.0,  # Pool timeout: 5 seconds
                 ),
                 follow_redirects=True,
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                headers=self.headers,
+                limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
             )
 
             # Establish connection and verify the MCP handshake
@@ -438,17 +444,17 @@ class MCPClient:
             logger.info("Successfully connected to MCP server via Streamable HTTP: %s", server_url)
             return True
 
-        except httpx.ConnectError as e:
+        except httpx2.ConnectError as e:
             logger.exception("Connection refused or server unreachable: %s", server_url)
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
-        except httpx.TimeoutException as e:
+        except httpx2.TimeoutException as e:
             logger.exception("Connection timeout for server: %s", server_url)
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
             logger.debug("Error details: %s", e)
             self._record_failure(reason_for_status(e.response.status_code), e.response.status_code)
@@ -489,24 +495,25 @@ class MCPClient:
 
         try:
             # Configure HTTP client for SSE with appropriate timeouts
-            client = httpx.AsyncClient(
-                timeout=httpx.Timeout(
+            client = httpx2.AsyncClient(
+                timeout=httpx2.Timeout(
                     connect=15.0,  # Connection timeout: 15 seconds
                     read=None,  # No read timeout for streaming (handled by keepalive)
                     write=30.0,  # Write timeout: 30 seconds
                     pool=5.0,  # Pool timeout: 5 seconds
                 ),
                 follow_redirects=True,
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                headers=self.headers,
+                limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
             )
 
             # Establish connection using MCP SDK's sse_client
             # Create a factory that ignores extra parameters since we already have a client
             def client_factory(
                 headers: dict[str, str] | None = None,
-                timeout: httpx.Timeout | None = None,
-                auth: httpx.Auth | None = None,
-            ) -> httpx.AsyncClient:
+                timeout: httpx2.Timeout | None = None,
+                auth: httpx2.Auth | None = None,
+            ) -> httpx2.AsyncClient:
                 return client
 
             await self._establish_session(
@@ -518,17 +525,17 @@ class MCPClient:
             logger.info("Successfully connected to MCP server via SSE: %s", server_url)
             return True
 
-        except httpx.ConnectError as e:
+        except httpx2.ConnectError as e:
             logger.exception("Connection refused or server unreachable: %s", server_url)
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
-        except httpx.TimeoutException as e:
+        except httpx2.TimeoutException as e:
             logger.exception("Connection timeout for server: %s", server_url)
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
             logger.debug("Error details: %s", e)
             self._record_failure(reason_for_status(e.response.status_code), e.response.status_code)

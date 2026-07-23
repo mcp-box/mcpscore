@@ -8,10 +8,13 @@ from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 import json
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, NoReturn
 
 from mcpscore import MCPAuditor, MCPClient
+from mcpscore.enums import ConnectionErrorReason
+from mcpscore.mcp_auditor import has_authorization_credential
 
 if TYPE_CHECKING:
     from mcpscore import MCPTransportType
@@ -59,7 +62,75 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit a machine-readable JSON report to stdout (logs go to stderr)",
     )
+    parser.add_argument(
+        "--header",
+        action="append",
+        metavar="'Name: Value'",
+        help=(
+            "Extra HTTP header sent to the server, e.g. --header 'Authorization: Bearer <token>' "
+            "to audit an auth-gated server. Repeatable. Header values are never logged or reported."
+        ),
+    )
+    parser.add_argument(
+        "--token",
+        metavar="TOKEN",
+        help=(
+            "Convenience for --header 'Authorization: Bearer <TOKEN>'. "
+            "Defaults to the MCPSCORE_TOKEN environment variable (keeps tokens out of shell history)."
+        ),
+    )
     return parser
+
+
+def parse_header(raw: str) -> tuple[str, str]:
+    """Parse a ``Name: Value`` header string into a (name, value) pair.
+
+    Args:
+        raw: A header in ``Name: Value`` form.
+
+    Returns:
+        The (name, value) tuple, both stripped.
+
+    Raises:
+        ValueError: If there is no colon separating name and value. The
+            malformed input is deliberately not echoed — header values may
+            carry secrets and the error text is logged.
+
+    """
+    name, sep, value = raw.partition(":")
+    if not sep or not name.strip():
+        raise ValueError("invalid header (expected 'Name: Value'; the value is not shown — headers may carry secrets)")
+    return name.strip(), value.strip()
+
+
+def collect_headers(args: argparse.Namespace) -> dict[str, str]:
+    """Build the request-header dict from --header, --token, and MCPSCORE_TOKEN.
+
+    Precedence: explicit --header entries first, then a bearer from --token or
+    the MCPSCORE_TOKEN env var (an explicit Authorization header is not
+    overwritten).
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        A header dict (possibly empty).
+
+    Raises:
+        ValueError: If a --header value is malformed.
+
+    """
+    headers: dict[str, str] = {}
+    for position, raw in enumerate(args.header or [], start=1):
+        try:
+            name, value = parse_header(raw)
+        except ValueError as e:
+            raise ValueError(f"--header #{position}: {e}") from None
+        headers[name] = value
+    token = args.token or os.environ.get("MCPSCORE_TOKEN")
+    if token and not any(name.lower() == "authorization" for name in headers):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _mcpscore_version() -> str:
@@ -82,6 +153,9 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
     readiness = report["readiness"]
 
     logger.info("")
+    if report["partial"]:
+        logger.info("⚠️  Partial audit (%s).", report["partial_reason"])
+        logger.info("Only the auth, TLS, and transport surface was scored — not comparable to a full audit.")
     logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
     logger.info(
         "Spec: %s negotiated (latest: %s) · era: %s",
@@ -150,30 +224,80 @@ async def async_main() -> None:
 
     args = build_parser().parse_args()
 
-    client: MCPClient = MCPClient()
-    auditor: MCPAuditor = MCPAuditor()
-
-    success, transport = await client.detect_and_connect(args.target)
-
-    if not success:
-        if args.target.startswith(("http://", "https://")):
-            logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
-            if await auditor.audit_modern_only(args.target):
-                logger.info(
-                    "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
-                )
-                log_audit_outcome(auditor)
-                if args.json:
-                    report = build_report(args.target, auditor.audit_data.transport_type, auditor)
-                    sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
-                return
-        logger.error("Error connecting to the MCP server: %s", args.target)
-        sys.exit(2)
-
-    logger.info("Connected to the MCP server: %s", args.target)
-    logger.info("Transport: %s", transport)
-
     try:
+        headers = collect_headers(args)
+    except ValueError as e:
+        logger.error("Usage error: %s", e)  # noqa: TRY400 — usage error, not an exception to trace
+        sys.exit(1)
+
+    if headers:
+        logger.info("Using %d custom header(s).", len(headers))
+
+    client: MCPClient = MCPClient(headers=headers or None)
+    auditor: MCPAuditor = MCPAuditor(headers=headers or None)
+
+    # Everything below runs inside one try/finally: failed detection attempts
+    # can leave resources on the client's exit stack, so every path out —
+    # early returns, sys.exit(2), audit errors — must reach cleanup().
+    try:
+        success, transport = await client.detect_and_connect(args.target)
+
+        if not success:
+            if args.target.startswith(("http://", "https://")):
+                logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
+                if await auditor.audit_modern_only(args.target):
+                    logger.info(
+                        "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
+                    )
+                    log_audit_outcome(auditor)
+                    if args.json:
+                        report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                    return
+
+                failure = client.last_connection_error
+                if failure is not None and failure.reason in (
+                    ConnectionErrorReason.UNAUTHORIZED,
+                    ConnectionErrorReason.FORBIDDEN,
+                ):
+                    status = failure.status_code or (
+                        401 if failure.reason is ConnectionErrorReason.UNAUTHORIZED else 403
+                    )
+                    # Key off the same predicate as the report's authenticated
+                    # flag: only an Authorization credential counts — a 401
+                    # with only tracing/custom headers is a missing credential,
+                    # not a rejected one.
+                    if has_authorization_credential(headers):
+                        logger.info(
+                            "Server rejected the provided credentials — "
+                            "running a partial audit of the observable surface."
+                        )
+                        logger.info("(Check that the --token/--header credentials are valid for this server.)")
+                        partial_reason = (
+                            f"Server rejected the provided credentials (HTTP {status}); scored the unauthenticated "
+                            "surface only — check that the token or headers are valid for this server."
+                        )
+                    else:
+                        logger.info(
+                            "Server requires authentication — running a partial audit of the observable surface."
+                        )
+                        logger.info("(Pass a token with --token or --header to audit behind the gate.)")
+                        partial_reason = (
+                            f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
+                            "only — pass a token to audit behind the gate."
+                        )
+                    await auditor.audit_partial(args.target, reason=partial_reason)
+                    log_audit_outcome(auditor)
+                    if args.json:
+                        report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                    return
+            logger.error("Error connecting to the MCP server: %s", args.target)
+            sys.exit(2)
+
+        logger.info("Connected to the MCP server: %s", args.target)
+        logger.info("Transport: %s", transport)
+
         logger.info("Starting the audit...")
         await auditor.audit(client)
         log_audit_outcome(auditor)
