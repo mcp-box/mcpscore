@@ -336,3 +336,23 @@ async def test_audit_partial_threads_headers_to_probes(monkeypatch: pytest.Monke
     await auditor.audit_partial(GATED_URL, reason="auth")
     assert captured["headers"] == {"Authorization": "Bearer tok"}
     assert auditor.get_audit_report()["authenticated"] is True
+
+
+async def test_non_authorization_headers_do_not_mark_authenticated(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    """A tracing/custom header is not a credential — the report must not claim auth."""
+    stub_probes(_auth_gated_probe_results())
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor(headers={"X-Trace-Id": "abc123"})
+    await auditor.audit_partial(GATED_URL, reason="auth")
+    assert auditor.get_audit_report()["authenticated"] is False
+
+
+async def test_audit_partial_over_http_records_unverified_tls(stub_probes):
+    """A plain-http target cannot verify TLS; the report must not claim it did."""
+    stub_probes(_auth_gated_probe_results())
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_partial("http://server.example/mcp", reason="auth") is True
+    assert auditor.audit_data.tls_verified is False
+    assert auditor.audit_data.tls_version is None

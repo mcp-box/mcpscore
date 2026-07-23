@@ -103,6 +103,27 @@ class TestSkipGating:
         assert AuthAuthorizationServersHttpsRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
         assert AuthProtectedResourceMetadataRule().skip_reason(data) is None
 
+    def test_metadata_detail_rules_skip_when_metadata_unsupported(self):
+        """The deeper metadata rules have nothing to inspect without the document."""
+        data = _data(_unauth(), _metadata(outcome=ProbeOutcome.UNSUPPORTED))
+        assert AuthMetadataHttpsRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+        assert AuthScopesAdvertisedRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_as_metadata_rule_skips_without_an_issuer(self):
+        """No authorization server listed → the servers rule's finding, not this one's."""
+        data = _data(_unauth(), _full_metadata(auth_server_issuer=None))
+        assert AuthServerMetadataPresentRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_pkce_rule_skips_when_as_metadata_unreachable(self):
+        """Unreachable RFC 8414 metadata is the presence rule's finding — no double-counting."""
+        data = _data(_unauth(), _full_metadata(auth_server_metadata_present=False))
+        assert AuthServerPkceRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_deep_as_rules_run_with_full_metadata(self):
+        data = _data(_unauth(), _full_metadata())
+        assert AuthServerMetadataPresentRule().skip_reason(data) is None
+        assert AuthServerPkceRule().skip_reason(data) is None
+
 
 class TestWwwAuthenticate:
     def test_challenge_present_passes(self):

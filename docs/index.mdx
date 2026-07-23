@@ -76,7 +76,8 @@ Many production MCP servers require OAuth 2.x. mcpscore handles them two ways:
   `--header 'Name: Value'` (repeatable, for API-key or custom-auth servers).
   For CI, set `MCPSCORE_TOKEN` in the environment to keep tokens out of shell
   history. Token and header values are never logged or written to the report —
-  only an `authenticated` flag is recorded.
+  only an `authenticated` flag is recorded (set when an Authorization
+  credential was sent; other custom headers do not set it).
 
 Example output tail:
 

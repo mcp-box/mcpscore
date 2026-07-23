@@ -51,6 +51,9 @@ document they need is unreachable, avoiding double-counting one defect.
   error now identifies the bad argument by position (`--header #2: …`).
 - The "custom header(s)" log line no longer says "for authentication" —
   `--header` is also valid for non-auth headers.
+- The report's `authenticated` flag is now set only when an Authorization
+  credential was sent (`--token` or an explicit `Authorization` header) —
+  previously any custom header marked the audit authenticated.
 - Auth-posture messages no longer hard-code "401": the WWW-Authenticate and
   challenge-metadata rules report the observed HTTP status (401 or 403), and
   `auth_www_authenticate`'s display name is now "Auth - WWW-Authenticate
@@ -353,7 +356,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b2...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b3...HEAD
+[1.1.0b3]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b2...v1.1.0b3
 [1.1.0b2]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b1...v1.1.0b2
 [1.1.0b1]: https://github.com/mcp-box/mcpscore/compare/v0.9.0...v1.1.0b1
 [0.9.0]: https://github.com/mcp-box/mcpscore/compare/v0.8.0...v0.9.0

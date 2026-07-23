@@ -528,9 +528,11 @@ class MCPAuditor:
         return {
             "score": self.score,
             "max_score": self.max_score,
-            # True when the audit was run with caller-supplied auth headers.
-            # Only the flag is reported — header values are never included.
-            "authenticated": self.headers is not None,
+            # True when the audit sent an Authorization credential (--token or
+            # an explicit Authorization --header). Other custom headers (e.g.
+            # tracing) do not mark the audit authenticated. Only the flag is
+            # reported — header values are never included.
+            "authenticated": any(name.lower() == "authorization" for name in (self.headers or {})),
             # A partial audit ran without a server session (e.g. an auth-gated
             # server): only probe-derived rules scored; session-dependent rules
             # were skipped as insufficient-data. The score is NOT comparable to

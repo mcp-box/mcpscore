@@ -971,6 +971,36 @@ class TestAuthCliFlow:
         assert "HTTP 401" in reason
         assert "Partial audit" in caplog.text
 
+    async def test_partial_audit_emits_json_report(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        capsys,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp", "--json"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(score=19, max_score=19, partial=True, partial_reason="requires auth")
+        )
+        mock_auditor.audit_data = MagicMock(transport_type=None)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == "https://gated.example/mcp"
+        assert report["partial"] is True
+        assert report["partial_reason"] == "requires auth"
+
     async def test_rejected_credentials_get_verify_guidance(
         self,
         monkeypatch: MonkeyPatch,
