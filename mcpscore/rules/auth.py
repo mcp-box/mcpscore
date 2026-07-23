@@ -30,8 +30,6 @@ from .base import (
 )
 from .registry import register_rule
 
-_AUTH_BASIS = "MCP Authorization (2025-06-18+) / RFC 9728"
-
 
 def _normalized(url: str) -> str:
     """Normalize a resource URL for comparison (trailing slash only)."""
@@ -119,7 +117,7 @@ class AuthWwwAuthenticateRule(AuthPostureBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": _AUTH_BASIS, "www_authenticate": challenge},
+            details={"basis": "MCP Authorization (2025-06-18+); RFC 9728 §5.1", "www_authenticate": challenge},
         )
 
 
@@ -154,7 +152,7 @@ class AuthProtectedResourceMetadataRule(AuthPostureBaseRule):
 
         """
         probe = self._probe(audit_data, PROBE_AUTH_METADATA)
-        details = {"basis": _AUTH_BASIS, **probe.details}
+        details = {"basis": "RFC 9728 §3 (well-known location), §2 (resource)", **probe.details}
         if probe.outcome is not ProbeOutcome.SUPPORTED:
             return RuleResult(
                 rule_name=self.rule_name,
@@ -242,11 +240,12 @@ class AuthAuthorizationServersHttpsRule(AuthPostureBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": _AUTH_BASIS, "authorization_servers": servers, "invalid": invalid},
+            details={
+                "basis": "RFC 9728 §2 (authorization_servers)",
+                "authorization_servers": servers,
+                "invalid": invalid,
+            },
         )
-
-
-_RFC_8414 = "RFC 8414 (OAuth 2.0 Authorization Server Metadata) / RFC 9700"
 
 
 class AuthMetadataBaseRule(AuthPostureBaseRule):
@@ -342,7 +341,7 @@ class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": _AUTH_BASIS, "resource_metadata": referenced},
+            details={"basis": "RFC 9728 §5.1 (resource_metadata parameter)", "resource_metadata": referenced},
         )
 
 
@@ -389,7 +388,11 @@ class AuthMetadataHttpsRule(AuthMetadataBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": _AUTH_BASIS, "metadata_url": metadata_url, "resource": resource},
+            details={
+                "basis": "RFC 9728 §2 (resource), §3 (HTTPS well-known)",
+                "metadata_url": metadata_url,
+                "resource": resource,
+            },
         )
 
 
@@ -434,7 +437,7 @@ class AuthScopesAdvertisedRule(AuthMetadataBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": _AUTH_BASIS, "scopes_supported": scopes},
+            details={"basis": "RFC 9728 §2 (scopes_supported)", "scopes_supported": scopes},
         )
 
 
@@ -492,7 +495,12 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": _RFC_8414, "issuer": issuer, "present": present, "has_endpoints": has_endpoints},
+            details={
+                "basis": "RFC 8414 §3 (well-known location), §2 (endpoints)",
+                "issuer": issuer,
+                "present": present,
+                "has_endpoints": has_endpoints,
+            },
         )
 
 
@@ -546,5 +554,8 @@ class AuthServerPkceRule(AuthMetadataBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": _RFC_8414, "issuer": details.get("auth_server_issuer")},
+            details={
+                "basis": "RFC 9700 §2.1.1 (PKCE); RFC 8414 §2 (code_challenge_methods_supported)",
+                "issuer": details.get("auth_server_issuer"),
+            },
         )

@@ -125,6 +125,26 @@ class TestSkipGating:
         assert AuthServerPkceRule().skip_reason(data) is None
 
 
+class TestCitations:
+    def test_every_rule_cites_a_specific_section(self):
+        """details["basis"] is a per-rule, section-level citation (report contract)."""
+        data = _data(_unauth(), _full_metadata())
+        for rule_cls in (
+            AuthWwwAuthenticateRule,
+            AuthProtectedResourceMetadataRule,
+            AuthAuthorizationServersHttpsRule,
+            AuthChallengeReferencesMetadataRule,
+            AuthMetadataHttpsRule,
+            AuthScopesAdvertisedRule,
+            AuthServerMetadataPresentRule,
+            AuthServerPkceRule,
+        ):
+            details = rule_cls().check(data).details
+            assert details is not None
+            basis = details["basis"]
+            assert "§" in basis, f"{rule_cls.rule_id} basis lacks a section-level citation: {basis!r}"
+
+
 class TestWwwAuthenticate:
     def test_challenge_present_passes(self):
         result = AuthWwwAuthenticateRule().check(_data(_unauth()))

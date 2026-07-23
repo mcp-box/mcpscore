@@ -259,7 +259,8 @@ class TestAsyncMain:
         assert exc_info.value.code == 2
         assert "Error connecting to the MCP server: /path/to/server.py" in caplog.text
         mock_auditor.audit.assert_not_called()
-        mock_client.cleanup.assert_not_called()
+        # Even a failed connection can leave resources on the exit stack.
+        mock_client.cleanup.assert_awaited_once()
 
     async def test_async_main_with_different_server_path(
         self,
@@ -486,7 +487,8 @@ class TestErrorHandling:
         assert exc_info.value.code == 2
         assert "Error connecting to the MCP server: https://example.com/mcp" in caplog.text
         mock_auditor.audit.assert_not_called()
-        mock_client.cleanup.assert_not_called()
+        # Even a failed connection can leave resources on the exit stack.
+        mock_client.cleanup.assert_awaited_once()
 
 
 class TestMainGuard:
@@ -970,6 +972,47 @@ class TestAuthCliFlow:
         assert "requires authentication" in reason
         assert "HTTP 401" in reason
         assert "Partial audit" in caplog.text
+
+    async def test_client_cleanup_runs_on_every_exit_path(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """Early returns (modern-only, partial) and exit-2 must still close the client.
+
+        Failed detection attempts can leave resources on the client's exit
+        stack, so cleanup() has to run no matter how async_main() exits.
+        """
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.cleanup = AsyncMock()
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(return_value=_report_payload(score=1, max_score=1))
+        mock_auditor.audit_data = MagicMock(transport_type=None)
+
+        scenarios = [
+            # (audit_modern_only result, connection failure, expects SystemExit)
+            (True, None, False),  # modern-only early return
+            (False, ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED), False),  # partial early return
+            (False, ConnectionFailure(reason=ConnectionErrorReason.UNREACHABLE), True),  # exit 2
+        ]
+        for modern, failure, exits in scenarios:
+            mock_client.cleanup.reset_mock()
+            mock_client.last_connection_error = failure
+            mock_auditor.audit_modern_only = AsyncMock(return_value=modern)
+            monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x.example/mcp"])
+            with (
+                patch("mcpscore.cli.MCPClient", return_value=mock_client),
+                patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            ):
+                if exits:
+                    with pytest.raises(SystemExit):
+                        await async_main()
+                else:
+                    await async_main()
+            mock_client.cleanup.assert_awaited_once()
 
     async def test_partial_audit_emits_json_report(
         self,

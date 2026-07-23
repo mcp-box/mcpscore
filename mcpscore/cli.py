@@ -235,56 +235,64 @@ async def async_main() -> None:
     client: MCPClient = MCPClient(headers=headers or None)
     auditor: MCPAuditor = MCPAuditor(headers=headers or None)
 
-    success, transport = await client.detect_and_connect(args.target)
-
-    if not success:
-        if args.target.startswith(("http://", "https://")):
-            logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
-            if await auditor.audit_modern_only(args.target):
-                logger.info(
-                    "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
-                )
-                log_audit_outcome(auditor)
-                if args.json:
-                    report = build_report(args.target, auditor.audit_data.transport_type, auditor)
-                    sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
-                return
-
-            failure = client.last_connection_error
-            if failure is not None and failure.reason in (
-                ConnectionErrorReason.UNAUTHORIZED,
-                ConnectionErrorReason.FORBIDDEN,
-            ):
-                status = failure.status_code or (401 if failure.reason is ConnectionErrorReason.UNAUTHORIZED else 403)
-                if headers:
-                    logger.info(
-                        "Server rejected the provided credentials — running a partial audit of the observable surface."
-                    )
-                    logger.info("(Check that the --token/--header credentials are valid for this server.)")
-                    partial_reason = (
-                        f"Server rejected the provided credentials (HTTP {status}); scored the unauthenticated "
-                        "surface only — check that the token or headers are valid for this server."
-                    )
-                else:
-                    logger.info("Server requires authentication — running a partial audit of the observable surface.")
-                    logger.info("(Pass a token with --token or --header to audit behind the gate.)")
-                    partial_reason = (
-                        f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
-                        "only — pass a token to audit behind the gate."
-                    )
-                await auditor.audit_partial(args.target, reason=partial_reason)
-                log_audit_outcome(auditor)
-                if args.json:
-                    report = build_report(args.target, auditor.audit_data.transport_type, auditor)
-                    sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
-                return
-        logger.error("Error connecting to the MCP server: %s", args.target)
-        sys.exit(2)
-
-    logger.info("Connected to the MCP server: %s", args.target)
-    logger.info("Transport: %s", transport)
-
+    # Everything below runs inside one try/finally: failed detection attempts
+    # can leave resources on the client's exit stack, so every path out —
+    # early returns, sys.exit(2), audit errors — must reach cleanup().
     try:
+        success, transport = await client.detect_and_connect(args.target)
+
+        if not success:
+            if args.target.startswith(("http://", "https://")):
+                logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
+                if await auditor.audit_modern_only(args.target):
+                    logger.info(
+                        "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
+                    )
+                    log_audit_outcome(auditor)
+                    if args.json:
+                        report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                    return
+
+                failure = client.last_connection_error
+                if failure is not None and failure.reason in (
+                    ConnectionErrorReason.UNAUTHORIZED,
+                    ConnectionErrorReason.FORBIDDEN,
+                ):
+                    status = failure.status_code or (
+                        401 if failure.reason is ConnectionErrorReason.UNAUTHORIZED else 403
+                    )
+                    if headers:
+                        logger.info(
+                            "Server rejected the provided credentials — "
+                            "running a partial audit of the observable surface."
+                        )
+                        logger.info("(Check that the --token/--header credentials are valid for this server.)")
+                        partial_reason = (
+                            f"Server rejected the provided credentials (HTTP {status}); scored the unauthenticated "
+                            "surface only — check that the token or headers are valid for this server."
+                        )
+                    else:
+                        logger.info(
+                            "Server requires authentication — running a partial audit of the observable surface."
+                        )
+                        logger.info("(Pass a token with --token or --header to audit behind the gate.)")
+                        partial_reason = (
+                            f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
+                            "only — pass a token to audit behind the gate."
+                        )
+                    await auditor.audit_partial(args.target, reason=partial_reason)
+                    log_audit_outcome(auditor)
+                    if args.json:
+                        report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                    return
+            logger.error("Error connecting to the MCP server: %s", args.target)
+            sys.exit(2)
+
+        logger.info("Connected to the MCP server: %s", args.target)
+        logger.info("Transport: %s", transport)
+
         logger.info("Starting the audit...")
         await auditor.audit(client)
         log_audit_outcome(auditor)

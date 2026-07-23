@@ -54,6 +54,12 @@ document they need is unreachable, avoiding double-counting one defect.
 - The report's `authenticated` flag is now set only when an Authorization
   credential was sent (`--token` or an explicit `Authorization` header) —
   previously any custom header marked the audit authenticated.
+- The auth-posture rules' `details["basis"]` now carries a per-rule,
+  section-level citation (e.g. `RFC 9728 §5.1`) instead of one broad string
+  shared across rules, matching the readiness rules' per-rule SEP citations.
+- The CLI now releases client resources on every exit path: the modern-only
+  and partial-audit early returns and the connection-failure exit previously
+  bypassed the cleanup that closes the client's exit stack.
 - Auth-posture messages no longer hard-code "401": the WWW-Authenticate and
   challenge-metadata rules report the observed HTTP status (401 or 403), and
   `auth_www_authenticate`'s display name is now "Auth - WWW-Authenticate
