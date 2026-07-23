@@ -171,6 +171,12 @@ def check_tag_absent(version: str) -> None:
     ok(f"tag v{version} is unused")
 
 
+REVIEW_BOT_CHECKS = frozenset({"copilot-pull-request-reviewer", "Cursor Bugbot"})
+"""Check runs registered by code-review bots. They are reviews, not CI gates —
+they re-enter in_progress on every push, so counting them would make a release
+racy against the bots' review latency."""
+
+
 def check_ci_green(sha: str) -> None:
     raw = run(
         "gh",
@@ -179,7 +185,7 @@ def check_ci_green(sha: str) -> None:
         "--jq",
         "[.check_runs[] | {name, status, conclusion, started_at, completed_at}]",
     )
-    runs = json.loads(raw)
+    runs = [r for r in json.loads(raw) if r["name"] not in REVIEW_BOT_CHECKS]
     if not runs:
         fail("no CI check runs found for HEAD — has CI finished?")
 

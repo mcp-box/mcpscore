@@ -209,6 +209,27 @@ class TestCheckCiGreen:
         with pytest.raises(SystemExit):
             release.check_ci_green("abc123")
 
+    def test_review_bots_are_not_ci_gates(self, monkeypatch: pytest.MonkeyPatch):
+        """An in-progress Copilot/Bugbot review must not block a release."""
+        copilot = {
+            "name": "copilot-pull-request-reviewer",
+            "status": "in_progress",
+            "conclusion": None,
+            "started_at": "2026-07-10T10:00:00Z",
+            "completed_at": None,
+        }
+        self._stub_checks(
+            monkeypatch,
+            [self._run("lint", "success", "2026-07-10T10:00:00Z"), copilot],
+        )
+        release.check_ci_green("abc123")  # must not raise
+
+    def test_only_review_bot_checks_counts_as_no_ci(self, monkeypatch: pytest.MonkeyPatch):
+        """With nothing but bot reviews on the commit, real CI has not run."""
+        self._stub_checks(monkeypatch, [self._run("Cursor Bugbot", "neutral", "2026-07-10T10:00:00Z")])
+        with pytest.raises(SystemExit):
+            release.check_ci_green("abc123")
+
 
 class TestCreateRelease:
     def test_passes_validated_target_and_cleans_up_notes_file(self, monkeypatch: pytest.MonkeyPatch):
