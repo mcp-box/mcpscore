@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 from mcpscore import MCPAuditor, MCPClient
 from mcpscore.enums import ConnectionErrorReason
+from mcpscore.mcp_auditor import has_authorization_credential
 
 if TYPE_CHECKING:
     from mcpscore import MCPTransportType
@@ -262,7 +263,11 @@ async def async_main() -> None:
                     status = failure.status_code or (
                         401 if failure.reason is ConnectionErrorReason.UNAUTHORIZED else 403
                     )
-                    if headers:
+                    # Key off the same predicate as the report's authenticated
+                    # flag: only an Authorization credential counts — a 401
+                    # with only tracing/custom headers is a missing credential,
+                    # not a rejected one.
+                    if has_authorization_credential(headers):
                         logger.info(
                             "Server rejected the provided credentials — "
                             "running a partial audit of the observable surface."

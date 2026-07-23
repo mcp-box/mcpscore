@@ -29,6 +29,16 @@ TLS_PROBE_TIMEOUT_S = 10
 """Timeout for probing the negotiated TLS version of an HTTPS server."""
 
 
+def has_authorization_credential(headers: dict[str, str] | None) -> bool:
+    """Whether the header set carries an Authorization credential.
+
+    The single predicate behind both the report's ``authenticated`` flag and
+    the CLI's rejected-credentials messaging — other custom headers (tracing,
+    API keys we cannot classify) never count as an auth credential.
+    """
+    return any(name.lower() == "authorization" for name in (headers or {}))
+
+
 class MCPAuditor:
     """Orchestrates the MCP server audit process.
 
@@ -532,7 +542,7 @@ class MCPAuditor:
             # an explicit Authorization --header). Other custom headers (e.g.
             # tracing) do not mark the audit authenticated. Only the flag is
             # reported — header values are never included.
-            "authenticated": any(name.lower() == "authorization" for name in (self.headers or {})),
+            "authenticated": has_authorization_credential(self.headers),
             # A partial audit ran without a server session (e.g. an auth-gated
             # server): only probe-derived rules scored; session-dependent rules
             # were skipped as insufficient-data. The score is NOT comparable to

@@ -1079,6 +1079,44 @@ class TestAuthCliFlow:
         assert "pass a token" not in reason
         assert "rejected the provided credentials" in caplog.text
 
+    async def test_non_auth_headers_get_missing_credential_guidance(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A tracing header is not a credential — a 401 means auth is missing, not rejected.
+
+        Keys off the same predicate as the report's authenticated flag, so the
+        log and the report never contradict each other.
+        """
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp", "--header", "X-Trace-Id: abc"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.UNAUTHORIZED)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.audit_partial = AsyncMock(return_value=True)
+        mock_auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(score=19, max_score=19, partial=True, partial_reason="requires auth")
+        )
+        mock_auditor.audit_data = MagicMock(transport_type=MCPTransportType.STREAMABLE_HTTP)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        assert "requires authentication" in reason
+        assert "pass a token" in reason
+        assert "rejected" not in reason
+        assert "rejected" not in caplog.text
+
     async def test_non_auth_failure_still_exits_2(
         self,
         monkeypatch: MonkeyPatch,
