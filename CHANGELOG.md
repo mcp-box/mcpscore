@@ -39,6 +39,18 @@ document they need is unreachable, avoiding double-counting one defect.
 
 ### Fixed
 
+- **Anonymous probes no longer carry any caller-supplied headers.** The
+  unauthenticated-behavior probe and the auth-metadata discovery fetches now
+  run on a separate HTTP client with none of the `--header` values (previously
+  only `Authorization` was stripped): a non-Authorization credential such as an
+  API key or cookie could defeat the unauthenticated observation, and RFC 8414
+  discovery can leave the server's origin for the authorization server's — no
+  caller credential belongs on those requests.
+- A malformed `--header` value (e.g. a missing colon) is no longer echoed in
+  the error message, which is logged — the value may be a mistyped secret. The
+  error now identifies the bad argument by position (`--header #2: …`).
+- The "custom header(s)" log line no longer says "for authentication" —
+  `--header` is also valid for non-auth headers.
 - Auth-posture messages no longer hard-code "401": the WWW-Authenticate and
   challenge-metadata rules report the observed HTTP status (401 or 403), and
   `auth_www_authenticate`'s display name is now "Auth - WWW-Authenticate

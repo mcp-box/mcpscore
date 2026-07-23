@@ -25,7 +25,10 @@ from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 from urllib.parse import urlsplit
 
 import httpx2
@@ -108,6 +111,15 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_AUTH_METADATA,
 )
 """Stable identifiers of all probes."""
+
+_ANONYMOUS_PROBE_IDS = frozenset({PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA})
+"""Probes that must see the server as an unauthenticated client does.
+
+These run on a client that carries none of the caller's headers: --header may
+hold non-Authorization credentials (API keys, cookies) that would defeat the
+unauthenticated observation, and auth-metadata discovery (RFC 8414) can leave
+the server's origin for the authorization server's.
+"""
 
 
 class ProbeOutcome(StrEnum):
@@ -251,7 +263,10 @@ async def _post(
 
     When ``anonymous``, remove any caller-supplied ``Authorization`` header so
     the probe observes the server's unauthenticated behavior even when a token
-    was provided via --token/--header.
+    was provided via --token/--header. When ``run_all_probes`` created the
+    clients itself, anonymous probes additionally run on a client that carries
+    no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop here also
+    covers caller-injected clients whose defaults it cannot control.
     """
     request = client.build_request("POST", url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
     if anonymous:
@@ -449,7 +464,11 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
     """GET a public well-known JSON document, stripping any caller Authorization.
 
     Returns (http_status, parsed_dict_or_None). Auth-discovery documents (RFC
-    9728, RFC 8414) are public; the caller's bearer must not be sent.
+    9728, RFC 8414) are public — and RFC 8414 discovery can leave the server's
+    origin for the authorization server's — so no caller credential may be
+    sent. When ``run_all_probes`` created the clients, these fetches already
+    run on a header-free client (``_ANONYMOUS_PROBE_IDS``); the pop here also
+    covers caller-injected clients.
     """
     request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
     request.headers.pop("Authorization", None)
@@ -664,11 +683,14 @@ async def run_all_probes(
     Args:
         url: The MCP endpoint URL (http:// or https://)
         client: Optional preconfigured httpx client (tests inject a
-            MockTransport-backed one); a short-lived client is created
-            otherwise
+            MockTransport-backed one); short-lived clients are created
+            otherwise. An injected client is used for every probe, including
+            the anonymous ones — the caller configures its headers.
         headers: Extra HTTP headers (e.g. an ``Authorization`` bearer) merged
-            into the short-lived client's defaults. Ignored when ``client`` is
-            supplied (the caller configures it). Sensitive — never logged.
+            into the short-lived authenticated client's defaults; probes in
+            ``_ANONYMOUS_PROBE_IDS`` run on a separate client that carries
+            none of them. Ignored when ``client`` is supplied. Sensitive —
+            never logged.
 
     Returns:
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
@@ -682,11 +704,14 @@ async def run_all_probes(
             logger.info("Probe %s failed against %s: %s", probe_id, url, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
 
-    async def run_with(http_client: httpx2.AsyncClient) -> dict[str, ProbeResult]:
-        results = await asyncio.gather(*(run_one(probe_id, http_client) for probe_id in PROBE_IDS))
+    async def run_with(select: Callable[[str], httpx2.AsyncClient]) -> dict[str, ProbeResult]:
+        results = await asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in PROBE_IDS))
         return {result.probe_id: result for result in results}
 
     if client is not None:
-        return await run_with(client)
-    async with httpx2.AsyncClient(follow_redirects=True, headers=headers) as own_client:
-        return await run_with(own_client)
+        return await run_with(lambda _probe_id: client)
+    async with (
+        httpx2.AsyncClient(follow_redirects=True, headers=headers) as own_client,
+        httpx2.AsyncClient(follow_redirects=True) as anon_client,
+    ):
+        return await run_with(lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client)

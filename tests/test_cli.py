@@ -865,6 +865,17 @@ class TestCollectHeaders:
         with pytest.raises(ValueError, match="invalid header"):
             parse_header("nocolon")
 
+    def test_header_error_never_echoes_the_value(self) -> None:
+        from mcpscore.cli import build_parser, collect_headers
+
+        # A missing colon can mean the whole argument is a mistyped secret
+        # (e.g. "Authorization Bearer <token>"); the error text is logged, so
+        # it must identify the bad argument by position, never by content.
+        args = build_parser().parse_args(["https://x", "--header", "X-A: 1", "--header", "Authorization supersecret"])
+        with pytest.raises(ValueError, match="--header #2") as exc:
+            collect_headers(args)
+        assert "supersecret" not in str(exc.value)
+
     def test_collect_headers_empty(self) -> None:
         from mcpscore.cli import build_parser, collect_headers
 

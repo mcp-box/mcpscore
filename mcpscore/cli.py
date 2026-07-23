@@ -91,12 +91,14 @@ def parse_header(raw: str) -> tuple[str, str]:
         The (name, value) tuple, both stripped.
 
     Raises:
-        ValueError: If there is no colon separating name and value.
+        ValueError: If there is no colon separating name and value. The
+            malformed input is deliberately not echoed — header values may
+            carry secrets and the error text is logged.
 
     """
     name, sep, value = raw.partition(":")
     if not sep or not name.strip():
-        raise ValueError(f"invalid header (expected 'Name: Value'): {raw!r}")
+        raise ValueError("invalid header (expected 'Name: Value'; the value is not shown — headers may carry secrets)")
     return name.strip(), value.strip()
 
 
@@ -118,8 +120,11 @@ def collect_headers(args: argparse.Namespace) -> dict[str, str]:
 
     """
     headers: dict[str, str] = {}
-    for raw in args.header or []:
-        name, value = parse_header(raw)
+    for position, raw in enumerate(args.header or [], start=1):
+        try:
+            name, value = parse_header(raw)
+        except ValueError as e:
+            raise ValueError(f"--header #{position}: {e}") from None
         headers[name] = value
     token = args.token or os.environ.get("MCPSCORE_TOKEN")
     if token and not any(name.lower() == "authorization" for name in headers):
@@ -225,7 +230,7 @@ async def async_main() -> None:
         sys.exit(1)
 
     if headers:
-        logger.info("Using %d custom header(s) for authentication.", len(headers))
+        logger.info("Using %d custom header(s).", len(headers))
 
     client: MCPClient = MCPClient(headers=headers or None)
     auditor: MCPAuditor = MCPAuditor(headers=headers or None)

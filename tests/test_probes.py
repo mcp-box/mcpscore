@@ -514,6 +514,45 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
 class TestAnonymousProbes:
     """The unauthenticated and metadata probes must not send a caller's bearer."""
 
+    async def test_own_client_path_keeps_all_caller_headers_off_anonymous_probes(self, monkeypatch):
+        """Anonymous probes run on a client with no caller headers at all.
+
+        --header can carry non-Authorization credentials (API keys, cookies);
+        they must not reach the unauthenticated probe or the auth-discovery
+        fetches — the latter can leave the server's origin entirely.
+        """
+        requests_log: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            requests_log.append(request)
+            if request.url.path.startswith("/.well-known/"):
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://as.example"]})
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}, json={})
+
+        transport = httpx2.MockTransport(handler)
+        real_async_client = httpx2.AsyncClient
+
+        def patched_client(**kwargs):
+            kwargs.setdefault("transport", transport)
+            return real_async_client(**kwargs)
+
+        monkeypatch.setattr(httpx2, "AsyncClient", patched_client)
+
+        await run_all_probes(URL, headers={"X-Api-Key": "sekret", "Authorization": "Bearer tok"})
+
+        wellknown = [r for r in requests_log if r.url.path.startswith("/.well-known/")]
+        assert wellknown, "auth-metadata discovery should have run"
+        for request in wellknown:
+            assert "X-Api-Key" not in request.headers
+            assert "Authorization" not in request.headers
+        # The unauthenticated probe's request reached the server with neither header.
+        assert any(
+            r.url.path == "/mcp" and "X-Api-Key" not in r.headers and "Authorization" not in r.headers
+            for r in requests_log
+        )
+        # Authenticated probes still carry the caller's headers.
+        assert any(r.headers.get("X-Api-Key") == "sekret" for r in requests_log)
+
     async def test_unauthenticated_probe_strips_authorization(self):
         from mcpscore.probes import _probe_unauthenticated
 

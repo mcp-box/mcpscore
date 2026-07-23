@@ -19,17 +19,18 @@ import release
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the script at a temporary repo root with a valid CHANGELOG and npm wrapper."""
-    (tmp_path / "pyproject.toml").write_text('[project]\nname = "mcpscore"\nversion = "1.2.3"\n')
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "mcpscore"\nversion = "1.2.3"\n', encoding="utf-8")
     (tmp_path / "CHANGELOG.md").write_text(
         "# Changelog\n\n"
         "## [1.2.3] - 2026-07-10\n\nThe notes body.\n\n"
         "## [1.2.2] - 2026-07-01\n\nOlder notes.\n\n"
         "[1.2.3]: https://github.com/mcp-box/mcpscore/compare/v1.2.2...v1.2.3\n"
-        "[1.2.2]: https://github.com/mcp-box/mcpscore/releases/tag/v1.2.2\n"
+        "[1.2.2]: https://github.com/mcp-box/mcpscore/releases/tag/v1.2.2\n",
+        encoding="utf-8",
     )
     (tmp_path / "npm").mkdir()
     (tmp_path / "npm" / "package.json").write_text(
-        '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.3"}}'
+        '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.3"}}', encoding="utf-8"
     )
     monkeypatch.setattr(release, "ROOT", tmp_path)
     return tmp_path
@@ -50,7 +51,10 @@ class TestCheckChangelog:
 
     def test_fails_without_the_compare_link(self, repo: Path):
         changelog = repo / "CHANGELOG.md"
-        changelog.write_text(changelog.read_text().replace("[1.2.3]: https://", "[nope]: https://"))
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace("[1.2.3]: https://", "[nope]: https://"),
+            encoding="utf-8",
+        )
         with pytest.raises(SystemExit):
             release.check_changelog("1.2.3")
 
@@ -58,7 +62,7 @@ class TestCheckChangelog:
         """A half-resolved merge must not pass preflight even when section and link greps succeed."""
         changelog = repo / "CHANGELOG.md"
         conflict = "<<<<<<< HEAD\n[a]: https://x/compare/a...b\n=======\n[b]: https://x\n>>>>>>> origin/main\n"
-        changelog.write_text(changelog.read_text() + conflict)
+        changelog.write_text(changelog.read_text(encoding="utf-8") + conflict, encoding="utf-8")
         with pytest.raises(SystemExit):
             release.check_changelog("1.2.3")
 
@@ -237,14 +241,16 @@ class TestCheckNpmVersionSync:
 
     def test_fails_on_wrapper_version_drift(self, repo: Path):
         (repo / "npm" / "package.json").write_text(
-            '{"name": "@mcp-box/mcpscore", "version": "1.2.2", "mcpscore": {"pythonVersion": "1.2.3"}}'
+            '{"name": "@mcp-box/mcpscore", "version": "1.2.2", "mcpscore": {"pythonVersion": "1.2.3"}}',
+            encoding="utf-8",
         )
         with pytest.raises(SystemExit):
             release.check_npm_version_sync("1.2.3")
 
     def test_fails_on_python_pin_drift(self, repo: Path):
         (repo / "npm" / "package.json").write_text(
-            '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.2"}}'
+            '{"name": "@mcp-box/mcpscore", "version": "1.2.3", "mcpscore": {"pythonVersion": "1.2.2"}}',
+            encoding="utf-8",
         )
         with pytest.raises(SystemExit):
             release.check_npm_version_sync("1.2.3")
@@ -255,7 +261,7 @@ class TestCheckNpmVersionSync:
             release.check_npm_version_sync("1.2.3")
 
     def test_fails_on_invalid_json(self, repo: Path):
-        (repo / "npm" / "package.json").write_text("{ not valid json")
+        (repo / "npm" / "package.json").write_text("{ not valid json", encoding="utf-8")
         with pytest.raises(SystemExit):
             release.check_npm_version_sync("1.2.3")
 
