@@ -73,7 +73,10 @@ Many production MCP servers require OAuth 2.x. mcpscore handles them two ways:
   report is marked `partial` and its score is not comparable to a full audit's.
 - **With a token**, mcpscore audits behind the gate like any client. Pass
   `--token <TOKEN>` (sent as `Authorization: Bearer …`) or an arbitrary
-  `--header 'Name: Value'` (repeatable, for API-key or custom-auth servers).
+  `--header 'Name: Value'` (repeatable, for API-key or custom-auth servers),
+  or `--oauth` to let mcpscore run the browser OAuth flow itself
+  (authorization code + PKCE; add `--client-id` for authorization servers
+  without dynamic client registration).
   For CI, set `MCPSCORE_TOKEN` in the environment to keep tokens out of shell
   history. Token and header values are never logged or written to the report —
   only an `authenticated` flag is recorded (set when an Authorization

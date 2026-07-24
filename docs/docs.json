@@ -27,7 +27,8 @@
         "group": "Scoring",
         "pages": [
           "methodology",
-          "rules"
+          "rules",
+          "stability"
         ]
       }
     ]
