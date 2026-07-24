@@ -1139,3 +1139,80 @@ class TestAuthCliFlow:
 
         assert exc.value.code == 2
         mock_auditor.audit_partial.assert_not_called()
+
+
+class TestOAuthCliFlow:
+    """--oauth flag wiring: conflicts, and the token landing in headers."""
+
+    async def test_client_id_without_oauth_exits_1(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--client-id", "abc"])
+        with pytest.raises(SystemExit) as exc:
+            await async_main()
+        assert exc.value.code == 1
+
+    async def test_oauth_conflicts_with_token(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth", "--token", "t"])
+        with pytest.raises(SystemExit) as exc:
+            await async_main()
+        assert exc.value.code == 1
+
+    async def test_oauth_requires_http_target(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/local/server.py", "--oauth"])
+        with pytest.raises(SystemExit) as exc:
+            await async_main()
+        assert exc.value.code == 1
+
+    async def test_oauth_token_feeds_authorization_header(
+        self, monkeypatch: MonkeyPatch, mock_client: MagicMock, mock_auditor: MagicMock
+    ) -> None:
+        import mcpscore.oauth
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth"])
+
+        async def fake_flow(server_url: str, *, client_id=None, **kwargs) -> str:
+            assert server_url == "https://x/mcp"
+            assert client_id is None
+            return "flow-token"
+
+        monkeypatch.setattr(mcpscore.oauth, "obtain_token_interactively", fake_flow)
+        captured = {}
+
+        def capture_client(**kwargs):
+            captured["headers"] = kwargs.get("headers")
+            return mock_client
+
+        mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STREAMABLE_HTTP))
+        with (
+            patch("mcpscore.cli.MCPClient", side_effect=capture_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        assert captured["headers"] == {"Authorization": "Bearer flow-token"}
+
+    async def test_oauth_flow_failure_exits_1(
+        self, monkeypatch: MonkeyPatch, mock_client: MagicMock, mock_auditor: MagicMock, caplog: LogCaptureFixture
+    ) -> None:
+        import mcpscore.oauth
+        from mcpscore.oauth import OAuthFlowError
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth"])
+
+        async def failing_flow(server_url: str, **kwargs) -> str:
+            raise OAuthFlowError("timed out after 300s waiting for the browser authorization")
+
+        monkeypatch.setattr(mcpscore.oauth, "obtain_token_interactively", failing_flow)
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.ERROR),
+            pytest.raises(SystemExit) as exc,
+        ):
+            await async_main()
+
+        assert exc.value.code == 1
+        assert "timed out" in caplog.text

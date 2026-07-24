@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--oauth`: interactive browser OAuth flow.** mcpscore discovers the
+  server's authorization server (RFC 9728 → RFC 8414), registers a client
+  dynamically (RFC 7591), opens the browser for the authorization-code +
+  PKCE grant, catches the redirect on a loopback listener, and audits with
+  the obtained token — which is held in memory only, never written to disk,
+  never logged. For authorization servers without dynamic client
+  registration (e.g. GitHub's), `--oauth --client-id <id>` uses a
+  pre-registered client instead; the failure message suggests this when
+  registration is unavailable.
+
+- **Stability contract published** (`docs/stability.mdx`): what is stable
+  from 1.1.0 on (`rule_id` never renamed/reused, report schema versioned via
+  `schema_version`, CLI flags and exit codes, credentials never in
+  logs/reports) and what evolves by design (the score is ruleset-dependent;
+  messages/details/severities may improve in any release).
+
 - **Readiness promotion for modern-lifecycle servers.** A server that
   negotiates the 2026-07-28 lifecycle (era `modern` or `dual-era`) now has
   its readiness points counted in the main score; the readiness block stays

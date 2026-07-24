@@ -1,0 +1,92 @@
+---
+title: "Stability contract"
+description: "What mcpscore promises to keep stable across releases — and what deliberately evolves."
+---
+
+From the first stable release (1.1.0), mcpscore commits to a stability
+contract so CI integrations and report consumers can depend on it. This page
+is that contract.
+
+## Stable — breaking changes only with a major version
+
+### Rule identifiers
+
+Every check has a `rule_id` (e.g. `tools_description_present_in_all`). A
+`rule_id` is **never renamed and never reused** for a different check. Rules
+may be *added* in any release; a rule may be *retired* (stops running) but
+its identifier is never given a new meaning.
+
+Integrations should key on `rule_id` — not on rule names, messages, or
+positions, which may be reworded or reordered in any release.
+
+### Report schema
+
+The `--json` report carries `schema_version` (currently `1`). Within a
+schema version:
+
+- Existing fields keep their names, types, and meanings.
+- New fields **may be added** in any release — consumers must ignore
+  unknown fields.
+- Field removals or type changes bump `schema_version`.
+
+The report's top-level shape: `schema_version`, `mcpscore_version`,
+`generated_at`, `target`, `transport`, `score`, `max_score`,
+`authenticated`, `partial`, `partial_reason`, `summary`, `results[]`,
+`skipped_rules[]`, `spec`, `readiness`.
+
+### CLI interface
+
+- The invocation shape — `mcpscore <target>` with `--json`, `--header`,
+  `--token` (and the `MCPSCORE_TOKEN` environment variable) — is stable.
+  New flags may be added; existing flags keep their meaning.
+- Exit codes are a contract: **0** audit completed (regardless of score),
+  **1** usage error, **2** connection failure with no fallback available.
+- `--json` writes exactly one JSON document to stdout; all logs go to
+  stderr. Pipelines may rely on stdout being clean JSON.
+
+### Credential handling
+
+Header and token values are never logged and never written to the report —
+only the boolean `authenticated` flag is recorded. This is a permanent
+commitment, not a default.
+
+## Evolving by design — expect movement between releases
+
+### The score
+
+**The score is ruleset-dependent and the ruleset grows.** `score` and
+`max_score` are severity-weighted sums over the rules that ran: adding
+rules (most releases) changes both, so **a score is comparable only
+within the same mcpscore version against the same server**. Track
+`mcpscore_version` alongside any score you store. We would rather grow
+the checks than freeze the number early; a calibrated scoring frame is
+planned to revisit this once the ruleset stabilizes.
+
+Two flags qualify a score further:
+
+- `partial: true` — only the observable surface of an auth-gated server
+  was scored; not comparable to a full audit.
+- `readiness.counted_in_main: true` — a modern-lifecycle server's
+  readiness points are included in the main score (see
+  [methodology](/methodology)); a CI `min-score` threshold means something
+  slightly different on either side of this flag.
+
+### Messages, details, and rule metadata
+
+Human-readable `message` strings, `details` contents (including the
+`basis` citations), severities, and category groupings may be improved in
+any release. They are for humans and for context — not for keying logic.
+
+### Readiness rules
+
+Readiness rules target the *next* spec revision, so the readiness rule set
+turns over at each revision: rules for a now-current revision migrate into
+the main axis and new readiness rules appear for the next draft. Their
+`rule_id`s still follow the never-reused rule.
+
+## Versioning
+
+mcpscore follows [SemVer](https://semver.org/): breaking changes to
+anything in the "Stable" section require a major version; rule additions
+and score movement are minor-version territory; pre-releases (`bN`) may
+change anything and exact-pin their dependencies.

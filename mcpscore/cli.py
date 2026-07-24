@@ -79,6 +79,25 @@ def build_parser() -> argparse.ArgumentParser:
             "Defaults to the MCPSCORE_TOKEN environment variable (keeps tokens out of shell history)."
         ),
     )
+    parser.add_argument(
+        "--oauth",
+        action="store_true",
+        help=(
+            "Obtain a token interactively: opens your browser for the server's OAuth flow "
+            "(authorization code + PKCE). The token is held in memory only — never written "
+            "to disk, never logged. Requires the authorization server to support dynamic "
+            "client registration unless --client-id is given."
+        ),
+    )
+    parser.add_argument(
+        "--client-id",
+        metavar="ID",
+        help=(
+            "Pre-registered OAuth client ID for --oauth, for authorization servers without "
+            "dynamic client registration (e.g. GitHub's). The registered app must allow a "
+            "loopback redirect URI (http://127.0.0.1:<port>/callback)."
+        ),
+    )
     return parser
 
 
@@ -205,6 +224,34 @@ def build_report(target: str, transport: MCPTransportType | None, auditor: MCPAu
     }
 
 
+async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> None:
+    """Run the --oauth browser flow and place the token into the header dict.
+
+    Exits with code 1 on flag conflicts or a failed flow; a no-op when
+    --oauth was not requested.
+    """
+    if args.client_id and not args.oauth:
+        logger.error("Usage error: --client-id only makes sense together with --oauth")
+        sys.exit(1)
+    if not args.oauth:
+        return
+    if any(name.lower() == "authorization" for name in headers):
+        logger.error("Usage error: --oauth conflicts with --token / an Authorization --header — pick one")
+        sys.exit(1)
+    if not args.target.startswith(("http://", "https://")):
+        logger.error("Usage error: --oauth requires an HTTP(S) server URL")
+        sys.exit(1)
+    from mcpscore.oauth import OAuthFlowError, obtain_token_interactively
+
+    try:
+        access_token = await obtain_token_interactively(args.target, client_id=args.client_id)
+    except OAuthFlowError as e:
+        logger.error("OAuth: %s", e)  # noqa: TRY400 — user-facing outcome, not a traceback
+        sys.exit(1)
+    headers["Authorization"] = f"Bearer {access_token}"
+    logger.info("OAuth flow completed — token held in memory only for this audit.")
+
+
 async def async_main() -> None:
     """Execute the main entry point for the MCPScore CLI application.
 
@@ -233,6 +280,8 @@ async def async_main() -> None:
     except ValueError as e:
         logger.error("Usage error: %s", e)  # noqa: TRY400 — usage error, not an exception to trace
         sys.exit(1)
+
+    await _apply_oauth(args, headers)
 
     if headers:
         logger.info("Using %d custom header(s).", len(headers))
