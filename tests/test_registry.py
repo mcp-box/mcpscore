@@ -34,12 +34,13 @@ def test_every_rule_cites_its_basis():
     auth rules). Readiness rules cite via their ``details["sep"]`` keys, which
     their own tests assert.
     """
+    from mcpscore.rules.auth import AuthPostureBaseRule
     from mcpscore.rules.base import READINESS_GROUP
 
     for rule in create_all_rules():
         if rule.group_name == READINESS_GROUP:
             continue  # cite via details["sep"], asserted in test_readiness_rules
-        if rule.group_name == "security" and rule.rule_id.startswith("auth_"):
+        if isinstance(rule, AuthPostureBaseRule):
             continue  # cite inline in details["basis"], asserted in test_auth_rules
         # Substantive citation required; the format is deliberately not
         # constrained to a source vocabulary (MCP/RFC/SEP/best-practice all
