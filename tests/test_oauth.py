@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx2
 import pytest
 
-from mcpscore.oauth import FLOW_TIMEOUT_S, OAuthFlowError, obtain_token_interactively
+from mcpscore.oauth import FLOW_TIMEOUT_S, OAuthFlowError, _LoopbackCallbackServer, obtain_token_interactively
 
 SERVER_URL = "https://server.example/mcp"
 AS_ISSUER = "https://auth.example"
@@ -83,7 +83,7 @@ def _fake_user(loop_actions: list[asyncio.Task]) -> object:
             async with httpx2.AsyncClient() as browser:
                 await browser.get(f"{redirect_uri}?code=fake-auth-code&state={state}")
 
-        loop_actions.append(asyncio.get_event_loop().create_task(complete()))
+        loop_actions.append(asyncio.create_task(complete()))
 
     return open_browser
 
@@ -147,7 +147,7 @@ async def test_authorization_refusal_raises_flow_failed():
             async with httpx2.AsyncClient() as browser:
                 await browser.get(f"{query['redirect_uri']}?error=access_denied&state={query.get('state', '')}")
 
-        actions.append(asyncio.get_event_loop().create_task(complete()))
+        actions.append(asyncio.create_task(complete()))
 
     with pytest.raises(OAuthFlowError, match="access_denied"):
         await obtain_token_interactively(
@@ -208,7 +208,7 @@ async def test_callback_without_code_raises():
                 # No code, no error — a broken AS redirect.
                 await browser.get(f"{query['redirect_uri']}?state={query.get('state', '')}")
 
-        actions.append(asyncio.get_event_loop().create_task(complete()))
+        actions.append(asyncio.create_task(complete()))
 
     with pytest.raises(OAuthFlowError, match="carried no code"):
         await obtain_token_interactively(
@@ -240,9 +240,10 @@ async def test_empty_token_response_raises_with_hint():
 
 
 async def test_loopback_unavailable_raises(monkeypatch: pytest.MonkeyPatch):
-    import mcpscore.oauth
+    async def failing_start(self) -> None:
+        raise OSError(98, "Address already in use")
 
-    monkeypatch.setattr(mcpscore.oauth, "_loopback_port_available", lambda: False)
+    monkeypatch.setattr(_LoopbackCallbackServer, "start", failing_start)
     with pytest.raises(OAuthFlowError, match="loopback port"):
         await obtain_token_interactively(SERVER_URL)
 
@@ -261,7 +262,7 @@ async def test_non_callback_requests_are_ignored():
                 await browser.get(f"{base}/favicon.ico")  # ignored by the listener
                 await browser.get(f"{redirect_uri}?code=fake-auth-code&state={query.get('state', '')}")
 
-        actions.append(asyncio.get_event_loop().create_task(complete()))
+        actions.append(asyncio.create_task(complete()))
 
     token = await obtain_token_interactively(
         SERVER_URL,
@@ -270,3 +271,43 @@ async def test_non_callback_requests_are_ignored():
     )
     assert token == ACCESS_TOKEN
     await asyncio.gather(*actions)
+
+
+async def test_second_callback_request_is_ignored():
+    """The listener is one-shot: a duplicate redirect must not disturb the result."""
+    listener = _LoopbackCallbackServer()
+    await listener.start()
+    try:
+        async with httpx2.AsyncClient() as browser:
+            await browser.get(f"{listener.redirect_uri}?code=first-code&state=s1")
+            # The user double-clicks / the browser retries: same redirect again.
+            await browser.get(f"{listener.redirect_uri}?code=stale-second-code&state=s2")
+        params = await listener.wait_for_callback(deadline_s=2)
+        assert params["code"] == "first-code"
+    finally:
+        await listener.close()
+
+
+async def test_token_exchange_failure_has_no_client_id_hint():
+    """A failure past registration (e.g. broken token endpoint) must not suggest --client-id."""
+    fake = FakeAuthServer()
+    original = fake.handler
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url).startswith(f"{AS_ISSUER}/token"):
+            return httpx2.Response(500, text="token endpoint exploded")
+        return original(request)
+
+    actions: list[asyncio.Task] = []
+    with pytest.raises(OAuthFlowError) as exc:
+        await obtain_token_interactively(
+            SERVER_URL,
+            open_browser=_fake_user(actions),
+            transport=httpx2.MockTransport(handler),
+        )
+    assert "--client-id" not in str(exc.value)
+    await asyncio.gather(*actions)
+
+
+async def test_close_before_start_is_safe():
+    await _LoopbackCallbackServer().close()  # must not raise

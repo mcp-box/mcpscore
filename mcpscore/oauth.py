@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
@@ -83,7 +82,7 @@ class _LoopbackCallbackServer:
     def __init__(self) -> None:
         super().__init__()
         self._server: asyncio.Server | None = None
-        self._result: asyncio.Future[dict[str, str]] = asyncio.get_event_loop().create_future()
+        self._result: asyncio.Future[dict[str, str]] = asyncio.get_running_loop().create_future()
         self.port: int = 0
 
     @property
@@ -118,15 +117,6 @@ class _LoopbackCallbackServer:
             await self._server.wait_closed()
 
 
-def _loopback_port_available() -> bool:  # pragma: no cover - trivial platform guard
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", 0))
-    except OSError:
-        return False
-    return True
-
-
 async def obtain_token_interactively(
     server_url: str,
     *,
@@ -156,11 +146,11 @@ async def obtain_token_interactively(
             and, for registration failures, suggests ``--client-id``.
 
     """
-    if not _loopback_port_available():
-        raise OAuthFlowError("cannot bind a loopback port for the OAuth callback")
-
     callback = _LoopbackCallbackServer()
-    await callback.start()
+    try:
+        await callback.start()
+    except OSError as exc:
+        raise OAuthFlowError(f"cannot bind a loopback port for the OAuth callback: {exc}") from exc
     try:
         storage = _MemoryTokenStorage()
         if client_id is not None:
