@@ -5,9 +5,12 @@
   diagnostics may differ; the commands are authoritative.
 - **`rule_id` is a stable public contract**: never rename or reuse one. New rules must
   cite the MCP spec section (or SEP) they enforce in their result `details`.
-- Readiness rules (`group_name = "readiness"`) score on a separate axis and must never
-  affect the main score. Rules that cannot judge anything return a skip reason —
-  they never fail a server for missing observations.
+- Readiness rules (`group_name = "readiness"`) score on the readiness axis; since the
+  1.1.0 promotion they ALSO count in the main score, but only for modern-lifecycle
+  servers (era modern/dual-era) in full audits — never for legacy servers, never in
+  partial audits (`readiness_promoted` in mcp_auditor.py is the single switch).
+  Rules that cannot judge anything return a skip reason — they never fail a server
+  for missing observations.
 - **Probes must never invoke `tools/call`** against a target server — audits must be
   free of tool side effects. Probes never raise; network failures are
   `ProbeOutcome.ERROR` data.

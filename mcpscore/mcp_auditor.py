@@ -139,6 +139,7 @@ class MCPAuditor:
         self.readiness_max = 0
         self.readiness_results = []
         self.era = None
+        self.readiness_promoted = False
 
     async def audit_modern_only(self, url: str) -> bool:
         """Audit a modern-only HTTP server via probes, without a legacy session.
@@ -315,14 +316,25 @@ class MCPAuditor:
         A separator line is logged before the first readiness rule so the two
         sections are visually distinct in the streamed output.
         """
+        # Readiness promotion (the documented migration in methodology.mdx):
+        # a server that negotiates the modern lifecycle gets its readiness
+        # rules counted in the MAIN score. Legacy-only servers keep readiness
+        # informative — guidance, not punishment. Partial audits are never
+        # promoted: their score is already not comparable to a full audit's,
+        # and folding a second axis in would make it less interpretable.
+        self.readiness_promoted = self.era in (Era.MODERN, Era.DUAL) and not self.audit_data.partial
+
         readiness_header_emitted = False
         for rule in sorted(self.rules, key=lambda r: r.sort_order):
             if rule.group_name == READINESS_GROUP and not readiness_header_emitted:
                 readiness_header_emitted = True
                 logger.info("")
                 logger.info(
-                    "🔭 Readiness checks for MCP %s (informative — not part of the main score):",
+                    "🔭 Readiness checks for MCP %s (%s):",
                     (DRAFT or LATEST).version,
+                    "counted in the main score — modern-lifecycle server"
+                    if self.readiness_promoted
+                    else "informative — not part of the main score",
                 )
 
             skip_reason: str | None = None
@@ -356,6 +368,13 @@ class MCPAuditor:
                 if res.passed:
                     self.readiness_score += res.severity.value
                 self.readiness_results.append(res)
+                if self.readiness_promoted:
+                    # Same points also count toward the main score; the
+                    # readiness sub-report stays populated as the transparent
+                    # breakdown of this share of the score.
+                    self.max_score += res.severity.value
+                    if res.passed:
+                        self.score += res.severity.value
             else:
                 self.max_score += res.severity.value
                 if res.passed:
@@ -564,6 +583,10 @@ class MCPAuditor:
             "readiness": {
                 "score": self.readiness_score,
                 "max_score": self.readiness_max,
+                # True when this server negotiates the modern lifecycle and
+                # these points are included in the top-level score/max_score
+                # (never true for partial audits).
+                "counted_in_main": self.readiness_promoted,
                 "results": [res.to_dict() for res in self.readiness_results],
                 "skipped": sum(1 for s in self.skipped_rules if s.group_name == READINESS_GROUP),
             },

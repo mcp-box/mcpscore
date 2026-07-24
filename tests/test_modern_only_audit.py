@@ -356,3 +356,44 @@ async def test_audit_partial_over_http_records_unverified_tls(stub_probes):
     assert await auditor.audit_partial("http://server.example/mcp", reason="auth") is True
     assert auditor.audit_data.tls_verified is False
     assert auditor.audit_data.tls_version is None
+
+
+async def test_modern_server_readiness_counts_in_main_score(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    """A modern-lifecycle server's readiness points are promoted into the main score."""
+    stub_probes(_modern_probe_results())
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only("https://modern.example/mcp") is True
+
+    report = auditor.get_audit_report()
+    assert auditor.era is Era.MODERN
+    assert report["readiness"]["counted_in_main"] is True
+    assert report["readiness"]["max_score"] > 0
+    # The main axis includes exactly the readiness points on top of its own.
+    main_only_max = report["max_score"] - report["readiness"]["max_score"]
+    assert main_only_max > 0  # main-axis rules still scored on their own
+    main_only_score = report["score"] - report["readiness"]["score"]
+    assert main_only_score >= 0
+
+
+async def test_partial_audit_never_promotes_readiness(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    """Even a modern-era server keeps readiness informative in a partial audit.
+
+    A partial score is already not comparable to a full audit's; folding the
+    readiness axis in would make it less interpretable.
+    """
+    stub_probes(_modern_probe_results())
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_partial("https://gated-modern.example/mcp", reason="auth") is True
+
+    report = auditor.get_audit_report()
+    assert auditor.era is Era.MODERN
+    assert report["partial"] is True
+    assert report["readiness"]["counted_in_main"] is False
+    # Main score excludes the readiness axis entirely.
+    readiness_ids = {r["rule_id"] for r in report["readiness"]["results"]}
+    main_ids = {r["rule_id"] for r in report["results"]}
+    assert not (readiness_ids & main_ids)

@@ -111,9 +111,14 @@ Two things worth knowing about how these run:
   modern support, because a legacy-only server keeping sessions is correct behavior,
   not leakage. A dual-era server (serving both lifecycles) is spec-legal and scores
   normally — what's flagged is legacy artifacts inside *modern* interactions.
-- When the 2026-07-28 revision goes final and adoption normalizes, these rules migrate
-  into the main score for servers that negotiate it — **their `rule_id`s never
-  change**, so CI integrations and report consumers are unaffected.
+- **Promotion (since 1.1.0):** a server that negotiates the modern lifecycle
+  (era `modern` or `dual-era`) has its readiness points **counted in the main
+  score** — the report's `readiness.counted_in_main` flag says which mode a
+  given audit used, and the readiness block stays populated as the transparent
+  breakdown of that share. Legacy-only servers keep readiness informative
+  (guidance, not punishment), and **partial audits are never promoted** — a
+  partial score is already not comparable to a full audit's. The `rule_id`s
+  never change, so CI integrations and report consumers are unaffected.
 
 <Note>
 **Draft-spec citations** — the 2026-07-28 revision is final-pending (release candidate

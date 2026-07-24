@@ -165,10 +165,13 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
     )
     if readiness["max_score"] > 0:
         logger.info(
-            "Readiness for MCP %s: %s/%s (informative — not part of the main score)",
+            "Readiness for MCP %s: %s/%s (%s)",
             spec["readiness_target"],
             readiness["score"],
             readiness["max_score"],
+            "counted in the main score — modern-lifecycle server"
+            if readiness.get("counted_in_main")
+            else "informative — not part of the main score",
         )
     else:
         logger.info(
