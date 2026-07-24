@@ -345,3 +345,43 @@ async def test_fixed_callback_port_is_used():
     assert token == ACCESS_TOKEN
     assert seen_redirects == [f"http://127.0.0.1:{port}/callback"]
     await asyncio.gather(*actions)
+
+
+async def test_flow_request_is_valid_json_rpc():
+    """The flow-driving request must be valid JSON-RPC so strict servers still 401."""
+    seen_bodies: list[dict] = []
+    fake = FakeAuthServer()
+    original = fake.handler
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url).startswith(SERVER_URL) and request.content:
+            seen_bodies.append(json.loads(request.content))
+        return original(request)
+
+    actions: list[asyncio.Task] = []
+    await obtain_token_interactively(
+        SERVER_URL,
+        open_browser=_fake_user(actions),
+        transport=httpx2.MockTransport(handler),
+    )
+    assert seen_bodies, "the flow must have posted to the server"
+    assert seen_bodies[0].get("jsonrpc") == "2.0"
+    assert "method" in seen_bodies[0]
+    await asyncio.gather(*actions)
+
+
+async def test_unknown_exception_text_is_not_echoed():
+    """Arbitrary exception text may carry response bodies — only the type is safe to log."""
+
+    class ExplodingTransport(httpx2.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+            raise RuntimeError("body dump with secret-sounding-content-xyz")
+
+    with pytest.raises(OAuthFlowError) as exc:
+        await obtain_token_interactively(
+            SERVER_URL,
+            open_browser=lambda _url: None,
+            transport=ExplodingTransport(),
+        )
+    assert "secret-sounding-content-xyz" not in str(exc.value)
+    assert "RuntimeError" in str(exc.value)

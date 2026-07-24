@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 import webbrowser
 
 import httpx2
-from mcp.client.auth import OAuthClientProvider, OAuthRegistrationError
+from mcp.client.auth import OAuthClientProvider, OAuthRegistrationError, OAuthTokenError
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from pydantic import AnyUrl
 
@@ -210,14 +210,27 @@ async def obtain_token_interactively(
             async with httpx2.AsyncClient(
                 auth=provider, follow_redirects=True, timeout=30.0, transport=transport
             ) as client:
-                await client.post(server_url, json={})
+                # A well-formed JSON-RPC request: servers that validate the
+                # body before their auth middleware still answer 401 with the
+                # WWW-Authenticate challenge discovery needs (an empty {} can
+                # draw a 400 with no challenge from such servers).
+                await client.post(
+                    server_url,
+                    json={"jsonrpc": "2.0", "id": 0, "method": "ping"},
+                    headers={"Accept": "application/json, text/event-stream"},
+                )
         except OAuthFlowError:
             raise
         except Exception as exc:
             hint = ""
             if client_id is None and isinstance(exc, OAuthRegistrationError):
                 hint = " (the authorization server may not support dynamic client registration — try --client-id)"
-            raise OAuthFlowError(f"OAuth flow failed: {exc}{hint}") from exc
+            # This message is logged. Known SDK OAuth errors carry summary-style
+            # text that never includes token material; any other exception may
+            # echo response bodies, so only its type is included (module
+            # contract: errors never contain token material).
+            detail = str(exc) if isinstance(exc, (OAuthRegistrationError, OAuthTokenError)) else type(exc).__name__
+            raise OAuthFlowError(f"OAuth flow failed: {detail}{hint}") from exc
 
         tokens = await storage.get_tokens()
         if tokens is None or not tokens.access_token:
