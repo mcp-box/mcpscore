@@ -1222,3 +1222,11 @@ class TestOAuthCliFlow:
         with pytest.raises(SystemExit) as exc:
             await async_main()
         assert exc.value.code == 1
+
+    async def test_callback_port_zero_without_oauth_exits_1(self, monkeypatch: MonkeyPatch) -> None:
+        """Falsy-but-present values must not slip the only-with---oauth guard."""
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--callback-port", "0"])
+        with pytest.raises(SystemExit) as exc:
+            await async_main()
+        assert exc.value.code == 1

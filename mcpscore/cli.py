@@ -240,7 +240,7 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
     Exits with code 1 on flag conflicts or a failed flow; a no-op when
     --oauth was not requested.
     """
-    if (args.client_id or args.callback_port) and not args.oauth:
+    if (args.client_id is not None or args.callback_port is not None) and not args.oauth:
         logger.error("Usage error: --client-id / --callback-port only make sense together with --oauth")
         sys.exit(1)
     if not args.oauth:

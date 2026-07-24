@@ -107,7 +107,11 @@ class _LoopbackCallbackServer:
         split = urlsplit(target)
         if split.path == CALLBACK_PATH and not self._result.done():
             params = {key: values[0] for key, values in parse_qs(split.query).items()}
-            self._result.set_result(params)
+            # Only an actual authorization response counts — a stray visit to
+            # bare /callback (scanner, prefetch) must not consume the one-shot
+            # future while the real redirect is still coming.
+            if "code" in params or "error" in params:
+                self._result.set_result(params)
 
     async def wait_for_callback(self, deadline_s: float) -> dict[str, str]:
         return await asyncio.wait_for(self._result, timeout=deadline_s)
@@ -186,8 +190,7 @@ async def obtain_token_interactively(
             if "error" in params:
                 description = params.get("error_description", "")
                 raise OAuthFlowError(f"authorization was refused: {params['error']} {description}".strip())
-            if "code" not in params:
-                raise OAuthFlowError("authorization response carried no code")
+            # The listener only resolves with code or error, so code is present here.
             return AuthorizationCodeResult(code=params["code"], state=params.get("state"), iss=params.get("iss"))
 
         provider = OAuthClientProvider(
@@ -222,6 +225,13 @@ async def obtain_token_interactively(
         except OAuthFlowError:
             raise
         except Exception as exc:
+            # The retried request can fail after the grant and token exchange
+            # already succeeded (network blip, server hiccup) — the flow's
+            # purpose is the token, so salvage it before declaring failure.
+            salvaged = await storage.get_tokens()
+            if salvaged is not None and salvaged.access_token:
+                logger.info("OAuth flow completed (the follow-up request failed, but the token was obtained).")
+                return salvaged.access_token
             hint = ""
             if client_id is None and isinstance(exc, OAuthRegistrationError):
                 hint = " (the authorization server may not support dynamic client registration — try --client-id)"

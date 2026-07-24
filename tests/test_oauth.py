@@ -197,25 +197,27 @@ async def test_registration_failure_hints_client_id():
         )
 
 
-async def test_callback_without_code_raises():
+async def test_stray_bare_callback_does_not_consume_the_flow():
+    """A parameterless /callback visit (scanner, prefetch) must not end the wait."""
     fake = FakeAuthServer()
     actions: list[asyncio.Task] = []
 
-    def bad_redirect(authorization_url: str) -> None:
+    def stray_then_real(authorization_url: str) -> None:
         async def complete() -> None:
             query = {key: values[0] for key, values in parse_qs(urlsplit(authorization_url).query).items()}
+            redirect_uri = query["redirect_uri"]
             async with httpx2.AsyncClient() as browser:
-                # No code, no error — a broken AS redirect.
-                await browser.get(f"{query['redirect_uri']}?state={query.get('state', '')}")
+                await browser.get(redirect_uri)  # no code, no error — ignored
+                await browser.get(f"{redirect_uri}?code=fake-auth-code&state={query.get('state', '')}")
 
         actions.append(asyncio.create_task(complete()))
 
-    with pytest.raises(OAuthFlowError, match="carried no code"):
-        await obtain_token_interactively(
-            SERVER_URL,
-            open_browser=bad_redirect,
-            transport=httpx2.MockTransport(fake.handler),
-        )
+    token = await obtain_token_interactively(
+        SERVER_URL,
+        open_browser=stray_then_real,
+        transport=httpx2.MockTransport(fake.handler),
+    )
+    assert token == ACCESS_TOKEN
     await asyncio.gather(*actions)
 
 
@@ -385,3 +387,22 @@ async def test_unknown_exception_text_is_not_echoed():
         )
     assert "secret-sounding-content-xyz" not in str(exc.value)
     assert "RuntimeError" in str(exc.value)
+
+
+async def test_token_survives_failed_followup_request():
+    """A network error on the retried request must not discard an obtained token."""
+    fake = FakeAuthServer()
+    actions: list[asyncio.Task] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url).startswith(SERVER_URL) and request.headers.get("Authorization"):
+            raise httpx2.ConnectError("server hiccup on the authorized retry")
+        return fake.handler(request)
+
+    token = await obtain_token_interactively(
+        SERVER_URL,
+        open_browser=_fake_user(actions),
+        transport=httpx2.MockTransport(handler),
+    )
+    assert token == ACCESS_TOKEN
+    await asyncio.gather(*actions)
