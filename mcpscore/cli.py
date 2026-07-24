@@ -145,8 +145,9 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
     """Log the human-readable audit outcome: score, spec/era line, readiness line.
 
     The main score and the readiness score are deliberately separate lines —
-    readiness for the next spec revision is informative and never part of the
-    main score (see the multi-spec-version design).
+    readiness for the next spec revision is informative for legacy servers
+    and counted in the main score for modern-lifecycle full audits — the
+    line says which mode applied (readiness promotion).
     """
     report = auditor.get_audit_report()
     spec = report["spec"]

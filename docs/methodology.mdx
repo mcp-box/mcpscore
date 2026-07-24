@@ -118,7 +118,11 @@ Two things worth knowing about how these run:
   breakdown of that share. Legacy-only servers keep readiness informative
   (guidance, not punishment), and **partial audits are never promoted** — a
   partial score is already not comparable to a full audit's. The `rule_id`s
-  never change, so CI integrations and report consumers are unaffected.
+  never change, so integrations keyed on rule IDs are unaffected — but
+  **score-based consumers** (e.g. a CI `min-score` threshold) should note
+  that a modern-lifecycle server's `score`/`max_score` now include the
+  readiness points; check `readiness.counted_in_main` to know which mode
+  scored a given audit.
 
 <Note>
 **Draft-spec citations** — the 2026-07-28 revision is final-pending (release candidate

@@ -80,9 +80,10 @@ class MCPAuditor:
         self.results: list[RuleResult] = []
         self.skipped_rules: list[SkippedRule] = []
 
-        # Readiness axis: rules in the READINESS_GROUP score here, never in
-        # the main score — readiness for the next spec revision is
-        # informative, not punitive (see the multi-spec-version design).
+        # Readiness axis: rules in the READINESS_GROUP score here. For
+        # legacy servers this stays informative, not punitive; for
+        # modern-lifecycle full audits the same points are ALSO counted in
+        # the main score (readiness promotion — see _run_all_rules).
         self.readiness_score: int = 0
         self.readiness_max: int = 0
         self.readiness_results: list[RuleResult] = []
@@ -558,7 +559,7 @@ class MCPAuditor:
             - spec: Negotiated/latest/readiness-target spec versions and the
               observed lifecycle era (legacy / modern / dual-era)
             - readiness: Independent readiness score for the next spec
-              revision, with its per-rule results — never part of the main score
+              revision, with its per-rule results and the counted_in_main flag
 
         """
         return {
