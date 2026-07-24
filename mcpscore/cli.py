@@ -98,6 +98,16 @@ def build_parser() -> argparse.ArgumentParser:
             "loopback redirect URI (http://127.0.0.1:<port>/callback)."
         ),
     )
+    parser.add_argument(
+        "--callback-port",
+        metavar="PORT",
+        type=int,
+        help=(
+            "Fixed loopback port for the --oauth redirect URI. RFC 8252 says authorization "
+            "servers must accept any port on loopback redirects, but if yours requires the "
+            "exact pre-registered URI, pin the port you registered (pairs with --client-id)."
+        ),
+    )
     return parser
 
 
@@ -230,8 +240,8 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
     Exits with code 1 on flag conflicts or a failed flow; a no-op when
     --oauth was not requested.
     """
-    if args.client_id and not args.oauth:
-        logger.error("Usage error: --client-id only makes sense together with --oauth")
+    if (args.client_id or args.callback_port) and not args.oauth:
+        logger.error("Usage error: --client-id / --callback-port only make sense together with --oauth")
         sys.exit(1)
     if not args.oauth:
         return
@@ -247,7 +257,9 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
     from mcpscore.oauth import OAuthFlowError, obtain_token_interactively
 
     try:
-        access_token = await obtain_token_interactively(args.target, client_id=args.client_id)
+        access_token = await obtain_token_interactively(
+            args.target, client_id=args.client_id, callback_port=args.callback_port
+        )
     except OAuthFlowError as e:
         logger.error("OAuth: %s", e)  # noqa: TRY400 — user-facing outcome, not a traceback
         sys.exit(1)

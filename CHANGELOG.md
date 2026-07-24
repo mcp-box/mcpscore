@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never logged. For authorization servers without dynamic client
   registration (e.g. GitHub's), `--oauth --client-id <id>` uses a
   pre-registered client instead; the failure message suggests this when
-  registration is unavailable.
+  registration is unavailable. `--callback-port` pins the loopback redirect
+  port for authorization servers that (against RFC 8252) require the exact
+  pre-registered redirect URI.
 
 - **Stability contract published** (`docs/stability.mdx`): what is stable
   from 1.1.0 on (`rule_id` never renamed/reused, report schema versioned via

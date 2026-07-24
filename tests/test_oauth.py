@@ -311,3 +311,37 @@ async def test_token_exchange_failure_has_no_client_id_hint():
 
 async def test_close_before_start_is_safe():
     await _LoopbackCallbackServer().close()  # must not raise
+
+
+async def test_fixed_callback_port_is_used():
+    """--callback-port pins the redirect URI for strict authorization servers."""
+    import socket as socket_module
+
+    with socket_module.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    fake = FakeAuthServer(dynamic_registration=False)
+    actions: list[asyncio.Task] = []
+    seen_redirects: list[str] = []
+
+    def check_redirect(authorization_url: str) -> None:
+        query = {key: values[0] for key, values in parse_qs(urlsplit(authorization_url).query).items()}
+        seen_redirects.append(query["redirect_uri"])
+
+        async def complete() -> None:
+            async with httpx2.AsyncClient() as browser:
+                await browser.get(f"{query['redirect_uri']}?code=fake-auth-code&state={query.get('state', '')}")
+
+        actions.append(asyncio.create_task(complete()))
+
+    token = await obtain_token_interactively(
+        SERVER_URL,
+        client_id="preregistered-app",
+        callback_port=port,
+        open_browser=check_redirect,
+        transport=httpx2.MockTransport(fake.handler),
+    )
+    assert token == ACCESS_TOKEN
+    assert seen_redirects == [f"http://127.0.0.1:{port}/callback"]
+    await asyncio.gather(*actions)

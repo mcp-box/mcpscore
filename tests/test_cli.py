@@ -1215,3 +1215,10 @@ class TestOAuthCliFlow:
 
         assert exc.value.code == 1
         assert "timed out" in caplog.text
+
+    async def test_callback_port_without_oauth_exits_1(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--callback-port", "8765"])
+        with pytest.raises(SystemExit) as exc:
+            await async_main()
+        assert exc.value.code == 1

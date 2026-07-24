@@ -79,8 +79,9 @@ class _LoopbackCallbackServer:
     query parameters of the first request to the callback path.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, port: int | None = None) -> None:
         super().__init__()
+        self._requested_port = port or 0
         self._server: asyncio.Server | None = None
         self._result: asyncio.Future[dict[str, str]] = asyncio.get_running_loop().create_future()
         self.port: int = 0
@@ -90,7 +91,7 @@ class _LoopbackCallbackServer:
         return f"http://127.0.0.1:{self.port}{CALLBACK_PATH}"
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(self._handle, host="127.0.0.1", port=0)
+        self._server = await asyncio.start_server(self._handle, host="127.0.0.1", port=self._requested_port)
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -121,6 +122,7 @@ async def obtain_token_interactively(
     server_url: str,
     *,
     client_id: str | None = None,
+    callback_port: int | None = None,
     flow_timeout_s: float = FLOW_TIMEOUT_S,
     open_browser: Callable[[str], object] = webbrowser.open,
     transport: httpx2.AsyncBaseTransport | None = None,
@@ -132,6 +134,11 @@ async def obtain_token_interactively(
         client_id: Pre-registered OAuth client ID for authorization servers
             without dynamic client registration (e.g. GitHub's). When set,
             registration is skipped and this ID is used with the PKCE flow.
+        callback_port: Fixed loopback port for the redirect URI. RFC 8252
+            requires authorization servers to accept any port on loopback
+            redirects, but some (non-compliant) ones demand the exact
+            pre-registered URI — pin the port you registered here. Default:
+            an ephemeral port.
         flow_timeout_s: Seconds to wait for the user to finish in the browser.
         open_browser: Injection point for tests; production uses the default
             browser.
@@ -146,7 +153,7 @@ async def obtain_token_interactively(
             and, for registration failures, suggests ``--client-id``.
 
     """
-    callback = _LoopbackCallbackServer()
+    callback = _LoopbackCallbackServer(port=callback_port)
     try:
         await callback.start()
     except OSError as exc:
