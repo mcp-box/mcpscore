@@ -113,8 +113,8 @@ class _LoopbackCallbackServer:
             if "code" in params or "error" in params:
                 self._result.set_result(params)
 
-    async def wait_for_callback(self, deadline_s: float) -> dict[str, str]:
-        return await asyncio.wait_for(self._result, timeout=deadline_s)
+    async def wait_for_callback(self, timeout_s: float) -> dict[str, str]:
+        return await asyncio.wait_for(self._result, timeout=timeout_s)
 
     async def close(self) -> None:
         if self._server is not None:

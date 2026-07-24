@@ -284,7 +284,7 @@ async def test_second_callback_request_is_ignored():
             await browser.get(f"{listener.redirect_uri}?code=first-code&state=s1")
             # The user double-clicks / the browser retries: same redirect again.
             await browser.get(f"{listener.redirect_uri}?code=stale-second-code&state=s2")
-        params = await listener.wait_for_callback(deadline_s=2)
+        params = await listener.wait_for_callback(timeout_s=2)
         assert params["code"] == "first-code"
     finally:
         await listener.close()
