@@ -39,8 +39,10 @@ The report's top-level shape: `schema_version`, `mcpscore_version`,
 - The invocation shape — `mcpscore <target>` with `--json`, `--header`,
   `--token` (and the `MCPSCORE_TOKEN` environment variable) — is stable.
   New flags may be added; existing flags keep their meaning.
-- Exit codes are a contract: **0** audit completed (regardless of score),
-  **1** usage error, **2** connection failure with no fallback available.
+- Exit codes are a contract: **0** audit completed (regardless of score);
+  **1** the audit was never attempted — a usage error or a failed `--oauth`
+  flow (timeout, refusal, registration or token-exchange failure);
+  **2** connection failure to the target server with no fallback available.
 - `--json` writes exactly one JSON document to stdout; all logs go to
   stderr. Pipelines may rely on stdout being clean JSON.
 
