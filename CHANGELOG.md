@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Readiness promotion for modern-lifecycle servers.** A server that
+  negotiates the 2026-07-28 lifecycle (era `modern` or `dual-era`) now has
+  its readiness points counted in the main score; the readiness block stays
+  populated as the breakdown and gains a `counted_in_main` flag. Legacy-only
+  servers are unchanged (readiness stays informative), and partial audits
+  are never promoted. This is the score migration the methodology doc
+  promised for spec-final; every `rule_id` is unchanged.
+
 - **Every rule now cites its primary source.** All 34 rules that predated the
   citation policy carry a `basis` in their result `details` — the MCP
   2025-11-25 spec section (or, where the spec is silent, the best-practice
