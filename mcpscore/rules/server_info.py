@@ -63,6 +63,7 @@ class ServerNamePresentRule(ServerInfoBaseRule):
     """Critical check: Verify that serverInfo.name is present."""
 
     rule_id = "server_name_present"
+    basis = "MCP 2025-11-25 Lifecycle §Initialization (serverInfo.name)"
     rule_order = 1
 
     @property
@@ -104,6 +105,7 @@ class ServerTitlePresentRule(ServerInfoBaseRule):
     """Medium check: Verify that serverInfo.title is present."""
 
     rule_id = "server_title_present"
+    basis = "MCP 2025-11-25 Lifecycle §Initialization (serverInfo.title)"
     rule_order = 3
 
     @property
@@ -145,6 +147,7 @@ class ServerVersionPresentRule(ServerInfoBaseRule):
     """High check: Verify that serverInfo.version is present."""
 
     rule_id = "server_version_present"
+    basis = "MCP 2025-11-25 Lifecycle §Initialization (serverInfo.version)"
     rule_order = 2
 
     @property
@@ -193,6 +196,7 @@ class ServerInstructionsPresentRule(BaseRule):
     group_name = "server_info"
     group_order = 2
     rule_id = "server_instructions_present"
+    basis = "MCP 2025-11-25 Lifecycle §Initialization (instructions)"
     rule_order = 4
 
     @property
@@ -238,6 +242,7 @@ class ServerWebsiteUrlPresentRule(ServerInfoBaseRule):
     """
 
     rule_id = "server_websiteurl_present"
+    basis = "MCP 2025-11-25 Lifecycle §Initialization (serverInfo.websiteUrl; 2025-11-25 field)"
     rule_order = 5
     min_spec_version = "2025-11-25"
 
@@ -287,6 +292,7 @@ class ServerIconsPresentRule(ServerInfoBaseRule):
     """
 
     rule_id = "server_icons_present"
+    basis = "MCP 2025-11-25 Lifecycle §Initialization (serverInfo.icons; 2025-11-25 field)"
     rule_order = 6
     min_spec_version = "2025-11-25"
 

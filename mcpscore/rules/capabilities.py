@@ -76,6 +76,7 @@ class CapabilityToolsPresentRule(CapabilityBaseRule):
     """Critical check: Verify that capabilities.tools is present."""
 
     rule_id = "capability_tools_present"
+    basis = "MCP 2025-11-25 Tools §Capabilities (servers supporting tools MUST declare the capability)"
     rule_order = 1
 
     @property
@@ -117,6 +118,7 @@ class CapabilityToolsListChangedRule(CapabilityBaseRule):
     """High check: Verify that capabilities.tools has listChanged implemented."""
 
     rule_id = "capability_tools_list_changed"
+    basis = "MCP 2025-11-25 Tools §Capabilities (listChanged)"
     rule_order = 2
 
     @property
@@ -161,6 +163,7 @@ class CapabilityPromptsPresentRule(CapabilityBaseRule):
     """Critical check: Verify that capabilities.prompts is present."""
 
     rule_id = "capability_prompts_present"
+    basis = "MCP 2025-11-25 Prompts §Capabilities (servers supporting prompts MUST declare the capability)"
     rule_order = 3
 
     @property
@@ -202,6 +205,7 @@ class CapabilityPromptsListChangedRule(CapabilityBaseRule):
     """High check: Verify that capabilities.prompts has listChanged implemented."""
 
     rule_id = "capability_prompts_list_changed"
+    basis = "MCP 2025-11-25 Prompts §Capabilities (listChanged)"
     rule_order = 4
 
     @property
@@ -246,6 +250,7 @@ class CapabilityResourcesPresentRule(CapabilityBaseRule):
     """Critical check: Verify that capabilities.resources is present."""
 
     rule_id = "capability_resources_present"
+    basis = "MCP 2025-11-25 Resources §Capabilities (servers supporting resources MUST declare the capability)"
     rule_order = 5
 
     @property
@@ -287,6 +292,7 @@ class CapabilityResourcesListChangedRule(CapabilityBaseRule):
     """High check: Verify that capabilities.resources has listChanged implemented."""
 
     rule_id = "capability_resources_list_changed"
+    basis = "MCP 2025-11-25 Resources §Capabilities (listChanged)"
     rule_order = 6
 
     @property
@@ -331,6 +337,7 @@ class CapabilityResourcesSubscribeRule(CapabilityBaseRule):
     """High check: Verify that capabilities.resources has subscribe implemented."""
 
     rule_id = "capability_resources_subscribe"
+    basis = "MCP 2025-11-25 Resources §Capabilities (subscribe)"
     rule_order = 7
 
     @property
@@ -375,6 +382,7 @@ class CapabilityLoggingPresentRule(CapabilityBaseRule):
     """Medium check: Verify that capabilities.logging is present."""
 
     rule_id = "capability_logging_present"
+    basis = "MCP 2025-11-25 Lifecycle §Capability Negotiation (logging)"
     rule_order = 8
 
     @property

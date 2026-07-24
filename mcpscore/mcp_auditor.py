@@ -347,6 +347,8 @@ class MCPAuditor:
 
             res: RuleResult = rule.check(self.audit_data)
             res.rule_id = rule.rule_id
+            if rule.basis and (res.details is None or "basis" not in res.details):
+                res.details = {**(res.details or {}), "basis": rule.basis}
             logger.info(res.message)
 
             if rule.group_name == READINESS_GROUP:

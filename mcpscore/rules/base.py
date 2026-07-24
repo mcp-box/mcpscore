@@ -248,6 +248,15 @@ class BaseRule(ABC):
     rule_id: str = ""
     """Unique identifier for this rule. Must be set by subclasses."""
 
+    basis: str | None = None
+    """Primary-source citation for the requirement this rule enforces, e.g.
+    an MCP spec section or a labeled best practice. The auditor injects it
+    into every result's ``details["basis"]`` unless the check already set
+    that key itself. Two rule families cite differently and leave this
+    attribute unset: auth-posture rules build ``details["basis"]`` inline
+    (per-result RFC sections), and readiness rules cite SEPs via their
+    ``details["sep"]`` key."""
+
     group_name: str = "default"
     """Group name for organizing related rules. Rules in the same group
     are executed together. Groups are executed in alphabetical order
