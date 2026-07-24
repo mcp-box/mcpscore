@@ -207,7 +207,8 @@ async def test_stray_bare_callback_does_not_consume_the_flow():
             query = {key: values[0] for key, values in parse_qs(urlsplit(authorization_url).query).items()}
             redirect_uri = query["redirect_uri"]
             async with httpx2.AsyncClient() as browser:
-                await browser.get(redirect_uri)  # no code, no error — ignored
+                stray = await browser.get(redirect_uri)  # no code, no error — ignored
+                assert "waiting" in stray.text
                 await browser.get(f"{redirect_uri}?code=fake-auth-code&state={query.get('state', '')}")
 
         actions.append(asyncio.create_task(complete()))
@@ -261,8 +262,10 @@ async def test_non_callback_requests_are_ignored():
             redirect_uri = query["redirect_uri"]
             base = redirect_uri.rsplit("/", 1)[0]
             async with httpx2.AsyncClient() as browser:
-                await browser.get(f"{base}/favicon.ico")  # ignored by the listener
-                await browser.get(f"{redirect_uri}?code=fake-auth-code&state={query.get('state', '')}")
+                favicon = await browser.get(f"{base}/favicon.ico")  # ignored by the listener
+                assert favicon.status_code == 404
+                success = await browser.get(f"{redirect_uri}?code=fake-auth-code&state={query.get('state', '')}")
+                assert "close this tab" in success.text
 
         actions.append(asyncio.create_task(complete()))
 

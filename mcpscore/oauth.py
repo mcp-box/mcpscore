@@ -38,10 +38,17 @@ CALLBACK_PATH = "/callback"
 FLOW_TIMEOUT_S = 300.0
 """How long to wait for the user to complete the browser flow."""
 
-_CALLBACK_RESPONSE = (
-    b"HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\nconnection: close\r\n\r\n"
-    b"<html><body><p>mcpscore received the authorization response. You can close this tab.</p></body></html>"
-)
+
+def _http_response(status_line: str, body: str) -> bytes:
+    return (
+        f"HTTP/1.1 {status_line}\r\ncontent-type: text/html; charset=utf-8\r\nconnection: close\r\n\r\n"
+        f"<html><body><p>{body}</p></body></html>"
+    ).encode()
+
+
+_SUCCESS_RESPONSE = _http_response("200 OK", "mcpscore received the authorization response. You can close this tab.")
+_WAITING_RESPONSE = _http_response("200 OK", "mcpscore is waiting for the authorization response…")
+_NOT_FOUND_RESPONSE = _http_response("404 Not Found", "Not found.")
 
 
 class OAuthFlowError(RuntimeError):
@@ -99,19 +106,25 @@ class _LoopbackCallbackServer:
             request_line = await reader.readline()
             parts = request_line.decode("latin-1").split(" ")
             target = parts[1] if len(parts) >= 2 else "/"
-            writer.write(_CALLBACK_RESPONSE)
+            split = urlsplit(target)
+            params = {key: values[0] for key, values in parse_qs(split.query).items()}
+            is_callback = split.path == CALLBACK_PATH
+            # Only an actual authorization response counts — a stray visit to
+            # bare /callback (scanner, prefetch) must not consume the one-shot
+            # future, and only a real response earns the success page.
+            is_auth_response = is_callback and ("code" in params or "error" in params)
+            if is_auth_response:
+                writer.write(_SUCCESS_RESPONSE)
+            elif is_callback:
+                writer.write(_WAITING_RESPONSE)
+            else:
+                writer.write(_NOT_FOUND_RESPONSE)
             await writer.drain()
         finally:
             writer.close()
             await writer.wait_closed()
-        split = urlsplit(target)
-        if split.path == CALLBACK_PATH and not self._result.done():
-            params = {key: values[0] for key, values in parse_qs(split.query).items()}
-            # Only an actual authorization response counts — a stray visit to
-            # bare /callback (scanner, prefetch) must not consume the one-shot
-            # future while the real redirect is still coming.
-            if "code" in params or "error" in params:
-                self._result.set_result(params)
+        if is_auth_response and not self._result.done():
+            self._result.set_result(params)
 
     async def wait_for_callback(self, timeout_s: float) -> dict[str, str]:
         return await asyncio.wait_for(self._result, timeout=timeout_s)
