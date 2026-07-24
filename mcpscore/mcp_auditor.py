@@ -90,6 +90,10 @@ class MCPAuditor:
         self.era: Era | None = None
         """Lifecycle era(s) the server was observed to support (set during audit)."""
 
+        self.readiness_promoted: bool = False
+        """Whether this run counted readiness in the main score (modern-lifecycle
+        server, full audit). Recomputed per run in _run_all_rules."""
+
     async def audit(self, client: MCPClient) -> tuple[int, int]:
         """Execute the complete audit process for an MCP server.
 

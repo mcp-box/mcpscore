@@ -789,3 +789,14 @@ async def test_inline_basis_is_never_overridden():
     await auditor.audit(DummyClient(None))
 
     assert auditor.results[0].details["basis"] == "RFC 0000 §1 (inline)"
+
+
+def test_fresh_auditor_report_before_any_audit():
+    """get_audit_report() on a never-run auditor must not raise.
+
+    Regression: readiness_promoted was set only in _reset_run_state, which
+    __init__ does not call — a fresh auditor raised AttributeError.
+    """
+    report = MCPAuditor().get_audit_report()
+    assert report["score"] == 0
+    assert report["readiness"]["counted_in_main"] is False
