@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   populated as the breakdown and gains a `counted_in_main` flag. Legacy-only
   servers are unchanged (readiness stays informative), and partial audits
   are never promoted. This is the score migration the methodology doc
-  promised for spec-final; rule_ids are unchanged.
+  promised for spec-final; every `rule_id` is unchanged.
 
 - **Every rule now cites its primary source.** All 34 rules that predated the
   citation policy carry a `basis` in their result `details` — the MCP

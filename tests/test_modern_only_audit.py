@@ -369,12 +369,20 @@ async def test_modern_server_readiness_counts_in_main_score(stub_probes, monkeyp
     report = auditor.get_audit_report()
     assert auditor.era is Era.MODERN
     assert report["readiness"]["counted_in_main"] is True
-    assert report["readiness"]["max_score"] > 0
-    # The main axis includes exactly the readiness points on top of its own.
-    main_only_max = report["max_score"] - report["readiness"]["max_score"]
-    assert main_only_max > 0  # main-axis rules still scored on their own
-    main_only_score = report["score"] - report["readiness"]["score"]
-    assert main_only_score >= 0
+    # Ground truth recomputed from the per-result severities: the main score
+    # must equal main-axis points PLUS readiness points — no more (double
+    # counting) and no less (flag set but scoring not updated).
+    main_max = sum(r.severity.value for r in auditor.results)
+    main_score = sum(r.severity.value for r in auditor.results if r.passed)
+    ready_max = sum(r.severity.value for r in auditor.readiness_results)
+    ready_score = sum(r.severity.value for r in auditor.readiness_results if r.passed)
+    assert ready_max > 0
+    assert main_max > 0  # main-axis rules still scored on their own
+    assert auditor.max_score == main_max + ready_max
+    assert auditor.score == main_score + ready_score
+    # The readiness axis itself is not inflated by the promotion.
+    assert auditor.readiness_max == ready_max
+    assert auditor.readiness_score == ready_score
 
 
 async def test_partial_audit_never_promotes_readiness(stub_probes, monkeypatch: pytest.MonkeyPatch):
@@ -393,7 +401,11 @@ async def test_partial_audit_never_promotes_readiness(stub_probes, monkeypatch: 
     assert auditor.era is Era.MODERN
     assert report["partial"] is True
     assert report["readiness"]["counted_in_main"] is False
-    # Main score excludes the readiness axis entirely.
+    # Main score equals exactly the main-axis points — readiness contributes
+    # nothing to it in a partial audit, even for a modern-era server.
+    assert auditor.max_score == sum(r.severity.value for r in auditor.results)
+    assert auditor.score == sum(r.severity.value for r in auditor.results if r.passed)
+    assert auditor.readiness_max == sum(r.severity.value for r in auditor.readiness_results)
     readiness_ids = {r["rule_id"] for r in report["readiness"]["results"]}
     main_ids = {r["rule_id"] for r in report["results"]}
     assert not (readiness_ids & main_ids)
