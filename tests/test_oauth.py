@@ -409,3 +409,31 @@ async def test_token_survives_failed_followup_request():
     )
     assert token == ACCESS_TOKEN
     await asyncio.gather(*actions)
+
+
+async def test_dropped_connection_does_not_break_the_flow():
+    """A client that connects and vanishes must not disturb the waiting flow."""
+    fake = FakeAuthServer()
+    actions: list[asyncio.Task] = []
+
+    def rude_visitor_then_real(authorization_url: str) -> None:
+        async def complete() -> None:
+            query = {key: values[0] for key, values in parse_qs(urlsplit(authorization_url).query).items()}
+            redirect_uri = query["redirect_uri"]
+            port = int(urlsplit(redirect_uri).port)
+            # Connect and disappear without sending a request.
+            _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.close()
+            await writer.wait_closed()
+            async with httpx2.AsyncClient() as browser:
+                await browser.get(f"{redirect_uri}?code=fake-auth-code&state={query.get('state', '')}")
+
+        actions.append(asyncio.create_task(complete()))
+
+    token = await obtain_token_interactively(
+        SERVER_URL,
+        open_browser=rude_visitor_then_real,
+        transport=httpx2.MockTransport(fake.handler),
+    )
+    assert token == ACCESS_TOKEN
+    await asyncio.gather(*actions)

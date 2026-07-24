@@ -17,6 +17,7 @@ in both modes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
@@ -102,6 +103,11 @@ class _LoopbackCallbackServer:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # Initialized before the try: a connection that dies during readline
+        # must still run the post-finally logic safely (no UnboundLocalError
+        # surfacing as an unhandled task exception).
+        params: dict[str, str] = {}
+        is_auth_response = False
         try:
             request_line = await reader.readline()
             parts = request_line.decode("latin-1").split(" ")
@@ -119,10 +125,12 @@ class _LoopbackCallbackServer:
                 writer.write(_WAITING_RESPONSE)
             else:
                 writer.write(_NOT_FOUND_RESPONSE)
-            await writer.drain()
+            with contextlib.suppress(ConnectionError):
+                await writer.drain()
         finally:
             writer.close()
-            await writer.wait_closed()
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
         if is_auth_response and not self._result.done():
             self._result.set_result(params)
 
