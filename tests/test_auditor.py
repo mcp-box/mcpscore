@@ -746,3 +746,46 @@ async def test_get_audit_report():
     assert all(res["rule_id"] == "dummy_rule" for res in report["results"])
     assert report["results"][0]["passed"] is True
     assert report["results"][1]["passed"] is False
+
+
+class CitedRule(DummyRule):
+    """Dummy rule with a class-level basis, optionally self-citing in details."""
+
+    rule_id = "cited_rule"
+    basis = "MCP 2025-11-25 Example §Section (test citation)"
+
+    def __init__(self, *, inline_basis: str | None = None) -> None:
+        super().__init__(passed=True, severity=RuleSeverity.LOW)
+        self._inline_basis = inline_basis
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        details = {"basis": self._inline_basis} if self._inline_basis else None
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=True,
+            message="msg",
+            details=details,
+        )
+
+
+async def test_basis_is_injected_into_result_details():
+    """The class-level citation reaches the report even when a check sets no details."""
+    auditor = MCPAuditor()
+    auditor.rules = [CitedRule()]
+
+    await auditor.audit(DummyClient(None))
+
+    details = auditor.results[0].details
+    assert details is not None
+    assert details["basis"] == "MCP 2025-11-25 Example §Section (test citation)"
+
+
+async def test_inline_basis_is_never_overridden():
+    """A check's own details["basis"] (the auth-rule pattern) wins over the class attribute."""
+    auditor = MCPAuditor()
+    auditor.rules = [CitedRule(inline_basis="RFC 0000 §1 (inline)")]
+
+    await auditor.audit(DummyClient(None))
+
+    assert auditor.results[0].details["basis"] == "RFC 0000 §1 (inline)"
