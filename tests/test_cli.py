@@ -1230,3 +1230,32 @@ class TestOAuthCliFlow:
         with pytest.raises(SystemExit) as exc:
             await async_main()
         assert exc.value.code == 1
+
+    async def test_blank_authorization_header_does_not_block_oauth(
+        self, monkeypatch: MonkeyPatch, mock_client: MagicMock, mock_auditor: MagicMock
+    ) -> None:
+        """A blank Authorization header is no credential (has_authorization_credential) — --oauth proceeds."""
+        import mcpscore.oauth
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth", "--header", "Authorization:"])
+
+        async def fake_flow(server_url: str, **kwargs) -> str:
+            return "flow-token"
+
+        monkeypatch.setattr(mcpscore.oauth, "obtain_token_interactively", fake_flow)
+        captured = {}
+
+        def capture_client(**kwargs):
+            captured["headers"] = kwargs.get("headers")
+            return mock_client
+
+        mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STREAMABLE_HTTP))
+        with (
+            patch("mcpscore.cli.MCPClient", side_effect=capture_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        # The flow ran and its token replaced the blank header.
+        assert captured["headers"]["Authorization"] == "Bearer flow-token"

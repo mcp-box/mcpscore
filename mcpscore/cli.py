@@ -245,7 +245,7 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
         sys.exit(1)
     if not args.oauth:
         return
-    if any(name.lower() == "authorization" for name in headers):
+    if has_authorization_credential(headers):
         logger.error(
             "Usage error: --oauth conflicts with an existing Authorization credential "
             "(--token, an Authorization --header, or the MCPSCORE_TOKEN environment variable) — pick one"
