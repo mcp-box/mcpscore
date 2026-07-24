@@ -1238,7 +1238,7 @@ class TestOAuthCliFlow:
         import mcpscore.oauth
 
         monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
-        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth", "--header", "Authorization:"])
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth", "--header", "authorization:"])
 
         async def fake_flow(server_url: str, **kwargs) -> str:
             return "flow-token"
@@ -1257,5 +1257,14 @@ class TestOAuthCliFlow:
         ):
             await async_main()
 
-        # The flow ran and its token replaced the blank header.
-        assert captured["headers"]["Authorization"] == "Bearer flow-token"
+        # The flow ran; its token replaced the blank header with NO duplicate
+        # case-variant left behind.
+        assert captured["headers"] == {"Authorization": "Bearer flow-token"}
+
+    async def test_callback_port_out_of_range_exits_1(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        for bad_port in ("0", "70000"):
+            monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth", "--callback-port", bad_port])
+            with pytest.raises(SystemExit) as exc:
+                await async_main()
+            assert exc.value.code == 1

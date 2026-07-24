@@ -245,6 +245,9 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
         sys.exit(1)
     if not args.oauth:
         return
+    if args.callback_port is not None and not 1 <= args.callback_port <= 65535:
+        logger.error("Usage error: --callback-port must be between 1 and 65535")
+        sys.exit(1)
     if has_authorization_credential(headers):
         logger.error(
             "Usage error: --oauth conflicts with an existing Authorization credential "
@@ -263,6 +266,10 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
     except OAuthFlowError as e:
         logger.error("OAuth: %s", e)  # noqa: TRY400 — user-facing outcome, not a traceback
         sys.exit(1)
+    # Replace any case-variant of the header (e.g. a blank 'authorization:')
+    # so the wire never carries duplicate Authorization headers.
+    for key in [name for name in headers if name.lower() == "authorization"]:
+        del headers[key]
     headers["Authorization"] = f"Bearer {access_token}"
     logger.info("OAuth flow completed — token held in memory only for this audit.")
 

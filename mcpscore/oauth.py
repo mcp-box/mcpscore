@@ -244,12 +244,13 @@ async def obtain_token_interactively(
 
         tokens = await storage.get_tokens()
         if tokens is None or not tokens.access_token:
-            hint = (
-                ""
-                if client_id is not None
-                else " (if the authorization server lacks dynamic client registration, pass --client-id)"
+            # No hint here: this path has non-registration causes (an empty
+            # token from the AS, a target that never requested auth) — the
+            # --client-id hint lives on the typed registration-error path,
+            # where it is accurate.
+            raise OAuthFlowError(
+                "the OAuth flow completed no token exchange (the server may not have requested authentication)"
             )
-            raise OAuthFlowError(f"the OAuth flow completed no token exchange{hint}")
         return tokens.access_token
     finally:
         await callback.close()
