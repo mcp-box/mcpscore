@@ -17,6 +17,7 @@ class TLSEnabledRule(BaseRule):
     """
 
     rule_id = "security_tls_enabled"
+    basis = "MCP 2025-11-25 Transports §Streamable HTTP Security Warning; TLS transport-security best practice"
     group_name = "security"
     group_order = 3
     rule_order = 1
@@ -107,6 +108,10 @@ class MalformedRequestHandlingRule(BaseRule):
     """
 
     rule_id = "security_malformed_request_handling"
+    basis = (
+        "MCP 2025-11-25 Transports §Sending Messages to the Server "
+        "(unacceptable input -> HTTP error / JSON-RPC error response)"
+    )
     group_name = "security"
     group_order = 3
     rule_order = 2
@@ -201,6 +206,7 @@ class ErrorDataLeakRule(BaseRule):
     """
 
     rule_id = "security_error_data_leak"
+    basis = "MCP 2025-11-25 Tools §Security Considerations (sanitize outputs); error-hygiene best practice"
     group_name = "security"
     group_order = 3
     rule_order = 3

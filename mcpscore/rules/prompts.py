@@ -59,6 +59,7 @@ class PromptsDescriptionPresentRule(PromptsBaseRule):
     """Medium check: Verify that all declared prompts have a description."""
 
     rule_id = "prompts_description_present"
+    basis = "MCP 2025-11-25 Prompts §Prompt (description)"
     rule_order = 1
 
     @property
@@ -109,6 +110,7 @@ class PromptsArgumentsDocumentedRule(PromptsBaseRule):
     """
 
     rule_id = "prompts_arguments_documented"
+    basis = "MCP 2025-11-25 Prompts §Prompt (arguments: name, description, required)"
     rule_order = 2
 
     @property

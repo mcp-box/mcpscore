@@ -15,6 +15,7 @@ class StreamableHTTPTransportRule(BaseRule):
     """
 
     rule_id = "transport_streamable_http"
+    basis = "MCP 2025-11-25 Transports §Streamable HTTP (replaces the deprecated HTTP+SSE transport from 2024-11-05)"
     group_name = "transport"
     group_order = 5
     rule_order = 1

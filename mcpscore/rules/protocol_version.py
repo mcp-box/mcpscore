@@ -64,6 +64,7 @@ class AllowedVersionRule(ProtocolVersionBaseRule):
     """Critical check: Verify the MCP protocol version is one of the allowed versions."""
 
     rule_id = "protocol_version_allowed"
+    basis = "MCP 2025-11-25 Lifecycle §Version Negotiation (server MUST respond with a version it supports)"
     rule_order = 1
 
     @property
@@ -107,6 +108,7 @@ class LatestVersionRule(ProtocolVersionBaseRule):
     """Medium check: Verify the MCP protocol version is the latest available version."""
 
     rule_id = "protocol_version_latest"
+    basis = "MCP 2025-11-25 Lifecycle §Version Negotiation (SHOULD be the latest supported version)"
     rule_order = 3
 
     @property
@@ -152,6 +154,7 @@ class DeprecatedVersionRule(ProtocolVersionBaseRule):
     """High check: Verify the MCP protocol version is not deprecated."""
 
     rule_id = "protocol_version_not_deprecated"
+    basis = "MCP Versioning §Revisions (draft/current/final status)"
     rule_order = 2
 
     deprecated_versions: ClassVar[list[str]] = deprecated_versions()

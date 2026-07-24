@@ -72,6 +72,7 @@ class ToolsAtLeastOneRule(ToolsBaseRule):
     """Critical check: Verify the MCP server provides at least one tool."""
 
     rule_id = "tools_at_least_one"
+    basis = "MCP 2025-11-25 Tools §Listing Tools (tools/list)"
     rule_order = 1
 
     @property
@@ -109,6 +110,7 @@ class ToolsNamePresentRule(ToolsBaseRule):
     """Critical check: Verify that all tools have a name."""
 
     rule_id = "tools_name_present_in_all"
+    basis = "MCP 2025-11-25 Tools §Tool (name: unique identifier)"
     rule_order = 2
 
     @property
@@ -155,6 +157,7 @@ class ToolsNamesUniqueRule(ToolsBaseRule):
     """Critical check: Verify that all tool names are unique."""
 
     rule_id = "tools_names_unique"
+    basis = "MCP 2025-11-25 Tools §Tool Names (SHOULD be unique within a server)"
     rule_order = 3
 
     @property
@@ -197,6 +200,7 @@ class ToolsNamesValidFormatRule(ToolsBaseRule):
     """High check: Verify that all tool names follow the format."""
 
     rule_id = "tools_names_valid_format"
+    basis = "MCP 2025-11-25 Tools §Tool Names (allowed charset, 1-128 length)"
     rule_order = 4
 
     @property
@@ -246,6 +250,7 @@ class ToolsTitlePresentRule(ToolsBaseRule):
     """High check: Verify that all tools have a title."""
 
     rule_id = "tools_title_present_in_all"
+    basis = "MCP 2025-11-25 Tools §Tool (title: display name)"
     rule_order = 5
 
     @property
@@ -289,6 +294,7 @@ class ToolsDescriptionPresentRule(ToolsBaseRule):
     """High check: Verify that all tools have a description."""
 
     rule_id = "tools_description_present_in_all"
+    basis = "MCP 2025-11-25 Tools §Tool (description)"
     rule_order = 6
 
     @property
@@ -396,6 +402,7 @@ class ToolsInputSchemaValidRule(ToolsBaseRule):
     """High check: Verify that each tool has a valid input schema."""
 
     rule_id = "tools_input_schema_valid"
+    basis = "MCP 2025-11-25 Tools §Tool (inputSchema MUST be a valid JSON Schema object; 2020-12 default)"
     rule_order = 7
 
     @property
@@ -445,6 +452,7 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
     """
 
     rule_id = "tools_output_schema_valid"
+    basis = "MCP 2025-11-25 Tools §Tool (outputSchema; JSON Schema usage guidelines)"
     rule_order = 8
 
     @property
@@ -509,6 +517,7 @@ class ToolsAnnotationsPresentRule(ToolsBaseRule):
     """
 
     rule_id = "tools_annotations_present"
+    basis = "MCP 2025-11-25 Tools §Tool (annotations)"
     rule_order = 9
 
     @property
@@ -560,6 +569,7 @@ class ToolsExecutionConsistentRule(BaseRule):
     group_name = "tools"
     group_order = 4
     rule_id = "tools_execution_consistent"
+    basis = "MCP 2025-11-25 Tools §Tool (execution.taskSupport); Lifecycle §Capability Negotiation (tasks)"
     rule_order = 10
     min_spec_version = "2025-11-25"
 

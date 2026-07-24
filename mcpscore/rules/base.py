@@ -248,6 +248,12 @@ class BaseRule(ABC):
     rule_id: str = ""
     """Unique identifier for this rule. Must be set by subclasses."""
 
+    basis: str | None = None
+    """Primary-source citation for the requirement this rule enforces (MCP
+    spec section, SEP, or RFC section). Injected into every result's
+    ``details["basis"]`` by the auditor unless the rule's check already set
+    one. Readiness rules cite via their ``details["sep"]`` key instead."""
+
     group_name: str = "default"
     """Group name for organizing related rules. Rules in the same group
     are executed together. Groups are executed in alphabetical order

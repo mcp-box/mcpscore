@@ -59,6 +59,7 @@ class ResourcesDescriptionPresentRule(ResourcesBaseRule):
     """Medium check: Verify that all declared resources have a description."""
 
     rule_id = "resources_description_present"
+    basis = "MCP 2025-11-25 Resources §Resource (description)"
     rule_order = 1
 
     @property

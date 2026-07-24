@@ -24,3 +24,22 @@ def test_registry_unique_ids():
     except ValueError:
         raised = True
     assert raised
+
+
+def test_every_rule_cites_its_basis():
+    """Every rule carries a primary-source citation (launch claim: "each citing the spec").
+
+    Non-readiness rules cite via the class-level ``basis`` attribute (injected
+    into result details by the auditor) or inline in their result details (the
+    auth rules). Readiness rules cite via their ``details["sep"]`` keys, which
+    their own tests assert.
+    """
+    from mcpscore.rules.base import READINESS_GROUP
+
+    for rule in create_all_rules():
+        if rule.group_name == READINESS_GROUP:
+            continue  # cite via details["sep"], asserted in test_readiness_rules
+        if rule.group_name == "security" and rule.rule_id.startswith("auth_"):
+            continue  # cite inline in details["basis"], asserted in test_auth_rules
+        assert rule.basis, f"{rule.rule_id} has no basis citation"
+        assert "MCP" in rule.basis or "RFC" in rule.basis, rule.rule_id

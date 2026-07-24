@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Every rule now cites its primary source.** All 34 rules that predated the
+  citation policy carry a `basis` in their result `details` — the MCP
+  2025-11-25 spec section (or, where the spec is silent, the best-practice
+  basis, labeled as such) verified against the published spec text. The
+  readiness rules keep their `sep` citations and the auth rules their RFC
+  sections, so every one of the 55 checks now names what it enforces.
+  Enforced by a registry test so future rules cannot ship uncited.
+
 ## [1.1.0b3] - 2026-07-22
 
 **Pre-release: deeper auth-posture rules on the SDK v2 line.** Published as a
