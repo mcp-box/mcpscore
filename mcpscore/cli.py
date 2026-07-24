@@ -236,7 +236,10 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
     if not args.oauth:
         return
     if any(name.lower() == "authorization" for name in headers):
-        logger.error("Usage error: --oauth conflicts with --token / an Authorization --header — pick one")
+        logger.error(
+            "Usage error: --oauth conflicts with an existing Authorization credential "
+            "(--token, an Authorization --header, or the MCPSCORE_TOKEN environment variable) — pick one"
+        )
         sys.exit(1)
     if not args.target.startswith(("http://", "https://")):
         logger.error("Usage error: --oauth requires an HTTP(S) server URL")

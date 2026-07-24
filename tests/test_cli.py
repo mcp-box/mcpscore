@@ -1197,13 +1197,12 @@ class TestOAuthCliFlow:
         self, monkeypatch: MonkeyPatch, mock_client: MagicMock, mock_auditor: MagicMock, caplog: LogCaptureFixture
     ) -> None:
         import mcpscore.oauth
-        from mcpscore.oauth import OAuthFlowError
 
         monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
         monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth"])
 
         async def failing_flow(server_url: str, **kwargs) -> str:
-            raise OAuthFlowError("timed out after 300s waiting for the browser authorization")
+            raise mcpscore.oauth.OAuthFlowError("timed out after 300s waiting for the browser authorization")
 
         monkeypatch.setattr(mcpscore.oauth, "obtain_token_interactively", failing_flow)
         with (

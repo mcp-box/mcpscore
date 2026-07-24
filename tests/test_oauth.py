@@ -103,8 +103,7 @@ async def test_full_flow_with_dynamic_registration():
     # PKCE was used in the exchange, with the public-client method.
     assert fake.token_calls[0]["grant_type"] == "authorization_code"
     assert "code_verifier" in fake.token_calls[0]
-    for task in actions:
-        await task
+    await asyncio.gather(*actions)
 
 
 async def test_client_id_skips_dynamic_registration():
@@ -122,8 +121,7 @@ async def test_client_id_skips_dynamic_registration():
     assert token == ACCESS_TOKEN
     assert fake.register_calls == 0
     assert fake.token_calls[0]["client_id"] == "preregistered-app"
-    for task in actions:
-        await task
+    await asyncio.gather(*actions)
 
 
 async def test_user_timeout_raises_flow_failed():
@@ -141,13 +139,15 @@ async def test_user_timeout_raises_flow_failed():
 async def test_authorization_refusal_raises_flow_failed():
     fake = FakeAuthServer()
 
+    actions: list[asyncio.Task] = []
+
     def refuse(authorization_url: str) -> None:
         async def complete() -> None:
             query = {key: values[0] for key, values in parse_qs(urlsplit(authorization_url).query).items()}
             async with httpx2.AsyncClient() as browser:
                 await browser.get(f"{query['redirect_uri']}?error=access_denied&state={query.get('state', '')}")
 
-        asyncio.get_event_loop().create_task(complete())
+        actions.append(asyncio.get_event_loop().create_task(complete()))
 
     with pytest.raises(OAuthFlowError, match="access_denied"):
         await obtain_token_interactively(
@@ -155,8 +155,118 @@ async def test_authorization_refusal_raises_flow_failed():
             open_browser=refuse,
             transport=httpx2.MockTransport(fake.handler),
         )
+    await asyncio.gather(*actions)
 
 
 def test_flow_timeout_default_is_generous():
     """A human completes a browser login; the default must allow minutes, not seconds."""
     assert FLOW_TIMEOUT_S >= 120
+
+
+async def test_registration_failure_hints_client_id():
+    """A 404 from the registration endpoint produces the --client-id hint."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        url = str(request.url)
+        if url.startswith(SERVER_URL):
+            metadata_url = "https://server.example/.well-known/oauth-protected-resource/mcp"
+            return httpx2.Response(401, headers={"WWW-Authenticate": f'Bearer resource_metadata="{metadata_url}"'})
+        if "oauth-protected-resource" in url:
+            return httpx2.Response(200, json={"resource": SERVER_URL, "authorization_servers": [AS_ISSUER]})
+        if "oauth-authorization-server" in url or "openid-configuration" in url:
+            return httpx2.Response(
+                200,
+                json={
+                    "issuer": AS_ISSUER,
+                    "authorization_endpoint": f"{AS_ISSUER}/authorize",
+                    "token_endpoint": f"{AS_ISSUER}/token",
+                    "registration_endpoint": f"{AS_ISSUER}/register",
+                    "response_types_supported": ["code"],
+                    "code_challenge_methods_supported": ["S256"],
+                },
+            )
+        if url.startswith(f"{AS_ISSUER}/register"):
+            return httpx2.Response(404, text="404 page not found")
+        return httpx2.Response(404)
+
+    with pytest.raises(OAuthFlowError, match="try --client-id"):
+        await obtain_token_interactively(
+            SERVER_URL,
+            open_browser=lambda _url: None,
+            transport=httpx2.MockTransport(handler),
+        )
+
+
+async def test_callback_without_code_raises():
+    fake = FakeAuthServer()
+    actions: list[asyncio.Task] = []
+
+    def bad_redirect(authorization_url: str) -> None:
+        async def complete() -> None:
+            query = {key: values[0] for key, values in parse_qs(urlsplit(authorization_url).query).items()}
+            async with httpx2.AsyncClient() as browser:
+                # No code, no error — a broken AS redirect.
+                await browser.get(f"{query['redirect_uri']}?state={query.get('state', '')}")
+
+        actions.append(asyncio.get_event_loop().create_task(complete()))
+
+    with pytest.raises(OAuthFlowError, match="carried no code"):
+        await obtain_token_interactively(
+            SERVER_URL,
+            open_browser=bad_redirect,
+            transport=httpx2.MockTransport(fake.handler),
+        )
+    await asyncio.gather(*actions)
+
+
+async def test_empty_token_response_raises_with_hint():
+    """A token endpoint returning an empty access token yields the no-token error."""
+    fake = FakeAuthServer()
+    original = fake.handler
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url).startswith(f"{AS_ISSUER}/token"):
+            return httpx2.Response(200, json={"access_token": "", "token_type": "Bearer"})
+        return original(request)
+
+    actions: list[asyncio.Task] = []
+    with pytest.raises(OAuthFlowError, match="no token exchange"):
+        await obtain_token_interactively(
+            SERVER_URL,
+            open_browser=_fake_user(actions),
+            transport=httpx2.MockTransport(handler),
+        )
+    await asyncio.gather(*actions)
+
+
+async def test_loopback_unavailable_raises(monkeypatch: pytest.MonkeyPatch):
+    import mcpscore.oauth
+
+    monkeypatch.setattr(mcpscore.oauth, "_loopback_port_available", lambda: False)
+    with pytest.raises(OAuthFlowError, match="loopback port"):
+        await obtain_token_interactively(SERVER_URL)
+
+
+async def test_non_callback_requests_are_ignored():
+    """A stray request (e.g. favicon) must not consume the one-shot callback."""
+    fake = FakeAuthServer()
+    actions: list[asyncio.Task] = []
+
+    def browser_with_favicon(authorization_url: str) -> None:
+        async def complete() -> None:
+            query = {key: values[0] for key, values in parse_qs(urlsplit(authorization_url).query).items()}
+            redirect_uri = query["redirect_uri"]
+            base = redirect_uri.rsplit("/", 1)[0]
+            async with httpx2.AsyncClient() as browser:
+                await browser.get(f"{base}/favicon.ico")  # ignored by the listener
+                await browser.get(f"{redirect_uri}?code=fake-auth-code&state={query.get('state', '')}")
+
+        actions.append(asyncio.get_event_loop().create_task(complete()))
+
+    token = await obtain_token_interactively(
+        SERVER_URL,
+        open_browser=browser_with_favicon,
+        transport=httpx2.MockTransport(fake.handler),
+    )
+    assert token == ACCESS_TOKEN
+    await asyncio.gather(*actions)

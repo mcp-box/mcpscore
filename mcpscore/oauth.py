@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlsplit
 import webbrowser
 
 import httpx2
-from mcp.client.auth import OAuthClientProvider
+from mcp.client.auth import OAuthClientProvider, OAuthRegistrationError
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from pydantic import AnyUrl
 
@@ -103,6 +103,7 @@ class _LoopbackCallbackServer:
             await writer.drain()
         finally:
             writer.close()
+            await writer.wait_closed()
         split = urlsplit(target)
         if split.path == CALLBACK_PATH and not self._result.done():
             params = {key: values[0] for key, values in parse_qs(split.query).items()}
@@ -217,7 +218,7 @@ async def obtain_token_interactively(
             raise
         except Exception as exc:
             hint = ""
-            if client_id is None and "regist" in str(exc).lower():
+            if client_id is None and isinstance(exc, OAuthRegistrationError):
                 hint = " (the authorization server may not support dynamic client registration — try --client-id)"
             raise OAuthFlowError(f"OAuth flow failed: {exc}{hint}") from exc
 
