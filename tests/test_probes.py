@@ -3,6 +3,7 @@
 import json
 
 import httpx2
+import pytest
 
 from mcpscore.probes import (
     ERROR_HEADER_MISMATCH,
@@ -23,6 +24,7 @@ from mcpscore.probes import (
     PROBE_UNKNOWN_VERSION,
     ProbeOutcome,
     ProbeResult,
+    _fetch_auth_server_metadata,
     _well_known_urls,
     not_applicable_results,
     run_all_probes,
@@ -326,6 +328,32 @@ class TestAuthMetadataProbe:
         assert auth.details["auth_server_metadata_present"] is False
         assert auth.details["auth_server_metadata_error"] == "ReadTimeout"
 
+    async def test_reachable_issuer_publishing_nothing_records_no_transport_error(self):
+        """A 404 from the second AS location must clear the first one's transport error.
+
+        ``auth_server_metadata_error`` means "the issuer could not be contacted
+        at all". An issuer that answers one location — even with a 404 — is
+        reachable and simply publishes no usable document there; reporting a
+        stale transport error would misattribute that to an unreachable host.
+        """
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if request.url.host == "auth.example":
+                if path == "/.well-known/oauth-authorization-server":
+                    raise httpx2.ConnectError("refused")
+                return httpx2.Response(404)  # reachable, just nothing published
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        d = results[PROBE_AUTH_METADATA].details
+        assert d["auth_server_metadata_present"] is False
+        assert "auth_server_metadata_error" not in d
+
     async def test_oidc_fallback_recovers_after_first_candidate_transport_error(self):
         """A transport error on the RFC 8414 URL still lets the OIDC location answer."""
 
@@ -391,6 +419,66 @@ class TestAuthMetadataProbe:
         auth = results[PROBE_AUTH_METADATA]
         assert auth.outcome is ProbeOutcome.ERROR
         assert auth.details["exception"] == "ConnectError"
+        # An ERROR outcome is the case that most needs diagnostic context, so
+        # the details established before the failure must survive it.
+        assert auth.details["urls_tried"] == _well_known_urls(URL)
+        assert auth.details["unreachable_locations"] == _well_known_urls(URL)
+
+    async def test_partially_unreachable_locations_are_recorded(self):
+        """A firewalled location must stay distinguishable from one that answered 404.
+
+        The mixed case: one well-known location cannot be contacted, another
+        answers but carries no metadata. The outcome is UNSUPPORTED either way,
+        but silently dropping the transport error makes an unreachable location
+        look identical to an absent document.
+        """
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            if request.url.path == "/.well-known/oauth-protected-resource/mcp":
+                raise httpx2.ConnectError("refused")
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.UNSUPPORTED
+        assert auth.details["http_status"] == 404
+        assert auth.details["unreachable_locations"] == [
+            "https://server.example/.well-known/oauth-protected-resource/mcp"
+        ]
+
+    async def test_reachable_locations_record_no_unreachable_list(self):
+        """The diagnostic key is absent entirely when every location answered."""
+        results = await _run(_modern_server_handler)
+        assert "unreachable_locations" not in results[PROBE_AUTH_METADATA].details
+
+    @pytest.mark.parametrize(
+        "issuer",
+        [
+            "https://256.256.256.256",  # invalid IPv4 literal
+            "https://999.999.999.999",
+            "https://::1",  # bare IPv6, unbracketed
+            "http://[::1",  # unterminated bracket
+        ],
+    )
+    async def test_unusable_issuer_url_is_a_finding_not_an_exception(self, issuer: str):
+        """A syntactically plausible but unusable issuer must not void the audit.
+
+        ``authorization_servers`` is server-controlled and only prefix-checked,
+        so these values raise httpx2.InvalidURL — which does NOT derive from
+        HTTPError. Letting it escape would hand a server a way to skip the six
+        auth rules out of its own max_score by advertising a malformed issuer.
+
+        Hermetic: URL parsing fails before any connection is attempted, so the
+        real client here never touches the network.
+        """
+        details: dict[str, object] = {}
+        async with httpx2.AsyncClient(follow_redirects=True) as client:
+            await _fetch_auth_server_metadata(client, issuer, details)
+        assert details["auth_server_issuer"] == issuer
+        assert details["auth_server_metadata_present"] is False
+        assert details["auth_server_metadata_error"] == "InvalidURL"
 
     async def test_invalid_json_is_unsupported(self):
         def handler(request: httpx2.Request) -> httpx2.Response:

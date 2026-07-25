@@ -24,12 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one, and `auth_server_metadata_present` skipped itself out of the very score
   it exists to enforce. The walk now records the failure in
   `auth_server_metadata_error` and leaves `auth_server_metadata_present` false,
-  keeping the protected-resource findings intact.
+  keeping the protected-resource findings intact. This covers unusable issuer
+  URLs too (an invalid IPv4 literal, a bare IPv6 host): `authorization_servers`
+  is server-controlled and only scheme-checked, and those raise `InvalidURL`,
+  which does not derive from `HTTPError` — so advertising a malformed issuer
+  was a way for a server to skip those six rules out of its own `max_score`.
 - A transport error on one RFC 9728 well-known location no longer aborts the
   discovery of the next. When *every* location fails to connect the probe still
   reports `ERROR` (unverified) rather than `UNSUPPORTED` — an unreachable host
   is not evidence that a server publishes no metadata, so the dependent rules
-  skip instead of failing it.
+  skip instead of failing it. Locations that could not be contacted are listed
+  in the probe's `unreachable_locations`, and the `ERROR` outcome now keeps the
+  context it collected (`urls_tried`) instead of reporting the exception alone.
+- `auth_server_metadata_error` is now recorded only when *no* authorization-server
+  location could be contacted. An issuer answering one location with a 404 is
+  reachable and simply publishes nothing there; it previously kept an earlier
+  candidate's transport error, misreporting it as unreachable.
 
 ## [1.1.0b4] - 2026-07-25
 
