@@ -1,0 +1,70 @@
+---
+title: "Score Badge"
+description: "Embed a live mcpscore badge in your README — it updates automatically every time your server is re-audited."
+icon: "shield-check"
+---
+
+Every server audited on [mcpscore.dev](https://mcpscore.dev) gets a stable
+badge URL, keyed by the server's URL — not by any single audit. Embed it once
+and it always shows the **latest completed score**:
+
+```
+https://mcpscore.dev/api/v1/servers/badge.svg?url=<url-encoded server URL>
+```
+
+## Embed it
+
+The report page on mcpscore.dev has a copy-paste block with these prefilled
+for your server; the shape is:
+
+<CodeGroup>
+
+```markdown Markdown
+[![mcpscore score](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp)](https://mcpscore.dev/audits/<audit-id>)
+```
+
+```html HTML
+<a href="https://mcpscore.dev/audits/<audit-id>">
+  <img src="https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp" alt="mcpscore score" />
+</a>
+```
+
+</CodeGroup>
+
+## How it stays fresh
+
+- The badge **image** always reflects the **newest completed audit** for the
+  exact server URL in the query string. Re-audit the server (on mcpscore.dev
+  or via CI) and every README embed updates on its own — no new snippet
+  needed.
+- The **click-through link** is different: it points at the specific audit
+  report you copied the snippet from, and stays pinned to it. Re-copy the
+  snippet from a newer report when you want the link to lead somewhere
+  fresher — the image keeps itself current either way.
+- It's served with a short cache (~5 minutes), so a fresh score shows up
+  quickly.
+- A server that has never been audited gets a neutral **"no data"** badge —
+  the embed never breaks.
+
+<Note>
+The `url` parameter must match the audited server URL exactly (URL-encoded).
+`https://example.com/mcp` and `https://example.com/mcp/other` are different
+servers as far as the badge is concerned.
+</Note>
+
+## Safe to embed
+
+Requesting the badge **never triggers an audit** — it's a read-only lookup of
+the latest score, so embedding it in a high-traffic README costs your server
+nothing.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="GitHub Action" icon="github" href="/github-action">
+    Re-audit on every pull request, so the badge tracks your main branch
+  </Card>
+  <Card title="Scoring Methodology" icon="scale-balanced" href="/methodology">
+    What the number on the badge actually measures
+  </Card>
+</CardGroup>

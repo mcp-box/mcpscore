@@ -80,6 +80,38 @@ at the entry file:
     min-score: 85
 ```
 
+### Audit an auth-gated server
+
+Store the credential as an Actions secret and export it as `MCPSCORE_TOKEN` —
+the CLI picks it up automatically and the value never appears in logs or in
+the report:
+
+```yaml
+- uses: mcp-box/mcpscore-action@v1
+  with:
+    target: https://your-server.example/mcp
+    min-score: 80
+  env:
+    MCPSCORE_TOKEN: ${{ secrets.MCPSCORE_TOKEN }}
+```
+
+For API-key servers, pass a header through `args` instead — see
+[Authenticated Servers](/authenticated-servers) for all the flavors:
+
+```yaml
+- uses: mcp-box/mcpscore-action@v1
+  with:
+    target: https://your-server.example/mcp
+    args: --header 'X-Api-Key: ${{ secrets.MCP_API_KEY }}'
+```
+
+<Note>
+Without a credential, an auth-gated server gets a **partial audit** of its
+observable surface (auth posture, TLS, transport). Partial scores cover fewer
+checks and are not comparable to full-audit scores — calibrate `min-score`
+against whichever kind of audit the workflow actually runs.
+</Note>
+
 ### Also require readiness for the upcoming spec
 
 ```yaml
