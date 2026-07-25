@@ -33,9 +33,14 @@ for your server; the shape is:
 
 ## How it stays fresh
 
-- The badge always reflects the **newest completed audit** for the exact
-  server URL in the query string. Re-audit the server (on mcpscore.dev or via
-  CI) and every README embed updates on its own — no new snippet needed.
+- The badge **image** always reflects the **newest completed audit** for the
+  exact server URL in the query string. Re-audit the server (on mcpscore.dev
+  or via CI) and every README embed updates on its own — no new snippet
+  needed.
+- The **click-through link** is different: it points at the specific audit
+  report you copied the snippet from, and stays pinned to it. Re-copy the
+  snippet from a newer report when you want the link to lead somewhere
+  fresher — the image keeps itself current either way.
 - It's served with a short cache (~5 minutes), so a fresh score shows up
   quickly.
 - A server that has never been audited gets a neutral **"no data"** badge —

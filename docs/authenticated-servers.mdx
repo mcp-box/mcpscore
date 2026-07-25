@@ -7,8 +7,10 @@ icon: "lock"
 Many production MCP servers sit behind OAuth 2.x or an API key. mcpscore audits
 them the way any MCP client connects to them: present a credential and audit
 behind the gate, or present nothing and score what an unauthenticated client
-can observe. Credential values are **never logged and never written to the
-report** — the only trace is a boolean `authenticated` flag.
+can observe. Credential **values** are **never logged and never written to
+the report** — about the credential itself, the report records only the
+boolean `authenticated` flag (other report fields like `partial_reason`
+describe the server's auth requirements, never your secrets).
 
 ## Bearer tokens
 
