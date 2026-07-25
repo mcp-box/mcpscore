@@ -1,0 +1,138 @@
+---
+title: "Authenticated Servers"
+description: "Audit servers behind OAuth or API keys — bring a token, run the browser flow, or score the observable surface without credentials."
+icon: "lock"
+---
+
+Many production MCP servers sit behind OAuth 2.x or an API key. mcpscore audits
+them the way any MCP client connects to them: present a credential and audit
+behind the gate, or present nothing and score what an unauthenticated client
+can observe. Credential values are **never logged and never written to the
+report** — the only trace is a boolean `authenticated` flag.
+
+## Bearer tokens
+
+If you already have a token, pass it directly:
+
+```bash
+mcpscore https://your-server.example/mcp --token "$MY_TOKEN"
+```
+
+`--token` is shorthand for `--header 'Authorization: Bearer <TOKEN>'`. When the
+flag is omitted, mcpscore falls back to the `MCPSCORE_TOKEN` environment
+variable — the recommended form in CI and anywhere shell history is a concern:
+
+```bash
+export MCPSCORE_TOKEN="$MY_TOKEN"
+mcpscore https://your-server.example/mcp
+```
+
+## API keys and custom headers
+
+For servers gated by an API key or any non-OAuth scheme, send arbitrary
+headers with `--header` (repeatable):
+
+```bash
+mcpscore https://your-server.example/mcp \
+  --header 'X-Api-Key: <key>' \
+  --header 'X-Tenant: acme'
+```
+
+An explicit `Authorization` header always wins over `--token` /
+`MCPSCORE_TOKEN`. Only an `Authorization` credential sets the report's
+`authenticated` flag — other custom headers are sent but don't claim the audit
+was authenticated.
+
+## Interactive OAuth
+
+No token at hand? Let mcpscore obtain one:
+
+```bash
+mcpscore https://your-server.example/mcp --oauth
+```
+
+This opens your browser for the server's OAuth flow (authorization code +
+PKCE, per the [MCP authorization
+spec](https://modelcontextprotocol.io/specification/draft/basic/authorization)).
+The token is held **in memory only** — never written to disk, never logged.
+
+`--oauth` relies on the authorization server supporting **dynamic client
+registration** (RFC 7591). Some don't — GitHub's authorization server, for
+example, has no registration endpoint. For those, register an OAuth app once
+yourself and pass its ID:
+
+```bash
+mcpscore https://your-server.example/mcp --oauth --client-id <your-app-id>
+```
+
+The registered app must allow a loopback redirect URI
+(`http://127.0.0.1:<port>/callback`). RFC 8252 requires authorization servers
+to accept any port on loopback redirects; if yours insists on the exact
+pre-registered URI, pin the port with `--callback-port`.
+
+## No credentials? Partial audits
+
+An auth-gated server audited without credentials is still worth scoring — the
+parts of quality an unauthenticated client can see are real:
+
+- **Authorization posture** — the server answers 401 with a proper
+  `WWW-Authenticate` challenge, serves RFC 9728 protected-resource metadata,
+  and points at HTTPS-only authorization servers.
+- **TLS** and **transport** behavior.
+
+The report is marked `partial` with a `partial_reason`, and the CLI says so:
+
+```
+⚠️  Partial audit (Server requires authentication — running a partial audit
+of the observable surface.).
+```
+
+<Note>
+A partial score covers fewer checks than a full audit, so the two are **not
+comparable** — don't gate CI on a partial score threshold you calibrated
+against full audits.
+</Note>
+
+## Worked example: GitHub Copilot MCP
+
+GitHub's Copilot MCP server is OAuth-gated. Without credentials you get a
+partial audit of its auth posture, TLS, and transport:
+
+```bash
+mcpscore https://api.githubcopilot.com/mcp/
+```
+
+With a GitHub token you audit behind the gate — tools, schemas, the full
+report:
+
+```bash
+mcpscore https://api.githubcopilot.com/mcp/ --token "$GITHUB_TOKEN"
+```
+
+(`--oauth` against GitHub needs `--client-id`, since GitHub's authorization
+server doesn't offer dynamic client registration — see above.)
+
+## In CI
+
+Store the token as a secret and export it as `MCPSCORE_TOKEN`; nothing else
+changes. With the [GitHub Action](/github-action):
+
+```yaml
+- uses: mcp-box/mcpscore-action@v1
+  with:
+    target: https://your-server.example/mcp
+    min-score: 80
+  env:
+    MCPSCORE_TOKEN: ${{ secrets.MCPSCORE_TOKEN }}
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="GitHub Action" icon="github" href="/github-action">
+    Gate pull requests on quality — including gated servers
+  </Card>
+  <Card title="Rules Reference" icon="list-check" href="/rules">
+    The auth-posture rules, with their spec and RFC citations
+  </Card>
+</CardGroup>

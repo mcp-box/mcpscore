@@ -82,6 +82,9 @@ Many production MCP servers require OAuth 2.x. mcpscore handles them two ways:
   only an `authenticated` flag is recorded (set when an Authorization
   credential was sent; other custom headers do not set it).
 
+The [Authenticated Servers guide](/authenticated-servers) walks through every
+flavor, including a worked example against GitHub's Copilot MCP server.
+
 Example output tail:
 
 ```
@@ -99,8 +102,14 @@ Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score)
   <Card title="Rules Reference" icon="list-check" href="/rules">
     Every rule, its severity, and when it applies
   </Card>
+  <Card title="Authenticated Servers" icon="lock" href="/authenticated-servers">
+    Audit behind OAuth and API keys — or score the observable surface
+  </Card>
   <Card title="GitHub Action" icon="github" href="/github-action">
     Gate pull requests on quality, with a report comment
+  </Card>
+  <Card title="Score Badge" icon="shield-check" href="/badge">
+    A live badge for your README that tracks your latest score
   </Card>
   <Card title="Source" icon="code" href="https://github.com/mcp-box/mcpscore">
     mcp-box/mcpscore — issues and contributing

@@ -18,6 +18,13 @@
         ]
       },
       {
+        "group": "Guides",
+        "pages": [
+          "authenticated-servers",
+          "badge"
+        ]
+      },
+      {
         "group": "Use in CI",
         "pages": [
           "github-action"
