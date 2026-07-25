@@ -39,6 +39,8 @@ The report's top-level shape: `schema_version`, `mcpscore_version`,
 - The invocation shape — `mcpscore <target>` with `--json`, `--header`,
   `--token` (and the `MCPSCORE_TOKEN` environment variable) — is stable.
   New flags may be added; existing flags keep their meaning.
+- `mcpscore --version` prints `mcpscore <version>` on stdout and exits 0,
+  with no other output and without needing a target. Scripts may parse it.
 - Exit codes are a contract: **0** audit completed (regardless of score);
   **1** the audit was never attempted — a usage error or a failed `--oauth`
   flow (timeout, refusal, registration or token-exchange failure);

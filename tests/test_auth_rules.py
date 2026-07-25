@@ -242,6 +242,47 @@ class TestChallengeReferencesMetadata:
         data = _data(_unauth(www_authenticate=None))
         assert AuthChallengeReferencesMetadataRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
+    def test_passes_on_unquoted_parameter(self):
+        """Stripe's real header form: a bare, unquoted resource_metadata value.
+
+        RFC 7235 §2.1 wants a quoted-string for a URL value, but deployed
+        servers send it bare and clients read it — scoring that as "no
+        resource_metadata parameter" reports a failure no client experiences.
+        """
+        unauth = _unauth(www_authenticate=f"Bearer resource_metadata={METADATA_URL}")
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is True
+        assert result.details is not None
+        assert result.details["resource_metadata"] == METADATA_URL
+
+    def test_unquoted_value_stops_at_parameter_separator(self):
+        """A bare value ends at the auth-param comma, not at the end of the header."""
+        unauth = _unauth(www_authenticate=f'Bearer resource_metadata={METADATA_URL}, error="invalid_token"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is True
+        assert result.details is not None
+        assert result.details["resource_metadata"] == METADATA_URL
+
+    def test_unquoted_cross_origin_is_still_caught(self):
+        """Tolerating the bare form must not weaken the cross-origin check."""
+        unauth = _unauth(www_authenticate="Bearer resource_metadata=https://evil.example/.well-known/x")
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is False
+        assert "not on this server's origin" in result.message
+
+    def test_param_name_is_matched_case_insensitively(self):
+        """RFC 7235 §2.1: auth-param names are case-insensitive."""
+        unauth = _unauth(www_authenticate=f'Bearer Resource_Metadata="{METADATA_URL}"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is True
+
+    def test_similarly_named_parameter_is_not_mistaken_for_the_real_one(self):
+        """``xresource_metadata`` is a different parameter and must not match."""
+        unauth = _unauth(www_authenticate='Bearer xresource_metadata="https://evil.example/x"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        assert result.passed is False
+        assert "no resource_metadata parameter" in result.message
+
 
 class TestMetadataHttps:
     def test_passes_for_https(self):

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0b6] - 2026-07-25
+
+### Added
+
+- **`mcpscore --version`.** It prints `mcpscore <version>` and exits 0 without
+  requiring a target, so identifying an installed build no longer means running
+  an audit or reading `--json` output. The greeting banner moved after argument
+  parsing, so `--version` and `--help` are no longer preceded by it — the
+  version line is the only thing written, and scripts can parse it.
+
+### Fixed
+
+- **`auth_challenge_references_metadata` now accepts an unquoted
+  `resource_metadata` value.** RFC 7235 §2.1 defines an auth-param value as
+  `token / quoted-string`, and a URL contains `:` and `/` — delimiters that are
+  not valid `token` characters — so strictly the value must be quoted.
+  Deployed servers send it bare anyway (verified against Stripe's MCP endpoint,
+  2026-07-25) and clients read it without trouble, so failing the rule reported
+  a discovery failure no real client experiences. The parser now reads both
+  forms, ending a bare value at the next comma or whitespace. Two related
+  corrections in the same parser: parameter names are matched
+  case-insensitively (RFC 7235 §2.1), and a name is matched only at a parameter
+  boundary, so `xresource_metadata=` is no longer mistaken for
+  `resource_metadata=`.
+
 ## [1.1.0b5] - 2026-07-25
 
 ### Fixed
@@ -439,7 +464,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b5...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b6...HEAD
+[1.1.0b6]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b5...v1.1.0b6
 [1.1.0b5]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b4...v1.1.0b5
 [1.1.0b4]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b3...v1.1.0b4
 [1.1.0b3]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b2...v1.1.0b3

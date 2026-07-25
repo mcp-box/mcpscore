@@ -16,6 +16,7 @@ authorization server's own RFC 8414 metadata and check it advertises PKCE
 (S256), per the OAuth security BCP (RFC 9700).
 """
 
+import re
 from typing import ClassVar
 from urllib.parse import urlsplit
 
@@ -271,14 +272,29 @@ class AuthMetadataBaseRule(AuthPostureBaseRule):
 
 
 def _parse_www_authenticate_param(header: str, param: str) -> str | None:
-    """Extract a quoted parameter (e.g. resource_metadata="…") from a challenge."""
-    marker = f'{param}="'
-    start = header.find(marker)
-    if start == -1:
+    """Extract an auth-param from a challenge, accepting the quoted and bare forms.
+
+    RFC 7235 §2.1 defines an auth-param value as ``token / quoted-string``, and
+    a URL contains ``:`` and ``/`` — delimiters that are not valid ``token``
+    characters — so strictly it must be quoted. Deployed servers send it bare
+    anyway (Stripe's MCP endpoint, verified 2026-07-25), and clients read it
+    fine, so scoring that as "no resource_metadata parameter" would report a
+    discovery failure no real client experiences.
+
+    The bare value ends at the next comma or whitespace, the auth-param
+    separators. Param names are matched case-insensitively (RFC 7235 §2.1) and
+    only at a parameter boundary, so ``xresource_metadata=`` is not mistaken
+    for ``resource_metadata=``.
+    """
+    pattern = re.compile(
+        rf"(?:^|[\s,]){re.escape(param)}\s*=\s*(?:\"([^\"]*)\"|([^\s,]+))",
+        re.IGNORECASE,
+    )
+    match = pattern.search(header)
+    if match is None:
         return None
-    start += len(marker)
-    end = header.find('"', start)
-    return header[start:end] if end != -1 else None
+    quoted, bare = match.groups()
+    return quoted if quoted is not None else bare
 
 
 @register_rule

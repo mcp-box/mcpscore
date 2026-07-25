@@ -11,6 +11,7 @@ This module tests the command-line interface functionality including:
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 import json
 import logging
@@ -21,9 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcpscore import MCPAuditor, MCPClient, MCPTransportType
-from mcpscore.cli import async_main, build_parser, build_report, main
+from mcpscore.cli import _mcpscore_version, async_main, build_parser, build_report, main
 
 if TYPE_CHECKING:
+    from _pytest.capture import CaptureFixture
     from _pytest.logging import LogCaptureFixture
     from _pytest.monkeypatch import MonkeyPatch
 
@@ -233,9 +235,11 @@ class TestAsyncMain:
             await async_main()
 
         assert exc_info.value.code == 1
-        assert "Welcome to MCPScore!" in caplog.text
         assert "Usage error" in caplog.text
         assert "target" in caplog.text
+        # The banner now follows argument parsing, so a usage error is not
+        # preceded by a greeting (same reason --version and --help aren't).
+        assert "Welcome to MCPScore!" not in caplog.text
 
     async def test_async_main_connection_failure(
         self,
@@ -671,6 +675,37 @@ class TestJSONOutput:
 
         assert exc_info.value.code == 1
         assert "Usage error" in caplog.text
+
+
+class TestVersionFlag:
+    """`mcpscore --version` — the first thing anyone runs to identify a build."""
+
+    def test_version_works_without_the_required_target(self, capsys: CaptureFixture[str]) -> None:
+        """--version exits 0 during parsing, before `target` is enforced."""
+        with pytest.raises(SystemExit) as exc_info:
+            build_parser().parse_args(["--version"])
+
+        assert exc_info.value.code == 0
+        assert capsys.readouterr().out.strip() == f"mcpscore {_mcpscore_version()}"
+
+    async def test_version_prints_no_banner(self, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]) -> None:
+        """Nothing precedes the version on stdout or stderr — it must stay parseable."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--version"])
+        with pytest.raises(SystemExit) as exc_info:
+            await async_main()
+
+        captured = capsys.readouterr()
+        assert exc_info.value.code == 0
+        assert captured.out.strip() == f"mcpscore {_mcpscore_version()}"
+        assert "Welcome" not in captured.out + captured.err
+
+    async def test_normal_runs_still_greet(self, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture) -> None:
+        """Moving the parse ahead of the banner must not drop it from real audits."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp"])
+        with caplog.at_level(logging.INFO), contextlib.suppress(SystemExit):
+            await async_main()
+
+        assert "Welcome to MCPScore!" in caplog.text
 
 
 class TestBuildReport:
