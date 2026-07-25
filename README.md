@@ -1,4 +1,4 @@
-# MCPScore
+# mcpscore
 
 [![CI](https://github.com/mcp-box/mcpscore/actions/workflows/ci.yml/badge.svg)](https://github.com/mcp-box/mcpscore/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/mcp-box/mcpscore/graph/badge.svg)](https://codecov.io/gh/mcp-box/mcpscore)
@@ -6,11 +6,13 @@
 [![Python](https://img.shields.io/pypi/pyversions/mcpscore.svg)](https://pypi.org/project/mcpscore/)
 [![License](https://img.shields.io/github/license/mcp-box/mcpscore.svg)](https://github.com/mcp-box/mcpscore/blob/main/LICENSE)
 
-A command-line tool for auditing MCP (Model Context Protocol) servers. MCPScore connects to your server, runs a comprehensive set of validation rules against it, and produces a severity-based report showing what's compliant and what needs attention.
+**Lighthouse for MCP.** Audit any MCP (Model Context Protocol) server and get a scored, actionable report in seconds.
 
-## Why MCPScore?
+Point mcpscore at a server — from the CLI, a GitHub Action, or [mcpscore.dev](https://mcpscore.dev) — and it grades protocol conformance, tool quality, security and auth posture, and readiness for the upcoming spec revision, then tells you exactly what to fix. Deterministic, no API key, no sign-up.
 
-MCP servers that violate the spec fail silently in the worst place: inside someone else's AI agent. A missing tool description, an outdated protocol version, or an unencrypted endpoint won't crash your server — it will just make agents pick the wrong tool, drop your server from their registry, or leak traffic. MCPScore catches these issues in seconds, before your users do.
+## Why mcpscore?
+
+MCP servers that violate the spec fail silently in the worst place: inside someone else's AI agent. A missing tool description, an outdated protocol version, or an unencrypted endpoint won't crash your server — it will just make agents pick the wrong tool, drop your server from their registry, or leak traffic. mcpscore catches these issues in seconds, before your users do.
 
 ```bash
 pip install mcpscore
@@ -32,7 +34,7 @@ Every rule has a severity, and each passing rule contributes its weight to the s
 | MEDIUM   | 2      | Recommendations that improve agent UX (titles, descriptions, error hygiene)      |
 | LOW      | 1      | Nice-to-haves (capability extras, transport recommendations)                     |
 
-The final score is reported as `earned/maximum` — higher means better MCP compliance.
+The final score is reported as `earned/maximum` — higher means a better-quality server.
 
 ## Features
 
@@ -43,29 +45,31 @@ The final score is reported as `earned/maximum` — higher means better MCP comp
 - **Severity-based reporting**: Rules categorized as CRITICAL, HIGH, MEDIUM, or LOW
 - **Library-friendly**: Fully typed (`py.typed`); use `MCPClient` + `MCPAuditor` programmatically
 
-## What it audits
+## What it scores
 
-- **Protocol Version Compliance**:
-  - ✅ Allowed versions check (CRITICAL)
-  - ✅ Latest version recommendation (MEDIUM)
-  - ✅ Deprecated version detection (HIGH)
+54 rules across four categories — the same four the report, the JSON output, and
+[mcpscore.dev](https://mcpscore.dev) show. Every rule cites the spec section or RFC it
+enforces; the full list is in the [rules reference](https://docs.mcpscore.dev/rules/).
 
-- **Server Information**:
-  - ✅ Server name presence (CRITICAL)
-  - ✅ Server title presence (MEDIUM)
-  - ✅ Server version presence (HIGH)
+**Protocol** (18 rules) — protocol version (allowed, latest, not deprecated), server
+name, title and version, advertised capabilities, and transport. Streamable HTTP is the
+current standard, so SSE-only servers get migration advice.
 
-- **Capabilities**: Tools, resources, prompts, logging, and subscription support
+**Tools Quality** (13 rules) — tool names (presence, uniqueness, format), titles,
+descriptions, and JSON Schema validity of input and output schemas, plus the equivalent
+checks for prompts and resources. These decide whether an agent picks the right tool and
+calls it correctly.
 
-- **Tools**: Names (presence, uniqueness, format), titles, descriptions, and JSON Schema validity of input/output schemas
+**Security & Auth** (11 rules) — HTTPS/TLS with the actually negotiated version,
+certificate validity, and error responses checked for data leaks. For auth-gated servers,
+the OAuth posture too: the `WWW-Authenticate` challenge, RFC 9728 protected-resource
+metadata, the RFC 8414 authorization-server chain, and whether PKCE (S256) is enforced.
+A gated server is scored on this surface without credentials — see
+[auditing authenticated servers](https://docs.mcpscore.dev/authenticated-servers/).
 
-- **Security**:
-  - ✅ HTTPS/TLS usage with the actually negotiated TLS version
-  - ✅ Valid certificate checks
-  - ✅ Error responses checked for data leaks
-
-- **Transport**:
-  - ✅ Streamable HTTP usage (the current MCP standard; SSE-only servers get migration advice)
+**Readiness** (12 rules) — how ready the server is for the upcoming MCP spec revision,
+reported on its own axis. For servers already speaking the new lifecycle those points
+also count toward the main score; for everyone else the axis stays informative.
 
 ## Requirements
 
@@ -106,7 +110,7 @@ mcpscore path/to/your/server.py --json > report.json
 ### Example output
 
 ```
-Welcome to MCPScore!
+Welcome to mcpscore!
 Connected to the MCP server: /path/to/server.py
 Transport: stdio
 Starting the audit...
@@ -176,6 +180,20 @@ output goes to stderr, so the JSON can be piped or redirected cleanly):
 (snapshots, dashboards); display names and messages may change between
 releases.
 
+## Score badge
+
+Every server audited on [mcpscore.dev](https://mcpscore.dev) gets a stable badge URL,
+keyed by the server's URL rather than by any single audit — embed it once and it always
+shows the latest completed score:
+
+```markdown
+[![mcpscore score](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp)](https://mcpscore.dev/audits/<audit-id>)
+```
+
+The report page on mcpscore.dev has a copy-paste block with these prefilled for your
+server. Full details, including the HTML form and how freshness works, are in the
+[badge docs](https://docs.mcpscore.dev/badge/).
+
 ## Troubleshooting
 
 **Connection fails**
@@ -187,7 +205,7 @@ releases.
 **Protocol version errors**
 
 - Confirm your server uses a currently supported MCP protocol version
-- If your server uses a newer version that MCPScore doesn't yet recognize, please [open an issue](https://github.com/mcp-box/mcpscore/issues)
+- If your server uses a newer version that mcpscore doesn't yet recognize, please [open an issue](https://github.com/mcp-box/mcpscore/issues)
 
 ## Contributing
 

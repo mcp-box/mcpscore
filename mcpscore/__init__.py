@@ -1,4 +1,4 @@
-"""MCPScore - A comprehensive auditing tool for MCP (Model Context Protocol) servers.
+"""mcpscore - a quality score for MCP (Model Context Protocol) servers.
 
 This package provides tools for auditing MCP servers to ensure compliance with
 protocol standards and best practices. It includes:

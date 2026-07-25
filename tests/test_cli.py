@@ -163,7 +163,7 @@ class TestAsyncMain:
         ):
             await async_main()
 
-        assert "Welcome to MCPScore!" in caplog.text
+        assert "Welcome to mcpscore!" in caplog.text
         mock_client.detect_and_connect.assert_called_once_with("/path/to/server.py")
         assert "Connected to the MCP server: /path/to/server.py" in caplog.text
         assert "Transport: stdio" in caplog.text
@@ -239,7 +239,7 @@ class TestAsyncMain:
         assert "target" in caplog.text
         # The banner now follows argument parsing, so a usage error is not
         # preceded by a greeting (same reason --version and --help aren't).
-        assert "Welcome to MCPScore!" not in caplog.text
+        assert "Welcome to mcpscore!" not in caplog.text
 
     async def test_async_main_connection_failure(
         self,
@@ -361,7 +361,7 @@ class TestAsyncMain:
             await async_main()
 
         log_messages = [
-            "Welcome to MCPScore!",
+            "Welcome to mcpscore!",
             "Connected to the MCP server: /path/to/server.py",
             "Transport: stdio",
             "Starting the audit...",
@@ -407,7 +407,7 @@ class TestLogging:
         ):
             await async_main()
 
-        assert "Welcome to MCPScore!" in caplog.text
+        assert "Welcome to mcpscore!" in caplog.text
         assert "Connected to the MCP server" in caplog.text
         assert "Starting the audit" in caplog.text
         assert "Audit finished" in caplog.text
@@ -705,7 +705,7 @@ class TestVersionFlag:
         with caplog.at_level(logging.INFO), contextlib.suppress(SystemExit):
             await async_main()
 
-        assert "Welcome to MCPScore!" in caplog.text
+        assert "Welcome to mcpscore!" in caplog.text
 
 
 class TestBuildReport:
