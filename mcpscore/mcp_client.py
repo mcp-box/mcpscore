@@ -37,12 +37,13 @@ _REASON_MESSAGES: dict[ConnectionErrorReason, str] = {
     ConnectionErrorReason.INVALID_URL: "Invalid server URL or path.",
     ConnectionErrorReason.UNREACHABLE: "Could not reach the server (connection refused, DNS failure, or host down).",
     ConnectionErrorReason.TIMEOUT: "The server did not respond in time.",
-    ConnectionErrorReason.UNAUTHORIZED: (
-        "The MCP server requires authentication (HTTP 401). MCPScore can only audit publicly accessible servers."
-    ),
-    ConnectionErrorReason.FORBIDDEN: (
-        "The MCP server refused access (HTTP 403). MCPScore can only audit publicly accessible servers."
-    ),
+    # Auth-gated servers are auditable: no session opens, but the caller runs a
+    # partial audit of the observable surface (auth posture, TLS, transport).
+    # These messages state the observation only — the actionable hint belongs to
+    # the caller, which knows whether it can carry credentials at all (the CLI
+    # suggests --token; the web service cannot).
+    ConnectionErrorReason.UNAUTHORIZED: "The MCP server requires authentication (HTTP 401).",
+    ConnectionErrorReason.FORBIDDEN: "The MCP server refused access (HTTP 403).",
     ConnectionErrorReason.HTTP_ERROR: "The server returned an HTTP error during the MCP handshake.",
     ConnectionErrorReason.NOT_MCP: (
         "The endpoint was reachable but did not complete an MCP handshake — it may not be an MCP server."
