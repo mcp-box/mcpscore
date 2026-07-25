@@ -57,6 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
         "target",
         help="Path to a local MCP server (.py, .js) or URL of a remote server (Streamable HTTP / SSE)",
     )
+    # An "action=version" argument exits during parsing, before argparse
+    # enforces the required `target` — so `mcpscore --version` works on its
+    # own, which is the whole point of asking a tool what version it is.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {_mcpscore_version()}",
+        help="Show the installed mcpscore version and exit",
+    )
     parser.add_argument(
         "--json",
         action="store_true",
@@ -293,9 +302,11 @@ async def async_main() -> None:
     Exits with code 1 on usage errors, or code 2 if connection fails and the
     server shows no modern-lifecycle support either.
     """
-    logger.info("Welcome to MCPScore!")
-
+    # Parse before greeting: --version and --help exit during parsing, and
+    # neither should be preceded by a banner.
     args = build_parser().parse_args()
+
+    logger.info("Welcome to MCPScore!")
 
     try:
         headers = collect_headers(args)
