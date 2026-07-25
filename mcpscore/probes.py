@@ -482,6 +482,26 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
     return response.status_code, parsed if isinstance(parsed, dict) else None
 
 
+async def _try_get_json_anonymous(
+    client: httpx2.AsyncClient, url: str
+) -> tuple[int | None, dict[str, Any] | None, str | None]:
+    """``_get_json_anonymous`` that reports transport failures as data, never raises.
+
+    The auth-discovery chain spans hosts the audited server does not control —
+    RFC 8414 discovery leaves the server's origin for the authorization
+    server's. An unreachable, slow or TLS-broken hop there is a finding about
+    *that* hop, so it must not discard what earlier hops already established.
+
+    Returns (http_status, parsed_dict_or_None, exception_name_or_None); status
+    is None when the request never completed.
+    """
+    try:
+        status, parsed = await _get_json_anonymous(client, url)
+    except httpx2.HTTPError as e:
+        return None, None, type(e).__name__
+    return status, parsed, None
+
+
 def _is_http_url(value: object) -> bool:
     """Whether a value is an http(s) URL string."""
     return isinstance(value, str) and value.startswith(("https://", "http://"))
@@ -503,13 +523,23 @@ async def _fetch_auth_server_metadata(client: httpx2.AsyncClient, issuer: str, d
     required authorization/token endpoints, and whether it advertises PKCE with
     S256 (`code_challenge_methods_supported`) — the OAuth security BCP (RFC
     9700) / MCP-auth requirement.
+
+    An authorization server that cannot be reached at all (DNS failure,
+    refused connection, timeout, TLS error) leaves
+    ``auth_server_metadata_present`` False and records the transport failure in
+    ``auth_server_metadata_error``: "the issuer this server advertises is
+    unreachable" is itself the finding, and it must not void the
+    protected-resource metadata already collected by the caller.
     """
     details["auth_server_issuer"] = issuer
     details["auth_server_metadata_present"] = False
     for candidate in _auth_server_metadata_urls(issuer):
-        _status, metadata = await _get_json_anonymous(client, candidate)
+        _status, metadata, error = await _try_get_json_anonymous(client, candidate)
+        if error is not None:
+            details["auth_server_metadata_error"] = error
         if metadata is None:
             continue
+        details.pop("auth_server_metadata_error", None)
         methods = metadata.get("code_challenge_methods_supported")
         details["auth_server_metadata_url"] = candidate
         details["auth_server_metadata_present"] = True
@@ -529,11 +559,23 @@ async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeRes
     where, plus the authorization server's endpoint/PKCE posture. Servers
     without authentication commonly 404 here — the dependent rules skip unless
     the endpoint demanded auth in the first place.
+
+    A transport error on one well-known location does not abort discovery of
+    the next, but "every location failed to connect" stays ERROR rather than
+    UNSUPPORTED: an unreachable host is *unverified*, not proof that the
+    server publishes no metadata, and the dependent rules must skip rather
+    than fail it.
     """
     details: dict[str, Any] = {"urls_tried": []}
+    reached = False
+    last_error: str | None = None
     for candidate in _well_known_urls(url):
         details["urls_tried"].append(candidate)
-        status, metadata = await _get_json_anonymous(client, candidate)
+        status, metadata, error = await _try_get_json_anonymous(client, candidate)
+        if error is not None:
+            last_error = error
+            continue
+        reached = True
         details["http_status"] = status
         if metadata is None:
             continue
@@ -552,6 +594,8 @@ async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeRes
             if first is not None:
                 await _fetch_auth_server_metadata(client, first, details)
             return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
+    if not reached:
+        return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.ERROR, {"exception": last_error})
     return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.UNSUPPORTED, details)
 
 

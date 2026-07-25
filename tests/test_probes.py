@@ -271,6 +271,127 @@ class TestAuthMetadataProbe:
         assert d["auth_server_has_endpoints"] is True
         assert d["auth_server_pkce_s256"] is False
 
+    async def test_unreachable_authorization_server_preserves_resource_metadata(self):
+        """An unreachable AS is a finding about the AS — it must not void the PRM.
+
+        Regression: the RFC 8414 walk leaves the audited server's origin, so a
+        ConnectError there used to propagate out of the probe and discard the
+        protected-resource metadata already collected, silently skipping six
+        auth rules (and shrinking max_score) for a correctly-configured server.
+        """
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            if request.url.host == "auth.example":
+                raise httpx2.ConnectError("name resolution failed")
+            if request.url.path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(
+                    200,
+                    json={
+                        "resource": URL,
+                        "authorization_servers": ["https://auth.example"],
+                        "scopes_supported": ["read"],
+                    },
+                )
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.SUPPORTED
+        # Everything established before the failing hop survives.
+        assert auth.details["resource"] == URL
+        assert auth.details["metadata_url"].endswith("/oauth-protected-resource/mcp")
+        assert auth.details["scopes_supported"] == ["read"]
+        # The unreachable issuer is recorded as data, not as a lost observation.
+        assert auth.details["auth_server_issuer"] == "https://auth.example"
+        assert auth.details["auth_server_metadata_present"] is False
+        assert auth.details["auth_server_metadata_error"] == "ConnectError"
+
+    async def test_authorization_server_timeout_is_recorded_not_raised(self):
+        """A merely slow authorization server degrades the same way as an absent one."""
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            if request.url.host == "auth.example":
+                raise httpx2.ReadTimeout("too slow")
+            if request.url.path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.SUPPORTED
+        assert auth.details["auth_server_metadata_present"] is False
+        assert auth.details["auth_server_metadata_error"] == "ReadTimeout"
+
+    async def test_oidc_fallback_recovers_after_first_candidate_transport_error(self):
+        """A transport error on the RFC 8414 URL still lets the OIDC location answer."""
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if request.url.host == "auth.example":
+                if path == "/.well-known/oauth-authorization-server":
+                    raise httpx2.ConnectError("refused")
+                return httpx2.Response(
+                    200,
+                    json={
+                        "issuer": "https://auth.example",
+                        "authorization_endpoint": "https://auth.example/authorize",
+                        "token_endpoint": "https://auth.example/token",
+                        "code_challenge_methods_supported": ["S256"],
+                    },
+                )
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        d = results[PROBE_AUTH_METADATA].details
+        assert d["auth_server_metadata_present"] is True
+        assert d["auth_server_pkce_s256"] is True
+        # A recovered candidate leaves no stale error behind.
+        assert "auth_server_metadata_error" not in d
+
+    async def test_well_known_transport_error_falls_through_to_origin_root(self):
+        """A transport error on the path-aware PRM location must not abort discovery."""
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            if request.url.path == "/.well-known/oauth-protected-resource/mcp":
+                raise httpx2.ConnectError("refused")
+            if request.url.path == "/.well-known/oauth-protected-resource":
+                return httpx2.Response(200, json={"resource": URL})
+            return httpx2.Response(404)
+
+        results = await _run(handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.SUPPORTED
+        assert auth.details["metadata_url"] == "https://server.example/.well-known/oauth-protected-resource"
+
+    async def test_all_well_known_locations_unreachable_stays_error(self):
+        """Unreachable ≠ "publishes no metadata" — the rules must skip, not fail.
+
+        Only the well-known fetches fail here, so the probe cannot claim the
+        server lacks a PRM document; ERROR keeps the dependent rules on
+        insufficient-data rather than scoring the server down for something
+        that was never observed.
+        """
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                raise httpx2.ConnectError("refused")
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+        auth = results[PROBE_AUTH_METADATA]
+        assert auth.outcome is ProbeOutcome.ERROR
+        assert auth.details["exception"] == "ConnectError"
+
     async def test_invalid_json_is_unsupported(self):
         def handler(request: httpx2.Request) -> httpx2.Response:
             if request.method == "GET":

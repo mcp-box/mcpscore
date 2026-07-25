@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0b5] - 2026-07-25
+
+### Fixed
+
+- **An unreachable authorization server no longer voids the protected-resource
+  findings.** The RFC 8414 discovery walk leaves the audited server's origin
+  for the authorization server's, and a transport failure there (DNS, refused
+  connection, timeout, TLS) propagated out of the auth-metadata probe and
+  discarded the RFC 9728 metadata already collected. Six auth rules
+  (`auth_protected_resource_metadata`, `auth_authorization_servers_https`,
+  `auth_metadata_https`, `auth_scopes_advertised`,
+  `auth_server_metadata_present`, `auth_server_metadata_pkce`) then skipped as
+  insufficient-data, shrinking `max_score` — so a server advertising a *bogus*
+  authorization server scored more leniently than one advertising a working
+  one, and `auth_server_metadata_present` skipped itself out of the very score
+  it exists to enforce. The walk now records the failure in
+  `auth_server_metadata_error` and leaves `auth_server_metadata_present` false,
+  keeping the protected-resource findings intact.
+- A transport error on one RFC 9728 well-known location no longer aborts the
+  discovery of the next. When *every* location fails to connect the probe still
+  reports `ERROR` (unverified) rather than `UNSUPPORTED` — an unreachable host
+  is not evidence that a server publishes no metadata, so the dependent rules
+  skip instead of failing it.
+
 ## [1.1.0b4] - 2026-07-25
 
 ### Added
@@ -405,7 +429,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b4...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b5...HEAD
+[1.1.0b5]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b4...v1.1.0b5
 [1.1.0b4]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b3...v1.1.0b4
 [1.1.0b3]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b2...v1.1.0b3
 [1.1.0b2]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b1...v1.1.0b2
