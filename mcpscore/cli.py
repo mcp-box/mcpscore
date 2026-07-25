@@ -1,4 +1,4 @@
-"""Command-line interface for MCPScore."""
+"""Command-line interface for mcpscore."""
 
 from __future__ import annotations
 
@@ -284,7 +284,7 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
 
 
 async def async_main() -> None:
-    """Execute the main entry point for the MCPScore CLI application.
+    """Execute the main entry point for the mcpscore CLI application.
 
     Orchestrates the audit process by:
     1. Parsing command line arguments for the server path or URL
@@ -306,7 +306,7 @@ async def async_main() -> None:
     # neither should be preceded by a banner.
     args = build_parser().parse_args()
 
-    logger.info("Welcome to MCPScore!")
+    logger.info("Welcome to mcpscore!")
 
     try:
         headers = collect_headers(args)

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The CLI welcome line is now `Welcome to mcpscore!`** (lowercase wordmark).
+  The brand guidelines spell the name as one lowercase word everywhere, and
+  spell this string out verbatim; the CLI was the last place saying "MCPScore".
+  The PyPI and npm summaries now both use the guidelines' per-surface copy —
+  they had drifted into three different descriptions of the same tool.
+
 ### Fixed
 
 - **The auth-gated connection messages no longer claim mcpscore cannot audit
