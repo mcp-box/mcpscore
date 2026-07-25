@@ -2,9 +2,31 @@ name: Publish
 
 # Triggered by publishing a GitHub Release (not a raw tag push), so the
 # `pypi` environment's protection rules gate the deploy.
+#
+# workflow_dispatch is the recovery path: a GitHub Actions outage (or any
+# transient failure) can leave a published Release whose PyPI upload never
+# ran, and the release event cannot be re-fired without deleting or
+# draft-cycling a release that is already public. Dispatching re-runs the
+# same jobs for an existing tag. The `pypi` environment still gates it, so
+# its protection rules and Trusted Publishing are unchanged.
+#
+#   gh workflow run publish.yml -f tag=v1.2.3
+#
+# Run it from the DEFAULT BRANCH and name the tag as an input — do not pass
+# `--ref <tag>`. GitHub reads the workflow definition from the dispatched
+# ref, so older tags (cut before this trigger existed) have no
+# workflow_dispatch and are rejected outright. The checkout below uses the
+# `tag` input, so building from the default branch still ships the tag's
+# source.
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, e.g. v1.1.0b6"
+        required: true
+        type: string
 
 permissions: {}
 
@@ -16,6 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
+          # Always build from the tag itself. On a release event this is what
+          # the default checkout would pick anyway; on a dispatch it stops a
+          # run started from the wrong ref (or with no --ref at all) from
+          # building `main` and uploading it under the tag's version.
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
@@ -58,4 +85,4 @@ jobs:
         run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}

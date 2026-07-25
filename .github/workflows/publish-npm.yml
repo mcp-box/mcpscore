@@ -7,6 +7,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, e.g. v1.1.0"
+        required: true
+        type: string
 
 permissions: {}
 
@@ -23,6 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
+          # Publish the tag's wrapper, never whatever `main` happens to hold.
+          # A dispatch defaults to the ref it was started from, so without this
+          # a recovery run would push main's npm/ to the registry under the
+          # release's version — and npm publishes are immutable.
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
       # No dependency caching is enabled (the `cache:` input is omitted), so
       # there is no cache to poison; the publish is OIDC + provenance built
