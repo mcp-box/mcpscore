@@ -80,11 +80,13 @@ parts of quality an unauthenticated client can see are real:
   and points at HTTPS-only authorization servers.
 - **TLS** and **transport** behavior.
 
-The report is marked `partial` with a `partial_reason`, and the CLI says so:
+The report is marked `partial` with a `partial_reason`, and the CLI says so
+in the report tail:
 
 ```
-⚠️  Partial audit (Server requires authentication — running a partial audit
-of the observable surface.).
+⚠️  Partial audit (Server requires authentication (HTTP 401); scored the
+unauthenticated surface only — pass a token to audit behind the gate.).
+Only the auth, TLS, and transport surface was scored — not comparable to a full audit.
 ```
 
 <Note>
