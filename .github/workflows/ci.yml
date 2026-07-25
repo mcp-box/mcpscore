@@ -2,9 +2,25 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Every branch, so a branch pushed without an open PR is still checked.
+    # Without this a merged-then-reused branch can reach a release unverified.
+    branches: ['**']
   pull_request:
     branches: [main]
+
+concurrency:
+  # Keyed by event, then head repo, then branch.
+  #   event_name: a push run and its pull_request run must NOT share a group.
+  #     They report onto the same PR, so cancelling one renders as a FAILED
+  #     check and blocks merge even though CI passed.
+  #   head repo: without it a fork PR whose head branch is named `main` (or two
+  #     forks sharing a branch name) collides with an unrelated run.
+  #   branch: consecutive pushes to one branch still supersede each other.
+  group: >-
+    ${{ github.workflow }}-${{ github.event_name }}-${{
+    github.event.pull_request.head.repo.full_name || github.repository }}-${{
+    github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions: {}
 
