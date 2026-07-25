@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The auth-gated connection messages no longer claim mcpscore cannot audit
+  gated servers.** Both read "MCPScore can only audit publicly accessible
+  servers", which stopped being true in 1.1.0b2 when credential-free partial
+  audits landed — and it is the text a consumer surfaces when it reports the
+  connection failure. They now state the observation only (`The MCP server
+  requires authentication (HTTP 401).`); the actionable hint belongs to the
+  caller, which knows whether it can carry credentials at all.
+
 ## [1.1.0b6] - 2026-07-25
 
 ### Added
