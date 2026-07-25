@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0b4] - 2026-07-25
+
 ### Added
 
 - **`--oauth`: interactive browser OAuth flow.** mcpscore discovers the
@@ -403,7 +405,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b3...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b4...HEAD
+[1.1.0b4]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b3...v1.1.0b4
 [1.1.0b3]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b2...v1.1.0b3
 [1.1.0b2]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b1...v1.1.0b2
 [1.1.0b1]: https://github.com/mcp-box/mcpscore/compare/v0.9.0...v1.1.0b1
