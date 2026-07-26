@@ -4,9 +4,9 @@
   "name": "mcpscore",
   "description": "Lighthouse for MCP \u2014 audit any MCP server and get a scored, actionable report in seconds.",
   "colors": {
-    "primary": "#0D9373",
-    "light": "#2EBD85",
-    "dark": "#0D9373"
+    "primary": "#0d9373",
+    "light": "#2ebd85",
+    "dark": "#0d9373"
   },
   "favicon": "/favicon.svg",
   "navigation": {
