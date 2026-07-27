@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0rc1] - 2026-07-27
+
 ### Changed
+
+- **Upgraded to MCP Python SDK `2.0.0rc1`** (from `2.0.0b2`). The engine's live
+  invariant is unchanged — DeepWiki still scores 90/101 across the same 34
+  rules — and the full suite passes on the new pin.
+- **Dropped the `timeout=` argument to `OAuthClientProvider`**, which
+  `2.0.0rc1` removed from its signature (it also gained `client_metadata_url`
+  and `validate_resource_url`). No behaviour change: the browser step was
+  already bounded by our own `callback_handler`, which waits on
+  `wait_for_callback(flow_timeout_s)` and raises `OAuthFlowError` with our
+  message. The SDK argument had been redundant.
 
 - **The CLI welcome line is now `Welcome to mcpscore!`** (lowercase wordmark).
   The brand guidelines spell the name as one lowercase word everywhere, and
@@ -482,7 +494,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b6...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0rc1...HEAD
+[1.1.0rc1]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b6...v1.1.0rc1
 [1.1.0b6]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b5...v1.1.0b6
 [1.1.0b5]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b4...v1.1.0b5
 [1.1.0b4]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b3...v1.1.0b4
