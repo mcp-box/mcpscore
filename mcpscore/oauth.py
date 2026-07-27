@@ -224,7 +224,11 @@ async def obtain_token_interactively(
             storage=storage,
             redirect_handler=redirect_handler,
             callback_handler=callback_handler,
-            timeout=flow_timeout_s,
+            # No `timeout=` here: SDK 2.0.0rc1 removed it from
+            # OAuthClientProvider. The bound is ours anyway — `callback_handler`
+            # above waits on `wait_for_callback(flow_timeout_s)` and raises
+            # OAuthFlowError, so the browser step is still capped at
+            # flow_timeout_s and the message stays ours.
         )
 
         # One authenticated request drives the whole flow: the 401 triggers
