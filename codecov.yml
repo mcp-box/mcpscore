@@ -1,0 +1,27 @@
+# Codecov configuration.
+#
+# Both statuses are pinned to 97%, matching `fail_under` in pyproject.toml, so
+# the local gate (`make all`) and the PR checks agree. Before this file existed
+# both statuses used Codecov's "auto" target — the base commit's coverage —
+# which failed PR #57 at 98.71% patch against a 98.84% base: a single partial
+# branch in a small diff, while the project sat above 99%. A fixed target says
+# what the bar actually is instead of ratcheting it upward silently.
+#
+# The floor is deliberately below where the suite sits (99%+): it is a
+# regression alarm, not the goal. Raise it when the real number has been
+# comfortably above a new floor for a while.
+
+coverage:
+  status:
+    project:
+      default:
+        target: 97%
+        # Tolerate rounding noise between runs; a real drop still trips it.
+        threshold: 0.5%
+    patch:
+      default:
+        target: 97%
+
+comment:
+  layout: "condensed_header, diff, flags, components"
+  require_changes: true

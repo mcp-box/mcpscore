@@ -93,6 +93,15 @@ First stable release. Ships the day the MCP `2026-07-28` revision went final.
   (83.2% → 94.4%). Rule count is unchanged at 52; `max_score` falls because
   optional features no longer carry required-level weight.
 
+### Changed
+
+- **Coverage floor raised to 97%, and Codecov now has an explicit config.**
+  `fail_under` in `pyproject.toml` and both Codecov statuses (project and
+  patch) are pinned to the same 97%, so the local gate and the PR checks fail
+  together. Codecov previously used its "auto" target — the base commit's
+  coverage — which failed a PR at 98.71% patch against a 98.84% base while the
+  project sat above 99%.
+
 ### Removed
 
 - **Retired `capability_resources_subscribe` (HIGH) and

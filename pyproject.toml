@@ -127,7 +127,9 @@ source = ["mcpscore"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 95
+# Kept in step with codecov.yml (project and patch both 97%) so the local gate
+# and the PR checks fail together instead of one surprising the other.
+fail_under = 97
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",

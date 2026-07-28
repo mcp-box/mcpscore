@@ -20,7 +20,7 @@ make format         # Auto-format (ruff)
 make lint           # Lint without fixing
 make typecheck      # Pyright (0 errors required in mcpscore/)
 make test           # Run the test suite
-make testcov        # Tests with coverage report (95% minimum enforced)
+make testcov        # Tests with coverage report (97% minimum enforced)
 make all            # Everything CI runs
 ```
 
@@ -48,7 +48,8 @@ violations are CRITICAL/HIGH, recommendations are MEDIUM/LOW.
 ## Pull request expectations
 
 - Keep PRs focused; separate refactors from behavior changes.
-- New code needs tests — coverage must stay at or above 95%.
+- New code needs tests — coverage must stay at or above 97%, for the project
+  total and for the diff of your PR (Codecov enforces both; see codecov.yml).
 - Public functions and classes carry type hints and docstrings.
 - Update `CHANGELOG.md` under `[Unreleased]`.
 - Formatting is automated (`make format`); style debates are out of scope.

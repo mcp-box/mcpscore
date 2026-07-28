@@ -236,6 +236,20 @@ class TestToolsListingAttempt:
         assert "capability_tools_present" in failed
         assert "capability_tools_present" not in skipped
 
+    async def test_absent_stateless_probe_is_not_an_attempt(self, stub_probes, monkeypatch: pytest.MonkeyPatch):
+        """Defensive path: no stateless observation at all in the probe map."""
+        results = _modern_probe_results()
+        del results[PROBE_STATELESS_LIST]
+        stub_probes(results)
+        monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+        auditor = MCPAuditor()
+        assert await auditor.audit_modern_only(URL) is True
+
+        assert auditor.audit_data.listings_attempted == frozenset()
+        assert auditor.audit_data.tools is None
+        assert "capability_tools_present" in {s.rule_id for s in auditor.skipped_rules}
+
     async def test_unobservable_probe_is_not_an_attempt(self, stub_probes, monkeypatch: pytest.MonkeyPatch):
         """A network error is not evidence about the server — skip, do not fail."""
         results = _modern_probe_results()
