@@ -378,7 +378,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "2.0.0rc1"
+version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -396,22 +396,22 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d1/ea/aa22bd3a6056fc9fb183ddb245545684cca2391286e1eb67946ab3ef418f/mcp-2.0.0rc1.tar.gz", hash = "sha256:664f719ea0ba33fa6a697fa1e32cadca6b6f7d7f958a8a8cda59622a0172d835", size = 1619591, upload-time = "2026-07-27T13:35:17.166Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/33/32d4dff2c95bb5d897c3ef4c83649a08996b17b58f0a326d2495d4c81179/mcp-2.0.0.tar.gz", hash = "sha256:0f440e735c13ece8bb19bc62cf0b86f4313448432fbb77d35e14034f4e050728", size = 1662284, upload-time = "2026-07-28T13:45:32.346Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1b/4c/02657d8e70dc828089e1a0f1326c44c3a1f9aba2d7b22df61feda71111fa/mcp-2.0.0rc1-py3-none-any.whl", hash = "sha256:43d8c181d3dac50aaa310e16fa14dae92ac844ffa3fcc3363b6a93d8b088ea0d", size = 340369, upload-time = "2026-07-27T13:35:13.997Z" },
+    { url = "https://files.pythonhosted.org/packages/67/72/7d7897418912c1d12e87556630dfb7bf0eac71160e9bef8b447960804ee3/mcp-2.0.0-py3-none-any.whl", hash = "sha256:1cb4c75d2d2c7b8c1d756355e5d82a39f2822cc7f13e22a2051d7ca3592349d6", size = 349980, upload-time = "2026-07-28T13:45:28.853Z" },
 ]
 
 [[package]]
 name = "mcp-types"
-version = "2.0.0rc1"
+version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/7b/a405786c8ec58f40769fb27b4131edc6f175b407be73a821eff446568ead/mcp_types-2.0.0rc1.tar.gz", hash = "sha256:3c9ec7d0e356d9c73023c53b418179801257869d2f1647cb6d19a9072831cfcd", size = 66486, upload-time = "2026-07-27T13:35:18.386Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/56/9b8e1c152f61f6c6b07c4b5896c88c7d0ae90bac6ee6306f852fcc5c1eb0/mcp_types-2.0.0.tar.gz", hash = "sha256:d7d939b9285c9961ae8866ba75ef85da34d12bafe276efbf4eb6a131786d8379", size = 66632, upload-time = "2026-07-28T13:45:33.804Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/01/c18c6c37df2ca487113e76b5a0fb001b285482b28dbde6488a832209ff68/mcp_types-2.0.0rc1-py3-none-any.whl", hash = "sha256:b40ce464006aacd6682049f6f3b573a2ce04af203fddd1716e8e1ae9226779bb", size = 69518, upload-time = "2026-07-27T13:35:15.598Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/4c/c78d78c3d52b0ac594ad7cc8ef5972adfe070e3597a8a4c6ce0cd39196ea/mcp_types-2.0.0-py3-none-any.whl", hash = "sha256:6b2de797ca2797f568b79529e1b25948e34de511bcc0bd82fef1039a6d1b8eb0", size = 69649, upload-time = "2026-07-28T13:45:30.713Z" },
 ]
 
 [[package]]
@@ -437,7 +437,7 @@ dev = [
 requires-dist = [
     { name = "httpx2", specifier = ">=2.5.0" },
     { name = "jsonschema", specifier = ">=4.21" },
-    { name = "mcp", specifier = "==2.0.0rc1" },
+    { name = "mcp", specifier = "==2.0.0" },
 ]
 
 [package.metadata.requires-dev]
