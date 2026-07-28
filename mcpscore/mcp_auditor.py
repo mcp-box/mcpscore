@@ -14,6 +14,7 @@ from .mcp_client import MCPClient
 from .probes import (
     PROBE_DISCOVER,
     PROBE_STATELESS_LIST,
+    ProbeOutcome,
     detect_era,
     has_modern_support,
     not_applicable_results,
@@ -266,16 +267,22 @@ class MCPAuditor:
             self.audit_data.protocol_version = (DRAFT or LATEST).version
 
         stateless = probes.get(PROBE_STATELESS_LIST)
-        if stateless is not None and stateless.payload is not None:
-            raw_tools = stateless.payload.get("tools")
-            if isinstance(raw_tools, list):
-                # The probe *is* the tools listing on this path; resources and
-                # prompts are never listed, so their rules stay unjudgeable.
+        if stateless is not None:
+            # The probe *is* the tools listing on this path (resources and
+            # prompts are never listed, so their rules stay unjudgeable). The
+            # attempt is recorded on the server's answer, not on a usable one:
+            # a server that declares tools and then does not answer tools/list
+            # must fail the consistency rule, not skip it. ERROR/NOT_APPLICABLE
+            # mean we could not observe — those still skip.
+            if stateless.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
                 self.audit_data.listings_attempted |= {"tools"}
-                try:
-                    self.audit_data.tools = [Tool.model_validate(tool) for tool in raw_tools]
-                except ValidationError as e:
-                    logger.info("Could not parse tools from the stateless probe payload: %s", e)
+            if stateless.payload is not None:
+                raw_tools = stateless.payload.get("tools")
+                if isinstance(raw_tools, list):
+                    try:
+                        self.audit_data.tools = [Tool.model_validate(tool) for tool in raw_tools]
+                    except ValidationError as e:
+                        logger.info("Could not parse tools from the stateless probe payload: %s", e)
 
     @staticmethod
     def _parse_payload_model(model: type, value: object):

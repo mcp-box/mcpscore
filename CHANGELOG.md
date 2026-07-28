@@ -74,9 +74,12 @@ First stable release. Ships the day the MCP `2026-07-28` revision went final.
   skips as `insufficient-data` (see `AuditData.listings_attempted`) instead of
   reading silence as a failed listing, which had cost a modern server declaring
   resources and prompts 10 CRITICAL points (verified on a fixture: 103/123
-  before, 103/113 after). The trade-off is stated in the rule docstring:
-  serving a feature without declaring it is only caught when the listing ran
-  for another reason.
+  before, 103/113 after). On the modern path the attempt is recorded on the
+  server's *answer*, not on a usable one — a server that declares tools and
+  then fails `tools/list` fails the rule rather than skipping it, while an
+  unobservable probe (network error) still skips. The trade-off is stated in
+  the rule docstring: serving a feature without declaring it is only caught
+  when the listing ran for another reason.
 
 - **`listChanged` rules downgraded from HIGH to LOW** and relabelled as
   advisory. 2025-11-25 §Capabilities: *"Both `subscribe` and `listChanged` are
