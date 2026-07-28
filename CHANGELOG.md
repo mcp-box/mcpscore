@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release script's smoke test now refreshes uv's package cache.** It
+  printed `uvx mcpscore==<version> …`, which fails with "your requirements are
+  unsatisfiable" on any machine that had resolved mcpscore before: uv caches the
+  PyPI index, so a version published seconds earlier is invisible to it. The
+  hint now passes `--refresh-package mcpscore`. Also notes that `npx
+  @mcp-box/mcpscore@<version>` delegates to `uvx` and shares the same cache.
+
 ## [1.1.0] - 2026-07-28
 
 First stable release. Ships the day the MCP `2026-07-28` revision went final.
