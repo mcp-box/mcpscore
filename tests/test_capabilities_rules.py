@@ -4,6 +4,7 @@ from mcp_types import ResourcesCapability
 from pydantic import BaseModel
 
 from mcpscore.rules import AuditData, RuleSeverity
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 from mcpscore.rules.capabilities import (
     CapabilityPromptsListChangedRule,
     CapabilityPromptsPresentRule,
@@ -143,3 +144,46 @@ def test_capabilities_feature_rules_declared_but_disabled(capabilities_full):
         result = rule.check(AuditData(capabilities=caps))
         assert result.passed is False
         assert "not supported" in result.message
+
+
+class TestListingNeverAttempted:
+    """A listing the auditor never ran must not be scored as a failed listing.
+
+    Regression for the review finding on PR #57: the session path lists a
+    feature only when the server declares it, and `audit_modern_only` collects
+    tools alone from the stateless probe. Treating `items is None` as "the
+    listing did not answer" failed a modern server that declares resources and
+    prompts for 10 CRITICAL points it had done nothing to deserve.
+    """
+
+    def test_modern_only_shape_skips_uncollected_listings(self, capabilities_full):
+        """Modern probe path: tools observed, resources/prompts never listed."""
+        data = AuditData(
+            capabilities=capabilities_full,
+            tools=[object()],
+            listings_attempted=frozenset({"tools"}),
+        )
+
+        assert CapabilityToolsPresentRule().skip_reason(data) is None
+        assert CapabilityToolsPresentRule().check(data).passed
+        for rule_cls in (CapabilityResourcesPresentRule, CapabilityPromptsPresentRule):
+            assert rule_cls().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_attempted_listing_is_judged(self, capabilities_full):
+        """Once a listing ran, silence really does mean it did not answer."""
+        data = AuditData(
+            capabilities=capabilities_full,
+            resources=None,
+            listings_attempted=frozenset({"resources"}),
+        )
+
+        rule = CapabilityResourcesPresentRule()
+        assert rule.skip_reason(data) is None
+        result = rule.check(data)
+        assert not result.passed
+        assert "did not answer" in result.message
+
+    def test_default_audit_data_attempts_nothing(self):
+        """The default is 'not attempted', so no rule can fail on absent data."""
+        for rule_cls, _ in DECLARATION_RULES:
+            assert rule_cls().skip_reason(AuditData()) == SKIP_REASON_INSUFFICIENT_DATA

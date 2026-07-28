@@ -19,7 +19,15 @@ from abc import abstractmethod
 from mcp_types import ServerCapabilities
 from pydantic import BaseModel
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_capabilities, requires_fields
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_capabilities,
+    requires_fields,
+)
 from .registry import register_rule
 
 
@@ -92,11 +100,19 @@ class CapabilityDeclarationRule(BaseRule):
 
     The spec requires the *declaration* of a feature the server supports, never
     the feature itself: "Servers that support resources MUST declare the
-    resources capability". So the failure conditions are a mismatch in either
-    direction — serving items without declaring, or declaring while the listing
-    does not answer — and a server that neither declares nor serves the feature
-    passes, because that is a legitimate design choice (most MCP servers are
-    tools-only).
+    resources capability". A server that neither declares nor serves the
+    feature passes, because that is a legitimate design choice (most MCP
+    servers are tools-only).
+
+    **Only judges a listing the auditor actually attempted.** `items is None`
+    does not mean "the listing failed": the session path lists a feature only
+    when the server declares it, and the modern-only probe path collects tools
+    alone. Reading that silence as failure cost a modern server declaring
+    resources and prompts 10 CRITICAL points for nothing. Rules whose listing
+    was never attempted skip as insufficient-data — see `listings_attempted`.
+
+    That gating also bounds what the rule can detect: serving a feature without
+    declaring it is caught only when something else caused the listing to run.
     """
 
     group_name = "capabilities"
@@ -111,6 +127,12 @@ class CapabilityDeclarationRule(BaseRule):
     @property
     def severity(self) -> RuleSeverity:
         return RuleSeverity.CRITICAL
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when this feature's listing was never attempted — silence is not evidence."""
+        if self.feature not in audit_data.listings_attempted:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
 
     def _evaluate(self, capabilities: ServerCapabilities | None, items: list | None) -> RuleResult:
         """Compare the declared capability against what the server served."""

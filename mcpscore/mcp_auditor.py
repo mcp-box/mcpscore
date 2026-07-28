@@ -269,6 +269,9 @@ class MCPAuditor:
         if stateless is not None and stateless.payload is not None:
             raw_tools = stateless.payload.get("tools")
             if isinstance(raw_tools, list):
+                # The probe *is* the tools listing on this path; resources and
+                # prompts are never listed, so their rules stay unjudgeable.
+                self.audit_data.listings_attempted |= {"tools"}
                 try:
                     self.audit_data.tools = [Tool.model_validate(tool) for tool in raw_tools]
                 except ValidationError as e:
@@ -499,6 +502,7 @@ class MCPAuditor:
             logger.error("No MCP client to audit")
             return
 
+        self.audit_data.listings_attempted |= {"tools"}
         tools: list[Tool] | None = await self.mcp_client.list_tools()
         if tools is None:
             logger.error("No Tools to audit")
@@ -518,6 +522,7 @@ class MCPAuditor:
             logger.error("No MCP client to audit")
             return
 
+        self.audit_data.listings_attempted |= {"resources"}
         resources: list[Resource] | None = await self.mcp_client.list_resources()
         if resources is None:
             logger.error("No Resources to audit")
@@ -537,6 +542,7 @@ class MCPAuditor:
             logger.error("No MCP client to audit")
             return
 
+        self.audit_data.listings_attempted |= {"prompts"}
         prompts: list[Prompt] | None = await self.mcp_client.list_prompts()
         if prompts is None:
             logger.error("No prompts to audit")

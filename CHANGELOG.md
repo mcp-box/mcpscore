@@ -66,8 +66,17 @@ First stable release. Ships the day the MCP `2026-07-28` revision went final.
   | yes | listing did not answer | ❌ fail — clients will call it and fail |
 
   Severity stays CRITICAL, because what remains is a genuine MUST violation.
-  The MCP spec's own docs server (`modelcontextprotocol.io/mcp`) goes from
-  failing `capability_prompts_present` to passing it.
+
+  **These rules only judge a listing the auditor actually attempted.** `tools`,
+  `resources` and `prompts` being `None` is ambiguous — the session path lists a
+  feature only when the server declares it, and `audit_modern_only` collects
+  tools alone from the stateless probe. A rule whose listing never ran now
+  skips as `insufficient-data` (see `AuditData.listings_attempted`) instead of
+  reading silence as a failed listing, which had cost a modern server declaring
+  resources and prompts 10 CRITICAL points (verified on a fixture: 103/123
+  before, 103/113 after). The trade-off is stated in the rule docstring:
+  serving a feature without declaring it is only caught when the listing ran
+  for another reason.
 
 - **`listChanged` rules downgraded from HIGH to LOW** and relabelled as
   advisory. 2025-11-25 §Capabilities: *"Both `subscribe` and `listChanged` are
