@@ -106,13 +106,15 @@ First stable release. Ships the day the MCP `2026-07-28` revision went final.
 - **Corrected two swapped SEP citations.** `server/discover` is introduced by
   [SEP-2575][sep-2575], not SEP-2567 ("Sessionless MCP via Explicit State
   Handles", which explicitly does not introduce it); the removal of
-  protocol-level sessions and `Mcp-Session-Id` is SEP-2567, not SEP-2575. The
-  `readiness_2026_server_discover` and `readiness_2026_no_session_id` rules
-  reported each other's SEP in their message and `details.sep`.
+  protocol-level sessions and `Mcp-Session-Id` is [SEP-2567][sep-2567], not
+  SEP-2575. The `readiness_2026_server_discover` and
+  `readiness_2026_no_session_id` rules reported each other's SEP in their
+  message and `details.sep`.
 - **`readiness_2026_no_session_id` no longer overstates the requirement.** The
   spec's backward-compatibility section is SHOULD-level ("ignore it, and do not
   mint or echo session IDs"); the message said "must".
 
+[sep-2567]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2567
 [sep-2575]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575
 [sep-2577]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577
 

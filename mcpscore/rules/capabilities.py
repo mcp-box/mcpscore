@@ -193,7 +193,7 @@ class CapabilityToolsListChangedRule(CapabilityBaseRule):
         return RuleSeverity.LOW
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
-        """High check: Verify that capabilities.tools has listChanged implemented.
+        """Advisory check: verify that capabilities.tools declares listChanged.
 
         Args:
             capabilities: Server capabilities to check
@@ -262,7 +262,7 @@ class CapabilityPromptsListChangedRule(CapabilityBaseRule):
         return RuleSeverity.LOW
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
-        """High check: Verify that capabilities.prompts has listChanged implemented.
+        """Advisory check: verify that capabilities.prompts declares listChanged.
 
         Args:
             capabilities: Server capabilities to check
@@ -331,7 +331,7 @@ class CapabilityResourcesListChangedRule(CapabilityBaseRule):
         return RuleSeverity.LOW
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
-        """High check: Verify that capabilities.resources has listChanged implemented.
+        """Advisory check: verify that capabilities.resources declares listChanged.
 
         Args:
             capabilities: Server capabilities to check

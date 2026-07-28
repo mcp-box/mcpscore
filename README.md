@@ -116,18 +116,16 @@ Transport: stdio
 Starting the audit...
 ✅ Protocol version '2025-11-25' is one of the allowed versions
 ✅ Protocol version '2025-11-25' is not deprecated
-✅ Protocol version '2025-11-25' is the latest version
+❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28'
 ✅ Server name is present: 'weather'
 ✅ Server version is present: '1.17.0'
 ❌ Server title is not present in server info
-✅ Tools capability is present
+✅ Declares the tools capability and serves 3 via tools/list
 ❌ listChanged is not supported by Tools
-✅ Prompts capability is present
+✅ Declares the prompts capability and serves 1 via prompts/list
 ❌ listChanged is not supported by Prompts
-✅ Resources capability is present
+✅ Declares the resources capability and serves 2 via resources/list
 ❌ listChanged is not supported by Resources
-❌ subscribe is not supported by Resources
-❌ Logging is not present in capabilities
 ✅ MCP Server provides at least one tool
 ✅ All Tools have a Name property specified
 ✅ All Tools have a Title property specified

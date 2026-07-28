@@ -79,31 +79,33 @@ version as a *property of your server that it detects*, not a mode of the tool:
   server answers stateless requests, mcpscore audits it through its probe layer
   instead of reporting a connection failure.
 
-## The readiness score (separate, informative)
+## The readiness score (separate axis)
 
-Ahead of a new spec revision, mcpscore answers a second question: **"is this server
-ready for the 2026-07-28 spec?"** This is deliberately a *separate* score
-(`readiness.score / readiness.max_score` in the report), never mixed into the main
-score — a fully compliant 2025-11-25 server keeps its clean main score, and readiness
-is guidance, not punishment.
+mcpscore answers a second question: **"is this server ready for the 2026-07-28
+spec?"** Results always appear as their own axis
+(`readiness.score / readiness.max_score` in the report). For legacy-only servers
+that axis stays informative — guidance, not punishment — so a fully compliant
+2025-11-25 server keeps a clean main score. For servers already on the modern
+lifecycle, readiness points are also counted in the main score (see Promotion
+below).
 
 Readiness rules for the **2026-07-28** revision, each anchored to normative spec
 language (MUST/MUST NOT unless noted):
 
 | Rule | Severity | Normative basis |
 |---|---|---|
-| `readiness_2026_server_discover` | CRITICAL | Servers MUST implement `server/discover` ([SEP-2567](https://modelcontextprotocol.io/specification/draft/server/discover)) |
-| `readiness_2026_stateless_request` | CRITICAL | Requests carry their context in `_meta`; the `initialize` handshake is removed ([SEP-2575](https://modelcontextprotocol.io/specification/draft/basic/index)) |
+| `readiness_2026_server_discover` | CRITICAL | Servers MUST implement `server/discover` ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
+| `readiness_2026_stateless_request` | CRITICAL | Requests carry their context in `_meta`; the `initialize` handshake is removed ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
 | `readiness_2026_meta_validation` | HIGH | Requests missing required `_meta` fields MUST be rejected with `-32602` + HTTP 400 |
-| `readiness_2026_header_validation` | HIGH | Header/body mismatches MUST be rejected with `-32020` (HeaderMismatch) + HTTP 400 ([SEP-2243](https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http)) |
-| `readiness_2026_cache_metadata` | HIGH | List/discover results MUST carry `ttlMs >= 0` and `cacheScope` ([SEP-2549](https://modelcontextprotocol.io/specification/draft/server/utilities/caching)) |
+| `readiness_2026_header_validation` | HIGH | Header/body mismatches MUST be rejected with `-32020` (HeaderMismatch) + HTTP 400 ([SEP-2243](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)) |
+| `readiness_2026_cache_metadata` | HIGH | List/discover results MUST carry `ttlMs >= 0` and `cacheScope` ([SEP-2549](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching)) |
 | `readiness_2026_unsupported_version_error` | MEDIUM | Unknown protocol versions MUST be rejected with `-32022` naming the supported versions |
-| `readiness_2026_error_code_migration` | MEDIUM | Missing resources yield `-32602`; the legacy `-32002` MUST NOT be emitted ([SEP-2164](https://modelcontextprotocol.io/specification/draft/changelog)) |
-| `readiness_2026_result_type` | MEDIUM | All results carry the `resultType` discriminator ([SEP-2322](https://modelcontextprotocol.io/specification/draft/basic/patterns/mrtr)) |
-| `readiness_2026_deprecated_features` | MEDIUM | Features deprecated in 2026-07-28 (logging; SHOULD NOT adopt) ([SEP-2577](https://modelcontextprotocol.io/specification/draft/deprecated)) |
-| `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([SEP-2106](https://modelcontextprotocol.io/specification/draft/basic/index)) |
-| `readiness_2026_no_session_id` | HIGH | No `Mcp-Session-Id` minted or echoed on modern requests — leaked legacy session bookkeeping |
-| `readiness_2026_removed_methods` | MEDIUM | Removed methods (e.g. `ping`) rejected with 404 + `-32601`, not served — leaked legacy surface |
+| `readiness_2026_error_code_migration` | MEDIUM | Missing resources yield `-32602`; the legacy `-32002` MUST NOT be emitted ([SEP-2164](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
+| `readiness_2026_result_type` | MEDIUM | All results carry the `resultType` discriminator ([SEP-2322](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr)) |
+| `readiness_2026_deprecated_features` | MEDIUM | Features deprecated in 2026-07-28 (logging; SHOULD NOT adopt) ([SEP-2577](https://modelcontextprotocol.io/specification/2026-07-28/deprecated)) |
+| `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([SEP-2106](https://modelcontextprotocol.io/specification/2026-07-28/basic/index)) |
+| `readiness_2026_no_session_id` | HIGH | No `Mcp-Session-Id` minted or echoed on modern requests — leaked legacy session bookkeeping ([SEP-2567](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
+| `readiness_2026_removed_methods` | MEDIUM | Removed methods (e.g. `ping`) rejected with 404 + `-32601`, not served — leaked legacy surface ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
 
 Two things worth knowing about how these run:
 

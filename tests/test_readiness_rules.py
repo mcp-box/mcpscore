@@ -498,6 +498,7 @@ class TestSepCitations:
                 continue
             seen[rule.rule_id] = (rule.check(data).details or {}).get("sep")
 
-        assert seen == {rule_id: self.EXPECTED_SEP[rule_id] for rule_id in seen}
-        # And no readiness rule ships without a citation at all.
+        # Key-set first so a new readiness rule missing from EXPECTED_SEP fails
+        # with a clear assertion, not a KeyError on the dict comprehension below.
         assert set(seen) == set(self.EXPECTED_SEP), "readiness rule missing from the citation table"
+        assert seen == {rule_id: self.EXPECTED_SEP[rule_id] for rule_id in seen}
