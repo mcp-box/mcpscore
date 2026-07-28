@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A registry of retired rule IDs** (`mcpscore/rules/retired.py`), rendered as a
+  "Retired rules" table in the [rules reference](https://docs.mcpscore.dev/rules/).
+  A `rule_id` is a public contract — it appears in stored reports and in CI
+  configuration that waives specific rules — so an ID that stops running now has
+  a permanent record of when it went and why, instead of silently vanishing from
+  the docs. Retired IDs are never reused; a test enforces both that and the
+  registry matching the live rule set.
+
+  The accompanying policy (`AGENTS.md`): a rule is retired only when it was
+  *wrong*. A rule that is correct but applies to particular spec revisions keeps
+  its ID and gains a `min_spec_version`/`max_spec_version` range instead —
+  obsolescence is scoping, not deletion.
+
 ### Fixed
 
 - **The release script's smoke test now refreshes uv's package cache.** It

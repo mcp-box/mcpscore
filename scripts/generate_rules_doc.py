@@ -10,6 +10,7 @@ from pathlib import Path
 
 from mcpscore.rules import create_all_rules
 from mcpscore.rules.base import READINESS_GROUP, BaseRule
+from mcpscore.rules.retired import RETIRED_RULES
 from mcpscore.spec import DRAFT, LATEST
 
 HEADER = """\
@@ -49,6 +50,33 @@ def _applies_to(rule: BaseRule) -> str:
     return f"{low} – {high}"
 
 
+RETIRED_HEADER = """\
+## Retired rules
+
+These `rule_id`s no longer run. They are listed because a rule ID is a public
+contract: it appears in JSON reports you may have stored and in CI
+configuration that may still reference it. **Retired IDs are never reused.**
+
+A rule is retired only when it was *wrong*. A rule that was correct but applies
+only to certain spec revisions is not retired — it keeps its ID and gains a
+version range in the **Applies to** column above.
+
+If a report of yours shows one of these, its result was accurate for the
+mcpscore version that produced it; the check simply no longer exists.
+
+"""
+
+
+def _retired_table() -> list[str]:
+    """Render the retired-rule registry, or nothing when it is empty."""
+    if not RETIRED_RULES:
+        return []
+    lines = [RETIRED_HEADER, "| Rule ID | Retired in | Last severity | Why |\n", "|---|---|---|---|\n"]
+    lines.extend(f"| `{r.rule_id}` | {r.version} | {r.severity} | {r.reason} |\n" for r in RETIRED_RULES)
+    lines.append("\n")
+    return lines
+
+
 def generate() -> str:
     groups: dict[str, list[BaseRule]] = defaultdict(list)
     for rule in sorted(create_all_rules(), key=lambda r: r.sort_order):
@@ -68,6 +96,7 @@ def generate() -> str:
             for rule in rules
         )
         lines.append("\n")
+    lines.extend(_retired_table())
     # Single trailing newline at EOF (keeps the end-of-file-fixer hook happy).
     return "".join(lines).rstrip("\n") + "\n"
 

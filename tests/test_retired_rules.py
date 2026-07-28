@@ -14,6 +14,7 @@ from dataclasses import replace
 
 from mcpscore.rules import AuditData, create_all_rules
 from mcpscore.rules.base import READINESS_GROUP
+from mcpscore.rules.retired import RETIRED_RULES
 
 RETIRED_RULE_IDS = frozenset({"capability_logging_present", "capability_resources_subscribe"})
 """rule_id is a public contract: these are retired, never reused."""
@@ -63,3 +64,28 @@ def test_omitting_the_optional_subscribe_capability_costs_nothing(capabilities_f
     without_subscribe = replace(capabilities_full, resources=replace(capabilities_full.resources, subscribe=False))
 
     assert _capability_score(without_subscribe) == _capability_score(capabilities_full)
+
+
+class TestRetiredRegistry:
+    """The registry is the public record of retired IDs — it must stay honest.
+
+    It feeds the "Retired rules" table in docs/rules.mdx, which is what someone
+    holding an old report or a stale CI waiver reads to find out what happened.
+    """
+
+    def test_registry_matches_the_ids_this_release_retired(self):
+        assert {r.rule_id for r in RETIRED_RULES} == RETIRED_RULE_IDS
+
+    def test_no_retired_id_is_ever_reused(self):
+        """A new rule reusing a retired ID would silently match old CI waivers."""
+        live = {rule.rule_id for rule in create_all_rules()}
+        assert live.isdisjoint({r.rule_id for r in RETIRED_RULES})
+
+    def test_entries_are_unique_and_explained(self):
+        ids = [r.rule_id for r in RETIRED_RULES]
+        assert len(ids) == len(set(ids)), "an ID may be retired only once"
+        for entry in RETIRED_RULES:
+            assert entry.version, entry.rule_id
+            assert entry.severity, entry.rule_id
+            # The reason is read by someone holding a report, not by us.
+            assert len(entry.reason) > 40, entry.rule_id
