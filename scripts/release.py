@@ -274,14 +274,26 @@ def wait_for_publish(version: str) -> None:
         # --prerelease=allow: uv's pre-release exception covers only direct
         # requirements, and this package's SDK pin (mcp==2.0.0bN) is transitive
         # from uvx's point of view.
-        print(f"\nSmoke test:\n  uvx --prerelease=allow mcpscore=={version} https://mcp.deepwiki.com/mcp")
+        # --refresh-package: see the note on the stable smoke test below.
+        print(
+            f"\nSmoke test:\n"
+            f"  uvx --refresh-package mcpscore --prerelease=allow "
+            f"mcpscore=={version} https://mcp.deepwiki.com/mcp"
+        )
         return
     # npm requires the scope slash URL-encoded (%2F) — canonical registry form.
     npm_path = NPM_PACKAGE.replace("/", "%2F")
     wait_for_registry("npm", f"https://registry.npmjs.org/{npm_path}/{version}", "publish-npm.yml")
+    # --refresh-package: uv caches the PyPI index, so a version published
+    # seconds ago is invisible to a machine that resolved this package before —
+    # the smoke test fails with "your requirements are unsatisfiable" for a
+    # release that is in fact live. Refreshing one package is enough; --no-cache
+    # also works but re-downloads every dependency.
+    # `npx` delegates to `uvx mcpscore==<pin>` (npm/bin/mcpscore.js) and so hits
+    # the same index cache — run the uvx line first to refresh it.
     print(
         f"\nSmoke test:\n"
-        f"  uvx mcpscore=={version} https://mcp.deepwiki.com/mcp\n"
+        f"  uvx --refresh-package mcpscore mcpscore=={version} https://mcp.deepwiki.com/mcp\n"
         f"  npx {NPM_PACKAGE}@{version} https://mcp.deepwiki.com/mcp"
     )
 
