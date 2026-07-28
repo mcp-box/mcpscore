@@ -138,7 +138,10 @@ class LatestVersionRule(ProtocolVersionBaseRule):
                 f"✅ Protocol version '{protocol_version}' is newer than the latest final version '{LATEST.version}'"
             )
         else:
-            message: str = f"❌ Not using the latest protocol version. Current: '{protocol_version}'"
+            message: str = (
+                f"❌ Not using the latest protocol version: negotiated '{protocol_version}', "
+                f"latest is '{LATEST.version}'"
+            )
 
         return RuleResult(
             rule_name=self.rule_name,

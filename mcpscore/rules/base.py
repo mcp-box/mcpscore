@@ -137,6 +137,14 @@ class AuditData:
     partial: bool = False
     partial_reason: str | None = None
 
+    # Which listings ("tools", "resources", "prompts") the auditor actually
+    # attempted. `tools=None` is ambiguous on its own — the listing may have
+    # failed, or may never have been tried (the session path only lists a
+    # feature the server declares; the modern-only probe path collects tools
+    # alone). Rules that judge declared-vs-served must skip what was never
+    # attempted instead of reading silence as failure.
+    listings_attempted: frozenset[str] = frozenset()
+
 
 # Decorators to specify what data a rule needs
 def requires_protocol_version(func: Callable) -> Callable:

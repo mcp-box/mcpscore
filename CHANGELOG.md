@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-28
+
+First stable release. Ships the day the MCP `2026-07-28` revision went final.
+
+### Added
+
+- **`2026-07-28` is now a recognized protocol version** (`MCPProtocolVersion.v2026_07_28`,
+  and `MCPProtocolVersion.Latest` now points at it).
+
+### Changed
+
+- **Pinned to the MCP Python SDK `2.0.0` stable** (from `2.0.0rc1`), published
+  2026-07-28 alongside the spec revision it implements. The SDK's own notes
+  report no API changes between rc1 and stable — the breaking changes all
+  landed earlier in the pre-release cycle, and the two we had already absorbed
+  (`OAuthClientProvider(timeout=…)` removal, `httpx2`) are unaffected.
+
+  Verified: the full gate passes, and DeepWiki scores **82/90 on both pins with
+  byte-identical per-rule results** (all 32 main rules plus all 12 readiness
+  rules compared individually, not just the total). The auth-gated path was
+  re-checked too — Linear still returns a 25/25 partial audit with all 8
+  auth-posture rules scored.
+
+- **The 2026-07-28 revision went final on 2026-07-28 and the spec registry
+  flipped with it**: `2026-07-28` DRAFT → CURRENT, `2025-11-25` CURRENT →
+  SUPERSEDED. Two consequences:
+
+  - **Fixes a CRITICAL false positive.** `allowed_versions()` deliberately
+    excludes draft revisions, so while `2026-07-28` was a draft, a server
+    correctly speaking the new revision failed `protocol_version_allowed`
+    (CRITICAL, −5). Our own modern-lifecycle fixture was failing it.
+  - `protocol_version_latest` (MEDIUM) now expects `2026-07-28`, so servers
+    still negotiating `2025-11-25` are marked as behind — accurate, and the
+    point of the rule, but it moves every legacy server's score by 2.
+
+- **All spec facts re-verified against the dated final URLs** on publication
+  day: changelog and SEP attributions, the Streamable HTTP request-header
+  table (`MCP-Protocol-Version` on every POST; `Mcp-Method` on all requests;
+  `Mcp-Name` on `tools/call`/`resources/read`/`prompts/get`), the error-code
+  allocation policy (`-32020`/`-32021`/`-32022`) and the deprecated-features
+  registry (Roots, Sampling, Logging, DCR, `includeContext`, HTTP+SSE). **No
+  fact changed from the release candidate** — the RC-era entry was correct.
+
+- **The capability-presence rules now check declared-vs-served consistency**
+  instead of demanding every capability. `capability_tools_present`,
+  `capability_prompts_present` and `capability_resources_present` cited "servers
+  that support X MUST declare the X capability" while failing servers that
+  simply do not offer X — penalizing a tools-only server (the median MCP
+  server) 10 CRITICAL points for a legitimate design choice. They now compare
+  the declaration against what the listing actually returns:
+
+  | declared | served | verdict |
+  |---|---|---|
+  | yes | yes (incl. empty) | ✅ pass |
+  | no | no | ✅ pass — the capability is only required of servers that support the feature |
+  | no | yes | ❌ fail — the real spec MUST |
+  | yes | listing did not answer | ❌ fail — clients will call it and fail |
+
+  Severity stays CRITICAL, because what remains is a genuine MUST violation.
+
+  **These rules only judge a listing the auditor actually attempted.** `tools`,
+  `resources` and `prompts` being `None` is ambiguous — the session path lists a
+  feature only when the server declares it, and `audit_modern_only` collects
+  tools alone from the stateless probe. A rule whose listing never ran now
+  skips as `insufficient-data` (see `AuditData.listings_attempted`) instead of
+  reading silence as a failed listing, which had cost a modern server declaring
+  resources and prompts 10 CRITICAL points (verified on a fixture: 103/123
+  before, 103/113 after). On the modern path the attempt is recorded on the
+  server's *answer*, not on a usable one — a server that declares tools and
+  then fails `tools/list` fails the rule rather than skipping it, while an
+  unobservable probe (network error) still skips. The trade-off is stated in
+  the rule docstring: serving a feature without declaring it is only caught
+  when the listing ran for another reason.
+
+- **`listChanged` rules downgraded from HIGH to LOW** and relabelled as
+  advisory. 2025-11-25 §Capabilities: *"Both `subscribe` and `listChanged` are
+  optional — servers can support neither, either, or both."* The signal is
+  worth keeping (an agent silently works from a stale list without it) but it
+  is an mcpscore recommendation, and the `basis` now says so rather than citing
+  a spec section that says the opposite.
+
+  Net effect on live servers: DeepWiki 90/101 → 84/90 (89.1% → 93.3%),
+  Context7 88/101 → 86/90 (87.1% → 95.6%), mcp-docs 84/101 → 85/90
+  (83.2% → 94.4%). Rule count is unchanged at 52; `max_score` falls because
+  optional features no longer carry required-level weight.
+
+### Changed
+
+- **Coverage floor raised to 97%, and Codecov now has an explicit config.**
+  `fail_under` in `pyproject.toml` and both Codecov statuses (project and
+  patch) are pinned to the same 97%, so the local gate and the PR checks fail
+  together. Codecov previously used its "auto" target — the base commit's
+  coverage — which failed a PR at 98.71% patch against a 98.84% base while the
+  project sat above 99%.
+
+### Removed
+
+- **Retired `capability_resources_subscribe` (HIGH) and
+  `capability_logging_present` (MEDIUM).** Both scored the *absence* of a
+  capability the spec section they cited calls optional — *"Both `subscribe`
+  and `listChanged` are optional: servers can support neither, either, or
+  both"* (2025-11-25 Resources §Capabilities) — and the 2026-07-28 revision
+  goes further: [SEP-2575][sep-2575] removes `resources/subscribe` in favour of
+  `subscriptions/listen`, and [SEP-2577][sep-2577] deprecates Logging.
+
+  `capability_logging_present` also contradicted `readiness_2026_deprecated_features`,
+  which fails a server for *declaring* `logging`. With readiness promoted into
+  the main score for modern and dual-era servers, **no server could pass both**:
+  every server in the acceptance corpus failed one or the other.
+
+  Scores are unaffected for servers that already passed these rules; every other
+  server gains up to 5 points as `max_score` drops by the same amount. The
+  audit now has **52 rules** (40 main + 12 readiness). Both `rule_id`s are
+  retired permanently and will never be reused.
+
+### Fixed
+
+- **Corrected two swapped SEP citations.** `server/discover` is introduced by
+  [SEP-2575][sep-2575], not SEP-2567 ("Sessionless MCP via Explicit State
+  Handles", which explicitly does not introduce it); the removal of
+  protocol-level sessions and `Mcp-Session-Id` is [SEP-2567][sep-2567], not
+  SEP-2575. The `readiness_2026_server_discover` and
+  `readiness_2026_no_session_id` rules reported each other's SEP in their
+  message and `details.sep`.
+- **`readiness_2026_no_session_id` no longer overstates the requirement.** The
+  spec's backward-compatibility section is SHOULD-level ("ignore it, and do not
+  mint or echo session IDs"); the message said "must".
+
+[sep-2567]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2567
+[sep-2575]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575
+[sep-2577]: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577
+
 ## [1.1.0rc1] - 2026-07-27
 
 ### Changed
@@ -494,7 +626,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0rc1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/mcp-box/mcpscore/compare/v1.1.0rc1...v1.1.0
 [1.1.0rc1]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b6...v1.1.0rc1
 [1.1.0b6]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b5...v1.1.0b6
 [1.1.0b5]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b4...v1.1.0b5

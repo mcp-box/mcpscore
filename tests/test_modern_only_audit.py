@@ -207,6 +207,65 @@ async def test_stateless_probe_without_payload_leaves_tools_none(stub_probes, mo
     assert auditor.audit_data.tools is None
 
 
+class TestToolsListingAttempt:
+    """`listings_attempted` records the server's answer, not a usable one.
+
+    Regression for the second review finding on PR #57: marking the attempt
+    only when a list-shaped tools payload parsed meant a modern server that
+    declares tools and then fails `tools/list` skipped
+    `capability_tools_present` as insufficient-data instead of failing it.
+    """
+
+    async def test_answered_probe_without_tools_is_still_an_attempt(self, stub_probes, monkeypatch: pytest.MonkeyPatch):
+        results = _modern_probe_results()
+        # The server answered tools/list, but with nothing usable in it.
+        results[PROBE_STATELESS_LIST] = ProbeResult(
+            PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {"result_type": "complete"}
+        )
+        stub_probes(results)
+        monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+        auditor = MCPAuditor()
+        assert await auditor.audit_modern_only(URL) is True
+
+        assert "tools" in auditor.audit_data.listings_attempted
+        assert auditor.audit_data.tools is None
+        # Declared in server/discover + no answer => the CRITICAL rule must fire.
+        failed = {r.rule_id for r in auditor.results if not r.passed}
+        skipped = {s.rule_id for s in auditor.skipped_rules}
+        assert "capability_tools_present" in failed
+        assert "capability_tools_present" not in skipped
+
+    async def test_absent_stateless_probe_is_not_an_attempt(self, stub_probes, monkeypatch: pytest.MonkeyPatch):
+        """Defensive path: no stateless observation at all in the probe map."""
+        results = _modern_probe_results()
+        del results[PROBE_STATELESS_LIST]
+        stub_probes(results)
+        monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+        auditor = MCPAuditor()
+        assert await auditor.audit_modern_only(URL) is True
+
+        assert auditor.audit_data.listings_attempted == frozenset()
+        assert auditor.audit_data.tools is None
+        assert "capability_tools_present" in {s.rule_id for s in auditor.skipped_rules}
+
+    async def test_unobservable_probe_is_not_an_attempt(self, stub_probes, monkeypatch: pytest.MonkeyPatch):
+        """A network error is not evidence about the server — skip, do not fail."""
+        results = _modern_probe_results()
+        results[PROBE_STATELESS_LIST] = ProbeResult(
+            PROBE_STATELESS_LIST, ProbeOutcome.ERROR, {"exception": "ConnectError"}
+        )
+        stub_probes(results)
+        monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+        auditor = MCPAuditor()
+        assert await auditor.audit_modern_only(URL) is True
+
+        assert "tools" not in auditor.audit_data.listings_attempted
+        assert "capability_tools_present" in {s.rule_id for s in auditor.skipped_rules}
+
+
 class TestAuditorReuseDoesNotLeakState:
     """Regression tests for per-run state reset (PR #21 review)."""
 

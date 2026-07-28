@@ -14,6 +14,7 @@ from .mcp_client import MCPClient
 from .probes import (
     PROBE_DISCOVER,
     PROBE_STATELESS_LIST,
+    ProbeOutcome,
     detect_era,
     has_modern_support,
     not_applicable_results,
@@ -266,13 +267,22 @@ class MCPAuditor:
             self.audit_data.protocol_version = (DRAFT or LATEST).version
 
         stateless = probes.get(PROBE_STATELESS_LIST)
-        if stateless is not None and stateless.payload is not None:
-            raw_tools = stateless.payload.get("tools")
-            if isinstance(raw_tools, list):
-                try:
-                    self.audit_data.tools = [Tool.model_validate(tool) for tool in raw_tools]
-                except ValidationError as e:
-                    logger.info("Could not parse tools from the stateless probe payload: %s", e)
+        if stateless is not None:
+            # The probe *is* the tools listing on this path (resources and
+            # prompts are never listed, so their rules stay unjudgeable). The
+            # attempt is recorded on the server's answer, not on a usable one:
+            # a server that declares tools and then does not answer tools/list
+            # must fail the consistency rule, not skip it. ERROR/NOT_APPLICABLE
+            # mean we could not observe — those still skip.
+            if stateless.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
+                self.audit_data.listings_attempted |= {"tools"}
+            if stateless.payload is not None:
+                raw_tools = stateless.payload.get("tools")
+                if isinstance(raw_tools, list):
+                    try:
+                        self.audit_data.tools = [Tool.model_validate(tool) for tool in raw_tools]
+                    except ValidationError as e:
+                        logger.info("Could not parse tools from the stateless probe payload: %s", e)
 
     @staticmethod
     def _parse_payload_model(model: type, value: object):
@@ -499,6 +509,7 @@ class MCPAuditor:
             logger.error("No MCP client to audit")
             return
 
+        self.audit_data.listings_attempted |= {"tools"}
         tools: list[Tool] | None = await self.mcp_client.list_tools()
         if tools is None:
             logger.error("No Tools to audit")
@@ -518,6 +529,7 @@ class MCPAuditor:
             logger.error("No MCP client to audit")
             return
 
+        self.audit_data.listings_attempted |= {"resources"}
         resources: list[Resource] | None = await self.mcp_client.list_resources()
         if resources is None:
             logger.error("No Resources to audit")
@@ -537,6 +549,7 @@ class MCPAuditor:
             logger.error("No MCP client to audit")
             return
 
+        self.audit_data.listings_attempted |= {"prompts"}
         prompts: list[Prompt] | None = await self.mcp_client.list_prompts()
         if prompts is None:
             logger.error("No prompts to audit")

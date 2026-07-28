@@ -1,6 +1,6 @@
 from mcpscore.rules import (
     AllowedVersionRule,
-    CapabilityLoggingPresentRule,
+    CapabilityToolsPresentRule,
     RuleRegistry,
     create_all_rules,
 )
@@ -10,7 +10,7 @@ def test_registry_creates_all_rules():
     rules = list(create_all_rules())
     # ensure at least a couple of known rules are included
     assert any(isinstance(r, AllowedVersionRule) for r in rules)
-    assert any(isinstance(r, CapabilityLoggingPresentRule) for r in rules)
+    assert any(isinstance(r, CapabilityToolsPresentRule) for r in rules)
 
 
 def test_registry_unique_ids():

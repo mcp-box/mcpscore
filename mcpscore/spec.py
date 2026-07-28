@@ -10,10 +10,13 @@ any new probes/rules) — never rewriting support for older versions.
 Version identifiers are the wire values (``YYYY-MM-DD`` date strings), which
 makes lexicographic comparison a total chronological order — see :func:`compare`.
 
-Facts for the ``2026-07-28`` entry were verified against the release candidate
-(locked 2026-05-21). The changelog is published under ``/specification/draft/``
-until the revision goes final; re-verify the entry against the dated spec URL
-on release before flipping its status to ``CURRENT``.
+Facts for the ``2026-07-28`` entry were first taken from the release candidate
+(locked 2026-05-21) and **re-verified against the dated final URL**
+(``/specification/2026-07-28/``) on 2026-07-28, the day it was published: the
+changelog, the transport header table, the error-code allocation and the
+deprecated-features registry all matched the RC, so no fact changed. Repeat that
+mechanical re-check whenever a revision goes final — the error codes were
+renumbered once already, after the RC was locked.
 """
 
 from __future__ import annotations
@@ -155,7 +158,7 @@ SPEC_VERSIONS: tuple[SpecVersion, ...] = (
         version="2025-11-25",
         release_date=date(2025, 11, 25),
         lifecycle=Lifecycle.STATEFUL,
-        status=SpecStatus.CURRENT,
+        status=SpecStatus.SUPERSEDED,
         deprecated_features=frozenset({"http-sse-transport", "sampling-include-context"}),
         required_request_headers=frozenset({"MCP-Protocol-Version"}),
         tool_schema_default_dialect=None,
@@ -165,7 +168,7 @@ SPEC_VERSIONS: tuple[SpecVersion, ...] = (
         version="2026-07-28",
         release_date=date(2026, 7, 28),
         lifecycle=Lifecycle.STATELESS,
-        status=SpecStatus.DRAFT,
+        status=SpecStatus.CURRENT,
         deprecated_features=frozenset(
             {
                 "http-sse-transport",
@@ -179,7 +182,7 @@ SPEC_VERSIONS: tuple[SpecVersion, ...] = (
         required_request_headers=frozenset({"MCP-Protocol-Version", "Mcp-Method"}),
         tool_schema_default_dialect="2020-12",
         notes=(
-            "Release candidate locked 2026-05-21; flip status to CURRENT once final. "
+            "Published final 2026-07-28; facts re-verified against the dated spec URL that day. "
             "Removes the initialize handshake (per-request _meta; mandatory server/discover). "
             "Mcp-Name is additionally required on tools/call, resources/read, and prompts/get. "
             "Deprecated features have earliest removal 2027-07-28 and remain functional."

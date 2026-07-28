@@ -31,12 +31,10 @@ from .base import (
     SkippedRule,
 )
 from .capabilities import (
-    CapabilityLoggingPresentRule,
     CapabilityPromptsListChangedRule,
     CapabilityPromptsPresentRule,
     CapabilityResourcesListChangedRule,
     CapabilityResourcesPresentRule,
-    CapabilityResourcesSubscribeRule,
     CapabilityToolsListChangedRule,
     CapabilityToolsPresentRule,
 )
@@ -109,12 +107,10 @@ __all__ = (
     "AuthWwwAuthenticateRule",
     "BaseRule",
     "CacheMetadataReadinessRule",
-    "CapabilityLoggingPresentRule",
     "CapabilityPromptsListChangedRule",
     "CapabilityPromptsPresentRule",
     "CapabilityResourcesListChangedRule",
     "CapabilityResourcesPresentRule",
-    "CapabilityResourcesSubscribeRule",
     "CapabilityToolsListChangedRule",
     "CapabilityToolsPresentRule",
     "DeprecatedFeaturesReadinessRule",
