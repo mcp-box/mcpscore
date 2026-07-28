@@ -290,7 +290,7 @@ def _base_details(response: _ProbeResponse) -> dict[str, Any]:
 
 
 async def _probe_discover(client: httpx2.AsyncClient, url: str) -> ProbeResult:
-    """``server/discover`` — mandatory for modern servers (SEP-2567).
+    """``server/discover`` — mandatory for modern servers (SEP-2575).
 
     SUPPORTED when the server returns a DiscoverResult carrying
     ``supportedVersions``; the details also record the caching hints so the

@@ -17,7 +17,7 @@ packages = ["mcpscore"]
 
 [project]
 name = "mcpscore"
-version = "1.1.0rc1"
+version = "1.1.0"
 description = "Audit an MCP server and get a scored, actionable quality report in seconds."
 authors = [{ name = "Alex Akimov"}]
 license = "MIT"
@@ -39,7 +39,7 @@ keywords = [
     "developer-tools",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
@@ -57,7 +57,7 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "mcp==2.0.0rc1",
+    "mcp==2.0.0",
     "httpx2>=2.5.0",
     "jsonschema>=4.21",
 ]

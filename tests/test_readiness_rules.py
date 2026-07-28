@@ -330,7 +330,7 @@ class TestReadinessScoringAxis:
 
         report = auditor.get_audit_report()
         assert report["spec"]["negotiated_version"] == "2025-11-25"
-        assert report["spec"]["latest_version"] == "2025-11-25"
+        assert report["spec"]["latest_version"] == "2026-07-28"
         assert report["spec"]["readiness_target"] == "2026-07-28"
         assert report["spec"]["era"] == "legacy"
         assert report["readiness"]["max_score"] > 0
@@ -454,3 +454,50 @@ class TestUncoveredBranches:
         tool = _tool(name="odd")
         tool.inputSchema = None
         assert ToolSchemaDialectReadinessRule().check(AuditData(tools=[tool])).passed
+
+
+class TestSepCitations:
+    """Every readiness rule must report the SEP that actually introduced its requirement.
+
+    Verified against the 2026-07-28 changelog on 2026-07-28. This table is the
+    guard that a `details["sep"]` truthiness check is not: `server/discover`
+    and the removal of protocol-level sessions were reported with each other's
+    SEP until it was caught by a launch-eve review.
+    """
+
+    EXPECTED_SEP = {
+        # server/discover, statelessness, session removal, subscriptions/listen,
+        # and the removed methods all land in SEP-2575 — except sessions.
+        "readiness_2026_server_discover": "SEP-2575",
+        "readiness_2026_stateless_request": "SEP-2575",
+        "readiness_2026_meta_validation": "SEP-2575",
+        "readiness_2026_unsupported_version_error": "SEP-2575",
+        "readiness_2026_removed_methods": "SEP-2575",
+        # "Sessionless MCP via Explicit State Handles" — removes Mcp-Session-Id.
+        "readiness_2026_no_session_id": "SEP-2567",
+        "readiness_2026_header_validation": "SEP-2243",
+        "readiness_2026_cache_metadata": "SEP-2549",
+        "readiness_2026_error_code_migration": "SEP-2164",
+        "readiness_2026_result_type": "SEP-2322",
+        "readiness_2026_deprecated_features": "SEP-2577",
+        "readiness_2026_tool_schema_dialect": "SEP-2106",
+    }
+
+    def test_every_readiness_rule_cites_the_right_sep(self):
+        from mcpscore.rules import create_all_rules
+        from mcpscore.rules.base import READINESS_GROUP
+
+        data = AuditData(
+            probes=modern_probes(),
+            capabilities=FakeServerCapabilities(logging=FakeLoggingCaps(enabled=True)),
+            tools=[_tool(name="ok")],
+        )
+        seen = {}
+        for rule in create_all_rules():
+            if rule.group_name != READINESS_GROUP or rule.skip_reason(data) is not None:
+                continue
+            seen[rule.rule_id] = (rule.check(data).details or {}).get("sep")
+
+        assert seen == {rule_id: self.EXPECTED_SEP[rule_id] for rule_id in seen}
+        # And no readiness rule ships without a citation at all.
+        assert set(seen) == set(self.EXPECTED_SEP), "readiness rule missing from the citation table"

@@ -8,7 +8,7 @@
 
 **Lighthouse for MCP.** Audit any MCP (Model Context Protocol) server and get a scored, actionable report in seconds.
 
-Point mcpscore at a server — from the CLI, a GitHub Action, or [mcpscore.dev](https://mcpscore.dev) — and it grades protocol conformance, tool quality, security and auth posture, and readiness for the upcoming spec revision, then tells you exactly what to fix. Deterministic, no API key, no sign-up.
+Point mcpscore at a server — from the CLI, a GitHub Action, or [mcpscore.dev](https://mcpscore.dev) — and it grades protocol conformance, tool quality, security and auth posture, and readiness for the 2026-07-28 spec revision, then tells you exactly what to fix. Deterministic, no API key, no sign-up.
 
 ## Why mcpscore?
 
@@ -47,11 +47,11 @@ The final score is reported as `earned/maximum` — higher means a better-qualit
 
 ## What it scores
 
-54 rules across four categories — the same four the report, the JSON output, and
+52 rules across four categories — the same four the report, the JSON output, and
 [mcpscore.dev](https://mcpscore.dev) show. Every rule cites the spec section or RFC it
 enforces; the full list is in the [rules reference](https://docs.mcpscore.dev/rules/).
 
-**Protocol** (18 rules) — protocol version (allowed, latest, not deprecated), server
+**Protocol** (16 rules) — protocol version (allowed, latest, not deprecated), server
 name, title and version, advertised capabilities, and transport. Streamable HTTP is the
 current standard, so SSE-only servers get migration advice.
 
@@ -67,7 +67,7 @@ metadata, the RFC 8414 authorization-server chain, and whether PKCE (S256) is en
 A gated server is scored on this surface without credentials — see
 [auditing authenticated servers](https://docs.mcpscore.dev/authenticated-servers/).
 
-**Readiness** (12 rules) — how ready the server is for the upcoming MCP spec revision,
+**Readiness** (12 rules) — how ready the server is for the 2026-07-28 MCP spec revision,
 reported on its own axis. For servers already speaking the new lifecycle those points
 also count toward the main score; for everyone else the axis stays informative.
 

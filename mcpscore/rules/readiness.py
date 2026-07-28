@@ -104,7 +104,7 @@ class ProbeBackedReadinessRule(ReadinessBaseRule):
 
 @register_rule
 class ServerDiscoverReadinessRule(ProbeBackedReadinessRule):
-    """Gateway check: the server implements the mandatory ``server/discover`` (SEP-2567)."""
+    """Gateway check: the server implements the mandatory ``server/discover`` (SEP-2575)."""
 
     rule_id = "readiness_2026_server_discover"
     rule_order = 1
@@ -127,13 +127,13 @@ class ServerDiscoverReadinessRule(ProbeBackedReadinessRule):
                 f"✅ Server answers server/discover (supported versions: {probe.details.get('supported_versions')})"
             )
         else:
-            message = f"❌ Server does not answer server/discover — mandatory from {READINESS_TARGET} (SEP-2567)"
+            message = f"❌ Server does not answer server/discover — mandatory from {READINESS_TARGET} (SEP-2575)"
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"sep": "SEP-2567", "target_version": READINESS_TARGET, **probe.details},
+            details={"sep": "SEP-2575", "target_version": READINESS_TARGET, **probe.details},
         )
 
 
@@ -566,10 +566,12 @@ class ToolSchemaDialectReadinessRule(ReadinessBaseRule):
 class NoSessionIdReadinessRule(ProbeBackedReadinessRule):
     """Legacy-leakage check: no ``Mcp-Session-Id`` minted or echoed on modern requests.
 
-    Session IDs are removed in the target revision; a server serving modern
-    requests must ignore an incoming ``Mcp-Session-Id`` and never mint or echo
-    one. Runs only when modern support was detected (inverse gating): a
-    legacy-only server keeping sessions is correct behavior, not leakage.
+    Protocol-level sessions are removed in the target revision (SEP-2567). A
+    server that serves modern requests SHOULD ignore an incoming
+    ``Mcp-Session-Id`` and not mint or echo one — the strength the spec's
+    backward-compatibility section uses. Runs only when modern support was
+    detected (inverse gating): a legacy-only server keeping sessions is correct
+    behavior, not leakage.
     """
 
     rule_id = "readiness_2026_no_session_id"
@@ -593,19 +595,20 @@ class NoSessionIdReadinessRule(ProbeBackedReadinessRule):
         elif echoed is not None:
             message = (
                 f"❌ Server echoes/mints an Mcp-Session-Id ('{echoed}') on a modern request — "
-                f"session IDs are removed in {READINESS_TARGET} and must not be emitted (SEP-2575)"
+                f"protocol-level sessions are removed in {READINESS_TARGET}; servers should not "
+                "mint or echo session IDs (SEP-2567)"
             )
         else:
             message = (
                 "❌ Server does not serve a modern request carrying a spurious Mcp-Session-Id — "
-                "the header must be ignored, not treated as an error (SEP-2575)"
+                "the header should be ignored, not treated as an error (SEP-2567)"
             )
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"sep": "SEP-2575", "target_version": READINESS_TARGET, **probe.details},
+            details={"sep": "SEP-2567", "target_version": READINESS_TARGET, **probe.details},
         )
 
 

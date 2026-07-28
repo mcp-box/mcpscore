@@ -24,16 +24,16 @@ def test_exactly_one_current_version():
     assert current[0] is spec.LATEST
 
 
-def test_latest_is_2025_11_25():
-    assert spec.LATEST.version == "2025-11-25"
-    assert spec.LATEST.lifecycle is Lifecycle.STATEFUL
+def test_latest_is_2026_07_28_stateless():
+    """Published final 2026-07-28; the registry flipped that day."""
+    assert spec.LATEST.version == "2026-07-28"
+    assert spec.LATEST.lifecycle is Lifecycle.STATELESS
 
 
-def test_draft_is_2026_07_28_stateless():
-    assert spec.DRAFT is not None
-    assert spec.DRAFT.version == "2026-07-28"
-    assert spec.DRAFT.lifecycle is Lifecycle.STATELESS
-    assert spec.DRAFT.status is SpecStatus.DRAFT
+def test_no_draft_revision_today():
+    """No revision is in draft: 2026-07-28 went final and nothing has opened after it."""
+    assert spec.DRAFT is None
+    assert spec.get("2025-11-25").status is SpecStatus.SUPERSEDED
 
 
 def test_allowed_versions_match_public_enum():
@@ -42,8 +42,16 @@ def test_allowed_versions_match_public_enum():
 
 
 def test_allowed_versions_exclude_drafts():
-    assert spec.DRAFT is not None
-    assert spec.DRAFT.version not in spec.allowed_versions()
+    """A draft is a readiness target, never a version a server may negotiate.
+
+    Vacuous while no draft is open — kept as the guard for the next revision,
+    which is exactly when a published version must appear in this list: while
+    2026-07-28 was still DRAFT, a server correctly speaking it failed
+    `protocol_version_allowed` at CRITICAL.
+    """
+    drafts = [v.version for v in spec.SPEC_VERSIONS if v.status is SpecStatus.DRAFT]
+    assert not set(drafts) & set(spec.allowed_versions())
+    assert spec.LATEST.version in spec.allowed_versions()
 
 
 def test_no_deprecated_versions_today():

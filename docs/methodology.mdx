@@ -82,7 +82,7 @@ version as a *property of your server that it detects*, not a mode of the tool:
 ## The readiness score (separate, informative)
 
 Ahead of a new spec revision, mcpscore answers a second question: **"is this server
-ready for the upcoming spec?"** This is deliberately a *separate* score
+ready for the 2026-07-28 spec?"** This is deliberately a *separate* score
 (`readiness.score / readiness.max_score` in the report), never mixed into the main
 score — a fully compliant 2025-11-25 server keeps its clean main score, and readiness
 is guidance, not punishment.
@@ -125,9 +125,12 @@ Two things worth knowing about how these run:
   scored a given audit.
 
 <Note>
-**Draft-spec citations** — the 2026-07-28 revision is final-pending (release candidate
-locked 2026-05-21). All citations above will be re-verified against the dated spec
-URLs when the revision is published, before the corresponding mcpscore release.
+**Citations re-verified 2026-07-28** — the 2026-07-28 revision was published final
+that day, and every citation above was re-checked against the dated spec URLs
+(`/specification/2026-07-28/`): the changelog, the transport header table, the
+error-code allocation and the deprecated-features registry all matched the release
+candidate, so no rule changed. The re-check is mechanical and repeats whenever a
+revision goes final — error codes were renumbered once already, after the RC lock.
 </Note>
 
 ## What mcpscore deliberately does not test
