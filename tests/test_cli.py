@@ -1197,6 +1197,69 @@ class TestAuthCliFlow:
         assert "HTTP 401" in reason
         assert "405" not in reason
 
+    async def test_probe_observed_gate_does_not_blame_the_credential(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """A token is not "rejected" when the session never carried it.
+
+        The gate is observed by an anonymous probe (it strips Authorization),
+        so a 401 there says the endpoint is gated and nothing about the
+        caller's token. With the session dying on 405, saying "rejected
+        credentials" would send the user to re-issue a working token.
+        """
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+        from mcpscore.probes import PROBE_UNAUTHENTICATED, ProbeOutcome, ProbeResult
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp", "--token", "probably-fine"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.HTTP_ERROR, status_code=405)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.last_probes = {
+            PROBE_UNAUTHENTICATED: ProbeResult(
+                PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, {"http_status": 401, "www_authenticate": "Bearer"}
+            )
+        }
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        assert "rejected" not in reason.lower()
+        assert "never exercised" in reason
+        assert "HTTP 401" in reason  # the gate
+        assert "405" in reason  # why the session failed, for diagnosis
+
+    async def test_session_401_with_a_token_is_still_a_rejection(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """The genuine rejection case must keep its wording."""
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp", "--token", "stale"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(
+            reason=ConnectionErrorReason.UNAUTHORIZED, status_code=401
+        )
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        assert "rejected the provided credentials" in reason
+
     async def test_non_auth_failure_still_exits_2(
         self,
         monkeypatch: MonkeyPatch,
