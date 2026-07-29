@@ -1156,6 +1156,47 @@ class TestAuthCliFlow:
         assert "rejected" not in reason
         assert "rejected" not in caplog.text
 
+    async def test_probe_observed_gate_triggers_partial_audit(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """A gate the *probes* saw is enough, even when the session died otherwise.
+
+        The shape behind 708 of 9,723 registry servers (2026-07-29 sweep): no
+        legacy endpoint, so the handshake fails on 405 rather than 401, while
+        the probes hold the challenge. Before this, they reported as
+        unreachable.
+        """
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+        from mcpscore.probes import PROBE_UNAUTHENTICATED, ProbeOutcome, ProbeResult
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://gated.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        # 405 from the SSE fallback — not an auth reason.
+        mock_client.last_connection_error = ConnectionFailure(reason=ConnectionErrorReason.HTTP_ERROR, status_code=405)
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+        mock_auditor.last_probes = {
+            PROBE_UNAUTHENTICATED: ProbeResult(
+                PROBE_UNAUTHENTICATED,
+                ProbeOutcome.SUPPORTED,
+                {"http_status": 401, "www_authenticate": "Bearer"},
+            )
+        }
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        mock_auditor.audit_partial.assert_awaited_once()
+        reason = mock_auditor.audit_partial.await_args.kwargs["reason"]
+        # The gate's status, not the 405 that ended the session.
+        assert "HTTP 401" in reason
+        assert "405" not in reason
+
     async def test_non_auth_failure_still_exits_2(
         self,
         monkeypatch: MonkeyPatch,
