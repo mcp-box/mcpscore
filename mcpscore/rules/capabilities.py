@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
     AuditData,
     BaseRule,
     RuleResult,
@@ -194,8 +195,40 @@ class CapabilityToolsPresentRule(CapabilityDeclarationRule):
         return self._evaluate(capabilities, items)
 
 
+class CapabilityListChangedRule(CapabilityBaseRule):
+    """Base class for the advisory `listChanged` rules.
+
+    `listChanged` is optional per the spec; these rules are mcpscore quality
+    opinions, scored LOW — an agent that caches a tool list and never hears
+    about changes silently works from a stale copy.
+
+    **Only judges a feature the server actually offers.** A tools-only server
+    has nothing to say about `prompts.listChanged`, and failing it for that was
+    the same optionality error the presence rules carried until 1.1.0: the
+    2026-07-29 registry sweep found 2,798 servers failing
+    `capability_prompts_list_changed` with no prompts at all, and 2,582 the
+    same for resources. Undeclared feature -> the advisory skips.
+    """
+
+    feature: str = ""
+    """Capability attribute this advisory is about (e.g. "prompts")."""
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the server does not offer this feature at all."""
+        capabilities = audit_data.capabilities
+        if capabilities is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if getattr(capabilities, self.feature, None) is None:
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
+
+
 @register_rule
-class CapabilityToolsListChangedRule(CapabilityBaseRule):
+class CapabilityToolsListChangedRule(CapabilityListChangedRule):
     """Advisory: the tools capability declares listChanged so clients can refresh a stale list.
 
     Optional per the spec — an mcpscore quality opinion, scored LOW: without
@@ -205,14 +238,11 @@ class CapabilityToolsListChangedRule(CapabilityBaseRule):
     rule_id = "capability_tools_list_changed"
     basis = "mcpscore recommendation; MCP 2025-11-25 Tools §Capabilities defines listChanged as optional"
     rule_order = 2
+    feature = "tools"
 
     @property
     def rule_name(self) -> str:
         return "Capabilities - Tools listChanged Implemented"
-
-    @property
-    def severity(self) -> RuleSeverity:
-        return RuleSeverity.LOW
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
         """Advisory check: verify that capabilities.tools declares listChanged.
@@ -264,7 +294,7 @@ class CapabilityPromptsPresentRule(CapabilityDeclarationRule):
 
 
 @register_rule
-class CapabilityPromptsListChangedRule(CapabilityBaseRule):
+class CapabilityPromptsListChangedRule(CapabilityListChangedRule):
     """Advisory: the prompts capability declares listChanged so clients can refresh a stale list.
 
     Optional per the spec — an mcpscore quality opinion, scored LOW: without
@@ -274,14 +304,11 @@ class CapabilityPromptsListChangedRule(CapabilityBaseRule):
     rule_id = "capability_prompts_list_changed"
     basis = "mcpscore recommendation; MCP 2025-11-25 Prompts §Capabilities defines listChanged as optional"
     rule_order = 4
+    feature = "prompts"
 
     @property
     def rule_name(self) -> str:
         return "Capabilities - Prompts listChanged Implemented"
-
-    @property
-    def severity(self) -> RuleSeverity:
-        return RuleSeverity.LOW
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
         """Advisory check: verify that capabilities.prompts declares listChanged.
@@ -333,7 +360,7 @@ class CapabilityResourcesPresentRule(CapabilityDeclarationRule):
 
 
 @register_rule
-class CapabilityResourcesListChangedRule(CapabilityBaseRule):
+class CapabilityResourcesListChangedRule(CapabilityListChangedRule):
     """Advisory: the resources capability declares listChanged so clients can refresh a stale list.
 
     Optional per the spec — an mcpscore quality opinion, scored LOW: without
@@ -343,14 +370,11 @@ class CapabilityResourcesListChangedRule(CapabilityBaseRule):
     rule_id = "capability_resources_list_changed"
     basis = "mcpscore recommendation; MCP 2025-11-25 Resources §Capabilities defines listChanged as optional"
     rule_order = 6
+    feature = "resources"
 
     @property
     def rule_name(self) -> str:
         return "Capabilities - Resources listChanged Implemented"
-
-    @property
-    def severity(self) -> RuleSeverity:
-        return RuleSeverity.LOW
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
         """Advisory check: verify that capabilities.resources declares listChanged.

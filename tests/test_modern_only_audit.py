@@ -317,7 +317,7 @@ class TestAuditorReuseDoesNotLeakState:
 
 # --- Partial audit (auth-gated servers) --------------------------------------
 
-from mcpscore.probes import PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED  # noqa: E402
+from mcpscore.probes import PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED, observed_auth_status  # noqa: E402
 
 
 def _auth_gated_probe_results() -> dict[str, ProbeResult]:
@@ -468,3 +468,53 @@ async def test_partial_audit_never_promotes_readiness(stub_probes, monkeypatch: 
     readiness_ids = {r["rule_id"] for r in report["readiness"]["results"]}
     main_ids = {r["rule_id"] for r in report["results"]}
     assert not (readiness_ids & main_ids)
+
+
+class TestProbeEvidenceSurvivesDecline:
+    """`audit_modern_only` keeps its observations even when it declines.
+
+    Regression for the registry sweep of 2026-07-29: 708 of 9,723 registry
+    servers are auth-gated but fail the *legacy* handshake on something other
+    than 401 (typically 405 from the SSE fallback). The probes saw the 401
+    challenge and even fetched the RFC 9728 metadata, but the observations were
+    discarded on the way out, so the CLI reported "Error connecting" instead of
+    the partial audit — on 29% of all gated servers.
+    """
+
+    async def test_probes_are_retained_when_modern_support_is_absent(
+        self, stub_probes, monkeypatch: pytest.MonkeyPatch
+    ):
+        results = not_applicable_results(reason="legacy-only server")
+        results[PROBE_UNAUTHENTICATED] = ProbeResult(
+            PROBE_UNAUTHENTICATED,
+            ProbeOutcome.SUPPORTED,
+            {"http_status": 401, "www_authenticate": 'Bearer resource_metadata="https://x.example/.well-known"'},
+        )
+        stub_probes(results)
+        monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+        auditor = MCPAuditor()
+        assert await auditor.audit_modern_only(URL) is False
+        assert auditor.last_probes is not None
+        assert observed_auth_status(auditor.last_probes) == 401
+
+
+class TestObservedAuthStatus:
+    def test_reports_the_gate_status(self):
+        probes = {
+            PROBE_UNAUTHENTICATED: ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, {"http_status": 403})
+        }
+        assert observed_auth_status(probes) == 403
+
+    def test_ignores_non_gate_statuses(self):
+        for status in (200, 404, 405, 500):
+            probes = {
+                PROBE_UNAUTHENTICATED: ProbeResult(
+                    PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, {"http_status": status}
+                )
+            }
+            assert observed_auth_status(probes) is None, status
+
+    def test_no_probes_is_no_evidence(self):
+        assert observed_auth_status(None) is None
+        assert observed_auth_status({}) is None

@@ -59,6 +59,10 @@ def mock_auditor() -> MagicMock:
     auditor.audit = AsyncMock(return_value=(85, 100))
     auditor.audit_modern_only = AsyncMock(return_value=False)
     auditor.get_audit_report = MagicMock(return_value=_report_payload())
+    # Instance attributes are not on the spec, so they must be set explicitly or
+    # every access raises AttributeError. `last_probes` mirrors a fresh auditor:
+    # no probe observations, i.e. no evidence of an auth gate.
+    auditor.last_probes = None
     return auditor
 
 

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, NoReturn
 from mcpscore import MCPAuditor, MCPClient
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
+from mcpscore.probes import observed_auth_status
 
 if TYPE_CHECKING:
     from mcpscore import MCPTransportType
@@ -342,13 +343,29 @@ async def async_main() -> None:
                     return
 
                 failure = client.last_connection_error
-                if failure is not None and failure.reason in (
+                session_gated = failure is not None and failure.reason in (
                     ConnectionErrorReason.UNAUTHORIZED,
                     ConnectionErrorReason.FORBIDDEN,
-                ):
-                    status = failure.status_code or (
-                        401 if failure.reason is ConnectionErrorReason.UNAUTHORIZED else 403
-                    )
+                )
+                # A gated server does not always *fail* with 401: when it serves
+                # no legacy endpoint the handshake dies on something else (405
+                # on the SSE fallback is the common shape) and only the probes
+                # see the challenge. Trust that observation too, or ~29% of
+                # gated servers report as unreachable while we hold their
+                # WWW-Authenticate and RFC 9728 metadata.
+                probed_status = observed_auth_status(auditor.last_probes)
+                if session_gated or probed_status is not None:
+                    # Report the status of the *gate*, not of whatever ended the
+                    # session: a server whose SSE fallback answers 405 is still
+                    # gated at 401, and saying "requires authentication (HTTP
+                    # 405)" would send the reader hunting the wrong problem.
+                    if session_gated:
+                        assert failure is not None  # noqa: S101 — session_gated implies it
+                        status = failure.status_code or (
+                            403 if failure.reason is ConnectionErrorReason.FORBIDDEN else 401
+                        )
+                    else:
+                        status = probed_status or 401
                     # Key off the same predicate as the report's authenticated
                     # flag: only an Authorization credential counts — a 401
                     # with only tracing/custom headers is a missing credential,
