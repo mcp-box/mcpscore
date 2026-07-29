@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release script now waits for the index resolvers actually read.** It
+  polled `pypi.org/pypi/mcpscore/<version>/json`, which turns green before the
+  *simple index* has propagated — so 1.1.1 printed its smoke test while `uvx`
+  still reported "there is no version of mcpscore==1.1.1" for a release that
+  was already published. It now additionally waits until
+  `pypi.org/simple/mcpscore/` serves the version's files.
+
 ## [1.1.1] - 2026-07-29
 
 Follow-up to the 1.1.0 launch release, driven by a full sweep of the 9,723

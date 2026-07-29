@@ -233,6 +233,41 @@ def create_release(version: str, notes: str, target: str) -> None:
     ok(f"GitHub Release v{version} created — publish workflow triggered")
 
 
+def wait_for_pypi_index(version: str) -> None:
+    """Poll PyPI's *simple index* until the release's files are resolvable.
+
+    Not `/pypi/<pkg>/<version>/json`: that metadata endpoint goes green before
+    the simple index has propagated, and the simple index is what `uv` and
+    `pip` resolve against. Waiting on the wrong one is why 1.1.1 printed a
+    smoke test that immediately failed with "there is no version of
+    mcpscore==1.1.1" for a release that was, in fact, published.
+    """
+    url = "https://pypi.org/simple/mcpscore/"
+    print(f"… waiting for the PyPI index to serve {version} (up to {REGISTRY_WAIT_SECONDS}s)")
+    deadline = time.monotonic() + REGISTRY_WAIT_SECONDS
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.pypi.simple.v1+json"})
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            with urllib.request.urlopen(  # noqa: S310 — fixed https registry URL
+                request, timeout=min(REGISTRY_REQUEST_TIMEOUT_SECONDS, remaining)
+            ) as response:
+                files = json.loads(response.read()).get("files", [])
+            if any(f"mcpscore-{version}-" in f.get("filename", "") for f in files):
+                ok(f"resolvable from the PyPI index ({version})")
+                return
+        except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, KeyError):
+            # Expected while the index propagates; retry until the deadline.
+            pass
+        time.sleep(min(10, max(0, deadline - time.monotonic())))
+    fail(
+        f"PyPI served no files for {version} within {REGISTRY_WAIT_SECONDS}s ({url}) — "
+        f"check the workflow: https://github.com/{REPO}/actions/workflows/publish.yml"
+    )
+
+
 def wait_for_registry(registry: str, url: str, workflow: str) -> None:
     """Poll a registry until it reports the version, or fail after the deadline.
 
@@ -269,6 +304,9 @@ def wait_for_registry(registry: str, url: str, workflow: str) -> None:
 def wait_for_publish(version: str) -> None:
     """Wait for the release to appear on each targeted registry, then print a smoke test."""
     wait_for_registry("PyPI", f"https://pypi.org/pypi/mcpscore/{version}/json", "publish.yml")
+    # The metadata endpoint above can be green while resolvers still 404 —
+    # wait for the index they actually read before printing a smoke test.
+    wait_for_pypi_index(version)
     if is_prerelease(version):
         ok("npm skipped (pre-release publishes to PyPI only)")
         # --prerelease=allow: uv's pre-release exception covers only direct
