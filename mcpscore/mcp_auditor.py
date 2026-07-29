@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 if TYPE_CHECKING:
     from mcp_types import InitializeResult, Prompt, Resource, Tool
 
+    from .probes import ProbeResult
+
 from pydantic import ValidationError
 
 from .enums import MCPTransportType
@@ -89,6 +91,11 @@ class MCPAuditor:
         self.readiness_max: int = 0
         self.readiness_results: list[RuleResult] = []
 
+        self.last_probes: dict[str, ProbeResult] | None = None
+        """Probe observations from the most recent modern-only attempt, kept even
+        when that attempt declined — they are the evidence that a server which
+        refused the legacy handshake is auth-gated rather than unreachable."""
+
         self.era: Era | None = None
         """Lifecycle era(s) the server was observed to support (set during audit)."""
 
@@ -170,6 +177,7 @@ class MCPAuditor:
             return False
 
         probes = await run_all_probes(url, headers=self.headers)
+        self.last_probes = probes
         if not has_modern_support(probes):
             return False
 

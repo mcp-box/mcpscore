@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, NoReturn
 from mcpscore import MCPAuditor, MCPClient
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
+from mcpscore.probes import observed_auth_status
 
 if TYPE_CHECKING:
     from mcpscore import MCPTransportType
@@ -342,18 +343,44 @@ async def async_main() -> None:
                     return
 
                 failure = client.last_connection_error
-                if failure is not None and failure.reason in (
+                session_gated = failure is not None and failure.reason in (
                     ConnectionErrorReason.UNAUTHORIZED,
                     ConnectionErrorReason.FORBIDDEN,
-                ):
-                    status = failure.status_code or (
-                        401 if failure.reason is ConnectionErrorReason.UNAUTHORIZED else 403
-                    )
+                )
+                # A gated server does not always *fail* with 401: when it serves
+                # no legacy endpoint the handshake dies on something else (405
+                # on the SSE fallback is the common shape) and only the probes
+                # see the challenge. Trust that observation too, or ~29% of
+                # gated servers report as unreachable while we hold their
+                # WWW-Authenticate and RFC 9728 metadata.
+                probed_status = observed_auth_status(auditor.last_probes)
+                if session_gated or probed_status is not None:
+                    # Report the status of the *gate*, not of whatever ended the
+                    # session: a server whose SSE fallback answers 405 is still
+                    # gated at 401, and saying "requires authentication (HTTP
+                    # 405)" would send the reader hunting the wrong problem.
+                    if session_gated:
+                        assert failure is not None  # noqa: S101 — session_gated implies it
+                        status = failure.status_code or (
+                            403 if failure.reason is ConnectionErrorReason.FORBIDDEN else 401
+                        )
+                    else:
+                        status = probed_status or 401
                     # Key off the same predicate as the report's authenticated
                     # flag: only an Authorization credential counts — a 401
                     # with only tracing/custom headers is a missing credential,
                     # not a rejected one.
-                    if has_authorization_credential(headers):
+                    #
+                    # "Rejected" additionally requires that the *session* was
+                    # the thing refused. The probe that reports a gate runs
+                    # `anonymous=True` — it strips the Authorization header —
+                    # so its 401 says the endpoint is gated and nothing at all
+                    # about the caller's token. When the session died of
+                    # something else (405 on the SSE fallback), the credential
+                    # was never exercised, and telling the user it was rejected
+                    # sends them to re-issue a token that is probably fine.
+                    credentials_rejected = session_gated and has_authorization_credential(headers)
+                    if credentials_rejected:
                         logger.info(
                             "Server rejected the provided credentials — "
                             "running a partial audit of the observable surface."
@@ -362,6 +389,24 @@ async def async_main() -> None:
                         partial_reason = (
                             f"Server rejected the provided credentials (HTTP {status}); scored the unauthenticated "
                             "surface only — check that the token or headers are valid for this server."
+                        )
+                    elif not session_gated and has_authorization_credential(headers):
+                        # Gated per an anonymous probe, but the session failed
+                        # separately — say so, and do not blame the credential.
+                        session_status = failure.status_code if failure is not None else None
+                        detail = f" (HTTP {session_status})" if session_status else ""
+                        logger.info(
+                            "Server requires authentication, and the session could not be established%s — "
+                            "running a partial audit of the observable surface.",
+                            detail,
+                        )
+                        logger.info(
+                            "(Your credentials were not exercised: the connection failed before they were used.)"
+                        )
+                        partial_reason = (
+                            f"Server requires authentication (HTTP {status}); the session could not be "
+                            f"established{detail}, so the supplied credentials were never exercised — scored the "
+                            "unauthenticated surface only."
                         )
                     else:
                         logger.info(

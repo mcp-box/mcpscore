@@ -7,7 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-29
+
+Follow-up to the 1.1.0 launch release, driven by a full sweep of the 9,723
+auditable endpoints in the official MCP registry.
+
+### Added
+
+- **A registry of retired rule IDs** (`mcpscore/rules/retired.py`), rendered as a
+  "Retired rules" table in the [rules reference](https://docs.mcpscore.dev/rules/).
+  A `rule_id` is a public contract — it appears in stored reports and in CI
+  configuration that waives specific rules — so an ID that stops running now has
+  a permanent record of when it went and why, instead of silently vanishing from
+  the docs. Retired IDs are never reused; a test enforces both that and the
+  registry matching the live rule set.
+
+  The accompanying policy (`AGENTS.md`): a rule is retired only when it was
+  *wrong*. A rule that is correct but applies to particular spec revisions keeps
+  its ID and gains a `min_spec_version`/`max_spec_version` range instead —
+  obsolescence is scoping, not deletion.
+
+### Changed
+
+- **The `listChanged` advisories no longer judge features a server does not
+  offer.** `capability_prompts_list_changed` and `capability_resources_list_changed`
+  failed servers with no prompts or resources at all — 2,798 and 2,582 servers
+  respectively in the registry sweep. They now skip as `not-applicable` when
+  the capability is absent, and still apply where the feature exists (a server
+  with tools that does not announce tool-list changes is still advised). Median
+  effect: +0.9 points, 54% of servers.
+
 ### Fixed
+
+- **Auth-gated servers that refuse the legacy handshake now get their partial
+  audit.** The partial branch only triggered when the *session* ended in
+  401/403; a server with no legacy endpoint fails the handshake on something
+  else (405 from the SSE fallback is the common shape), so the probes' 401
+  observation — and the RFC 9728 metadata already fetched — were discarded and
+  the CLI reported "Error connecting". The 2026-07-29 registry sweep put a
+  number on it: **708 of 9,723 servers, 29% of all gated servers**. The engine
+  now keeps the probe observations when the modern-only attempt declines and
+  decides on that evidence; re-running those 708 produced **703 partial
+  audits** (mean auth posture 84.4%), the other 5 being genuinely unreachable.
+  The reported status is the gate's (401), not whatever ended the session.
 
 - **The release script's smoke test now refreshes uv's package cache.** It
   printed `uvx mcpscore==<version> …`, which fails with "your requirements are
@@ -635,7 +677,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/mcp-box/mcpscore/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mcp-box/mcpscore/compare/v1.1.0rc1...v1.1.0
 [1.1.0rc1]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b6...v1.1.0rc1
 [1.1.0b6]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b5...v1.1.0b6

@@ -5,6 +5,17 @@
   diagnostics may differ; the commands are authoritative.
 - **`rule_id` is a stable public contract**: never rename or reuse one. New rules must
   cite the MCP spec section (or SEP) they enforce in their result `details`.
+- **Rule lifecycle — three states, and the choice between them matters:**
+  1. **Active** — runs everywhere.
+  2. **Version-scoped** — set `min_spec_version`/`max_spec_version` when a rule is
+     correct but only for some revisions. Use this for anything the spec removed
+     or deprecated: the rule keeps its ID and still judges servers on the
+     revisions where the requirement held. **Obsolescence is scoping, not deletion.**
+  3. **Retired** — delete the rule *only when it was wrong* (it asserted something
+     the spec does not require, or contradicted another rule), and add an entry to
+     `mcpscore/rules/retired.py`. That registry generates the "Retired rules" table
+     in `docs/rules.mdx`, so an old report or a stale CI waiver stays explainable.
+     A retired ID is never reused — a test enforces it.
 - Readiness rules (`group_name = "readiness"`) score on the readiness axis; since the
   1.1.0 promotion they ALSO count in the main score, but only for modern-lifecycle
   servers (era modern/dual-era) in full audits — never for legacy servers, never in

@@ -4,7 +4,7 @@ from mcp_types import ResourcesCapability
 from pydantic import BaseModel
 
 from mcpscore.rules import AuditData, RuleSeverity
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from mcpscore.rules.capabilities import (
     CapabilityPromptsListChangedRule,
     CapabilityPromptsPresentRule,
@@ -187,3 +187,40 @@ class TestListingNeverAttempted:
         """The default is 'not attempted', so no rule can fail on absent data."""
         for rule_cls, _ in DECLARATION_RULES:
             assert rule_cls().skip_reason(AuditData()) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestListChangedAdvisoryScope:
+    """The advisory only judges a feature the server actually offers.
+
+    From the 2026-07-29 registry sweep: 2,798 servers failed
+    `capability_prompts_list_changed` with no prompts at all, and 2,582 failed
+    the resources one with no resources — penalised for not announcing changes
+    to something they do not have.
+    """
+
+    def test_absent_feature_is_not_applicable(self, capabilities_missing):
+        for rule_cls in (
+            CapabilityToolsListChangedRule,
+            CapabilityPromptsListChangedRule,
+            CapabilityResourcesListChangedRule,
+        ):
+            assert rule_cls().skip_reason(AuditData(capabilities=capabilities_missing)) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_declared_feature_is_still_judged(self, capabilities_full):
+        """The signal we keep: the feature exists, so the advice applies."""
+        data = AuditData(capabilities=capabilities_full)
+        for rule_cls in (
+            CapabilityToolsListChangedRule,
+            CapabilityPromptsListChangedRule,
+            CapabilityResourcesListChangedRule,
+        ):
+            assert rule_cls().skip_reason(data) is None
+            assert rule_cls().check(data).passed
+
+    def test_declared_but_disabled_still_fails(self, capabilities_full):
+        caps = replace(capabilities_full, tools=replace(capabilities_full.tools, list_changed=False))
+        rule = CapabilityToolsListChangedRule()
+        data = AuditData(capabilities=caps)
+
+        assert rule.skip_reason(data) is None
+        assert not rule.check(data).passed

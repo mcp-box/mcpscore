@@ -114,3 +114,21 @@ normative citations behind each rule.
 | `readiness_2026_tool_schema_dialect` | Readiness 2026-07-28 - tool schema dialect | LOW | 1 | all versions |
 | `readiness_2026_no_session_id` | Readiness 2026-07-28 - no session IDs | HIGH | 3 | all versions |
 | `readiness_2026_removed_methods` | Readiness 2026-07-28 - removed methods | MEDIUM | 2 | all versions |
+
+## Retired rules
+
+These `rule_id`s no longer run. They are listed because a rule ID is a public
+contract: it appears in JSON reports you may have stored and in CI
+configuration that may still reference it. **Retired IDs are never reused.**
+
+A rule is retired only when it was *wrong*. A rule that was correct but applies
+only to certain spec revisions is not retired — it keeps its ID and gains a
+version range in the **Applies to** column above.
+
+If a report of yours shows one of these, its result was accurate for the
+mcpscore version that produced it; the check simply no longer exists.
+
+| Rule ID | Retired in | Last severity | Why |
+|---|---|---|---|
+| `capability_resources_subscribe` | 1.1.0 | HIGH | Scored the absence of an optional capability — 2025-11-25 Resources §Capabilities calls `subscribe` optional — and 2026-07-28 removes `resources/subscribe` outright (SEP-2575). |
+| `capability_logging_present` | 1.1.0 | MEDIUM | Scored the absence of an optional capability, and contradicted `readiness_2026_deprecated_features`, which fails a server for *declaring* `logging` (deprecated by SEP-2577). No server could pass both. |

@@ -444,6 +444,21 @@ async def _probe_unauthenticated(client: httpx2.AsyncClient, url: str) -> ProbeR
     return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)
 
 
+def observed_auth_status(probes: dict[str, ProbeResult] | None) -> int | None:
+    """HTTP status of an auth gate the probes observed, or None if they saw no gate.
+
+    The unauthenticated probe records whatever the server answered, so this is
+    the evidence that a server is gated even when the *session* failed for an
+    unrelated reason — a legacy SSE fallback answering ``405``, say. Without it
+    a gated server that rejects the legacy handshake looks simply unreachable.
+    """
+    result = (probes or {}).get(PROBE_UNAUTHENTICATED)
+    if result is None:
+        return None
+    status = result.details.get("http_status")
+    return status if status in (401, 403) else None
+
+
 def _well_known_urls(url: str) -> list[str]:
     """RFC 9728 §3 well-known locations for a protected resource URL.
 
