@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Three resource-catalog rules validate absolute resource URIs, non-blank
+  resource names, and non-negative declared byte sizes.
+
 ## [1.1.1] - 2026-07-29
 
 Follow-up to the 1.1.0 launch release, driven by a full sweep of the 9,723
