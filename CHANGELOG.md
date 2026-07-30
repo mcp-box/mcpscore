@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Three resource-catalog rules validate absolute resource URIs, non-blank
+  resource names, and non-negative declared byte sizes.
+- Four catalog-validation rules check resource MIME types and annotations, plus
+  unique and non-blank argument names within prompts.
+- Four MCP 2026 tool-schema rules validate `x-mcp-header` names, uniqueness,
+  primitive parameter types, and static reachability without invoking tools.
+
 ### Fixed
 
 - **The local lint gate now runs the same hooks, at the same versions, as CI.**
@@ -21,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass — the hooks catch what CI enforces, the ruff calls catch untracked files
   the hooks cannot see.
 
-- **The release script now waits for the index resolvers actually read.** It
+- **The release script now waits for the index resolvers actually use.** It
   polled `pypi.org/pypi/mcpscore/<version>/json`, which turns green before the
   *simple index* has propagated — so 1.1.1 printed its smoke test while `uvx`
   still reported "there is no version of mcpscore==1.1.1" for a release that

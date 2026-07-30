@@ -4,6 +4,8 @@ from mcp_types import Prompt, PromptArgument
 
 from mcpscore.rules import (
     AuditData,
+    PromptsArgumentNamesPresentRule,
+    PromptsArgumentNamesUniqueRule,
     PromptsArgumentsDocumentedRule,
     PromptsDescriptionPresentRule,
     RuleSeverity,
@@ -41,6 +43,62 @@ class TestPromptsDescriptionPresentRule:
         assert result.passed is False
         assert result.details is not None
         assert result.details["prompts_without_description"] == ["bad"]
+
+
+class TestPromptsArgumentNamesUniqueRule:
+    def test_unique_names_and_separate_prompt_scopes_pass(self) -> None:
+        result = PromptsArgumentNamesUniqueRule().check(
+            AuditData(
+                prompts=[
+                    _prompt("first", arguments=[PromptArgument(name="topic"), PromptArgument(name="format")]),
+                    _prompt("second", arguments=[PromptArgument(name="topic")]),
+                ]
+            )
+        )
+        assert result.passed is True
+        assert result.details == {"duplicate_arguments": []}
+
+    def test_duplicate_name_within_prompt_fails(self) -> None:
+        result = PromptsArgumentNamesUniqueRule().check(
+            AuditData(
+                prompts=[
+                    _prompt(
+                        "review",
+                        arguments=[PromptArgument(name="code"), PromptArgument(name="code")],
+                    )
+                ]
+            )
+        )
+        assert result.passed is False
+        assert result.details == {"duplicate_arguments": ["review.code"]}
+
+
+class TestPromptsArgumentNamesPresentRule:
+    def test_named_arguments_and_prompt_without_arguments_pass(self) -> None:
+        result = PromptsArgumentNamesPresentRule().check(
+            AuditData(
+                prompts=[
+                    _prompt("none"),
+                    _prompt("named", arguments=[PromptArgument(name="topic")]),
+                ]
+            )
+        )
+        assert result.passed is True
+        assert result.details == {"prompts_with_unnamed_arguments": []}
+
+    def test_blank_argument_name_fails_once_per_prompt(self) -> None:
+        result = PromptsArgumentNamesPresentRule().check(
+            AuditData(
+                prompts=[
+                    _prompt(
+                        "bad",
+                        arguments=[PromptArgument(name=""), PromptArgument(name="  ")],
+                    )
+                ]
+            )
+        )
+        assert result.passed is False
+        assert result.details == {"prompts_with_unnamed_arguments": ["bad"]}
 
 
 class TestPromptsArgumentsDocumentedRule:

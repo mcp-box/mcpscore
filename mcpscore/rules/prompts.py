@@ -55,12 +55,95 @@ class PromptsBaseRule(BaseRule):
 
 
 @register_rule
+class PromptsArgumentNamesUniqueRule(PromptsBaseRule):
+    """High check: Verify that argument names are unique within each prompt.
+
+    The spec text imposes no explicit uniqueness requirement on argument
+    names; the rule enforces the mechanism instead: ``prompts/get`` passes
+    arguments as a JSON object keyed by name, so only one of two same-named
+    declarations can ever be addressed.
+    """
+
+    rule_id = "prompts_argument_names_unique"
+    basis = "MCP 2026-07-28 Prompts §Getting a Prompt (prompts/get arguments are keyed by name)"
+    rule_order = 1
+
+    @property
+    def rule_name(self) -> str:
+        return "Prompts - Argument names must be unique"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_prompts(self, prompts: list[Prompt]) -> RuleResult:
+        """Find duplicate argument names within each prompt."""
+        duplicate_arguments: list[str] = []
+        for prompt in prompts:
+            seen: set[str] = set()
+            for argument in prompt.arguments or []:
+                if argument.name in seen:
+                    duplicate_arguments.append(f"{prompt.name}.{argument.name}")
+                seen.add(argument.name)
+
+        passed = not duplicate_arguments
+        message = (
+            "✅ All prompt argument names are unique"
+            if passed
+            else f"❌ Number of duplicate prompt arguments: {len(duplicate_arguments)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"duplicate_arguments": duplicate_arguments},
+        )
+
+
+@register_rule
+class PromptsArgumentNamesPresentRule(PromptsBaseRule):
+    """Medium check: Verify that every prompt argument has a non-blank name."""
+
+    rule_id = "prompts_argument_names_present"
+    basis = "MCP 2026-07-28 Prompts §Prompt (arguments)"
+    rule_order = 2
+
+    @property
+    def rule_name(self) -> str:
+        return "Prompts - All arguments must have a name"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_prompts(self, prompts: list[Prompt]) -> RuleResult:
+        """Find prompt arguments whose names contain no visible text."""
+        prompts_with_unnamed_arguments = [
+            prompt.name for prompt in prompts if any(not argument.name.strip() for argument in (prompt.arguments or []))
+        ]
+        passed = not prompts_with_unnamed_arguments
+        message = (
+            "✅ All prompt arguments have a name"
+            if passed
+            else f"❌ Number of prompts with unnamed arguments: {len(prompts_with_unnamed_arguments)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"prompts_with_unnamed_arguments": prompts_with_unnamed_arguments},
+        )
+
+
+@register_rule
 class PromptsDescriptionPresentRule(PromptsBaseRule):
     """Medium check: Verify that all declared prompts have a description."""
 
     rule_id = "prompts_description_present"
     basis = "MCP 2025-11-25 Prompts §Prompt (description)"
-    rule_order = 1
+    rule_order = 3
 
     @property
     def rule_name(self) -> str:
@@ -111,7 +194,7 @@ class PromptsArgumentsDocumentedRule(PromptsBaseRule):
 
     rule_id = "prompts_arguments_documented"
     basis = "MCP 2025-11-25 Prompts §Prompt (arguments: name, description, required)"
-    rule_order = 2
+    rule_order = 4
 
     @property
     def rule_name(self) -> str:

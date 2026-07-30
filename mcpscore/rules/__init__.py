@@ -39,6 +39,8 @@ from .capabilities import (
     CapabilityToolsPresentRule,
 )
 from .prompts import (
+    PromptsArgumentNamesPresentRule,
+    PromptsArgumentNamesUniqueRule,
     PromptsArgumentsDocumentedRule,
     PromptsDescriptionPresentRule,
 )
@@ -63,7 +65,12 @@ from .readiness import (
 )
 from .registry import RuleRegistry, create_all_rules
 from .resources import (
+    ResourcesAnnotationsValidRule,
     ResourcesDescriptionPresentRule,
+    ResourcesMimeTypesValidRule,
+    ResourcesNamesPresentRule,
+    ResourcesSizesValidRule,
+    ResourcesUrisValidRule,
 )
 from .security import (
     ErrorDataLeakRule,
@@ -84,6 +91,10 @@ from .tools import (
     ToolsDescriptionPresentRule,
     ToolsExecutionConsistentRule,
     ToolsInputSchemaValidRule,
+    ToolsMcpHeadersPrimitiveTypesRule,
+    ToolsMcpHeadersStaticallyReachableRule,
+    ToolsMcpHeadersUniqueRule,
+    ToolsMcpHeadersValidNamesRule,
     ToolsNamePresentRule,
     ToolsNamesUniqueRule,
     ToolsNamesValidFormatRule,
@@ -122,10 +133,17 @@ __all__ = (
     "MalformedRequestHandlingRule",
     "MetaValidationReadinessRule",
     "NoSessionIdReadinessRule",
+    "PromptsArgumentNamesPresentRule",
+    "PromptsArgumentNamesUniqueRule",
     "PromptsArgumentsDocumentedRule",
     "PromptsDescriptionPresentRule",
     "RemovedMethodsReadinessRule",
+    "ResourcesAnnotationsValidRule",
     "ResourcesDescriptionPresentRule",
+    "ResourcesMimeTypesValidRule",
+    "ResourcesNamesPresentRule",
+    "ResourcesSizesValidRule",
+    "ResourcesUrisValidRule",
     "ResultTypeReadinessRule",
     "RuleRegistry",
     "RuleResult",
@@ -147,6 +165,10 @@ __all__ = (
     "ToolsDescriptionPresentRule",
     "ToolsExecutionConsistentRule",
     "ToolsInputSchemaValidRule",
+    "ToolsMcpHeadersPrimitiveTypesRule",
+    "ToolsMcpHeadersStaticallyReachableRule",
+    "ToolsMcpHeadersUniqueRule",
+    "ToolsMcpHeadersValidNamesRule",
     "ToolsNamePresentRule",
     "ToolsNamesUniqueRule",
     "ToolsNamesValidFormatRule",
