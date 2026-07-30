@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from datetime import datetime
 import re
 from urllib.parse import urlsplit
 
@@ -10,6 +11,13 @@ from .registry import register_rule
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
 _URI_CHARACTER_RE = re.compile(r"^[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$")
 _INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_MEDIA_TYPE_ATOM_PATTERN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+_MEDIA_TYPE_QUOTED_VALUE = r'"(?:[\t !#-\[\]-~]|\\[\t -~])*"'
+_MEDIA_TYPE_RE = re.compile(
+    rf"^{_MEDIA_TYPE_ATOM_PATTERN}/{_MEDIA_TYPE_ATOM_PATTERN}"
+    rf"(?:[ \t]*;[ \t]*{_MEDIA_TYPE_ATOM_PATTERN}="
+    rf"(?:{_MEDIA_TYPE_ATOM_PATTERN}|{_MEDIA_TYPE_QUOTED_VALUE}))*$"
+)
 
 
 class ResourcesBaseRule(BaseRule):
@@ -185,12 +193,101 @@ class ResourcesSizesValidRule(ResourcesBaseRule):
 
 
 @register_rule
+class ResourcesMimeTypesValidRule(ResourcesBaseRule):
+    """Medium check: Verify that supplied resource MIME types are valid."""
+
+    rule_id = "resources_mime_types_valid"
+    basis = "MCP 2026-07-28 Resources §Resource (mimeType)"
+    rule_order = 4
+
+    @property
+    def rule_name(self) -> str:
+        return "Resources - Declared MIME types must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_resources(self, resources: list[Resource]) -> RuleResult:
+        """Verify that every supplied MIME type has a type and subtype."""
+        resources_with_invalid_mime_type = [
+            {"name": resource.name, "mime_type": resource.mime_type}
+            for resource in resources
+            if resource.mime_type is not None and _MEDIA_TYPE_RE.fullmatch(resource.mime_type) is None
+        ]
+        passed = not resources_with_invalid_mime_type
+        message = (
+            "✅ All declared resource MIME types are valid"
+            if passed
+            else f"❌ Number of resources with invalid MIME types: {len(resources_with_invalid_mime_type)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"resources_with_invalid_mime_type": resources_with_invalid_mime_type},
+        )
+
+
+@register_rule
+class ResourcesAnnotationsValidRule(ResourcesBaseRule):
+    """Medium check: Verify that resource annotations are valid."""
+
+    rule_id = "resources_annotations_valid"
+    basis = "MCP 2026-07-28 Resources §Annotations (audience, priority, lastModified)"
+    rule_order = 5
+
+    @property
+    def rule_name(self) -> str:
+        return "Resources - Declared annotations must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_resources(self, resources: list[Resource]) -> RuleResult:
+        """Verify annotation values not already constrained by the SDK model."""
+        resources_with_invalid_annotations = [
+            resource.name
+            for resource in resources
+            if resource.annotations is not None
+            and resource.annotations.last_modified is not None
+            and not _is_iso_8601(resource.annotations.last_modified)
+        ]
+        passed = not resources_with_invalid_annotations
+        message = (
+            "✅ All declared resource annotations are valid"
+            if passed
+            else f"❌ Number of resources with invalid annotations: {len(resources_with_invalid_annotations)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"resources_with_invalid_annotations": resources_with_invalid_annotations},
+        )
+
+
+def _is_iso_8601(value: str) -> bool:
+    """Return whether a value is a non-blank ISO 8601 date or timestamp."""
+    if not value or value != value.strip():
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+@register_rule
 class ResourcesDescriptionPresentRule(ResourcesBaseRule):
     """Medium check: Verify that all declared resources have a description."""
 
     rule_id = "resources_description_present"
     basis = "MCP 2025-11-25 Resources §Resource (description)"
-    rule_order = 4
+    rule_order = 6
 
     @property
     def rule_name(self) -> str:

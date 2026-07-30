@@ -1,10 +1,12 @@
 """Tests for resource-quality rules."""
 
-from mcp_types import Resource
+from mcp_types import Annotations, Resource
 
 from mcpscore.rules import (
     AuditData,
+    ResourcesAnnotationsValidRule,
     ResourcesDescriptionPresentRule,
+    ResourcesMimeTypesValidRule,
     ResourcesNamesPresentRule,
     ResourcesSizesValidRule,
     ResourcesUrisValidRule,
@@ -18,8 +20,17 @@ def _resource(
     *,
     uri: str | None = None,
     size: int | None = None,
+    mime_type: str | None = None,
+    annotations: Annotations | None = None,
 ) -> Resource:
-    return Resource(name=name, uri=uri if uri is not None else f"file:///{name}", description=description, size=size)
+    return Resource(
+        name=name,
+        uri=uri if uri is not None else f"file:///{name}",
+        description=description,
+        size=size,
+        mime_type=mime_type,
+        annotations=annotations,
+    )
 
 
 class TestResourcesUrisValidRule:
@@ -96,6 +107,62 @@ class TestResourcesSizesValidRule:
         result = ResourcesSizesValidRule().check(AuditData(resources=[_resource("bad", size=-1)]))
         assert result.passed is False
         assert result.details == {"resources_with_invalid_size": [{"name": "bad", "size": -1}]}
+
+
+class TestResourcesMimeTypesValidRule:
+    def test_absent_and_valid_mime_types_pass(self) -> None:
+        result = ResourcesMimeTypesValidRule().check(
+            AuditData(
+                resources=[
+                    _resource("unknown"),
+                    _resource("text", mime_type="text/plain"),
+                    _resource("vendor", mime_type="application/vnd.example+json"),
+                    _resource("parameter", mime_type='text/plain; charset="utf-8"'),
+                ]
+            )
+        )
+        assert result.passed is True
+        assert result.details == {"resources_with_invalid_mime_type": []}
+
+    def test_invalid_mime_types_fail(self) -> None:
+        result = ResourcesMimeTypesValidRule().check(
+            AuditData(
+                resources=[
+                    _resource("missing-subtype", mime_type="text"),
+                    _resource("parameter", mime_type="text/plain; charset"),
+                    _resource("blank", mime_type=""),
+                ]
+            )
+        )
+        assert result.passed is False
+        assert result.details is not None
+        assert {item["name"] for item in result.details["resources_with_invalid_mime_type"]} == {
+            "missing-subtype",
+            "parameter",
+            "blank",
+        }
+
+
+class TestResourcesAnnotationsValidRule:
+    def test_absent_and_iso_8601_last_modified_pass(self) -> None:
+        result = ResourcesAnnotationsValidRule().check(
+            AuditData(
+                resources=[
+                    _resource("none"),
+                    _resource("date", annotations=Annotations(last_modified="2026-07-30")),
+                    _resource("timestamp", annotations=Annotations(last_modified="2026-07-30T10:15:30Z")),
+                ]
+            )
+        )
+        assert result.passed is True
+        assert result.details == {"resources_with_invalid_annotations": []}
+
+    def test_invalid_last_modified_fails(self) -> None:
+        result = ResourcesAnnotationsValidRule().check(
+            AuditData(resources=[_resource("bad", annotations=Annotations(last_modified="30 July 2026"))])
+        )
+        assert result.passed is False
+        assert result.details == {"resources_with_invalid_annotations": ["bad"]}
 
 
 class TestResourcesDescriptionPresentRule:
