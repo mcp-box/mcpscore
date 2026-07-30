@@ -1,9 +1,15 @@
 from abc import abstractmethod
+import re
+from urllib.parse import urlsplit
 
 from mcp_types import Resource
 
 from .base import BaseRule, RuleResult, RuleSeverity, requires_fields
 from .registry import register_rule
+
+_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
+_URI_CHARACTER_RE = re.compile(r"^[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$")
+_INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 class ResourcesBaseRule(BaseRule):
@@ -55,12 +61,136 @@ class ResourcesBaseRule(BaseRule):
 
 
 @register_rule
+class ResourcesUrisValidRule(ResourcesBaseRule):
+    """High check: Verify that every resource has a valid absolute URI."""
+
+    rule_id = "resources_uris_valid"
+    basis = "MCP 2026-07-28 Resources §Resource (uri is the resource's unique identifier)"
+    rule_order = 1
+
+    @property
+    def rule_name(self) -> str:
+        return "Resources - All resource URIs must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_resources(self, resources: list[Resource]) -> RuleResult:
+        """Verify that every resource URI is absolute and syntactically valid."""
+        invalid_resource_uris = [
+            {"name": resource.name, "uri": resource.uri}
+            for resource in resources
+            if not _is_valid_absolute_uri(resource.uri)
+        ]
+        passed = not invalid_resource_uris
+        message = (
+            "✅ All resource URIs are valid"
+            if passed
+            else f"❌ Number of resources with invalid URIs: {len(invalid_resource_uris)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"invalid_resource_uris": invalid_resource_uris},
+        )
+
+
+def _is_valid_absolute_uri(value: str) -> bool:
+    """Return whether a value is an absolute URI with a valid scheme."""
+    # urlsplit accepts almost any string, so the character regex does the real
+    # RFC 3986 charset enforcement (spaces, control chars, raw non-ASCII).
+    if not value or _URI_CHARACTER_RE.fullmatch(value) is None or _INVALID_PERCENT_ESCAPE_RE.search(value) is not None:
+        return False
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port  # urlsplit is lazy: only this access validates the port
+    except ValueError:
+        return False
+    return bool(parsed.scheme and _URI_SCHEME_RE.fullmatch(parsed.scheme))
+
+
+@register_rule
+class ResourcesNamesPresentRule(ResourcesBaseRule):
+    """Medium check: Verify that every resource has a non-blank name."""
+
+    rule_id = "resources_names_present"
+    basis = "MCP 2026-07-28 Resources §Resource (name)"
+    rule_order = 2
+
+    @property
+    def rule_name(self) -> str:
+        return "Resources - All resources must have a name"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_resources(self, resources: list[Resource]) -> RuleResult:
+        """Verify that every resource name contains visible text."""
+        resources_without_name = [resource.uri for resource in resources if not resource.name.strip()]
+        passed = not resources_without_name
+        message = (
+            "✅ All resources have a name"
+            if passed
+            else f"❌ Number of resources without a name: {len(resources_without_name)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"resources_without_name": resources_without_name},
+        )
+
+
+@register_rule
+class ResourcesSizesValidRule(ResourcesBaseRule):
+    """Medium check: Verify that supplied resource sizes are non-negative."""
+
+    rule_id = "resources_sizes_valid"
+    basis = "MCP 2026-07-28 Resources §Resource (size is the optional size in bytes)"
+    rule_order = 3
+
+    @property
+    def rule_name(self) -> str:
+        return "Resources - Declared sizes must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_resources(self, resources: list[Resource]) -> RuleResult:
+        """Verify that every supplied byte size is non-negative."""
+        resources_with_invalid_size = [
+            {"name": resource.name, "size": resource.size}
+            for resource in resources
+            if resource.size is not None and resource.size < 0
+        ]
+        passed = not resources_with_invalid_size
+        message = (
+            "✅ All declared resource sizes are valid"
+            if passed
+            else f"❌ Number of resources with invalid sizes: {len(resources_with_invalid_size)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"resources_with_invalid_size": resources_with_invalid_size},
+        )
+
+
+@register_rule
 class ResourcesDescriptionPresentRule(ResourcesBaseRule):
     """Medium check: Verify that all declared resources have a description."""
 
     rule_id = "resources_description_present"
     basis = "MCP 2025-11-25 Resources §Resource (description)"
-    rule_order = 1
+    rule_order = 4
 
     @property
     def rule_name(self) -> str:

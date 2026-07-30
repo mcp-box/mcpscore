@@ -64,6 +64,9 @@ from .readiness import (
 from .registry import RuleRegistry, create_all_rules
 from .resources import (
     ResourcesDescriptionPresentRule,
+    ResourcesNamesPresentRule,
+    ResourcesSizesValidRule,
+    ResourcesUrisValidRule,
 )
 from .security import (
     ErrorDataLeakRule,
@@ -126,6 +129,9 @@ __all__ = (
     "PromptsDescriptionPresentRule",
     "RemovedMethodsReadinessRule",
     "ResourcesDescriptionPresentRule",
+    "ResourcesNamesPresentRule",
+    "ResourcesSizesValidRule",
+    "ResourcesUrisValidRule",
     "ResultTypeReadinessRule",
     "RuleRegistry",
     "RuleResult",
