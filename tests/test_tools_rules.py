@@ -28,6 +28,10 @@ from mcpscore.rules.tools import (
     ToolsDescriptionPresentRule,
     ToolsExecutionConsistentRule,
     ToolsInputSchemaValidRule,
+    ToolsMcpHeadersPrimitiveTypesRule,
+    ToolsMcpHeadersStaticallyReachableRule,
+    ToolsMcpHeadersUniqueRule,
+    ToolsMcpHeadersValidNamesRule,
     ToolsNamePresentRule,
     ToolsNamesUniqueRule,
     ToolsNamesValidFormatRule,
@@ -889,6 +893,162 @@ class TestToolsOutputSchemaValidRule:
         assert result.passed is False
         assert result.details is not None
         assert len(result.details["tools_with_invalid_output_schema"]) == 1
+
+
+def _header_tool(name: str, input_schema: dict[str, Any]) -> Tool:
+    return Tool(name=name, input_schema=input_schema)
+
+
+class TestToolsMcpHeadersValidNamesRule:
+    def test_valid_and_absent_annotations_pass(self) -> None:
+        tools = [
+            _header_tool(
+                "valid",
+                {
+                    "type": "object",
+                    "properties": {
+                        "region": {"type": "string", "x-mcp-header": "Region"},
+                        "plain": {"type": "string"},
+                    },
+                },
+            ),
+            _header_tool("absent", {"type": "object", "properties": {}}),
+        ]
+        result = ToolsMcpHeadersValidNamesRule().check(AuditData(tools=tools))
+        assert result.passed is True
+        assert result.details == {"invalid_headers": []}
+
+    @pytest.mark.parametrize("header", ["", "not a token", "line\nbreak", 42])
+    def test_invalid_header_name_fails(self, header: object) -> None:
+        tool = _header_tool(
+            "bad",
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string", "x-mcp-header": header}},
+            },
+        )
+        result = ToolsMcpHeadersValidNamesRule().check(AuditData(tools=[tool]))
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["invalid_headers"][0]["path"] == "$.properties.value"
+
+
+class TestToolsMcpHeadersUniqueRule:
+    def test_names_are_case_insensitively_unique_within_a_tool(self) -> None:
+        tool = _header_tool(
+            "duplicate",
+            {
+                "type": "object",
+                "properties": {
+                    "first": {"type": "string", "x-mcp-header": "Region"},
+                    "second": {"type": "string", "x-mcp-header": "region"},
+                },
+            },
+        )
+        result = ToolsMcpHeadersUniqueRule().check(AuditData(tools=[tool]))
+        assert result.passed is False
+        assert result.details is not None
+        assert len(result.details["duplicate_headers"]) == 2
+
+    def test_same_header_name_in_different_tools_passes(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"region": {"type": "string", "x-mcp-header": "Region"}},
+        }
+        result = ToolsMcpHeadersUniqueRule().check(
+            AuditData(tools=[_header_tool("first", schema), _header_tool("second", schema)])
+        )
+        assert result.passed is True
+
+
+class TestToolsMcpHeadersPrimitiveTypesRule:
+    @pytest.mark.parametrize("parameter_type", ["string", "boolean", "integer"])
+    def test_allowed_primitive_type_passes(self, parameter_type: str) -> None:
+        tool = _header_tool(
+            "valid",
+            {
+                "type": "object",
+                "properties": {"value": {"type": parameter_type, "x-mcp-header": "Value"}},
+            },
+        )
+        assert ToolsMcpHeadersPrimitiveTypesRule().check(AuditData(tools=[tool])).passed
+
+    @pytest.mark.parametrize("parameter_type", ["number", "object", "array", None])
+    def test_unsupported_or_missing_type_fails(self, parameter_type: str | None) -> None:
+        property_schema: dict[str, Any] = {"x-mcp-header": "Value"}
+        if parameter_type is not None:
+            property_schema["type"] = parameter_type
+        tool = _header_tool(
+            "invalid",
+            {"type": "object", "properties": {"value": property_schema}},
+        )
+        result = ToolsMcpHeadersPrimitiveTypesRule().check(AuditData(tools=[tool]))
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["headers_with_invalid_types"][0]["type"] == parameter_type
+
+
+class TestToolsMcpHeadersStaticallyReachableRule:
+    def test_nested_properties_chain_passes(self) -> None:
+        tool = _header_tool(
+            "nested",
+            {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "object",
+                        "properties": {
+                            "region": {"type": "string", "x-mcp-header": "Region"},
+                        },
+                    }
+                },
+            },
+        )
+        assert ToolsMcpHeadersStaticallyReachableRule().check(AuditData(tools=[tool])).passed
+
+    @pytest.mark.parametrize(
+        ("schema", "expected_path"),
+        [
+            (
+                {"type": "object", "x-mcp-header": "Root", "properties": {}},
+                "$",
+            ),
+            (
+                {
+                    "type": "object",
+                    "properties": {
+                        "values": {
+                            "type": "array",
+                            "items": {"type": "string", "x-mcp-header": "Item"},
+                        }
+                    },
+                },
+                "$.properties.values.items",
+            ),
+            (
+                {
+                    "type": "object",
+                    "properties": {
+                        "value": {
+                            "oneOf": [
+                                {"type": "string", "x-mcp-header": "Variant"},
+                            ]
+                        }
+                    },
+                },
+                "$.properties.value.oneOf[0]",
+            ),
+        ],
+    )
+    def test_annotations_outside_properties_chain_fail(
+        self,
+        schema: dict[str, Any],
+        expected_path: str,
+    ) -> None:
+        result = ToolsMcpHeadersStaticallyReachableRule().check(AuditData(tools=[_header_tool("invalid", schema)]))
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["unreachable_headers"][0]["path"] == expected_path
 
 
 class TestToolsExecutionConsistentRule:

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Three resource-catalog rules validate absolute resource URIs, non-blank
   resource names, and non-negative declared byte sizes.
+- Four catalog-validation rules check resource MIME types and annotations, plus
+  unique and non-blank argument names within prompts.
+- Four MCP 2026 tool-schema rules validate `x-mcp-header` names, uniqueness,
+  primitive parameter types, and static reachability without invoking tools.
 
 ## [1.1.1] - 2026-07-29
 

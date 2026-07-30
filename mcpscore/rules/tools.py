@@ -334,6 +334,56 @@ class ToolsDescriptionPresentRule(ToolsBaseRule):
 
 
 _VALID_JSON_TYPES = {"string", "number", "integer", "boolean", "array", "object", "null"}
+_HTTP_FIELD_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+# Deliberately strict: a JSON Schema type array (e.g. ["string", "null"]) also
+# fails, even though the transport spec's client-behavior table contemplates
+# null parameter values. The spec's constraint text names only the three bare
+# primitives, so clients reading it literally will reject annotated union
+# types too — flagging them matches the strictest conforming client.
+_MCP_HEADER_PRIMITIVE_TYPES = {"integer", "string", "boolean"}
+
+
+def _mcp_header_annotations(schema: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect every x-mcp-header annotation and its static reachability."""
+    annotations: list[dict[str, Any]] = []
+
+    def walk(node: Any, path: str, *, reachable: bool, properties_allowed: bool) -> None:
+        if isinstance(node, dict):
+            if "x-mcp-header" in node:
+                annotations.append(
+                    {
+                        "header": node["x-mcp-header"],
+                        "path": path,
+                        "type": node.get("type"),
+                        "reachable": reachable,
+                    }
+                )
+
+            for key, value in node.items():
+                if key == "properties" and isinstance(value, dict):
+                    for property_name, property_schema in value.items():
+                        property_path = f"{path}.properties.{property_name}"
+                        walk(
+                            property_schema,
+                            property_path,
+                            reachable=properties_allowed,
+                            properties_allowed=properties_allowed,
+                        )
+                elif isinstance(value, (dict, list)):
+                    walk(value, f"{path}.{key}", reachable=False, properties_allowed=False)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]", reachable=False, properties_allowed=False)
+
+    walk(schema, "$", reachable=False, properties_allowed=True)
+    return annotations
+
+
+def _tool_mcp_header_annotations(tools: list[Tool]) -> list[dict[str, Any]]:
+    """Collect x-mcp-header annotations with their tool names."""
+    return [
+        {"tool": tool.name, **annotation} for tool in tools for annotation in _mcp_header_annotations(tool.input_schema)
+    ]
 
 
 def is_valid_schema(schema: dict[str, Any] | None) -> bool:
@@ -490,6 +540,164 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
             message=message,
             details={"tools_with_invalid_output_schema": tools_with_invalid_output_schema},
         )
+
+
+class ToolsMcpHeadersBaseRule(ToolsBaseRule):
+    """Base class for 2026 x-mcp-header definition rules."""
+
+    min_spec_version = "2026-07-28"
+
+
+@register_rule
+class ToolsMcpHeadersValidNamesRule(ToolsMcpHeadersBaseRule):
+    """High check: Verify x-mcp-header values use HTTP field-name syntax."""
+
+    rule_id = "tools_mcp_headers_valid_names"
+    basis = "MCP 2026-07-28 Tools §Tool Definitions (x-mcp-header constraints)"
+    rule_order = 11
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - MCP header names must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find empty, non-string, or syntactically invalid header names."""
+        invalid_headers = [
+            annotation
+            for annotation in _tool_mcp_header_annotations(tools)
+            if not isinstance(annotation["header"], str) or _HTTP_FIELD_NAME_RE.fullmatch(annotation["header"]) is None
+        ]
+        return _mcp_header_result(
+            self,
+            invalid_headers,
+            "invalid_headers",
+            "All MCP header names are valid",
+            "MCP headers with invalid names",
+        )
+
+
+@register_rule
+class ToolsMcpHeadersUniqueRule(ToolsMcpHeadersBaseRule):
+    """High check: Verify x-mcp-header values are case-insensitively unique."""
+
+    rule_id = "tools_mcp_headers_unique"
+    basis = "MCP 2026-07-28 Tools §Tool Definitions (x-mcp-header constraints)"
+    rule_order = 12
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - MCP header names must be unique"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find duplicate header names within each tool input schema."""
+        annotations = _tool_mcp_header_annotations(tools)
+        counts = Counter(
+            (annotation["tool"], annotation["header"].casefold())
+            for annotation in annotations
+            if isinstance(annotation["header"], str)
+        )
+        duplicate_headers = [
+            annotation
+            for annotation in annotations
+            if isinstance(annotation["header"], str)
+            and counts[(annotation["tool"], annotation["header"].casefold())] > 1
+        ]
+        return _mcp_header_result(
+            self,
+            duplicate_headers,
+            "duplicate_headers",
+            "All MCP header names are unique",
+            "duplicate MCP header annotations",
+        )
+
+
+@register_rule
+class ToolsMcpHeadersPrimitiveTypesRule(ToolsMcpHeadersBaseRule):
+    """High check: Verify x-mcp-header appears only on allowed primitives."""
+
+    rule_id = "tools_mcp_headers_primitive_types"
+    basis = "MCP 2026-07-28 Tools §Tool Definitions (x-mcp-header primitive types)"
+    rule_order = 13
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - MCP headers must annotate supported primitive types"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find annotations on number, object, array, or untyped schemas."""
+        invalid_types = [
+            annotation
+            for annotation in _tool_mcp_header_annotations(tools)
+            if annotation["type"] not in _MCP_HEADER_PRIMITIVE_TYPES
+        ]
+        return _mcp_header_result(
+            self,
+            invalid_types,
+            "headers_with_invalid_types",
+            "All MCP headers annotate supported primitive types",
+            "MCP headers on unsupported types",
+        )
+
+
+@register_rule
+class ToolsMcpHeadersStaticallyReachableRule(ToolsMcpHeadersBaseRule):
+    """High check: Verify annotated properties are statically reachable."""
+
+    rule_id = "tools_mcp_headers_statically_reachable"
+    basis = "MCP 2026-07-28 Tools §Tool Definitions (x-mcp-header static reachability)"
+    rule_order = 14
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - MCP header parameters must be statically reachable"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find annotations reached through anything except properties chains."""
+        unreachable_headers = [
+            annotation for annotation in _tool_mcp_header_annotations(tools) if not annotation["reachable"]
+        ]
+        return _mcp_header_result(
+            self,
+            unreachable_headers,
+            "unreachable_headers",
+            "All MCP header parameters are statically reachable",
+            "statically unreachable MCP header parameters",
+        )
+
+
+def _mcp_header_result(
+    rule: BaseRule,
+    failures: list[dict[str, Any]],
+    details_key: str,
+    pass_message: str,
+    failure_label: str,
+) -> RuleResult:
+    """Build a consistent result for an x-mcp-header rule."""
+    passed = not failures
+    message = f"✅ {pass_message}" if passed else f"❌ Number of {failure_label}: {len(failures)}"
+    return RuleResult(
+        rule_name=rule.rule_name,
+        severity=rule.severity,
+        passed=passed,
+        message=message,
+        details={details_key: failures},
+    )
 
 
 # The behavior-describing hints from the MCP tool `annotations` object. The

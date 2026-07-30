@@ -73,6 +73,10 @@ Every rule mcpscore runs, generated from the rule registry
 | `tools_output_schema_valid` | Tools - All tools must have a valid output schema | HIGH | 3 | all versions |
 | `tools_annotations_present` | Tools - All tools should declare behavior annotations | MEDIUM | 2 | all versions |
 | `tools_execution_consistent` | Tools - Task Execution Backed by Tasks Capability | MEDIUM | 2 | 2025-11-25 – … |
+| `tools_mcp_headers_valid_names` | Tools - MCP header names must be valid | HIGH | 3 | 2026-07-28 – … |
+| `tools_mcp_headers_unique` | Tools - MCP header names must be unique | HIGH | 3 | 2026-07-28 – … |
+| `tools_mcp_headers_primitive_types` | Tools - MCP headers must annotate supported primitive types | HIGH | 3 | 2026-07-28 – … |
+| `tools_mcp_headers_statically_reachable` | Tools - MCP header parameters must be statically reachable | HIGH | 3 | 2026-07-28 – … |
 
 ## Transport
 
@@ -87,12 +91,16 @@ Every rule mcpscore runs, generated from the rule registry
 | `resources_uris_valid` | Resources - All resource URIs must be valid | HIGH | 3 | all versions |
 | `resources_names_present` | Resources - All resources must have a name | MEDIUM | 2 | all versions |
 | `resources_sizes_valid` | Resources - Declared sizes must be valid | MEDIUM | 2 | all versions |
+| `resources_mime_types_valid` | Resources - Declared MIME types must be valid | MEDIUM | 2 | all versions |
+| `resources_annotations_valid` | Resources - Declared annotations must be valid | MEDIUM | 2 | all versions |
 | `resources_description_present` | Resources - All resources should have a description | MEDIUM | 2 | all versions |
 
 ## Prompts
 
 | Rule ID | Name | Severity | Weight | Applies to |
 |---|---|---|---|---|
+| `prompts_argument_names_unique` | Prompts - Argument names must be unique | HIGH | 3 | all versions |
+| `prompts_argument_names_present` | Prompts - All arguments must have a name | MEDIUM | 2 | all versions |
 | `prompts_description_present` | Prompts - All prompts should have a description | MEDIUM | 2 | all versions |
 | `prompts_arguments_documented` | Prompts - All prompt arguments should be documented | LOW | 1 | all versions |
 
