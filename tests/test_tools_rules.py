@@ -510,6 +510,13 @@ class TestToolsNamesUniqueRule:
         assert rule.severity == RuleSeverity.CRITICAL
         assert "unique" in rule.rule_name.lower()
 
+    def test_incomplete_listing_skips(self, valid_tool: Tool) -> None:
+        """A partial tool list cannot prove uniqueness — the duplicate may be on an unfetched page."""
+        rule = ToolsNamesUniqueRule()
+        data = AuditData(tools=[valid_tool], incomplete_listings=frozenset({"tools"}))
+        assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+        assert rule.skip_reason(AuditData(tools=[valid_tool])) is None
+
     def test_with_unique_names(self, valid_tool: Tool) -> None:
         """Pass: All tool names are unique."""
         rule = ToolsNamesUniqueRule()

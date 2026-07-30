@@ -746,6 +746,19 @@ async def test_get_audit_report():
     assert all(res["rule_id"] == "dummy_rule" for res in report["results"])
     assert report["results"][0]["passed"] is True
     assert report["results"][1]["passed"] is False
+    assert report["incomplete_listings"] == []
+
+
+async def test_report_surfaces_incomplete_listings():
+    """A broken pagination is explicit report evidence, not just a skip reason."""
+    auditor = MCPAuditor()
+    auditor.rules = [DummyRule(passed=True, severity=RuleSeverity.HIGH)]
+
+    await auditor.audit(DummyClient(None))
+    auditor.audit_data.incomplete_listings = frozenset({"tools", "prompts"})
+    report = auditor.get_audit_report()
+
+    assert report["incomplete_listings"] == ["prompts", "tools"]
 
 
 class CitedRule(DummyRule):

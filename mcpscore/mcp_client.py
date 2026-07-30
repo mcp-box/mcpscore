@@ -1,10 +1,11 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 import logging
 import sys
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx2
 from mcp import (
@@ -18,7 +19,7 @@ from mcp import (
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp_types import Prompt, Resource, Tool
+from mcp_types import PaginatedRequestParams, Prompt, Resource, Tool
 
 from .enums import ConnectionErrorReason, MCPTransportType
 
@@ -31,6 +32,9 @@ ERROR_NO_ACTIVE_SESSION = "No active session, connect to the MCP server first!"
 
 HANDSHAKE_TIMEOUT_S = 30
 """Default timeout for the MCP initialize handshake performed during connect."""
+
+MAX_LISTING_PAGES = 100
+"""Safety bound for a single paginated MCP listing."""
 
 
 _REASON_MESSAGES: dict[ConnectionErrorReason, str] = {
@@ -158,6 +162,7 @@ class MCPClient:
         self.timeout: int | None = timeout
         self.headers: dict[str, str] | None = headers or None
         self._init_result: InitializeResult | None = None
+        self.incomplete_listings: set[str] = set()
 
         # Transport metadata (populated after connection)
         self.transport_type: MCPTransportType | None = None
@@ -598,13 +603,7 @@ class MCPClient:
             logger.error(ERROR_NO_ACTIVE_SESSION)
             return None
 
-        try:
-            response: ListToolsResult = await self.session.list_tools()
-            # TODO: Add support for nextCursor
-            return response.tools
-        except Exception:
-            logger.exception("Failed to list tools from the MCP server")
-            return None
+        return await self._list_all_pages(self.session.list_tools, "tools", "tools")
 
     async def list_resources(self) -> list[Resource] | None:
         """List and display all available resources from the MCP server.
@@ -619,13 +618,7 @@ class MCPClient:
             logger.error(ERROR_NO_ACTIVE_SESSION)
             return None
 
-        try:
-            response: ListResourcesResult = await self.session.list_resources()
-            # TODO: Add support for nextCursor
-            return response.resources
-        except Exception:
-            logger.exception("Failed to list resources from the MCP server")
-            return None
+        return await self._list_all_pages(self.session.list_resources, "resources", "resources")
 
     async def list_prompts(self) -> list[Prompt] | None:
         """List and display all available prompts from the MCP server.
@@ -640,13 +633,46 @@ class MCPClient:
             logger.error(ERROR_NO_ACTIVE_SESSION)
             return None
 
-        try:
-            response: ListPromptsResult = await self.session.list_prompts()
-            # TODO: Add support for nextCursor
-            return response.prompts
-        except Exception:
-            logger.exception("Failed to list prompts from the MCP server")
-            return None
+        return await self._list_all_pages(self.session.list_prompts, "prompts", "prompts")
+
+    async def _list_all_pages(
+        self,
+        fetch_page: Callable[..., Awaitable[ListToolsResult | ListResourcesResult | ListPromptsResult]],
+        item_attribute: str,
+        listing_name: str,
+    ) -> list[Any] | None:
+        """Collect a complete MCP listing while guarding against broken cursors."""
+        items: list[Any] = []
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        self.incomplete_listings.discard(listing_name)
+
+        for page_number in range(MAX_LISTING_PAGES):
+            try:
+                response = (
+                    await fetch_page()
+                    if page_number == 0
+                    else await fetch_page(params=PaginatedRequestParams(cursor=cursor))
+                )
+            except Exception:
+                self.incomplete_listings.add(listing_name)
+                logger.exception("Failed to list %s from the MCP server", listing_name)
+                return items or None
+
+            items.extend(getattr(response, item_attribute))
+            next_cursor = response.next_cursor
+            if next_cursor is None:
+                return items
+            if next_cursor in seen_cursors:
+                self.incomplete_listings.add(listing_name)
+                logger.error("Stopped listing %s after the server repeated cursor %r", listing_name, next_cursor)
+                return items
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        self.incomplete_listings.add(listing_name)
+        logger.error("Stopped listing %s after %d pages", listing_name, MAX_LISTING_PAGES)
+        return items
 
     async def cleanup(self) -> None:
         """Clean up client resources and close all connections.

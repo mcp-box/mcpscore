@@ -1,8 +1,9 @@
 from abc import abstractmethod
+from collections import Counter
 
 from mcp_types import Prompt
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_fields
+from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
 from .registry import register_rule
 
 
@@ -235,4 +236,43 @@ class PromptsArgumentsDocumentedRule(PromptsBaseRule):
             passed=passed,
             message=message,
             details={"undocumented_arguments": undocumented_arguments},
+        )
+
+
+@register_rule
+class PromptsNamesUniqueRule(PromptsBaseRule):
+    """High check: Verify that each listed prompt has a unique name."""
+
+    rule_id = "prompts_names_unique"
+    basis = "MCP 2026-07-28 Prompts §Prompt (name: Unique identifier for the prompt)"
+    rule_order = 5
+
+    @property
+    def rule_name(self) -> str:
+        return "Prompts - Prompt names must be unique"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when pagination did not produce the complete prompt list."""
+        return SKIP_REASON_INSUFFICIENT_DATA if "prompts" in audit_data.incomplete_listings else None
+
+    def _check_prompts(self, prompts: list[Prompt]) -> RuleResult:
+        """Find prompt names declared more than once."""
+        counts = Counter(prompt.name for prompt in prompts)
+        duplicate_names = sorted(name for name, count in counts.items() if count > 1)
+        passed = not duplicate_names
+        message = (
+            "✅ All prompt names are unique"
+            if passed
+            else f"❌ Number of duplicate prompt names: {len(duplicate_names)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"duplicate_names": duplicate_names},
         )
