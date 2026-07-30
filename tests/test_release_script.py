@@ -4,6 +4,7 @@ The release script runs with real git/gh/network in production; here every
 external effect is stubbed so the decision logic is verified hermetically.
 """
 
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -322,8 +323,60 @@ class TestWaitForRegistry:
     def test_wait_for_publish_polls_both_registries(self, monkeypatch: pytest.MonkeyPatch):
         polled: list[str] = []
         monkeypatch.setattr(release, "wait_for_registry", lambda name, _url, _workflow: polled.append(name))
+        # Must be stubbed too, or the suite makes a real request to pypi.org and
+        # blocks for the full deadline on a version that does not exist.
+        monkeypatch.setattr(release, "wait_for_pypi_index", lambda version: polled.append(f"index:{version}"))
         release.wait_for_publish("1.2.3")
-        assert polled == ["PyPI", "npm"]
+        assert polled == ["PyPI", "index:1.2.3", "npm"]
+
+
+class TestWaitForPypiIndex:
+    """The metadata endpoint goes green before the index resolvers read.
+
+    1.1.1 was published, announced, and then `uvx mcpscore==1.1.1` reported "no
+    version of mcpscore==1.1.1" — the release had not reached the simple index
+    yet. The wait must key on the artifact list, not on metadata.
+    """
+
+    @staticmethod
+    def _index(*filenames: str):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"files": [{"filename": f} for f in filenames]}).encode()
+
+        return lambda _request, **_kwargs: FakeResponse()
+
+    def test_returns_once_the_version_has_files(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            release.urllib.request,
+            "urlopen",
+            self._index("mcpscore-1.2.3-py3-none-any.whl", "mcpscore-1.2.3.tar.gz"),
+        )
+        release.wait_for_pypi_index("1.2.3")  # must not raise
+
+    def test_a_different_version_is_not_a_match(self, monkeypatch: pytest.MonkeyPatch):
+        """The bug's shape: the index answers 200, just without this release."""
+        monkeypatch.setattr(release.urllib.request, "urlopen", self._index("mcpscore-1.1.0-py3-none-any.whl"))
+        clock = iter(range(0, 10_000, 60))
+        monkeypatch.setattr(release.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
+        with pytest.raises(SystemExit):
+            release.wait_for_pypi_index("1.2.3")
+
+    def test_a_prefix_match_is_not_enough(self, monkeypatch: pytest.MonkeyPatch):
+        """`1.1.1` must not be satisfied by `1.1.10`'s artifacts."""
+        monkeypatch.setattr(release.urllib.request, "urlopen", self._index("mcpscore-1.1.10-py3-none-any.whl"))
+        clock = iter(range(0, 10_000, 60))
+        monkeypatch.setattr(release.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
+        with pytest.raises(SystemExit):
+            release.wait_for_pypi_index("1.1.1")
 
 
 class TestMainDryRun:

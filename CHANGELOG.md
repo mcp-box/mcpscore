@@ -16,6 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Four MCP 2026 tool-schema rules validate `x-mcp-header` names, uniqueness,
   primitive parameter types, and static reachability without invoking tools.
 
+### Fixed
+
+- **The local lint gate now runs the same hooks, at the same versions, as CI.**
+  `make lint` used the venv's ruff (floating `>=0.15.20`, resolving to 0.16.0)
+  while CI lints through pre-commit, pinned at 0.14.8 — so the two could not
+  agree. The gap was not theoretical: 0.14.8 requires a `# noqa: S310` on a
+  `urllib.request.Request(...)` line that 0.16.0 reports as an *unused* noqa
+  and `ruff --fix` silently deletes. The local gate went green having removed
+  exactly what CI demanded. Both are now pinned to 0.16.0 (`.pre-commit-config.yaml`
+  and an exact `ruff==` dev dependency, with a comment tying them together),
+  and `make lint` runs `pre-commit run --all-files` before its own working-tree
+  pass — the hooks catch what CI enforces, the ruff calls catch untracked files
+  the hooks cannot see.
+
+- **The release script now waits for the index resolvers actually use.** It
+  polled `pypi.org/pypi/mcpscore/<version>/json`, which turns green before the
+  *simple index* has propagated — so 1.1.1 printed its smoke test while `uvx`
+  still reported "there is no version of mcpscore==1.1.1" for a release that
+  was already published. It now additionally waits until
+  `pypi.org/simple/mcpscore/` serves the version's files.
+
 ## [1.1.1] - 2026-07-29
 
 Follow-up to the 1.1.0 launch release, driven by a full sweep of the 9,723

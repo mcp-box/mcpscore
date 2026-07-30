@@ -78,7 +78,12 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.20",
+    # Exact, and kept equal to the ruff rev in .pre-commit-config.yaml:
+    # CI lints via pre-commit while `make lint` uses this one, so a version
+    # gap means the local gate cannot see what CI enforces. A floating pin
+    # (>=0.15.20) against pre-commit's 0.14.8 let `ruff --fix` strip a
+    # `# noqa: S310` that CI still required — green locally, red on push.
+    "ruff==0.16.0",
 ]
 
 [tool.uv]

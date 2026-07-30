@@ -10,8 +10,17 @@ format: ## Auto-format code
 	uv run ruff check --fix
 	uv run ruff format
 
+.PHONY: precommit
+precommit: ## Run the pinned pre-commit hooks — the same gate CI's lint job runs
+	uv run pre-commit run --all-files
+
 .PHONY: lint
-lint: ## Lint code (no auto-fix)
+lint: precommit ## Lint code (no auto-fix): CI's hooks, then the working tree
+# `precommit` runs the hooks CI runs, at the pinned versions, over files git
+# TRACKS. The ruff calls below re-check the working tree, so an untracked file
+# is linted too. Both are needed: CI once failed on a `# noqa` that a newer,
+# unpinned local ruff had auto-removed, and CI once passed a file ruff had
+# never read because git did not track it.
 	uv run ruff check
 	uv run ruff format --check
 
