@@ -699,15 +699,17 @@ class TestToolsTitlePresentRule:
         result = rule.check(AuditData(tools=[valid_tool]))
         assert result.passed is True
         assert result.details is not None
-        assert result.details["tools_with_empty_titles"] == []
+        assert result.details["tools_without_title"] == []
 
-    def test_with_empty_title(self, tool_with_empty_title: Tool) -> None:
-        """Fail: Tool has empty title."""
+    @pytest.mark.parametrize("title", ["", "   ", None])
+    def test_missing_blank_and_whitespace_titles_fail(self, valid_schema: dict[str, Any], title: str | None) -> None:
+        """A missing title is just as absent as an empty one (PR #64 Bugbot finding)."""
+        tool = Tool(name="untitled", title=title, input_schema=valid_schema)
         rule = ToolsTitlePresentRule()
-        result = rule.check(AuditData(tools=[tool_with_empty_title]))
+        result = rule.check(AuditData(tools=[tool]))
         assert result.passed is False
         assert result.details is not None
-        assert "valid_name" in result.details["tools_with_empty_titles"]
+        assert result.details["tools_without_title"] == ["untitled"]
 
     def test_with_mixed_titles(self, valid_tool: Tool, tool_with_empty_title: Tool) -> None:
         """Fail: Some tools have empty titles."""
@@ -715,7 +717,7 @@ class TestToolsTitlePresentRule:
         result = rule.check(AuditData(tools=[valid_tool, tool_with_empty_title]))
         assert result.passed is False
         assert result.details is not None
-        assert len(result.details["tools_with_empty_titles"]) == 1
+        assert len(result.details["tools_without_title"]) == 1
 
 
 # ============================================================================
@@ -873,6 +875,16 @@ class TestToolsInputSchemaValidRule:
 
 class TestToolsInputPropertiesDocumentedRule:
     """Test documentation of statically reachable input properties."""
+
+    def test_schema_without_properties_and_non_dict_property_pass(self) -> None:
+        """Nothing to document: no properties key, and a boolean property schema is skipped."""
+        tools = [
+            Tool(name="bare", input_schema={"type": "object"}),
+            Tool(name="boolean-schema", input_schema={"type": "object", "properties": {"x": True}}),
+        ]
+        result = ToolsInputPropertiesDocumentedRule().check(AuditData(tools=tools))
+        assert result.passed is True
+        assert result.details == {"undocumented_properties": []}
 
     def test_documented_nested_properties_pass(self) -> None:
         tool = Tool(

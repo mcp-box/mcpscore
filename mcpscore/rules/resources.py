@@ -375,7 +375,9 @@ class ResourcesTitlesPresentRule(ResourcesBaseRule):
     rule_id = "resources_titles_present"
     basis = "MCP 2026-07-28 Resources §Resource (title: optional human-readable name for display)"
     # `title` was introduced in the 2025-06-18 revision — earlier servers
-    # cannot declare one and must not be penalized for its absence.
+    # cannot declare one and must not be penalized for its absence. (The
+    # basis cites the revision the rule was verified against, per repo
+    # policy — intentionally not the introduction revision.)
     min_spec_version = "2025-06-18"
     rule_order = 8
 

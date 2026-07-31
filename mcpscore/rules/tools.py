@@ -271,13 +271,15 @@ class ToolsTitlePresentRule(ToolsBaseRule):
     rule_id = "tools_title_present_in_all"
     basis = "MCP 2025-11-25 Tools §Tool (title: display name)"
     # `title` was introduced in the 2025-06-18 revision — earlier servers
-    # cannot declare one and must not be penalized for its absence.
+    # cannot declare one and must not be penalized for its absence. (The
+    # basis cites the revision the rule was verified against, per repo
+    # policy — intentionally not the introduction revision.)
     min_spec_version = "2025-06-18"
     rule_order = 5
 
     @property
     def rule_name(self) -> str:
-        return "Tools - All tools must have a Title"
+        return "Tools - All tools should have a display title"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -287,7 +289,7 @@ class ToolsTitlePresentRule(ToolsBaseRule):
         return RuleSeverity.LOW
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
-        """High check: Verify that all tools have a title.
+        """Find tools without a non-blank display title.
 
         Args:
             tools: The tools to validate
@@ -295,14 +297,14 @@ class ToolsTitlePresentRule(ToolsBaseRule):
             RuleResult with the check outcome
 
         """
-        tools_with_empty_titles: list[str] = [tool.name for tool in tools if tool.title == ""]
+        tools_without_title: list[str] = [tool.name for tool in tools if not (tool.title and tool.title.strip())]
 
-        passed = len(tools_with_empty_titles) == 0
+        passed = len(tools_without_title) == 0
 
         message = (
-            "✅ All Tools have a Title property specified"
+            "✅ All tools have a display title"
             if passed
-            else f"❌ Number of tools with empty Titles: {len(tools_with_empty_titles)}"
+            else f"❌ Number of tools without a display title: {len(tools_without_title)}"
         )
 
         return RuleResult(
@@ -310,7 +312,7 @@ class ToolsTitlePresentRule(ToolsBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"tools_with_empty_titles": tools_with_empty_titles},
+            details={"tools_without_title": tools_without_title},
         )
 
 
@@ -710,9 +712,9 @@ def _undocumented_input_properties(tool: Tool) -> list[dict[str, str]]:
     """Find undocumented properties reachable through direct properties chains."""
     failures: list[dict[str, str]] = []
 
-    def walk(schema: object, path: str) -> None:
-        if not isinstance(schema, dict):
-            return
+    # walk is entered only with dicts: the model validates input_schema, and
+    # recursion below descends only into property schemas that are dicts.
+    def walk(schema: dict[str, Any], path: str) -> None:
         properties = schema.get("properties")
         if not isinstance(properties, dict):
             return

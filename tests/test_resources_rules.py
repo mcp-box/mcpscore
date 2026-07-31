@@ -1,6 +1,7 @@
 """Tests for resource-quality rules."""
 
 from mcp_types import Annotations, Resource
+import pytest
 
 from mcpscore.rules import (
     AuditData,
@@ -218,6 +219,14 @@ class TestResourcesAnnotationsValidRule:
         )
         assert result.passed is False
         assert result.details == {"resources_with_invalid_annotations": ["bad"]}
+
+    @pytest.mark.parametrize("value", ["", " 2026-07-30T10:15:30Z "])
+    def test_blank_or_padded_last_modified_fails(self, value: str) -> None:
+        """Whitespace padding is not tolerated — the value must be exactly the timestamp."""
+        result = ResourcesAnnotationsValidRule().check(
+            AuditData(resources=[_resource("bad", annotations=Annotations(last_modified=value))])
+        )
+        assert result.passed is False
 
 
 class TestResourcesDescriptionPresentRule:
