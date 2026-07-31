@@ -746,6 +746,36 @@ async def test_get_audit_report():
     assert all(res["rule_id"] == "dummy_rule" for res in report["results"])
     assert report["results"][0]["passed"] is True
     assert report["results"][1]["passed"] is False
+    assert report["incomplete_listings"] == []
+
+
+async def test_stale_client_markers_do_not_leak_into_unattempted_listings():
+    """A reused client's leftover incomplete markers must not indict listings this audit never fetched.
+
+    MCPClient.incomplete_listings accumulates for the client's lifetime; only
+    the listing a collect step just attempted may be read from it. (PR #63
+    Bugbot finding: capability-absent listings inherited stale markers.)
+    """
+    auditor = MCPAuditor()
+    client = DummyClient(None, tools=[])
+    client.incomplete_listings = {"resources"}  # stale marker from a previous audit on this client
+    auditor.mcp_client = client
+
+    await auditor._collect_tools()
+
+    assert "resources" not in auditor.audit_data.incomplete_listings
+
+
+async def test_report_surfaces_incomplete_listings():
+    """A broken pagination is explicit report evidence, not just a skip reason."""
+    auditor = MCPAuditor()
+    auditor.rules = [DummyRule(passed=True, severity=RuleSeverity.HIGH)]
+
+    await auditor.audit(DummyClient(None))
+    auditor.audit_data.incomplete_listings = frozenset({"tools", "prompts"})
+    report = auditor.get_audit_report()
+
+    assert report["incomplete_listings"] == ["prompts", "tools"]
 
 
 class CitedRule(DummyRule):

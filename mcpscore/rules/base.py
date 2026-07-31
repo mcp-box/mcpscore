@@ -145,6 +145,10 @@ class AuditData:
     # attempted instead of reading silence as failure.
     listings_attempted: frozenset[str] = frozenset()
 
+    # Listings for which the client returned only partial evidence because
+    # pagination failed, repeated a cursor, or exceeded its safety bound.
+    incomplete_listings: frozenset[str] = frozenset()
+
 
 # Decorators to specify what data a rule needs
 def requires_protocol_version(func: Callable) -> Callable:

@@ -8,8 +8,10 @@ from mcpscore.rules import (
     PromptsArgumentNamesUniqueRule,
     PromptsArgumentsDocumentedRule,
     PromptsDescriptionPresentRule,
+    PromptsNamesUniqueRule,
     RuleSeverity,
 )
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 
 
 def _prompt(
@@ -43,6 +45,23 @@ class TestPromptsDescriptionPresentRule:
         assert result.passed is False
         assert result.details is not None
         assert result.details["prompts_without_description"] == ["bad"]
+
+
+class TestPromptsNamesUniqueRule:
+    def test_unique_names_pass(self) -> None:
+        result = PromptsNamesUniqueRule().check(AuditData(prompts=[_prompt("one"), _prompt("two")]))
+        assert result.passed is True
+        assert result.details == {"duplicate_names": []}
+
+    def test_duplicate_name_fails_once(self) -> None:
+        result = PromptsNamesUniqueRule().check(AuditData(prompts=[_prompt("same"), _prompt("same"), _prompt("same")]))
+        assert result.passed is False
+        assert result.details == {"duplicate_names": ["same"]}
+
+    def test_incomplete_listing_skips(self) -> None:
+        rule = PromptsNamesUniqueRule()
+        data = AuditData(prompts=[_prompt("one")], incomplete_listings=frozenset({"prompts"}))
+        assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 class TestPromptsArgumentNamesUniqueRule:

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Complete paginated collection for tools, resources, and prompts, with cursor
+  loop detection and a page safety bound. Listings that could not be fetched
+  completely are reported in a new top-level `incomplete_listings` field, and
+  uniqueness rules (including the existing `tools_names_unique`) skip as
+  insufficient-data instead of judging a partial catalog.
+- Two uniqueness rules verify that resource URIs and prompt names remain unique
+  across their complete paginated listings.
 - Three resource-catalog rules validate absolute resource URIs, non-blank
   resource names, and non-negative declared byte sizes.
 - Four catalog-validation rules check resource MIME types and annotations, plus

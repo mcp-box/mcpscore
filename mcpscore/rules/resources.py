@@ -1,11 +1,12 @@
 from abc import abstractmethod
+from collections import Counter
 from datetime import datetime
 import re
 from urllib.parse import urlsplit
 
 from mcp_types import Resource
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_fields
+from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
 from .registry import register_rule
 
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
@@ -325,4 +326,43 @@ class ResourcesDescriptionPresentRule(ResourcesBaseRule):
             passed=passed,
             message=message,
             details={"resources_without_description": resources_without_description},
+        )
+
+
+@register_rule
+class ResourcesUrisUniqueRule(ResourcesBaseRule):
+    """High check: Verify that each listed resource has a unique URI."""
+
+    rule_id = "resources_uris_unique"
+    basis = "MCP 2026-07-28 Resources §Resource (uri: Unique identifier for the resource)"
+    rule_order = 7
+
+    @property
+    def rule_name(self) -> str:
+        return "Resources - Resource URIs must be unique"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when pagination did not produce the complete resource list."""
+        return SKIP_REASON_INSUFFICIENT_DATA if "resources" in audit_data.incomplete_listings else None
+
+    def _check_resources(self, resources: list[Resource]) -> RuleResult:
+        """Find resource URIs declared more than once."""
+        counts = Counter(resource.uri for resource in resources)
+        duplicate_uris = sorted(uri for uri, count in counts.items() if count > 1)
+        passed = not duplicate_uris
+        message = (
+            "✅ All resource URIs are unique"
+            if passed
+            else f"❌ Number of duplicate resource URIs: {len(duplicate_uris)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"duplicate_uris": duplicate_uris},
         )

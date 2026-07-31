@@ -83,6 +83,17 @@ class ToolsAtLeastOneRule(ToolsBaseRule):
     def severity(self) -> RuleSeverity:
         return RuleSeverity.CRITICAL
 
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when an incomplete listing collected zero tools.
+
+        An empty partial listing cannot prove the server has no tools — the
+        tools may live on a page that was never fetched. A non-empty partial
+        listing proves presence, so the rule still judges (and passes) it.
+        """
+        if "tools" in audit_data.incomplete_listings and not audit_data.tools:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
         """Critical check: Verify the MCP server provides at least one tool.
 
@@ -167,6 +178,14 @@ class ToolsNamesUniqueRule(ToolsBaseRule):
     @property
     def severity(self) -> RuleSeverity:
         return RuleSeverity.CRITICAL
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when pagination did not produce the complete tool list.
+
+        Uniqueness judged on a partial listing can produce a false pass —
+        the duplicate may live on a page that was never fetched.
+        """
+        return SKIP_REASON_INSUFFICIENT_DATA if "tools" in audit_data.incomplete_listings else None
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
         """Critical check: Verify that all tools names are unique.

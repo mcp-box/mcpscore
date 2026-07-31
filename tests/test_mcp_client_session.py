@@ -175,3 +175,122 @@ class TestMCPClientSessionOperations:
 
         assert result == []
         assert len(result) == 0
+
+    @pytest.mark.parametrize(
+        ("method_name", "result_type", "item_field", "first_item", "second_item"),
+        [
+            (
+                "list_tools",
+                ListToolsResult,
+                "tools",
+                Tool(name="first", input_schema={"type": "object"}),
+                Tool(name="second", input_schema={"type": "object"}),
+            ),
+            (
+                "list_resources",
+                ListResourcesResult,
+                "resources",
+                Resource(uri="file:///first", name="first"),
+                Resource(uri="file:///second", name="second"),
+            ),
+            (
+                "list_prompts",
+                ListPromptsResult,
+                "prompts",
+                Prompt(name="first"),
+                Prompt(name="second"),
+            ),
+        ],
+    )
+    async def test_listing_collects_all_pages(
+        self,
+        mock_connected_client,
+        method_name,
+        result_type,
+        item_field,
+        first_item,
+        second_item,
+    ):
+        """Every supported listing follows nextCursor and aggregates its pages."""
+        session_method = getattr(mock_connected_client.session, method_name)
+        session_method.side_effect = [
+            result_type(**{item_field: [first_item], "nextCursor": ""}),
+            result_type(**{item_field: [second_item]}),
+        ]
+
+        result = await getattr(mock_connected_client, method_name)()
+
+        assert result == [first_item, second_item]
+        assert session_method.call_count == 2
+        assert session_method.call_args_list[0].args == ()
+        assert session_method.call_args_list[1].kwargs["params"].cursor == ""
+        assert mock_connected_client.incomplete_listings == set()
+
+    async def test_repeated_cursor_stops_tools_listing_and_marks_it_incomplete(self, mock_connected_client, caplog):
+        """A looping server cannot make pagination run forever."""
+        first = Tool(name="first", input_schema={"type": "object"})
+        second = Tool(name="second", input_schema={"type": "object"})
+        mock_connected_client.session.list_tools.side_effect = [
+            ListToolsResult(tools=[first], nextCursor="again"),
+            ListToolsResult(tools=[second], nextCursor="again"),
+        ]
+
+        result = await mock_connected_client.list_tools()
+
+        assert result == [first, second]
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        assert "repeated cursor" in caplog.text
+
+    async def test_later_page_failure_returns_partial_listing(self, mock_connected_client):
+        """Evidence from successful pages remains usable but is labelled incomplete."""
+        first = Resource(uri="file:///first", name="first")
+        mock_connected_client.session.list_resources.side_effect = [
+            ListResourcesResult(resources=[first], nextCursor="next"),
+            RuntimeError("page failed"),
+        ]
+
+        result = await mock_connected_client.list_resources()
+
+        assert result == [first]
+        assert mock_connected_client.incomplete_listings == {"resources"}
+
+    async def test_empty_partial_listing_is_a_list_not_none(self, mock_connected_client):
+        """A successful-but-empty page followed by an error is partial evidence, not 'unavailable'.
+
+        `None` would make every tool rule fail as "Tools object is not
+        available"; an empty list with the incomplete marker lets rules skip
+        or judge appropriately. (PR #63 Bugbot finding.)
+        """
+        mock_connected_client.session.list_tools.side_effect = [
+            ListToolsResult(tools=[], nextCursor="next"),
+            RuntimeError("page failed"),
+        ]
+
+        result = await mock_connected_client.list_tools()
+
+        assert result == []
+        assert result is not None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+
+    async def test_first_page_failure_still_returns_none(self, mock_connected_client):
+        """A listing that never produced a page keeps the historical None semantics."""
+        mock_connected_client.session.list_tools.side_effect = RuntimeError("boom")
+
+        result = await mock_connected_client.list_tools()
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+
+    async def test_page_budget_stops_unbounded_prompt_listing(self, mock_connected_client, monkeypatch, caplog):
+        """A server that always advances its cursor is still bounded."""
+        monkeypatch.setattr("mcpscore.mcp_client.MAX_LISTING_PAGES", 2)
+        mock_connected_client.session.list_prompts.side_effect = [
+            ListPromptsResult(prompts=[Prompt(name="one")], nextCursor="second"),
+            ListPromptsResult(prompts=[Prompt(name="two")], nextCursor="third"),
+        ]
+
+        result = await mock_connected_client.list_prompts()
+
+        assert [prompt.name for prompt in result] == ["one", "two"]
+        assert mock_connected_client.incomplete_listings == {"prompts"}
+        assert "after 2 pages" in caplog.text

@@ -505,6 +505,18 @@ class MCPAuditor:
             self.audit_data.capabilities = init_result.capabilities
             self.audit_data.instructions = init_result.instructions
 
+    def _capture_listing_completeness(self, listing: str) -> None:
+        """Record whether THIS audit's fetch of ``listing`` was complete.
+
+        Reads only the just-attempted listing from the client's cumulative
+        ``incomplete_listings`` set: a client reused across audits may carry
+        markers for listings this audit never fetched (e.g. the capability is
+        absent on this server), and those must not leak into the report or
+        skip uniqueness rules without cause.
+        """
+        if listing in getattr(self.mcp_client, "incomplete_listings", frozenset()):
+            self.audit_data.incomplete_listings |= {listing}
+
     async def _collect_tools(self) -> None:
         """Collect the list of Tools from the MCP server.
 
@@ -519,6 +531,7 @@ class MCPAuditor:
 
         self.audit_data.listings_attempted |= {"tools"}
         tools: list[Tool] | None = await self.mcp_client.list_tools()
+        self._capture_listing_completeness("tools")
         if tools is None:
             logger.error("No Tools to audit")
             return
@@ -539,6 +552,7 @@ class MCPAuditor:
 
         self.audit_data.listings_attempted |= {"resources"}
         resources: list[Resource] | None = await self.mcp_client.list_resources()
+        self._capture_listing_completeness("resources")
         if resources is None:
             logger.error("No Resources to audit")
             return
@@ -559,6 +573,7 @@ class MCPAuditor:
 
         self.audit_data.listings_attempted |= {"prompts"}
         prompts: list[Prompt] | None = await self.mcp_client.list_prompts()
+        self._capture_listing_completeness("prompts")
         if prompts is None:
             logger.error("No prompts to audit")
             return
@@ -577,6 +592,9 @@ class MCPAuditor:
               (see RuleResult.to_dict)
             - skipped_rules: Rules considered but not executed (with reason),
               e.g. rules outside the server's spec-version range
+            - incomplete_listings: Listings (tools/resources/prompts) whose
+              pagination did not complete, so completeness-dependent rules
+              were skipped
             - spec: Negotiated/latest/readiness-target spec versions and the
               observed lifecycle era (legacy / modern / dual-era)
             - readiness: Independent readiness score for the next spec
@@ -597,6 +615,10 @@ class MCPAuditor:
             # a full audit's — partial_reason says why.
             "partial": self.audit_data.partial,
             "partial_reason": self.audit_data.partial_reason,
+            # Listings whose pagination failed part-way (error, cursor loop, or
+            # page bound): their items were judged, but completeness-dependent
+            # rules were skipped as insufficient-data.
+            "incomplete_listings": sorted(self.audit_data.incomplete_listings),
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
             "skipped_rules": [s.to_dict() for s in self.skipped_rules],

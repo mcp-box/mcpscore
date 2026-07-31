@@ -9,9 +9,11 @@ from mcpscore.rules import (
     ResourcesMimeTypesValidRule,
     ResourcesNamesPresentRule,
     ResourcesSizesValidRule,
+    ResourcesUrisUniqueRule,
     ResourcesUrisValidRule,
     RuleSeverity,
 )
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 
 
 def _resource(
@@ -74,6 +76,31 @@ class TestResourcesUrisValidRule:
             "space",
             "escape",
         }
+
+
+class TestResourcesUrisUniqueRule:
+    def test_unique_uris_pass(self) -> None:
+        result = ResourcesUrisUniqueRule().check(AuditData(resources=[_resource("one"), _resource("two")]))
+        assert result.passed is True
+        assert result.details == {"duplicate_uris": []}
+
+    def test_duplicate_uri_fails_once(self) -> None:
+        result = ResourcesUrisUniqueRule().check(
+            AuditData(
+                resources=[
+                    _resource("one", uri="file:///same"),
+                    _resource("two", uri="file:///same"),
+                    _resource("three", uri="file:///same"),
+                ]
+            )
+        )
+        assert result.passed is False
+        assert result.details == {"duplicate_uris": ["file:///same"]}
+
+    def test_incomplete_listing_skips(self) -> None:
+        rule = ResourcesUrisUniqueRule()
+        data = AuditData(resources=[_resource("one")], incomplete_listings=frozenset({"resources"}))
+        assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 class TestResourcesNamesPresentRule:

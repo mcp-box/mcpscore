@@ -43,6 +43,7 @@ from .prompts import (
     PromptsArgumentNamesUniqueRule,
     PromptsArgumentsDocumentedRule,
     PromptsDescriptionPresentRule,
+    PromptsNamesUniqueRule,
 )
 from .protocol_version import (
     AllowedVersionRule,
@@ -70,6 +71,7 @@ from .resources import (
     ResourcesMimeTypesValidRule,
     ResourcesNamesPresentRule,
     ResourcesSizesValidRule,
+    ResourcesUrisUniqueRule,
     ResourcesUrisValidRule,
 )
 from .security import (
@@ -137,12 +139,14 @@ __all__ = (
     "PromptsArgumentNamesUniqueRule",
     "PromptsArgumentsDocumentedRule",
     "PromptsDescriptionPresentRule",
+    "PromptsNamesUniqueRule",
     "RemovedMethodsReadinessRule",
     "ResourcesAnnotationsValidRule",
     "ResourcesDescriptionPresentRule",
     "ResourcesMimeTypesValidRule",
     "ResourcesNamesPresentRule",
     "ResourcesSizesValidRule",
+    "ResourcesUrisUniqueRule",
     "ResourcesUrisValidRule",
     "ResultTypeReadinessRule",
     "RuleRegistry",
