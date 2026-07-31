@@ -426,6 +426,26 @@ class TestToolsAtLeastOneRule:
         assert rule.rule_id == "tools_at_least_one"
         assert rule.rule_order == 1
         assert rule.severity == RuleSeverity.CRITICAL
+
+    def test_empty_incomplete_listing_skips(self) -> None:
+        """An empty partial listing cannot prove the server has no tools."""
+        rule = ToolsAtLeastOneRule()
+        data = AuditData(tools=[], incomplete_listings=frozenset({"tools"}))
+        assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_nonempty_incomplete_listing_still_judges(self, valid_tool: Tool) -> None:
+        """A non-empty partial listing proves presence — judge it, don't skip."""
+        rule = ToolsAtLeastOneRule()
+        data = AuditData(tools=[valid_tool], incomplete_listings=frozenset({"tools"}))
+        assert rule.skip_reason(data) is None
+        assert rule.check(data).passed is True
+
+    def test_empty_complete_listing_still_fails(self) -> None:
+        """A complete empty listing is a genuine failure, not insufficient data."""
+        rule = ToolsAtLeastOneRule()
+        data = AuditData(tools=[])
+        assert rule.skip_reason(data) is None
+        assert rule.check(data).passed is False
         assert "at least one tool" in rule.rule_name.lower()
 
     def test_with_one_tool(self, valid_tool: Tool) -> None:

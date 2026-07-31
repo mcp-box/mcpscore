@@ -657,7 +657,10 @@ class MCPClient:
             except Exception:
                 self.incomplete_listings.add(listing_name)
                 logger.exception("Failed to list %s from the MCP server", listing_name)
-                return items or None
+                # None means the listing yielded nothing at all; once any page
+                # succeeded the collected items — even zero of them — are
+                # partial evidence and must not degrade to "unavailable".
+                return None if page_number == 0 else items
 
             items.extend(getattr(response, item_attribute))
             next_cursor = response.next_cursor

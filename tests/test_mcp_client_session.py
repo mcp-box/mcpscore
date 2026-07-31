@@ -254,6 +254,33 @@ class TestMCPClientSessionOperations:
         assert result == [first]
         assert mock_connected_client.incomplete_listings == {"resources"}
 
+    async def test_empty_partial_listing_is_a_list_not_none(self, mock_connected_client):
+        """A successful-but-empty page followed by an error is partial evidence, not 'unavailable'.
+
+        `None` would make every tool rule fail as "Tools object is not
+        available"; an empty list with the incomplete marker lets rules skip
+        or judge appropriately. (PR #63 Bugbot finding.)
+        """
+        mock_connected_client.session.list_tools.side_effect = [
+            ListToolsResult(tools=[], nextCursor="next"),
+            RuntimeError("page failed"),
+        ]
+
+        result = await mock_connected_client.list_tools()
+
+        assert result == []
+        assert result is not None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+
+    async def test_first_page_failure_still_returns_none(self, mock_connected_client):
+        """A listing that never produced a page keeps the historical None semantics."""
+        mock_connected_client.session.list_tools.side_effect = RuntimeError("boom")
+
+        result = await mock_connected_client.list_tools()
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+
     async def test_page_budget_stops_unbounded_prompt_listing(self, mock_connected_client, monkeypatch, caplog):
         """A server that always advances its cursor is still bounded."""
         monkeypatch.setattr("mcpscore.mcp_client.MAX_LISTING_PAGES", 2)
