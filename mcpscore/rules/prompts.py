@@ -276,3 +276,40 @@ class PromptsNamesUniqueRule(PromptsBaseRule):
             message=message,
             details={"duplicate_names": duplicate_names},
         )
+
+
+@register_rule
+class PromptsTitlesPresentRule(PromptsBaseRule):
+    """Low check: Encourage human-readable display titles for prompts."""
+
+    rule_id = "prompts_titles_present"
+    basis = "MCP 2026-07-28 Prompts §Prompt (title: optional human-readable name for display)"
+    # `title` was introduced in the 2025-06-18 revision — earlier servers
+    # cannot declare one and must not be penalized for its absence.
+    min_spec_version = "2025-06-18"
+    rule_order = 6
+
+    @property
+    def rule_name(self) -> str:
+        return "Prompts - All prompts should have a display title"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_prompts(self, prompts: list[Prompt]) -> RuleResult:
+        """Find prompts without a non-blank display title."""
+        prompts_without_title = [prompt.name for prompt in prompts if not (prompt.title and prompt.title.strip())]
+        passed = not prompts_without_title
+        message = (
+            "✅ All prompts have a display title"
+            if passed
+            else f"❌ Number of prompts without a display title: {len(prompts_without_title)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"prompts_without_title": prompts_without_title},
+        )

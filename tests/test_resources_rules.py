@@ -9,6 +9,7 @@ from mcpscore.rules import (
     ResourcesMimeTypesValidRule,
     ResourcesNamesPresentRule,
     ResourcesSizesValidRule,
+    ResourcesTitlesPresentRule,
     ResourcesUrisUniqueRule,
     ResourcesUrisValidRule,
     RuleSeverity,
@@ -101,6 +102,33 @@ class TestResourcesUrisUniqueRule:
         rule = ResourcesUrisUniqueRule()
         data = AuditData(resources=[_resource("one")], incomplete_listings=frozenset({"resources"}))
         assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestResourcesTitlesPresentRule:
+    def test_scoped_to_revisions_that_have_title(self) -> None:
+        """`title` first appeared in 2025-06-18 — earlier servers cannot declare one."""
+        rule = ResourcesTitlesPresentRule()
+        assert rule.min_spec_version == "2025-06-18"
+        assert not rule.applies_to("2025-03-26")
+        assert rule.applies_to("2025-06-18")
+
+    def test_non_blank_titles_pass(self) -> None:
+        resources = [
+            Resource(uri="file:///one", name="one", title="First resource"),
+            Resource(uri="file:///two", name="two", title="Second resource"),
+        ]
+        result = ResourcesTitlesPresentRule().check(AuditData(resources=resources))
+        assert result.passed is True
+        assert result.details == {"resources_without_title": []}
+
+    def test_missing_and_blank_titles_fail_with_uris(self) -> None:
+        resources = [
+            _resource("missing", uri="file:///missing"),
+            Resource(uri="file:///blank", name="blank", title="   "),
+        ]
+        result = ResourcesTitlesPresentRule().check(AuditData(resources=resources))
+        assert result.passed is False
+        assert result.details == {"resources_without_title": ["file:///missing", "file:///blank"]}
 
 
 class TestResourcesNamesPresentRule:

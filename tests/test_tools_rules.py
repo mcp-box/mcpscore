@@ -27,6 +27,7 @@ from mcpscore.rules.tools import (
     ToolsBaseRule,
     ToolsDescriptionPresentRule,
     ToolsExecutionConsistentRule,
+    ToolsInputPropertiesDocumentedRule,
     ToolsInputSchemaValidRule,
     ToolsMcpHeadersPrimitiveTypesRule,
     ToolsMcpHeadersStaticallyReachableRule,
@@ -682,8 +683,15 @@ class TestToolsTitlePresentRule:
         rule = ToolsTitlePresentRule()
         assert rule.rule_id == "tools_title_present_in_all"
         assert rule.rule_order == 5
-        assert rule.severity == RuleSeverity.HIGH
+        assert rule.severity == RuleSeverity.LOW
         assert "title" in rule.rule_name.lower()
+
+    def test_scoped_to_revisions_that_have_title(self) -> None:
+        """`title` first appeared in 2025-06-18 — earlier servers cannot declare one."""
+        rule = ToolsTitlePresentRule()
+        assert rule.min_spec_version == "2025-06-18"
+        assert not rule.applies_to("2025-03-26")
+        assert rule.applies_to("2025-06-18")
 
     def test_with_valid_title(self, valid_tool: Tool) -> None:
         """Pass: All tools have titles."""
@@ -861,6 +869,69 @@ class TestToolsInputSchemaValidRule:
         tool = Tool(name="test", input_schema={"type": "object", "properties": {}})
         result = rule.check(AuditData(tools=[tool]))
         assert result.passed is True
+
+
+class TestToolsInputPropertiesDocumentedRule:
+    """Test documentation of statically reachable input properties."""
+
+    def test_documented_nested_properties_pass(self) -> None:
+        tool = Tool(
+            name="search",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search terms"},
+                    "options": {
+                        "type": "object",
+                        "description": "Search options",
+                        "properties": {
+                            "limit": {"type": "integer", "description": "Maximum results"},
+                        },
+                    },
+                },
+            },
+        )
+        result = ToolsInputPropertiesDocumentedRule().check(AuditData(tools=[tool]))
+        assert result.passed is True
+        assert result.details == {"undocumented_properties": []}
+
+    def test_missing_and_blank_descriptions_report_exact_paths(self) -> None:
+        tool = Tool(
+            name="search",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "options": {
+                        "type": "object",
+                        "description": " ",
+                        "properties": {"limit": {"type": "integer"}},
+                    },
+                },
+            },
+        )
+        result = ToolsInputPropertiesDocumentedRule().check(AuditData(tools=[tool]))
+        assert result.passed is False
+        assert result.details == {
+            "undocumented_properties": [
+                {"tool": "search", "path": "$.properties.query"},
+                {"tool": "search", "path": "$.properties.options"},
+                {"tool": "search", "path": "$.properties.options.properties.limit"},
+            ]
+        }
+
+    def test_unresolved_schema_branches_are_not_judged(self) -> None:
+        tool = Tool(
+            name="search",
+            input_schema={
+                "type": "object",
+                "$defs": {"query": {"type": "string"}},
+                "anyOf": [{"type": "object", "properties": {"query": {"type": "string"}}}],
+            },
+        )
+        result = ToolsInputPropertiesDocumentedRule().check(AuditData(tools=[tool]))
+        assert result.passed is True
+        assert result.details == {"undocumented_properties": []}
 
 
 # ============================================================================
