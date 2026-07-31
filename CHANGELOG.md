@@ -7,10 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-31
+
+Catalog-quality release: sixteen new rules across tools, resources, and
+prompts — each validated against the live registry corpus with dedicated
+dry-run sweeps before shipping — plus complete pagination of MCP listings
+and a rebalance of the tool-title rule.
+
 ### Added
 
+- Three resource-catalog rules validate absolute resource URIs, non-blank
+  resource names, and non-negative declared byte sizes.
+- Four catalog-validation rules check resource MIME types and annotations, plus
+  unique and non-blank argument names within prompts.
+- Four MCP 2026 tool-schema rules validate `x-mcp-header` names, uniqueness,
+  primitive parameter types, and static reachability without invoking tools.
+- Two uniqueness rules verify that resource URIs and prompt names remain unique
+  across their complete paginated listings.
 - Three catalog-usability rules recommend display titles for resources and
   prompts, and descriptions for statically reachable tool input properties.
+- Complete paginated collection for tools, resources, and prompts, with cursor
+  loop detection and a page safety bound. Listings that could not be fetched
+  completely are reported in a new top-level `incomplete_listings` field, and
+  uniqueness rules (including the existing `tools_names_unique`) skip as
+  insufficient-data instead of judging a partial catalog.
 
 ### Changed
 
@@ -21,19 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at all. Aligns with the new resource and prompt title rules. The check now
   also counts missing and whitespace-only titles — previously only a literal
   empty string failed, so absent titles passed silently.
-- Complete paginated collection for tools, resources, and prompts, with cursor
-  loop detection and a page safety bound. Listings that could not be fetched
-  completely are reported in a new top-level `incomplete_listings` field, and
-  uniqueness rules (including the existing `tools_names_unique`) skip as
-  insufficient-data instead of judging a partial catalog.
-- Two uniqueness rules verify that resource URIs and prompt names remain unique
-  across their complete paginated listings.
-- Three resource-catalog rules validate absolute resource URIs, non-blank
-  resource names, and non-negative declared byte sizes.
-- Four catalog-validation rules check resource MIME types and annotations, plus
-  unique and non-blank argument names within prompts.
-- Four MCP 2026 tool-schema rules validate `x-mcp-header` names, uniqueness,
-  primitive parameter types, and static reachability without invoking tools.
 
 ### Fixed
 
@@ -726,7 +733,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/mcp-box/mcpscore/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/mcp-box/mcpscore/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mcp-box/mcpscore/compare/v1.1.0rc1...v1.1.0
 [1.1.0rc1]: https://github.com/mcp-box/mcpscore/compare/v1.1.0b6...v1.1.0rc1
