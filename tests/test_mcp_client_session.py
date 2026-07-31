@@ -6,7 +6,6 @@ from mcp import InitializeResult, ListPromptsResult, ListResourcesResult, ListTo
 from mcp_types import Prompt, Resource, Tool
 import pytest
 
-import mcpscore.mcp_client as mcp_client_module
 from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
 
 
@@ -257,7 +256,7 @@ class TestMCPClientSessionOperations:
 
     async def test_page_budget_stops_unbounded_prompt_listing(self, mock_connected_client, monkeypatch, caplog):
         """A server that always advances its cursor is still bounded."""
-        monkeypatch.setattr(mcp_client_module, "MAX_LISTING_PAGES", 2)
+        monkeypatch.setattr("mcpscore.mcp_client.MAX_LISTING_PAGES", 2)
         mock_connected_client.session.list_prompts.side_effect = [
             ListPromptsResult(prompts=[Prompt(name="one")], nextCursor="second"),
             ListPromptsResult(prompts=[Prompt(name="two")], nextCursor="third"),
