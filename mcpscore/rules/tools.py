@@ -266,22 +266,30 @@ class ToolsNamesValidFormatRule(ToolsBaseRule):
 
 @register_rule
 class ToolsTitlePresentRule(ToolsBaseRule):
-    """High check: Verify that all tools have a title."""
+    """Low check: Encourage human-readable display titles for tools."""
 
     rule_id = "tools_title_present_in_all"
     basis = "MCP 2025-11-25 Tools §Tool (title: display name)"
+    # `title` was introduced in the 2025-06-18 revision — earlier servers
+    # cannot declare one and must not be penalized for its absence. (The
+    # basis cites the revision the rule was verified against, per repo
+    # policy — intentionally not the introduction revision.)
+    min_spec_version = "2025-06-18"
     rule_order = 5
 
     @property
     def rule_name(self) -> str:
-        return "Tools - All tools must have a Title"
+        return "Tools - All tools should have a display title"
 
     @property
     def severity(self) -> RuleSeverity:
-        return RuleSeverity.HIGH
+        # LOW since the 2026-07 rebalance (was HIGH): title is optional with a
+        # spec-defined fallback to `name`, and the registry sweep showed half
+        # the ecosystem omits it — matching the resource/prompt title rules.
+        return RuleSeverity.LOW
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
-        """High check: Verify that all tools have a title.
+        """Find tools without a non-blank display title.
 
         Args:
             tools: The tools to validate
@@ -289,14 +297,14 @@ class ToolsTitlePresentRule(ToolsBaseRule):
             RuleResult with the check outcome
 
         """
-        tools_with_empty_titles: list[str] = [tool.name for tool in tools if tool.title == ""]
+        tools_without_title: list[str] = [tool.name for tool in tools if not (tool.title and tool.title.strip())]
 
-        passed = len(tools_with_empty_titles) == 0
+        passed = len(tools_without_title) == 0
 
         message = (
-            "✅ All Tools have a Title property specified"
+            "✅ All tools have a display title"
             if passed
-            else f"❌ Number of tools with empty Titles: {len(tools_with_empty_titles)}"
+            else f"❌ Number of tools without a display title: {len(tools_without_title)}"
         )
 
         return RuleResult(
@@ -304,7 +312,7 @@ class ToolsTitlePresentRule(ToolsBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"tools_with_empty_titles": tools_with_empty_titles},
+            details={"tools_without_title": tools_without_title},
         )
 
 
@@ -697,6 +705,66 @@ class ToolsMcpHeadersStaticallyReachableRule(ToolsMcpHeadersBaseRule):
             "unreachable_headers",
             "All MCP header parameters are statically reachable",
             "statically unreachable MCP header parameters",
+        )
+
+
+def _undocumented_input_properties(tool: Tool) -> list[dict[str, str]]:
+    """Find undocumented properties reachable through direct properties chains."""
+    failures: list[dict[str, str]] = []
+
+    # walk is entered only with dicts: the model validates input_schema, and
+    # recursion below descends only into property schemas that are dicts.
+    def walk(schema: dict[str, Any], path: str) -> None:
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return
+        for property_name, property_schema in properties.items():
+            property_path = f"{path}.properties.{property_name}"
+            if not isinstance(property_schema, dict):
+                continue
+            description = property_schema.get("description")
+            if not isinstance(description, str) or not description.strip():
+                failures.append({"tool": tool.name, "path": property_path})
+            walk(property_schema, property_path)
+
+    walk(tool.input_schema, "$")
+    return failures
+
+
+@register_rule
+class ToolsInputPropertiesDocumentedRule(ToolsBaseRule):
+    """Medium check: Encourage descriptions for statically reachable inputs."""
+
+    rule_id = "tools_input_properties_documented"
+    # Quality recommendation, not a spec mandate: the spec's §Tool examples
+    # document every property, but no normative text requires it. Undocumented
+    # parameters directly degrade LLM tool selection and argument filling.
+    basis = "MCP 2026-07-28 Tools §Tool (inputSchema; property descriptions per the spec's examples)"
+    rule_order = 15
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Input properties should be documented"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find statically reachable input properties without descriptions."""
+        undocumented_properties = [failure for tool in tools for failure in _undocumented_input_properties(tool)]
+        passed = not undocumented_properties
+        message = (
+            "✅ All statically reachable tool inputs are documented"
+            if passed
+            else f"❌ Number of undocumented tool input properties: {len(undocumented_properties)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"undocumented_properties": undocumented_properties},
         )
 
 

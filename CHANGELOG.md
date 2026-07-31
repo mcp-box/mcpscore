@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Three catalog-usability rules recommend display titles for resources and
+  prompts, and descriptions for statically reachable tool input properties.
+
+### Changed
+
+- `tools_title_present_in_all` is downgraded HIGH → LOW and scoped to spec
+  revisions that define `title` (2025-06-18 and later): the field is optional
+  with a spec-defined display fallback to `name`, a registry sweep showed half
+  the ecosystem omits it, and servers on earlier revisions cannot declare it
+  at all. Aligns with the new resource and prompt title rules. The check now
+  also counts missing and whitespace-only titles — previously only a literal
+  empty string failed, so absent titles passed silently.
 - Complete paginated collection for tools, resources, and prompts, with cursor
   loop detection and a page safety bound. Listings that could not be fetched
   completely are reported in a new top-level `incomplete_listings` field, and

@@ -9,6 +9,7 @@ from mcpscore.rules import (
     PromptsArgumentsDocumentedRule,
     PromptsDescriptionPresentRule,
     PromptsNamesUniqueRule,
+    PromptsTitlesPresentRule,
     RuleSeverity,
 )
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
@@ -62,6 +63,30 @@ class TestPromptsNamesUniqueRule:
         rule = PromptsNamesUniqueRule()
         data = AuditData(prompts=[_prompt("one")], incomplete_listings=frozenset({"prompts"}))
         assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestPromptsTitlesPresentRule:
+    def test_scoped_to_revisions_that_have_title(self) -> None:
+        """`title` first appeared in 2025-06-18 — earlier servers cannot declare one."""
+        rule = PromptsTitlesPresentRule()
+        assert rule.min_spec_version == "2025-06-18"
+        assert not rule.applies_to("2025-03-26")
+        assert rule.applies_to("2025-06-18")
+
+    def test_non_blank_titles_pass(self) -> None:
+        prompts = [
+            Prompt(name="one", title="First prompt"),
+            Prompt(name="two", title="Second prompt"),
+        ]
+        result = PromptsTitlesPresentRule().check(AuditData(prompts=prompts))
+        assert result.passed is True
+        assert result.details == {"prompts_without_title": []}
+
+    def test_missing_and_blank_titles_fail_with_names(self) -> None:
+        prompts = [_prompt("missing"), Prompt(name="blank", title="   ")]
+        result = PromptsTitlesPresentRule().check(AuditData(prompts=prompts))
+        assert result.passed is False
+        assert result.details == {"prompts_without_title": ["missing", "blank"]}
 
 
 class TestPromptsArgumentNamesUniqueRule:

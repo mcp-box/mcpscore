@@ -1,6 +1,7 @@
 """Tests for resource-quality rules."""
 
 from mcp_types import Annotations, Resource
+import pytest
 
 from mcpscore.rules import (
     AuditData,
@@ -9,6 +10,7 @@ from mcpscore.rules import (
     ResourcesMimeTypesValidRule,
     ResourcesNamesPresentRule,
     ResourcesSizesValidRule,
+    ResourcesTitlesPresentRule,
     ResourcesUrisUniqueRule,
     ResourcesUrisValidRule,
     RuleSeverity,
@@ -103,6 +105,33 @@ class TestResourcesUrisUniqueRule:
         assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
+class TestResourcesTitlesPresentRule:
+    def test_scoped_to_revisions_that_have_title(self) -> None:
+        """`title` first appeared in 2025-06-18 — earlier servers cannot declare one."""
+        rule = ResourcesTitlesPresentRule()
+        assert rule.min_spec_version == "2025-06-18"
+        assert not rule.applies_to("2025-03-26")
+        assert rule.applies_to("2025-06-18")
+
+    def test_non_blank_titles_pass(self) -> None:
+        resources = [
+            Resource(uri="file:///one", name="one", title="First resource"),
+            Resource(uri="file:///two", name="two", title="Second resource"),
+        ]
+        result = ResourcesTitlesPresentRule().check(AuditData(resources=resources))
+        assert result.passed is True
+        assert result.details == {"resources_without_title": []}
+
+    def test_missing_and_blank_titles_fail_with_uris(self) -> None:
+        resources = [
+            _resource("missing", uri="file:///missing"),
+            Resource(uri="file:///blank", name="blank", title="   "),
+        ]
+        result = ResourcesTitlesPresentRule().check(AuditData(resources=resources))
+        assert result.passed is False
+        assert result.details == {"resources_without_title": ["file:///missing", "file:///blank"]}
+
+
 class TestResourcesNamesPresentRule:
     def test_non_blank_names_pass(self) -> None:
         result = ResourcesNamesPresentRule().check(AuditData(resources=[_resource("README"), _resource("Schema")]))
@@ -190,6 +219,14 @@ class TestResourcesAnnotationsValidRule:
         )
         assert result.passed is False
         assert result.details == {"resources_with_invalid_annotations": ["bad"]}
+
+    @pytest.mark.parametrize("value", ["", " 2026-07-30T10:15:30Z "])
+    def test_blank_or_padded_last_modified_fails(self, value: str) -> None:
+        """Whitespace padding is not tolerated — the value must be exactly the timestamp."""
+        result = ResourcesAnnotationsValidRule().check(
+            AuditData(resources=[_resource("bad", annotations=Annotations(last_modified=value))])
+        )
+        assert result.passed is False
 
 
 class TestResourcesDescriptionPresentRule:

@@ -67,7 +67,7 @@ Every rule mcpscore runs, generated from the rule registry
 | `tools_name_present_in_all` | Tools - All tools must have a Name | CRITICAL | 5 | all versions |
 | `tools_names_unique` | Tools - All tool names must be unique | CRITICAL | 5 | all versions |
 | `tools_names_valid_format` | Tools - All tool names must follow the format | HIGH | 3 | all versions |
-| `tools_title_present_in_all` | Tools - All tools must have a Title | HIGH | 3 | all versions |
+| `tools_title_present_in_all` | Tools - All tools should have a display title | LOW | 1 | 2025-06-18 – … |
 | `tools_description_present_in_all` | Tools - All tools must have a Description | HIGH | 3 | all versions |
 | `tools_input_schema_valid` | Tools - All tools must have a valid input schema | HIGH | 3 | all versions |
 | `tools_output_schema_valid` | Tools - All tools must have a valid output schema | HIGH | 3 | all versions |
@@ -77,6 +77,7 @@ Every rule mcpscore runs, generated from the rule registry
 | `tools_mcp_headers_unique` | Tools - MCP header names must be unique | HIGH | 3 | 2026-07-28 – … |
 | `tools_mcp_headers_primitive_types` | Tools - MCP headers must annotate supported primitive types | HIGH | 3 | 2026-07-28 – … |
 | `tools_mcp_headers_statically_reachable` | Tools - MCP header parameters must be statically reachable | HIGH | 3 | 2026-07-28 – … |
+| `tools_input_properties_documented` | Tools - Input properties should be documented | MEDIUM | 2 | all versions |
 
 ## Transport
 
@@ -95,6 +96,7 @@ Every rule mcpscore runs, generated from the rule registry
 | `resources_annotations_valid` | Resources - Declared annotations must be valid | MEDIUM | 2 | all versions |
 | `resources_description_present` | Resources - All resources should have a description | MEDIUM | 2 | all versions |
 | `resources_uris_unique` | Resources - Resource URIs must be unique | HIGH | 3 | all versions |
+| `resources_titles_present` | Resources - All resources should have a display title | LOW | 1 | 2025-06-18 – … |
 
 ## Prompts
 
@@ -105,6 +107,7 @@ Every rule mcpscore runs, generated from the rule registry
 | `prompts_description_present` | Prompts - All prompts should have a description | MEDIUM | 2 | all versions |
 | `prompts_arguments_documented` | Prompts - All prompt arguments should be documented | LOW | 1 | all versions |
 | `prompts_names_unique` | Prompts - Prompt names must be unique | HIGH | 3 | all versions |
+| `prompts_titles_present` | Prompts - All prompts should have a display title | LOW | 1 | 2025-06-18 – … |
 
 ## Readiness rules (separate score)
 

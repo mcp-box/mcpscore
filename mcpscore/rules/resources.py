@@ -366,3 +366,44 @@ class ResourcesUrisUniqueRule(ResourcesBaseRule):
             message=message,
             details={"duplicate_uris": duplicate_uris},
         )
+
+
+@register_rule
+class ResourcesTitlesPresentRule(ResourcesBaseRule):
+    """Low check: Encourage human-readable display titles for resources."""
+
+    rule_id = "resources_titles_present"
+    basis = "MCP 2026-07-28 Resources §Resource (title: optional human-readable name for display)"
+    # `title` was introduced in the 2025-06-18 revision — earlier servers
+    # cannot declare one and must not be penalized for its absence. (The
+    # basis cites the revision the rule was verified against, per repo
+    # policy — intentionally not the introduction revision.)
+    min_spec_version = "2025-06-18"
+    rule_order = 8
+
+    @property
+    def rule_name(self) -> str:
+        return "Resources - All resources should have a display title"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_resources(self, resources: list[Resource]) -> RuleResult:
+        """Find resources without a non-blank display title."""
+        resources_without_title = [
+            resource.uri for resource in resources if not (resource.title and resource.title.strip())
+        ]
+        passed = not resources_without_title
+        message = (
+            "✅ All resources have a display title"
+            if passed
+            else f"❌ Number of resources without a display title: {len(resources_without_title)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"resources_without_title": resources_without_title},
+        )
