@@ -384,7 +384,10 @@ async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeR
     """Send a modern request naming a fabricated protocol version.
 
     Modern servers MUST reject it with ``-32022`` (UnsupportedProtocolVersion)
-    whose ``data`` lists ``supported`` and ``requested`` versions.
+    whose ``data`` lists ``supported`` and ``requested`` versions. SUPPORTED
+    requires the full error shape: the ``data`` block is what tells a client
+    which version to retry with, so a bare ``-32022`` records
+    ``data_well_formed: false`` and stays UNSUPPORTED.
     """
     response = await _post(
         client,
@@ -395,11 +398,21 @@ async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeR
     details = _base_details(response)
     error = response.error
     if error is not None and response.error_code == ERROR_UNSUPPORTED_PROTOCOL_VERSION:
-        data = error.get("data")
-        if isinstance(data, dict):
-            details["supported"] = data.get("supported")
-            details["requested"] = data.get("requested")
-        return ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.SUPPORTED, details)
+        raw_data = error.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        supported = data.get("supported")
+        requested = data.get("requested")
+        details["supported"] = supported
+        details["requested"] = requested
+        well_formed = (
+            isinstance(supported, list)
+            and bool(supported)
+            and all(isinstance(v, str) for v in supported)
+            and isinstance(requested, str)
+        )
+        details["data_well_formed"] = well_formed
+        outcome = ProbeOutcome.SUPPORTED if well_formed else ProbeOutcome.UNSUPPORTED
+        return ProbeResult(PROBE_UNKNOWN_VERSION, outcome, details)
     return ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.UNSUPPORTED, details)
 
 

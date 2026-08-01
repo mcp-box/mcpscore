@@ -138,6 +138,70 @@ class ServerDiscoverReadinessRule(ProbeBackedReadinessRule):
 
 
 @register_rule
+class SupportedVersionsReadinessRule(ProbeBackedReadinessRule):
+    """The DiscoverResult names at least one supported protocol version.
+
+    The schema requires ``supportedVersions: string[]`` on every DiscoverResult
+    and the client "should choose a version from this list for use in
+    subsequent requests" — an empty list satisfies the type but makes version
+    selection impossible, so it is judged a defect here (the schema has no
+    minItems constraint yet). Skips when there is no DiscoverResult to
+    inspect: the CRITICAL gateway rule already carries that verdict.
+    """
+
+    rule_id = "readiness_2026_supported_versions"
+    rule_order = 13
+    probe_id = PROBE_DISCOVER
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - supported versions listed"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip (beyond the base gating) when the discover probe found no DiscoverResult."""
+        if reason := super().skip_reason(audit_data):
+            return reason
+        if self._probe(audit_data).outcome is not ProbeOutcome.SUPPORTED:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        probe = self._probe(audit_data)
+        versions = probe.details.get("supported_versions")
+        versions = versions if isinstance(versions, list) else []
+        non_strings = [v for v in versions if not isinstance(v, str)]
+        passed = bool(versions) and not non_strings
+        if passed:
+            message = f"✅ server/discover names {len(versions)} supported protocol version(s): {versions}"
+        elif not versions:
+            message = (
+                "❌ server/discover returns an empty supportedVersions list — clients choose their "
+                "protocol version from this list, so an empty one makes version selection impossible"
+            )
+        else:
+            message = (
+                f"❌ supportedVersions contains non-string entries {non_strings} — the schema "
+                "requires a list of protocol version strings"
+            )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "sep": "SEP-2575",
+                "schema_field": "DiscoverResult.supportedVersions",
+                "target_version": READINESS_TARGET,
+                "supported_versions": versions,
+            },
+        )
+
+
+@register_rule
 class StatelessRequestReadinessRule(ProbeBackedReadinessRule):
     """Gateway check: the server accepts a stateless request with per-request ``_meta`` (SEP-2575)."""
 
@@ -304,7 +368,12 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
 
 @register_rule
 class UnsupportedVersionErrorReadinessRule(ProbeBackedReadinessRule):
-    """Unknown protocol versions are rejected with -32022 naming the supported versions."""
+    """Unknown protocol versions are rejected with -32022 naming the supported versions.
+
+    The error code alone is not enough: the schema requires the error's
+    ``data`` to carry ``supported`` (the versions to retry with) and
+    ``requested``, so a bare -32022 fails with its own message.
+    """
 
     rule_id = "readiness_2026_unsupported_version_error"
     rule_order = 6
@@ -324,6 +393,11 @@ class UnsupportedVersionErrorReadinessRule(ProbeBackedReadinessRule):
         if passed:
             message = (
                 f"✅ Unknown protocol versions are rejected with -32022 (supported: {probe.details.get('supported')})"
+            )
+        elif probe.details.get("data_well_formed") is False:
+            message = (
+                "❌ -32022 is emitted but its data block is missing or malformed — the error must "
+                "carry data.supported (a non-empty list of versions to retry with) and data.requested"
             )
         else:
             message = (

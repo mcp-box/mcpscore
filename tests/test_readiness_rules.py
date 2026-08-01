@@ -32,6 +32,7 @@ from mcpscore.rules.readiness import (
     ResultTypeReadinessRule,
     ServerDiscoverReadinessRule,
     StatelessRequestReadinessRule,
+    SupportedVersionsReadinessRule,
     ToolSchemaDialectReadinessRule,
     UnsupportedVersionErrorReadinessRule,
 )
@@ -144,6 +145,18 @@ class TestDetailProbeRules:
         assert rule.skip_reason(data) is None
         assert not rule.check(data).passed
 
+    def test_unsupported_version_error_flags_missing_data(self):
+        probes = modern_probes(
+            probe_unknown_version=ProbeResult(
+                PROBE_UNKNOWN_VERSION,
+                ProbeOutcome.UNSUPPORTED,
+                {"http_status": 400, "supported": None, "requested": None, "data_well_formed": False},
+            )
+        )
+        result = UnsupportedVersionErrorReadinessRule().check(AuditData(probes=probes))
+        assert not result.passed
+        assert "data block is missing or malformed" in result.message
+
     def test_error_code_migration_flags_legacy_code(self):
         probes = modern_probes(
             probe_missing_resource=ProbeResult(
@@ -155,6 +168,54 @@ class TestDetailProbeRules:
         result = ErrorCodeMigrationReadinessRule().check(AuditData(probes=probes))
         assert not result.passed
         assert "-32002" in result.message
+
+
+class TestSupportedVersionsRule:
+    def test_pass_against_modern_server(self):
+        data = AuditData(probes=modern_probes())
+        rule = SupportedVersionsReadinessRule()
+        assert rule.skip_reason(data) is None
+        result = rule.check(data)
+        assert result.passed
+        assert result.details["supported_versions"] == ["2026-07-28"]
+
+    def test_fail_when_list_is_empty(self):
+        probes = modern_probes(
+            probe_discover=ProbeResult(
+                PROBE_DISCOVER, ProbeOutcome.SUPPORTED, {"http_status": 200, "supported_versions": []}
+            )
+        )
+        data = AuditData(probes=probes)
+        rule = SupportedVersionsReadinessRule()
+        assert rule.skip_reason(data) is None
+        result = rule.check(data)
+        assert not result.passed
+        assert "empty" in result.message
+
+    def test_fail_on_non_string_entries(self):
+        probes = modern_probes(
+            probe_discover=ProbeResult(
+                PROBE_DISCOVER,
+                ProbeOutcome.SUPPORTED,
+                {"http_status": 200, "supported_versions": ["2026-07-28", 20260728]},
+            )
+        )
+        result = SupportedVersionsReadinessRule().check(AuditData(probes=probes))
+        assert not result.passed
+        assert "non-string" in result.message
+
+    def test_skip_when_discover_answered_without_result(self):
+        # Stateless gateway keeps modern support, but there is no DiscoverResult
+        # to inspect — the gateway rule carries that verdict, this one skips.
+        probes = modern_probes(
+            probe_discover=ProbeResult(PROBE_DISCOVER, ProbeOutcome.UNSUPPORTED, {"http_status": 404})
+        )
+        rule = SupportedVersionsReadinessRule()
+        assert rule.skip_reason(AuditData(probes=probes)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_skip_without_modern_support(self):
+        rule = SupportedVersionsReadinessRule()
+        assert rule.skip_reason(AuditData(probes=legacy_probes())) == SKIP_REASON_REQUIRES_MODERN_SUPPORT
 
 
 class TestCacheMetadataRule:
@@ -469,6 +530,7 @@ class TestSepCitations:
         # server/discover, statelessness, session removal, subscriptions/listen,
         # and the removed methods all land in SEP-2575 — except sessions.
         "readiness_2026_server_discover": "SEP-2575",
+        "readiness_2026_supported_versions": "SEP-2575",
         "readiness_2026_stateless_request": "SEP-2575",
         "readiness_2026_meta_validation": "SEP-2575",
         "readiness_2026_unsupported_version_error": "SEP-2575",
