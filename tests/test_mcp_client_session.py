@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 from mcp import InitializeResult, ListPromptsResult, ListResourcesResult, ListToolsResult
-from mcp_types import Prompt, Resource, Tool
+from mcp_types import ListResourceTemplatesResult, Prompt, Resource, ResourceTemplate, Tool
 import pytest
 
 from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
@@ -176,6 +176,21 @@ class TestMCPClientSessionOperations:
         assert result == []
         assert len(result) == 0
 
+    async def test_list_resource_templates_no_session(self, mcp_client, caplog):
+        """Resource-template listing requires an active session."""
+        assert await mcp_client.list_resource_templates() is None
+        assert ERROR_NO_ACTIVE_SESSION in caplog.text
+
+    async def test_list_resource_templates_success(self, mock_connected_client):
+        """Resource templates are returned from a complete first page."""
+        templates = [ResourceTemplate(name="users", uriTemplate="users/{id}")]
+        mock_connected_client.session.list_resource_templates.return_value = ListResourceTemplatesResult(
+            resourceTemplates=templates
+        )
+
+        assert await mock_connected_client.list_resource_templates() == templates
+        mock_connected_client.session.list_resource_templates.assert_called_once()
+
     @pytest.mark.parametrize(
         ("method_name", "result_type", "item_field", "first_item", "second_item"),
         [
@@ -199,6 +214,13 @@ class TestMCPClientSessionOperations:
                 "prompts",
                 Prompt(name="first"),
                 Prompt(name="second"),
+            ),
+            (
+                "list_resource_templates",
+                ListResourceTemplatesResult,
+                "resource_templates",
+                ResourceTemplate(name="first", uriTemplate="file:///{path}"),
+                ResourceTemplate(name="second", uriTemplate="https://example.com/{id}"),
             ),
         ],
     )

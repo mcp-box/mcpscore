@@ -18,7 +18,7 @@ class PromptsBaseRule(BaseRule):
     """
 
     group_name = "prompts"
-    group_order = 7
+    group_order = 8
 
     @requires_fields("prompts")
     def check(self, prompts: list[Prompt] | None) -> RuleResult:  # type: ignore[override]

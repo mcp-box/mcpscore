@@ -25,6 +25,7 @@ class DummyClient(MCPClient):
         init_result: Any | None,
         tools: list[Any] | None = None,
         resources: list[Any] | None = None,
+        resource_templates: list[Any] | None = None,
         prompts: list[Any] | None = None,
         url: str | None = None,
         transport_type: str = "streamable-http",
@@ -33,6 +34,7 @@ class DummyClient(MCPClient):
         self._init_result = init_result
         self._tools = tools
         self._resources = resources
+        self._resource_templates = resource_templates
         self._prompts = prompts
         self.url = url
         self.transport_type = transport_type  # type: ignore[assignment]
@@ -46,6 +48,9 @@ class DummyClient(MCPClient):
 
     async def list_resources(self):
         return self._resources
+
+    async def list_resource_templates(self):
+        return self._resource_templates
 
     async def list_prompts(self):
         return self._prompts
@@ -186,12 +191,14 @@ async def test_auditor_with_resources_capability():
             self.name = "Test Resource"
 
     resources = [Resource()]
+    resource_templates = [object()]
     auditor = MCPAuditor()
     auditor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), resources=resources))
+    await auditor.audit(DummyClient(InitResult(), resources=resources, resource_templates=resource_templates))
 
     assert auditor.audit_data.resources == resources
+    assert auditor.audit_data.resource_templates == resource_templates
 
 
 async def test_auditor_with_prompts_capability():
@@ -307,6 +314,7 @@ async def test_auditor_with_no_capabilities():
     # When capabilities is None, collection methods are not called, so fields remain None
     assert auditor.audit_data.tools is None
     assert auditor.audit_data.resources is None
+    assert auditor.audit_data.resource_templates is None
     assert auditor.audit_data.prompts is None
 
 
@@ -535,6 +543,33 @@ async def test_collect_prompts_with_none_response(caplog):
     assert "No prompts to audit" in caplog.text
     # When list_prompts() returns None, the field remains None (default value)
     assert auditor.audit_data.prompts is None
+
+
+async def test_collect_resource_templates_with_none_client(caplog):
+    """Template collection returns safely when no client is configured."""
+    auditor = MCPAuditor()
+    auditor.mcp_client = None
+
+    await auditor._collect_resource_templates()
+
+    assert "No MCP client to audit" in caplog.text
+
+
+async def test_collect_resource_templates_with_incomplete_none_response(caplog):
+    """A failed first template page remains unavailable and explicitly incomplete."""
+
+    class NoneResourceTemplatesClient(MCPClient):
+        async def list_resource_templates(self):
+            self.incomplete_listings.add("resource_templates")
+
+    auditor = MCPAuditor()
+    auditor.mcp_client = NoneResourceTemplatesClient()
+
+    await auditor._collect_resource_templates()
+
+    assert "No resource templates to audit" in caplog.text
+    assert auditor.audit_data.resource_templates is None
+    assert auditor.audit_data.incomplete_listings == {"resource_templates"}
 
 
 async def test_get_audit_summary_with_mixed_results():
