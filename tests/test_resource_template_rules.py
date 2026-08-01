@@ -95,3 +95,19 @@ def test_only_the_uniqueness_rule_skips_incomplete_catalogs() -> None:
     assert ResourceTemplatesNamesPresentRule().skip_reason(data) is None
     # A bad template on a fetched page is a finding even when pages are missing.
     assert ResourceTemplatesUriTemplatesValidRule().check(data).passed is False
+
+
+def test_all_template_rules_skip_when_listing_produced_no_evidence() -> None:
+    """A failed listing is unavailable, not an empty catalog that passes."""
+    for templates in (None, []):
+        data = AuditData(
+            resource_templates=templates,
+            listings_attempted=frozenset({"resource_templates"}),
+            incomplete_listings=frozenset({"resource_templates"}),
+        )
+        for rule in (
+            ResourceTemplatesUriTemplatesValidRule(),
+            ResourceTemplatesUniqueRule(),
+            ResourceTemplatesNamesPresentRule(),
+        ):
+            assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA

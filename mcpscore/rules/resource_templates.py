@@ -93,6 +93,13 @@ class ResourceTemplatesBaseRule(BaseRule):
     group_name = "resource_templates"
     group_order = 7
 
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when an attempted listing produced no evidence to judge."""
+        listing = "resource_templates"
+        unavailable = audit_data.resource_templates is None and listing in audit_data.listings_attempted
+        empty_partial = not audit_data.resource_templates and listing in audit_data.incomplete_listings
+        return SKIP_REASON_INSUFFICIENT_DATA if unavailable or empty_partial else None
+
     @requires_fields("resource_templates")
     def check(self, templates: list[ResourceTemplate] | None) -> RuleResult:  # type: ignore[override]
         """Execute the rule, treating an absent optional catalog as not applicable."""
@@ -170,7 +177,11 @@ class ResourceTemplatesUniqueRule(ResourceTemplatesBaseRule):
         Uniqueness judged on a partial listing can produce a false pass — the
         duplicate may live on a page that was never fetched.
         """
-        return SKIP_REASON_INSUFFICIENT_DATA if "resource_templates" in audit_data.incomplete_listings else None
+        return (
+            SKIP_REASON_INSUFFICIENT_DATA
+            if super().skip_reason(audit_data) is not None or "resource_templates" in audit_data.incomplete_listings
+            else None
+        )
 
     def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
         counts = Counter(template.uri_template for template in templates)
