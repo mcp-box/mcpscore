@@ -87,11 +87,11 @@ def test_template_rules_pass_when_capability_has_no_templates() -> None:
 def test_only_the_uniqueness_rule_skips_incomplete_catalogs() -> None:
     """Per-item rules judge partial evidence; only uniqueness needs the full catalog."""
     data = AuditData(
-        resource_templates=[_template("users", "users/{id}")],
+        resource_templates=[_template("users", "users/{bad-name}")],
         incomplete_listings=frozenset({"resource_templates"}),
     )
     assert ResourceTemplatesUniqueRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
     assert ResourceTemplatesUriTemplatesValidRule().skip_reason(data) is None
     assert ResourceTemplatesNamesPresentRule().skip_reason(data) is None
     # A bad template on a fetched page is a finding even when pages are missing.
-    assert ResourceTemplatesUriTemplatesValidRule().check(data).passed is True
+    assert ResourceTemplatesUriTemplatesValidRule().check(data).passed is False
