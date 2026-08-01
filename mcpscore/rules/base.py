@@ -11,7 +11,7 @@ from mcpscore.spec import compare
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcp_types import Implementation, Prompt, Resource, ServerCapabilities, Tool
+    from mcp_types import Implementation, Prompt, Resource, ResourceTemplate, ServerCapabilities, Tool
 
     from ..enums import MCPTransportType
     from ..probes import ProbeResult
@@ -116,6 +116,7 @@ class AuditData:
     instructions: str | None = None
     tools: list[Tool] | None = None
     resources: list[Resource] | None = None
+    resource_templates: list[ResourceTemplate] | None = None
     prompts: list[Prompt] | None = None
 
     # Transport and connection information (for HTTP/SSE audits)
@@ -137,7 +138,7 @@ class AuditData:
     partial: bool = False
     partial_reason: str | None = None
 
-    # Which listings ("tools", "resources", "prompts") the auditor actually
+    # Which listings (tools, resources, resource_templates, prompts) the auditor actually
     # attempted. `tools=None` is ambiguous on its own — the listing may have
     # failed, or may never have been tried (the session path only lists a
     # feature the server declares; the modern-only probe path collects tools

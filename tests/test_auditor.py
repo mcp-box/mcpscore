@@ -25,6 +25,7 @@ class DummyClient(MCPClient):
         init_result: Any | None,
         tools: list[Any] | None = None,
         resources: list[Any] | None = None,
+        resource_templates: list[Any] | None = None,
         prompts: list[Any] | None = None,
         url: str | None = None,
         transport_type: str = "streamable-http",
@@ -33,6 +34,7 @@ class DummyClient(MCPClient):
         self._init_result = init_result
         self._tools = tools
         self._resources = resources
+        self._resource_templates = resource_templates
         self._prompts = prompts
         self.url = url
         self.transport_type = transport_type  # type: ignore[assignment]
@@ -46,6 +48,9 @@ class DummyClient(MCPClient):
 
     async def list_resources(self):
         return self._resources
+
+    async def list_resource_templates(self):
+        return self._resource_templates
 
     async def list_prompts(self):
         return self._prompts
@@ -186,12 +191,14 @@ async def test_auditor_with_resources_capability():
             self.name = "Test Resource"
 
     resources = [Resource()]
+    resource_templates = [object()]
     auditor = MCPAuditor()
     auditor.rules = []
 
-    await auditor.audit(DummyClient(InitResult(), resources=resources))
+    await auditor.audit(DummyClient(InitResult(), resources=resources, resource_templates=resource_templates))
 
     assert auditor.audit_data.resources == resources
+    assert auditor.audit_data.resource_templates == resource_templates
 
 
 async def test_auditor_with_prompts_capability():
@@ -307,6 +314,7 @@ async def test_auditor_with_no_capabilities():
     # When capabilities is None, collection methods are not called, so fields remain None
     assert auditor.audit_data.tools is None
     assert auditor.audit_data.resources is None
+    assert auditor.audit_data.resource_templates is None
     assert auditor.audit_data.prompts is None
 
 

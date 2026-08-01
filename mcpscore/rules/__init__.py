@@ -66,6 +66,11 @@ from .readiness import (
     UnsupportedVersionErrorReadinessRule,
 )
 from .registry import RuleRegistry, create_all_rules
+from .resource_templates import (
+    ResourceTemplatesNamesPresentRule,
+    ResourceTemplatesUniqueRule,
+    ResourceTemplatesUriTemplatesValidRule,
+)
 from .resources import (
     ResourcesAnnotationsValidRule,
     ResourcesDescriptionPresentRule,
@@ -145,6 +150,9 @@ __all__ = (
     "PromptsNamesUniqueRule",
     "PromptsTitlesPresentRule",
     "RemovedMethodsReadinessRule",
+    "ResourceTemplatesNamesPresentRule",
+    "ResourceTemplatesUniqueRule",
+    "ResourceTemplatesUriTemplatesValidRule",
     "ResourcesAnnotationsValidRule",
     "ResourcesDescriptionPresentRule",
     "ResourcesMimeTypesValidRule",

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
-    from mcp_types import InitializeResult, Prompt, Resource, Tool
+    from mcp_types import InitializeResult, Prompt, Resource, ResourceTemplate, Tool
 
     from .probes import ProbeResult
 
@@ -128,6 +128,7 @@ class MCPAuditor:
                 await self._collect_tools()
             if self.audit_data.capabilities.resources is not None:
                 await self._collect_resources()
+                await self._collect_resource_templates()
             if self.audit_data.capabilities.prompts is not None:
                 await self._collect_prompts()
         await self._collect_probes()
@@ -579,6 +580,21 @@ class MCPAuditor:
             return
         else:
             self.audit_data.prompts = prompts
+
+    async def _collect_resource_templates(self) -> None:
+        """Collect the complete resource-template catalog from the MCP server."""
+        if self.mcp_client is None:
+            logger.error("No MCP client to audit")
+            return
+
+        listing = "resource_templates"
+        self.audit_data.listings_attempted |= {listing}
+        templates: list[ResourceTemplate] | None = await self.mcp_client.list_resource_templates()
+        self._capture_listing_completeness(listing)
+        if templates is None:
+            logger.error("No resource templates to audit")
+            return
+        self.audit_data.resource_templates = templates
 
     def get_audit_report(self) -> dict:
         """Generate a machine-readable report of the full audit.

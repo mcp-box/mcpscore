@@ -19,7 +19,7 @@ from mcp import (
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp_types import PaginatedRequestParams, Prompt, Resource, Tool
+from mcp_types import ListResourceTemplatesResult, PaginatedRequestParams, Prompt, Resource, ResourceTemplate, Tool
 
 from .enums import ConnectionErrorReason, MCPTransportType
 
@@ -620,6 +620,18 @@ class MCPClient:
 
         return await self._list_all_pages(self.session.list_resources, "resources", "resources")
 
+    async def list_resource_templates(self) -> list[ResourceTemplate] | None:
+        """List every available resource template from the MCP server."""
+        if not self.session:
+            logger.error(ERROR_NO_ACTIVE_SESSION)
+            return None
+
+        return await self._list_all_pages(
+            self.session.list_resource_templates,
+            "resource_templates",
+            "resource_templates",
+        )
+
     async def list_prompts(self) -> list[Prompt] | None:
         """List and display all available prompts from the MCP server.
 
@@ -637,7 +649,10 @@ class MCPClient:
 
     async def _list_all_pages(
         self,
-        fetch_page: Callable[..., Awaitable[ListToolsResult | ListResourcesResult | ListPromptsResult]],
+        fetch_page: Callable[
+            ...,
+            Awaitable[ListToolsResult | ListResourcesResult | ListPromptsResult | ListResourceTemplatesResult],
+        ],
         item_attribute: str,
         listing_name: str,
     ) -> list[Any] | None:

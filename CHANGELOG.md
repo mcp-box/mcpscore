@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Collect and fully paginate MCP resource templates, preserving partial evidence
+  and reporting incomplete listings when pagination fails, loops, or exceeds its
+  safety bound.
+- Three resource-template rules validate RFC 6570 URI-template syntax, unique
+  `uriTemplate` identifiers, and non-blank names without reading resources or
+  invoking tools.
+
 ## [1.2.0] - 2026-07-31
 
 Catalog-quality release: sixteen new rules across tools, resources, and
