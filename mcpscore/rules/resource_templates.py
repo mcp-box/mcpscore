@@ -109,7 +109,7 @@ class ResourceTemplatesBaseRule(BaseRule):
     @abstractmethod
     def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
         """Validate the collected resource templates."""
-        ...
+        raise NotImplementedError
 
 
 @register_rule

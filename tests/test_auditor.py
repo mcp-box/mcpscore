@@ -545,6 +545,33 @@ async def test_collect_prompts_with_none_response(caplog):
     assert auditor.audit_data.prompts is None
 
 
+async def test_collect_resource_templates_with_none_client(caplog):
+    """Template collection returns safely when no client is configured."""
+    auditor = MCPAuditor()
+    auditor.mcp_client = None
+
+    await auditor._collect_resource_templates()
+
+    assert "No MCP client to audit" in caplog.text
+
+
+async def test_collect_resource_templates_with_incomplete_none_response(caplog):
+    """A failed first template page remains unavailable and explicitly incomplete."""
+
+    class NoneResourceTemplatesClient(MCPClient):
+        async def list_resource_templates(self):
+            self.incomplete_listings.add("resource_templates")
+
+    auditor = MCPAuditor()
+    auditor.mcp_client = NoneResourceTemplatesClient()
+
+    await auditor._collect_resource_templates()
+
+    assert "No resource templates to audit" in caplog.text
+    assert auditor.audit_data.resource_templates is None
+    assert auditor.audit_data.incomplete_listings == {"resource_templates"}
+
+
 async def test_get_audit_summary_with_mixed_results():
     """Test audit summary generation with mixed pass/fail results.
 

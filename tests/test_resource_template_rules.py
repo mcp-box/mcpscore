@@ -30,6 +30,7 @@ def test_uri_template_validator_rejects_invalid_grammar() -> None:
         "https://example.com/{",
         "https://example.com/}",
         "https://example.com/{}",
+        "https://example.com/{+}",
         "https://example.com/{name:0}",
         "https://example.com/{name:10000}",
         "https://example.com/{name**}",
