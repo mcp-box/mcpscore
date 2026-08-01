@@ -352,6 +352,17 @@ class TestEraDetection:
         )
         assert detect_era(None, probes) is Era.MODERN
 
+    def test_modern_via_bare_error_code_with_malformed_data(self):
+        # A bare -32022 fails the readiness rule's shape check (UNSUPPORTED),
+        # but the code itself is modern vocabulary — era must not demote.
+        probes = legacy_probes()
+        probes[PROBE_UNKNOWN_VERSION] = ProbeResult(
+            PROBE_UNKNOWN_VERSION,
+            ProbeOutcome.UNSUPPORTED,
+            {"http_status": 400, "error_code": -32022, "data_well_formed": False},
+        )
+        assert detect_era(None, probes) is Era.MODERN
+
     def test_no_evidence(self):
         assert detect_era(None, not_applicable_results(reason="stdio")) is None
         assert detect_era(None, None) is None

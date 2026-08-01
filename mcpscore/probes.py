@@ -748,10 +748,17 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
         (e.g. stdio servers, where probes do not run)
 
     """
+    # Recognition of the modern error is about the CODE: a server answering
+    # -32022 speaks the modern vocabulary even when the error's data block is
+    # malformed (the probe then reports UNSUPPORTED for the readiness rule,
+    # which judges the shape — that must not demote the server's era).
+    unknown = (probes or {}).get(PROBE_UNKNOWN_VERSION)
     modern = has_modern_support(probes) or (
-        probes is not None
-        and PROBE_UNKNOWN_VERSION in probes
-        and probes[PROBE_UNKNOWN_VERSION].outcome is ProbeOutcome.SUPPORTED
+        unknown is not None
+        and (
+            unknown.outcome is ProbeOutcome.SUPPORTED
+            or unknown.details.get("error_code") == ERROR_UNSUPPORTED_PROTOCOL_VERSION
+        )
     )
     legacy = session_protocol_version is not None
 

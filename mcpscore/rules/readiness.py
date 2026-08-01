@@ -196,6 +196,7 @@ class SupportedVersionsReadinessRule(ProbeBackedReadinessRule):
                 "sep": "SEP-2575",
                 "schema_field": "DiscoverResult.supportedVersions",
                 "target_version": READINESS_TARGET,
+                **probe.details,
                 "supported_versions": versions,
             },
         )
