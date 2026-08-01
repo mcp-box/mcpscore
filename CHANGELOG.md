@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Three resource-template rules validate RFC 6570 URI-template syntax, unique
   `uriTemplate` identifiers, and non-blank names without reading resources or
   invoking tools.
+- New HIGH readiness rule `readiness_2026_supported_versions`: a
+  `server/discover` DiscoverResult must name at least one supported protocol
+  version (all strings) — the schema requires `supportedVersions: string[]`
+  but has no minItems constraint, and an empty list makes version selection
+  impossible.
+
+### Changed
+
+- `readiness_2026_unsupported_version_error` now requires the full
+  `UnsupportedProtocolVersionError` shape, not just the -32022 code: the
+  error's `data` must carry `supported` (a non-empty list of version strings
+  to retry with) and `requested`, as the schema requires. A bare -32022 now
+  fails with a dedicated message. Era detection is unaffected: the -32022
+  code alone still counts as modern-era evidence.
 
 ## [1.2.0] - 2026-07-31
 

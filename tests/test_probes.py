@@ -142,6 +142,7 @@ async def test_modern_server_supports_all_probed_behaviors():
     unknown = results[PROBE_UNKNOWN_VERSION].details
     assert unknown["supported"] == ["2026-07-28"]
     assert unknown["requested"] == "2099-01-01"
+    assert unknown["data_well_formed"] is True
 
     assert results[PROBE_MISSING_RESOURCE].details["legacy_code_emitted"] is False
 
@@ -686,22 +687,56 @@ async def test_error_without_message_field_is_handled():
     assert "error_message" not in details
 
 
-async def test_unknown_version_error_with_non_dict_data():
+def _unknown_version_handler(data: object) -> object:
+    """Build a handler answering every request with -32022 carrying the given error data.
+
+    ``data`` is spliced into the error verbatim; the sentinel ``_OMIT`` leaves
+    the data member out entirely (a bare -32022).
+    """
+
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
-        return httpx2.Response(
-            400,
-            json={
-                "jsonrpc": "2.0",
-                "id": body.get("id"),
-                "error": {"code": ERROR_UNSUPPORTED_PROTOCOL_VERSION, "message": "nope", "data": "not-a-dict"},
-            },
-        )
+        error: dict = {"code": ERROR_UNSUPPORTED_PROTOCOL_VERSION, "message": "nope"}
+        if data is not _OMIT:
+            error["data"] = data
+        return httpx2.Response(400, json={"jsonrpc": "2.0", "id": body.get("id"), "error": error})
 
-    results = await _run(handler)
+    return handler
+
+
+_OMIT = object()
+
+
+async def test_unknown_version_error_with_non_dict_data():
+    # The error code alone is not enough (schema requires data.supported +
+    # data.requested); before the tightening this outcome was SUPPORTED.
+    results = await _run(_unknown_version_handler("not-a-dict"))
     unknown = results[PROBE_UNKNOWN_VERSION]
-    assert unknown.outcome is ProbeOutcome.SUPPORTED
-    assert "supported" not in unknown.details
+    assert unknown.outcome is ProbeOutcome.UNSUPPORTED
+    assert unknown.details["supported"] is None
+    assert unknown.details["data_well_formed"] is False
+
+
+async def test_unknown_version_error_without_data():
+    results = await _run(_unknown_version_handler(_OMIT))
+    unknown = results[PROBE_UNKNOWN_VERSION]
+    assert unknown.outcome is ProbeOutcome.UNSUPPORTED
+    assert unknown.details["data_well_formed"] is False
+
+
+async def test_unknown_version_error_with_empty_supported_list():
+    results = await _run(_unknown_version_handler({"supported": [], "requested": "2099-01-01"}))
+    unknown = results[PROBE_UNKNOWN_VERSION]
+    assert unknown.outcome is ProbeOutcome.UNSUPPORTED
+    assert unknown.details["data_well_formed"] is False
+
+
+async def test_unknown_version_error_without_requested_echo():
+    results = await _run(_unknown_version_handler({"supported": ["2026-07-28"]}))
+    unknown = results[PROBE_UNKNOWN_VERSION]
+    assert unknown.outcome is ProbeOutcome.UNSUPPORTED
+    assert unknown.details["supported"] == ["2026-07-28"]
+    assert unknown.details["data_well_formed"] is False
 
 
 async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch):

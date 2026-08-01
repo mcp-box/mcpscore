@@ -384,7 +384,10 @@ async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeR
     """Send a modern request naming a fabricated protocol version.
 
     Modern servers MUST reject it with ``-32022`` (UnsupportedProtocolVersion)
-    whose ``data`` lists ``supported`` and ``requested`` versions.
+    whose ``data`` lists ``supported`` and ``requested`` versions. SUPPORTED
+    requires the full error shape: the ``data`` block is what tells a client
+    which version to retry with, so a bare ``-32022`` records
+    ``data_well_formed: false`` and stays UNSUPPORTED.
     """
     response = await _post(
         client,
@@ -395,11 +398,21 @@ async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeR
     details = _base_details(response)
     error = response.error
     if error is not None and response.error_code == ERROR_UNSUPPORTED_PROTOCOL_VERSION:
-        data = error.get("data")
-        if isinstance(data, dict):
-            details["supported"] = data.get("supported")
-            details["requested"] = data.get("requested")
-        return ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.SUPPORTED, details)
+        raw_data = error.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        supported = data.get("supported")
+        requested = data.get("requested")
+        details["supported"] = supported
+        details["requested"] = requested
+        well_formed = (
+            isinstance(supported, list)
+            and bool(supported)
+            and all(isinstance(v, str) for v in supported)
+            and isinstance(requested, str)
+        )
+        details["data_well_formed"] = well_formed
+        outcome = ProbeOutcome.SUPPORTED if well_formed else ProbeOutcome.UNSUPPORTED
+        return ProbeResult(PROBE_UNKNOWN_VERSION, outcome, details)
     return ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.UNSUPPORTED, details)
 
 
@@ -735,10 +748,17 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
         (e.g. stdio servers, where probes do not run)
 
     """
+    # Recognition of the modern error is about the CODE: a server answering
+    # -32022 speaks the modern vocabulary even when the error's data block is
+    # malformed (the probe then reports UNSUPPORTED for the readiness rule,
+    # which judges the shape — that must not demote the server's era).
+    unknown = (probes or {}).get(PROBE_UNKNOWN_VERSION)
     modern = has_modern_support(probes) or (
-        probes is not None
-        and PROBE_UNKNOWN_VERSION in probes
-        and probes[PROBE_UNKNOWN_VERSION].outcome is ProbeOutcome.SUPPORTED
+        unknown is not None
+        and (
+            unknown.outcome is ProbeOutcome.SUPPORTED
+            or unknown.details.get("error_code") == ERROR_UNSUPPORTED_PROTOCOL_VERSION
+        )
     )
     legacy = session_protocol_version is not None
 
