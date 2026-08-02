@@ -1462,12 +1462,23 @@ class TestStdioCommandCliFlow:
         with pytest.raises(ValueError, match="--env only applies"):
             resolve_target(args)
 
-    def test_parse_env_vars_rejects_malformed_without_echoing_value(self) -> None:
+    def test_parse_env_vars_rejects_malformed_without_echoing_entry(self) -> None:
+        # Without a '=', a "name" is indistinguishable from a pasted secret —
+        # the error identifies the entry by position and never echoes it.
         with pytest.raises(ValueError, match="NAME=VALUE") as exc_info:
-            parse_env_vars(["SECRETVALUE"])
-        assert "SECRETVALUE" in str(exc_info.value)  # the *name* side is safe to show
-        with pytest.raises(ValueError, match="NAME=VALUE"):
-            parse_env_vars(["=value-only"])
+            parse_env_vars(["A=1", "SECRETVALUE"])
+        assert "SECRETVALUE" not in str(exc_info.value)
+        assert "#2" in str(exc_info.value)
+        with pytest.raises(ValueError, match="NAME=VALUE") as exc_info:
+            parse_env_vars(["=secret-value-only"])
+        assert "secret-value-only" not in str(exc_info.value)
+
+    def test_stdio_command_repr_hides_env(self) -> None:
+        cmd = StdioCommand(command="./server", args=("--x",), env={"API_KEY": "hunter2"})
+        rendered = repr(cmd)
+        assert "hunter2" not in rendered
+        assert "API_KEY" not in rendered
+        assert "./server" in rendered  # command/args stay debuggable
 
     async def test_stdio_usage_error_precedes_banner(self, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture) -> None:
         monkeypatch.setattr(sys, "argv", ["mcpscore", "--stdio"])

@@ -209,15 +209,17 @@ def parse_env_vars(pairs: list[str]) -> dict[str, str]:
 
     Raises:
         ValueError: If an entry has no ``=`` or an empty name. The message
-            names the variable only — values are sensitive and never echoed.
+            identifies the entry by position only and never echoes any part
+            of it: without a ``=`` there is no way to tell a variable name
+            from an accidentally pasted secret (same policy as
+            ``parse_header``).
 
     """
     env: dict[str, str] = {}
-    for raw in pairs:
+    for position, raw in enumerate(pairs, start=1):
         name, sep, value = raw.partition("=")
         if not sep or not name:
-            label = name or "<empty>"
-            raise ValueError(f"--env expects NAME=VALUE (got an entry for '{label}' without one)")
+            raise ValueError(f"--env #{position}: expected NAME=VALUE (the entry is not shown — it may carry a secret)")
         env[name] = value
     return env
 

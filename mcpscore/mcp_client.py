@@ -46,12 +46,14 @@ class StdioCommand:
         args: Arguments passed to the executable, in order.
         env: Extra environment variables for the server process, merged over
             the SDK's minimal default environment. None inherits the default.
+            Excluded from the repr — env values are secrets by assumption and
+            must never surface in logs or tracebacks.
 
     """
 
     command: str
     args: tuple[str, ...] = ()
-    env: Mapping[str, str] | None = field(default=None, hash=False)
+    env: Mapping[str, str] | None = field(default=None, hash=False, repr=False)
 
     @property
     def display(self) -> str:
