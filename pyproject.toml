@@ -86,11 +86,6 @@ dev = [
     "ruff==0.16.0",
 ]
 
-[tool.uv]
-# mcp 2.0.0b2 pins the transitive mcp-types==2.0.0b2; uv only auto-allows
-# pre-releases for direct dependencies, so transitive betas need this.
-prerelease = "allow"
-
 [tool.pyright]
 reportMissingImports = true
 venvPath = "."
