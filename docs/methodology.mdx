@@ -49,7 +49,7 @@ of three reasons:
 
 ## How an audit runs
 
-1. **Connect** — stdio (local `.py`/`.js` servers), Streamable HTTP, or SSE, with
+1. **Connect** — stdio (local servers in any language: `.py`/`.js` files directly, or an arbitrary command via `--stdio`), Streamable HTTP, or SSE, with
    automatic transport detection. A connection only counts once the server completes a
    real MCP handshake.
 2. **Collect** — protocol version, server info, capabilities, tools, resources,

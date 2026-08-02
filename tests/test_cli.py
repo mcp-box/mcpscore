@@ -21,8 +21,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcpscore import MCPAuditor, MCPClient, MCPTransportType
-from mcpscore.cli import _mcpscore_version, async_main, build_parser, build_report, main
+from mcpscore import MCPAuditor, MCPClient, MCPTransportType, StdioCommand
+from mcpscore.cli import (
+    _mcpscore_version,
+    async_main,
+    build_parser,
+    build_report,
+    main,
+    parse_env_vars,
+    resolve_target,
+)
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture
@@ -1411,3 +1419,146 @@ class TestOAuthCliFlow:
             with pytest.raises(SystemExit) as exc:
                 await async_main()
             assert exc.value.code == 1
+
+
+class TestStdioCommandCliFlow:
+    """--stdio: generic any-language local servers, and --env plumbing."""
+
+    def test_stdio_remainder_captures_command_and_flags(self) -> None:
+        args = build_parser().parse_args(["--json", "--stdio", "java", "-jar", "server.jar", "--port", "9"])
+        assert args.json is True
+        assert args.stdio == ["java", "-jar", "server.jar", "--port", "9"]
+        assert args.target is None
+
+    def test_resolve_target_builds_stdio_command(self) -> None:
+        args = build_parser().parse_args(["--env", "API_KEY=k", "--stdio", "dotnet", "run"])
+        target = resolve_target(args)
+        assert isinstance(target, StdioCommand)
+        assert target.command == "dotnet"
+        assert target.args == ("run",)
+        assert target.env == {"API_KEY": "k"}
+
+    def test_resolve_target_plain_url_unchanged(self) -> None:
+        args = build_parser().parse_args(["https://example.com/mcp"])
+        assert resolve_target(args) == "https://example.com/mcp"
+
+    def test_resolve_target_rejects_both(self) -> None:
+        args = build_parser().parse_args(["server.py", "--stdio", "./srv"])
+        with pytest.raises(ValueError, match="not both"):
+            resolve_target(args)
+
+    def test_resolve_target_rejects_empty_stdio(self) -> None:
+        args = build_parser().parse_args(["--stdio"])
+        with pytest.raises(ValueError, match="needs a command"):
+            resolve_target(args)
+
+    def test_resolve_target_rejects_missing_target(self) -> None:
+        args = build_parser().parse_args([])
+        with pytest.raises(ValueError, match="target is required"):
+            resolve_target(args)
+
+    def test_resolve_target_rejects_env_without_stdio(self) -> None:
+        args = build_parser().parse_args(["https://example.com/mcp", "--env", "A=1"])
+        with pytest.raises(ValueError, match="--env only applies"):
+            resolve_target(args)
+
+    def test_parse_env_vars_inherits_value_less_names(self, monkeypatch: MonkeyPatch) -> None:
+        # The secret-safe form: --env NAME copies from mcpscore's own
+        # environment, so the value never appears on any command line.
+        monkeypatch.setenv("API_KEY", "s3cret-value")
+        argv = ["--env", "API_KEY", "--env", "LOG_LEVEL=debug", "--stdio", "./srv"]
+        target = resolve_target(build_parser().parse_args(argv))
+        assert isinstance(target, StdioCommand)
+        assert target.env == {"API_KEY": "s3cret-value", "LOG_LEVEL": "debug"}
+        # The regression the review asked for: the inherited value reaches the
+        # command's env without ever having been a CLI argument.
+        assert not any("s3cret-value" in token for token in argv)
+
+    def test_parse_env_vars_unset_name_errors_without_echoing_entry(self, monkeypatch: MonkeyPatch) -> None:
+        # A no-'=' entry might be a mistyped name OR a pasted secret — the
+        # error identifies it by position and never echoes it.
+        monkeypatch.delenv("SECRETVALUE", raising=False)
+        with pytest.raises(ValueError, match="not set in the environment") as exc_info:
+            parse_env_vars(["A=1", "SECRETVALUE"])
+        assert "SECRETVALUE" not in str(exc_info.value)
+        assert "#2" in str(exc_info.value)
+
+    def test_parse_env_vars_rejects_empty_name_without_echoing_entry(self) -> None:
+        with pytest.raises(ValueError, match="NAME=VALUE or NAME") as exc_info:
+            parse_env_vars(["=secret-value-only"])
+        assert "secret-value-only" not in str(exc_info.value)
+
+    def test_stdio_command_repr_hides_env(self) -> None:
+        cmd = StdioCommand(command="./server", args=("--x",), env={"API_KEY": "hunter2"})
+        rendered = repr(cmd)
+        assert "hunter2" not in rendered
+        assert "API_KEY" not in rendered
+        assert "./server" in rendered  # command/args stay debuggable
+
+    async def test_stdio_usage_error_precedes_banner(self, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--stdio"])
+        with caplog.at_level(logging.INFO), pytest.raises(SystemExit) as exc_info:
+            await async_main()
+        assert exc_info.value.code == 1
+        assert "Usage error" in caplog.text
+        assert "Welcome to mcpscore!" not in caplog.text
+
+    async def test_oauth_rejects_stdio_target(self, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--oauth", "--stdio", "./server"])
+        with caplog.at_level(logging.INFO), pytest.raises(SystemExit) as exc_info:
+            await async_main()
+        assert exc_info.value.code == 1
+        assert "--oauth requires an HTTP(S) server URL" in caplog.text
+
+    async def test_async_main_audits_stdio_command(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A --stdio audit connects, audits, and reports the joined command line."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--json", "--stdio", "java", "-jar", "server.jar"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STDIO))
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        (call_target,) = mock_client.detect_and_connect.call_args.args
+        assert isinstance(call_target, StdioCommand)
+        assert call_target.command == "java"
+        assert call_target.args == ("-jar", "server.jar")
+        assert "Connected to the MCP server: java -jar server.jar" in caplog.text
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == "java -jar server.jar"
+        assert report["transport"] == "stdio"
+        mock_client.cleanup.assert_called_once()
+
+    async def test_async_main_stdio_command_failure_exits_2(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A failed --stdio connect exits 2 without the URL-only fallbacks."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--stdio", "./no-such-server"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 2
+        assert "Error connecting to the MCP server: ./no-such-server" in caplog.text
+        mock_auditor.audit_modern_only.assert_not_called()
+        mock_client.cleanup.assert_called_once()
