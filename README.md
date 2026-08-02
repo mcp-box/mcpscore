@@ -47,7 +47,7 @@ The final score is reported as `earned/maximum` — higher means a better-qualit
 
 ## What it scores
 
-71 rules across four categories — the same four the report, the JSON output, and
+72 rules across four categories — the same four the report, the JSON output, and
 [mcpscore.dev](https://mcpscore.dev) show. Every rule cites the spec section or RFC it
 enforces; the full list is in the [rules reference](https://docs.mcpscore.dev/rules/).
 
@@ -70,7 +70,7 @@ metadata, the RFC 8414 authorization-server chain, and whether PKCE (S256) is en
 A gated server is scored on this surface without credentials — see
 [auditing authenticated servers](https://docs.mcpscore.dev/authenticated-servers/).
 
-**Readiness** (12 rules) — how ready the server is for the 2026-07-28 MCP spec revision,
+**Readiness** (13 rules) — how ready the server is for the 2026-07-28 MCP spec revision,
 reported on its own axis. For servers already speaking the new lifecycle those points
 also count toward the main score; for everyone else the axis stays informative.
 
