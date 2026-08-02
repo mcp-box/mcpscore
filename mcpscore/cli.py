@@ -71,8 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
             "--stdio ./server, --stdio java -jar server.jar, --stdio dotnet run --project ./srv. "
             "Consumes the REST of the command line (the server's own flags included), so put "
             "every mcpscore option before it. Replaces the positional target. The command runs "
-            "directly (no shell). Pass secrets via --env, not as arguments — the command line "
-            "appears as the report's target (and in the process list)."
+            "directly (no shell). Never pass secrets as arguments — the command line appears as "
+            "the report's target (and in the process list); use the value-less --env NAME form."
         ),
     )
     parser.add_argument(
@@ -80,8 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="NAME=VALUE",
         help=(
-            "Extra environment variable for the --stdio server process, e.g. --env API_KEY=… "
-            "Repeatable. Merged over a minimal default environment; values are never logged."
+            "Extra environment variable for the --stdio server process. Repeatable. "
+            "--env NAME=VALUE sets it inline (non-sensitive config only: the value lands in "
+            "shell history and the process list). --env NAME copies the value from mcpscore's "
+            "own environment — use this for secrets: API_KEY=… mcpscore --env API_KEY --stdio … "
+            "Merged over a minimal default environment; values are never logged or reported."
         ),
     )
     # An "action=version" argument exits during parsing, before argparse
@@ -199,7 +202,13 @@ def collect_headers(args: argparse.Namespace) -> dict[str, str]:
 
 
 def parse_env_vars(pairs: list[str]) -> dict[str, str]:
-    """Parse repeated ``NAME=VALUE`` --env arguments into a dict.
+    """Parse repeated --env arguments (``NAME=VALUE`` or value-less ``NAME``).
+
+    ``NAME=VALUE`` sets the value inline — fine for non-sensitive
+    configuration. A bare ``NAME`` copies the value from mcpscore's own
+    inherited environment (``API_KEY=… mcpscore --env API_KEY --stdio …``) —
+    the right form for secrets, because the value never appears on any
+    command line, in shell history, or in a process listing.
 
     Args:
         pairs: Raw --env values as given on the command line.
@@ -208,19 +217,29 @@ def parse_env_vars(pairs: list[str]) -> dict[str, str]:
         Mapping of variable names to values (later duplicates win).
 
     Raises:
-        ValueError: If an entry has no ``=`` or an empty name. The message
-            identifies the entry by position only and never echoes any part
-            of it: without a ``=`` there is no way to tell a variable name
-            from an accidentally pasted secret (same policy as
-            ``parse_header``).
+        ValueError: If an entry has an empty name, or names a variable that
+            is not set in the environment. Error messages identify the entry
+            by position only and never echo it: a malformed entry may be an
+            accidentally pasted secret (same policy as ``parse_header``).
 
     """
     env: dict[str, str] = {}
     for position, raw in enumerate(pairs, start=1):
         name, sep, value = raw.partition("=")
-        if not sep or not name:
-            raise ValueError(f"--env #{position}: expected NAME=VALUE (the entry is not shown — it may carry a secret)")
-        env[name] = value
+        if not name:
+            raise ValueError(
+                f"--env #{position}: expected NAME=VALUE or NAME (the entry is not shown — it may carry a secret)"
+            )
+        if not sep:
+            inherited = os.environ.get(name)
+            if inherited is None:
+                raise ValueError(
+                    f"--env #{position}: names a variable that is not set in the environment "
+                    "(the entry is not shown — it may be a mistyped name or a pasted secret)"
+                )
+            env[name] = inherited
+        else:
+            env[name] = value
     return env
 
 

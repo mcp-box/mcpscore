@@ -1462,14 +1462,29 @@ class TestStdioCommandCliFlow:
         with pytest.raises(ValueError, match="--env only applies"):
             resolve_target(args)
 
-    def test_parse_env_vars_rejects_malformed_without_echoing_entry(self) -> None:
-        # Without a '=', a "name" is indistinguishable from a pasted secret —
-        # the error identifies the entry by position and never echoes it.
-        with pytest.raises(ValueError, match="NAME=VALUE") as exc_info:
+    def test_parse_env_vars_inherits_value_less_names(self, monkeypatch: MonkeyPatch) -> None:
+        # The secret-safe form: --env NAME copies from mcpscore's own
+        # environment, so the value never appears on any command line.
+        monkeypatch.setenv("API_KEY", "s3cret-value")
+        argv = ["--env", "API_KEY", "--env", "LOG_LEVEL=debug", "--stdio", "./srv"]
+        target = resolve_target(build_parser().parse_args(argv))
+        assert isinstance(target, StdioCommand)
+        assert target.env == {"API_KEY": "s3cret-value", "LOG_LEVEL": "debug"}
+        # The regression the review asked for: the inherited value reaches the
+        # command's env without ever having been a CLI argument.
+        assert not any("s3cret-value" in token for token in argv)
+
+    def test_parse_env_vars_unset_name_errors_without_echoing_entry(self, monkeypatch: MonkeyPatch) -> None:
+        # A no-'=' entry might be a mistyped name OR a pasted secret — the
+        # error identifies it by position and never echoes it.
+        monkeypatch.delenv("SECRETVALUE", raising=False)
+        with pytest.raises(ValueError, match="not set in the environment") as exc_info:
             parse_env_vars(["A=1", "SECRETVALUE"])
         assert "SECRETVALUE" not in str(exc_info.value)
         assert "#2" in str(exc_info.value)
-        with pytest.raises(ValueError, match="NAME=VALUE") as exc_info:
+
+    def test_parse_env_vars_rejects_empty_name_without_echoing_entry(self) -> None:
+        with pytest.raises(ValueError, match="NAME=VALUE or NAME") as exc_info:
             parse_env_vars(["=secret-value-only"])
         assert "secret-value-only" not in str(exc_info.value)
 

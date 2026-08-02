@@ -14,9 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `java -jar server.jar`, `dotnet run --project …` — and audits it exactly
   like a `.py`/`.js` target. It consumes the rest of the command line (the
   server's own flags included), runs the command directly with no shell, and
-  pairs with the new repeatable `--env NAME=VALUE` for server configuration
+  pairs with the new repeatable `--env` for server configuration
   (merged over the SDK's minimal default environment; values are never
-  logged). Library consumers get the same via the new `StdioCommand`
+  logged or reported). `--env NAME=VALUE` sets a value inline for
+  non-sensitive config; the value-less `--env NAME` copies the value from
+  mcpscore's own environment, keeping secrets off every command line. Library consumers get the same via the new `StdioCommand`
   dataclass accepted by `MCPClient.detect_and_connect`. The positional
   `.py`/`.js`/URL target is unchanged.
 

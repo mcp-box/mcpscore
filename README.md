@@ -110,6 +110,10 @@ mcpscore path/to/your/server.js
 mcpscore --stdio ./my-go-server
 mcpscore --stdio java -jar server.jar
 
+# Server env: --env NAME=VALUE for plain config; value-less --env NAME
+# copies from your environment — use that form for secrets
+API_KEY=... mcpscore --env API_KEY --stdio ./my-go-server
+
 # Remote MCP server (auto-detects Streamable HTTP or SSE)
 mcpscore https://example.com/mcp
 

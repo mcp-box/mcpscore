@@ -200,3 +200,60 @@ class TestStdioCommand:
         assert result is False
         assert "Command not found: 'no-such-binary'" in caplog.text
         assert mcp_client.last_connection_error is not None
+
+    async def test_command_handshake_timeout_classified(self, mcp_client, caplog):
+        cmd = StdioCommand(command="./slow-server")
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.side_effect = TimeoutError()
+            result = await mcp_client._connect_with_stdio_command(cmd)
+        assert result is False
+        assert "handshake timed out" in caplog.text
+        assert "./slow-server" in caplog.text
+        assert mcp_client.last_connection_error.reason.value == "timeout"
+
+    async def test_command_handshake_cancelled_classified_not_mcp(self, mcp_client, caplog):
+        """Classify an SDK-teardown CancelledError as NOT_MCP, not a re-raise.
+
+        The cancellation comes from the SDK's context teardown, not from our
+        own task being cancelled — it means the process spoke no MCP.
+        """
+        import asyncio
+
+        cmd = StdioCommand(command="./not-an-mcp-server")
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.side_effect = asyncio.CancelledError()
+            result = await mcp_client._connect_with_stdio_command(cmd)
+        assert result is False
+        assert "handshake failed" in caplog.text
+        assert mcp_client.last_connection_error.reason.value == "not_mcp"
+
+
+class TestStdioCommandRealProcess:
+    """End-to-end: launch a real server process, no transport mocking.
+
+    Guards the integration the mocked tests cannot see: StdioServerParameters,
+    the SDK's environment handling, actual process launch, and the MCP
+    handshake working together.
+    """
+
+    async def test_handshake_and_env_round_trip_through_real_process(self):
+        from pathlib import Path
+        import sys as _sys
+
+        server = str(Path(__file__).parent / "stdio_e2e_server.py")
+        cmd = StdioCommand(
+            command=_sys.executable,
+            args=(server,),
+            env={"MCPSCORE_E2E_ENV": "env-round-trip-proof"},
+        )
+        client = MCPClient()
+        try:
+            success, transport = await client.detect_and_connect(cmd)
+            assert success is True
+            assert transport is MCPTransportType.STDIO
+            # The env var reached the real subprocess: the server echoes it
+            # back as its version through the actual handshake.
+            assert client._init_result is not None
+            assert client._init_result.server_info.version == "env-round-trip-proof"
+        finally:
+            await client.cleanup()

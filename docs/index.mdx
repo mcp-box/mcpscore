@@ -52,11 +52,15 @@ mcpscore path/to/server.py
 mcpscore path/to/server.js
 
 # Local servers in any language: --stdio runs an arbitrary command
-# (it consumes the rest of the line, so put mcpscore options first;
-# pass secrets via --env — the command line appears in the report)
+# (it consumes the rest of the line, so put mcpscore options first)
 mcpscore --stdio ./my-go-server
 mcpscore --stdio java -jar server.jar
-mcpscore --env API_KEY=... --stdio dotnet run --project ./server
+
+# Server env vars: NAME=VALUE inline for plain config; for secrets use
+# the value-less form, which copies from mcpscore's own environment so
+# the value never touches a command line or the report
+mcpscore --env LOG_LEVEL=debug --stdio dotnet run --project ./server
+API_KEY=... mcpscore --env API_KEY --stdio ./my-go-server
 
 # Remote servers (Streamable HTTP / SSE, auto-detected —
 # including modern-only servers on the 2026 stateless lifecycle)
