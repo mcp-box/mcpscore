@@ -41,7 +41,7 @@ The final score is reported as `earned/maximum` — higher means a better-qualit
 - **Multiple transports**: STDIO (local servers), Streamable HTTP, and SSE (remote servers)
 - **Auto-detection**: Picks the right transport automatically — tries Streamable HTTP first, falls back to SSE for URLs
 - **Real handshake verification**: A connection only counts once the server completes the MCP `initialize` handshake — pointing it at a non-MCP endpoint fails cleanly
-- **Multi-language**: Audits both Python (`.py`) and Node.js (`.js`) MCP servers via STDIO
+- **Any-language**: Audits MCP servers in any language via STDIO — `.py`/`.js` files directly, everything else (Go, Java, C#, Rust, ...) via `--stdio <command>`
 - **Severity-based reporting**: Rules categorized as CRITICAL, HIGH, MEDIUM, or LOW
 - **Library-friendly**: Fully typed (`py.typed`); use `MCPClient` + `MCPAuditor` programmatically
 
@@ -77,8 +77,10 @@ also count toward the main score; for everyone else the axis stays informative.
 ## Requirements
 
 - Python 3.11+
-- Node.js on `PATH` if auditing a Node.js MCP server
-- A Python interpreter on `PATH` if auditing a Python MCP server
+- The server's own runtime on `PATH` when auditing a local server: Node.js for
+  `.js` targets, a Python interpreter for `.py` targets, and for `--stdio`
+  whatever the command names (a JRE for `java -jar`, the .NET SDK for
+  `dotnet run`, nothing extra for a compiled Go/Rust binary)
 
 ## Installation
 
@@ -205,7 +207,7 @@ server. Full details, including the HTML form and how freshness works, are in th
 **Connection fails**
 
 - Check the path or URL is correct and reachable
-- For local servers, make sure Python or Node.js is on `PATH`
+- For local servers, make sure the runtime is on `PATH` (Python/Node.js for `.py`/`.js` targets; whatever `--stdio` names for other languages)
 - "Not a valid MCP server (handshake failed)" means the endpoint responded but did not complete the MCP `initialize` handshake — verify the URL points at an actual MCP endpoint (often `/mcp`)
 
 **Protocol version errors**
