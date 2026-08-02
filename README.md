@@ -103,6 +103,11 @@ mcpscore path/to/your/server.py
 # Local Node.js MCP server (STDIO)
 mcpscore path/to/your/server.js
 
+# Local server in any language — --stdio runs an arbitrary command
+# (put mcpscore options before it; it consumes the rest of the line)
+mcpscore --stdio ./my-go-server
+mcpscore --stdio java -jar server.jar
+
 # Remote MCP server (auto-detects Streamable HTTP or SSE)
 mcpscore https://example.com/mcp
 

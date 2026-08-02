@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mcpscore.enums import MCPTransportType
-from mcpscore.mcp_client import MCPClient
+from mcpscore.mcp_client import MCPClient, StdioCommand
 
 
 class TestMCPClientStdioErrors:
@@ -67,7 +67,7 @@ class TestMCPClientStdioErrors:
             result = await mcp_client._connect_with_stdio(server_path)
 
             assert result is False
-            assert "Permission denied accessing server script" in caplog.text
+            assert "Permission denied launching server" in caplog.text
 
     async def test_connect_stdio_generic_exception(self, mcp_client, caplog):
         """Test stdio connection with generic exception."""
@@ -136,3 +136,67 @@ class TestMCPClientStdioErrors:
 
             assert success is False
             assert transport is None
+
+
+class TestStdioCommand:
+    """Generic stdio commands: any-language local servers via StdioCommand."""
+
+    @pytest.fixture
+    def mcp_client(self):
+        return MCPClient()
+
+    async def test_display_joins_command_and_args(self):
+        cmd = StdioCommand(command="java", args=("-jar", "server.jar"))
+        assert cmd.display == "java -jar server.jar"
+
+    async def test_detect_and_connect_dispatches_stdio_command(self, mcp_client):
+        cmd = StdioCommand(command="./server")
+        with patch.object(mcp_client, "_connect_with_stdio_command", return_value=True) as connect:
+            success, transport = await mcp_client.detect_and_connect(cmd)
+        assert success is True
+        assert transport is MCPTransportType.STDIO
+        connect.assert_awaited_once_with(cmd)
+
+    async def test_detect_and_connect_stdio_command_failure(self, mcp_client):
+        cmd = StdioCommand(command="./server")
+        with patch.object(mcp_client, "_connect_with_stdio_command", return_value=False):
+            success, transport = await mcp_client.detect_and_connect(cmd)
+        assert success is False
+        assert transport is None
+
+    async def test_command_passed_through_without_env(self, mcp_client):
+        """No --env: the SDK's own default environment handling applies (env=None)."""
+        cmd = StdioCommand(command="dotnet", args=("run", "--project", "./srv"))
+        with (
+            patch("mcpscore.mcp_client.stdio_client") as mock_stdio,
+            patch.object(mcp_client, "_establish_session", new=AsyncMock()) as establish,
+        ):
+            result = await mcp_client._connect_with_stdio_command(cmd)
+        assert result is True
+        params = mock_stdio.call_args.args[0]
+        assert params.command == "dotnet"
+        assert params.args == ["run", "--project", "./srv"]
+        assert params.env is None
+        establish.assert_awaited_once()
+
+    async def test_env_merged_over_default_environment(self, mcp_client):
+        """--env vars land on top of the SDK default env, not instead of it."""
+        cmd = StdioCommand(command="./server", env={"API_KEY": "secret", "PATH": "/custom"})
+        with (
+            patch("mcpscore.mcp_client.stdio_client") as mock_stdio,
+            patch("mcpscore.mcp_client.get_default_environment", return_value={"PATH": "/usr/bin", "HOME": "/home"}),
+            patch.object(mcp_client, "_establish_session", new=AsyncMock()),
+        ):
+            result = await mcp_client._connect_with_stdio_command(cmd)
+        assert result is True
+        params = mock_stdio.call_args.args[0]
+        assert params.env == {"PATH": "/custom", "HOME": "/home", "API_KEY": "secret"}
+
+    async def test_command_not_found_names_the_command(self, mcp_client, caplog):
+        cmd = StdioCommand(command="no-such-binary")
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.side_effect = FileNotFoundError("not found")
+            result = await mcp_client._connect_with_stdio_command(cmd)
+        assert result is False
+        assert "Command not found: 'no-such-binary'" in caplog.text
+        assert mcp_client.last_connection_error is not None

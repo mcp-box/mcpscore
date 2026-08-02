@@ -51,6 +51,13 @@ issues before your users do.
 mcpscore path/to/server.py
 mcpscore path/to/server.js
 
+# Local servers in any language: --stdio runs an arbitrary command
+# (it consumes the rest of the line, so put mcpscore options first;
+# pass secrets via --env — the command line appears in the report)
+mcpscore --stdio ./my-go-server
+mcpscore --stdio java -jar server.jar
+mcpscore --env API_KEY=... --stdio dotnet run --project ./server
+
 # Remote servers (Streamable HTTP / SSE, auto-detected —
 # including modern-only servers on the 2026 stateless lifecycle)
 mcpscore https://example.com/mcp

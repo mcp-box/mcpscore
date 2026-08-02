@@ -1,8 +1,9 @@
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
+import shlex
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -17,7 +18,7 @@ from mcp import (
     StdioServerParameters,
 )
 from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp_types import ListResourceTemplatesResult, PaginatedRequestParams, Prompt, Resource, ResourceTemplate, Tool
 
@@ -29,6 +30,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ERROR_NO_ACTIVE_SESSION = "No active session, connect to the MCP server first!"
+
+
+@dataclass(frozen=True)
+class StdioCommand:
+    """A local MCP server launched as an arbitrary stdio command.
+
+    Generalizes the ``.py``/``.js`` file targets to any language: a compiled
+    Go binary, ``java -jar server.jar``, ``dotnet run --project …``, and so
+    on. The command is executed directly (no shell), so arguments need no
+    quoting and behave identically across platforms.
+
+    Attributes:
+        command: The executable to launch (resolved on PATH or a file path).
+        args: Arguments passed to the executable, in order.
+        env: Extra environment variables for the server process, merged over
+            the SDK's minimal default environment. None inherits the default.
+
+    """
+
+    command: str
+    args: tuple[str, ...] = ()
+    env: Mapping[str, str] | None = field(default=None, hash=False)
+
+    @property
+    def display(self) -> str:
+        """Return the human-readable command line (for logs and the report)."""
+        return shlex.join([self.command, *self.args])
+
 
 HANDSHAKE_TIMEOUT_S = 30
 """Default timeout for the MCP initialize handshake performed during connect."""
@@ -176,19 +205,24 @@ class MCPClient:
         # HTTP status recovered from a single attempt's buffered teardown error.
         self._pending_http_status: int | None = None
 
-    async def detect_and_connect(self, server_path_or_url: str) -> tuple[bool, MCPTransportType | None]:
+    async def detect_and_connect(self, server_path_or_url: str | StdioCommand) -> tuple[bool, MCPTransportType | None]:
         """Automatically detect transport type and connect to MCP server.
 
         Attempts to connect using Streamable HTTP first, then falls back to SSE.
-        For local files (.py, .js), uses stdio transport.
+        For local files (.py, .js), uses stdio transport. A ``StdioCommand``
+        launches an arbitrary local server command over stdio (any language).
 
         Args:
-            server_path_or_url: Path to server script or URL
+            server_path_or_url: Path to server script, URL, or a StdioCommand
 
         Returns:
             Tuple of (success: bool, transport: MCPTransportType | None)
 
         """
+        if isinstance(server_path_or_url, StdioCommand):
+            success = await self._connect_with_stdio_command(server_path_or_url)
+            return (success, MCPTransportType.STDIO if success else None)
+
         # Check if it's a local file path
         if server_path_or_url.endswith((".py", ".js")):
             success = await self.connect_to_server(MCPTransportType.STDIO, server_path_or_url)
@@ -373,31 +407,64 @@ class MCPClient:
 
         # Use sys.executable for Python to ensure we use the same interpreter
         command: str = sys.executable if is_python else "node"
+        missing_hint = (
+            "Python interpreter not found. Please ensure Python is installed and on PATH."
+            if is_python
+            else "Node.js not found. Please ensure Node.js is installed and on PATH."
+        )
         server_params = StdioServerParameters(command=command, args=[server_script_path], env=None)
+        return await self._launch_stdio(server_params, display=server_script_path, missing_hint=missing_hint)
 
+    async def _connect_with_stdio_command(self, command: StdioCommand) -> bool:
+        """Launch an arbitrary local server command and connect over stdio.
+
+        Args:
+            command: The executable, its arguments, and optional extra
+                environment variables (merged over the SDK's default env).
+
+        Returns:
+            True if a connection was successful, False otherwise
+
+        """
+        env = {**get_default_environment(), **command.env} if command.env else None
+        server_params = StdioServerParameters(command=command.command, args=list(command.args), env=env)
+        missing_hint = f"Command not found: '{command.command}'. Please ensure it is installed and on PATH."
+        return await self._launch_stdio(server_params, display=command.display, missing_hint=missing_hint)
+
+    async def _launch_stdio(self, server_params: StdioServerParameters, display: str, missing_hint: str) -> bool:
+        """Start a stdio server process and perform the MCP handshake.
+
+        Args:
+            server_params: Fully-resolved command, arguments and environment.
+            display: Human-readable target for log messages (script path or
+                joined command line).
+            missing_hint: Message logged when the launcher executable is not
+                found on PATH.
+
+        Returns:
+            True if a connection was successful, False otherwise
+
+        """
         try:
             await self._establish_session(stdio_client(server_params), MCPTransportType.STDIO, url=None)
             return True
         except FileNotFoundError as e:
-            if is_python:
-                logger.exception("Python interpreter not found. Please ensure Python is installed and on PATH.")
-            else:
-                logger.exception("Node.js not found. Please ensure Node.js is installed and on PATH.")
+            logger.exception(missing_hint)
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except PermissionError as e:
-            logger.exception("Permission denied accessing server script: %s", server_script_path)
+            logger.exception("Permission denied launching server: %s", display)
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except TimeoutError:
-            logger.error("MCP initialize handshake timed out for server: %s", server_script_path)  # noqa: TRY400
+            logger.error("MCP initialize handshake timed out for server: %s", display)  # noqa: TRY400
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except asyncio.CancelledError:
             self._reraise_if_cancelled()
-            logger.error("MCP initialize handshake failed for server: %s", server_script_path)  # noqa: TRY400
+            logger.error("MCP initialize handshake failed for server: %s", display)  # noqa: TRY400
             self._record_failure(ConnectionErrorReason.NOT_MCP)
             return False
         except Exception as e:

@@ -12,7 +12,7 @@ import os
 import sys
 from typing import TYPE_CHECKING, NoReturn
 
-from mcpscore import MCPAuditor, MCPClient
+from mcpscore import MCPAuditor, MCPClient, StdioCommand
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.probes import observed_auth_status
@@ -56,7 +56,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "target",
-        help="Path to a local MCP server (.py, .js) or URL of a remote server (Streamable HTTP / SSE)",
+        nargs="?",
+        help=(
+            "Path to a local MCP server (.py, .js) or URL of a remote server (Streamable HTTP / SSE). "
+            "For servers in other languages, use --stdio instead."
+        ),
+    )
+    parser.add_argument(
+        "--stdio",
+        nargs=argparse.REMAINDER,
+        metavar="COMMAND",
+        help=(
+            "Launch a local MCP server as an arbitrary stdio command — any language: "
+            "--stdio ./server, --stdio java -jar server.jar, --stdio dotnet run --project ./srv. "
+            "Consumes the REST of the command line (the server's own flags included), so put "
+            "every mcpscore option before it. Replaces the positional target. The command runs "
+            "directly (no shell). Pass secrets via --env, not as arguments — the command line "
+            "appears as the report's target (and in the process list)."
+        ),
+    )
+    parser.add_argument(
+        "--env",
+        action="append",
+        metavar="NAME=VALUE",
+        help=(
+            "Extra environment variable for the --stdio server process, e.g. --env API_KEY=… "
+            "Repeatable. Merged over a minimal default environment; values are never logged."
+        ),
     )
     # An "action=version" argument exits during parsing, before argparse
     # enforces the required `target` — so `mcpscore --version` works on its
@@ -172,6 +198,60 @@ def collect_headers(args: argparse.Namespace) -> dict[str, str]:
     return headers
 
 
+def parse_env_vars(pairs: list[str]) -> dict[str, str]:
+    """Parse repeated ``NAME=VALUE`` --env arguments into a dict.
+
+    Args:
+        pairs: Raw --env values as given on the command line.
+
+    Returns:
+        Mapping of variable names to values (later duplicates win).
+
+    Raises:
+        ValueError: If an entry has no ``=`` or an empty name. The message
+            names the variable only — values are sensitive and never echoed.
+
+    """
+    env: dict[str, str] = {}
+    for raw in pairs:
+        name, sep, value = raw.partition("=")
+        if not sep or not name:
+            label = name or "<empty>"
+            raise ValueError(f"--env expects NAME=VALUE (got an entry for '{label}' without one)")
+        env[name] = value
+    return env
+
+
+def resolve_target(args: argparse.Namespace) -> str | StdioCommand:
+    """Resolve the audit target from the positional target and --stdio.
+
+    Exactly one of the two must be given; --env only makes sense with
+    --stdio (a URL or bare script target spawns no configurable process).
+
+    Returns:
+        The URL / script path string, or a StdioCommand for --stdio.
+
+    Raises:
+        ValueError: On any invalid combination (message is user-facing).
+
+    """
+    if args.stdio is not None:
+        if args.target is not None:
+            raise ValueError("give either a target or --stdio, not both")
+        if not args.stdio:
+            raise ValueError("--stdio needs a command to run, e.g. --stdio java -jar server.jar")
+        return StdioCommand(
+            command=args.stdio[0],
+            args=tuple(args.stdio[1:]),
+            env=parse_env_vars(args.env) if args.env else None,
+        )
+    if args.env:
+        raise ValueError("--env only applies to --stdio servers")
+    if args.target is None:
+        raise ValueError("a target is required: a URL, a .py/.js path, or --stdio <command>")
+    return args.target
+
+
 def _mcpscore_version() -> str:
     """Return the installed mcpscore package version, or "unknown"."""
     try:
@@ -244,7 +324,7 @@ def build_report(target: str, transport: MCPTransportType | None, auditor: MCPAu
     }
 
 
-async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> None:
+async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str], target: str | StdioCommand) -> None:
     """Run the --oauth browser flow and place the token into the header dict.
 
     Exits with code 1 on flag conflicts or a failed flow; a no-op when
@@ -264,14 +344,14 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str]) -> Non
             "(--token, an Authorization --header, or the MCPSCORE_TOKEN environment variable) — pick one"
         )
         sys.exit(1)
-    if not args.target.startswith(("http://", "https://")):
+    if not isinstance(target, str) or not target.startswith(("http://", "https://")):
         logger.error("Usage error: --oauth requires an HTTP(S) server URL")
         sys.exit(1)
     from mcpscore.oauth import OAuthFlowError, obtain_token_interactively
 
     try:
         access_token = await obtain_token_interactively(
-            args.target, client_id=args.client_id, callback_port=args.callback_port
+            target, client_id=args.client_id, callback_port=args.callback_port
         )
     except OAuthFlowError as e:
         logger.error("OAuth: %s", e)  # noqa: TRY400 — user-facing outcome, not a traceback
@@ -307,6 +387,15 @@ async def async_main() -> None:
     # neither should be preceded by a banner.
     args = build_parser().parse_args()
 
+    # Resolve the target before greeting: an invalid target/--stdio combination
+    # is a usage error, and (like argparse's own) it should not be preceded by
+    # a banner.
+    try:
+        target = resolve_target(args)
+    except ValueError as e:
+        logger.error("Usage error: %s", e)  # noqa: TRY400 — usage error, not an exception to trace
+        sys.exit(1)
+
     logger.info("Welcome to mcpscore!")
 
     try:
@@ -315,7 +404,11 @@ async def async_main() -> None:
         logger.error("Usage error: %s", e)  # noqa: TRY400 — usage error, not an exception to trace
         sys.exit(1)
 
-    await _apply_oauth(args, headers)
+    # What the report and log lines call the target: the URL/path itself, or
+    # the joined command line for a --stdio server.
+    target_display = target if isinstance(target, str) else target.display
+
+    await _apply_oauth(args, headers, target)
 
     if headers:
         logger.info("Using %d custom header(s).", len(headers))
@@ -327,18 +420,18 @@ async def async_main() -> None:
     # can leave resources on the client's exit stack, so every path out —
     # early returns, sys.exit(2), audit errors — must reach cleanup().
     try:
-        success, transport = await client.detect_and_connect(args.target)
+        success, transport = await client.detect_and_connect(target)
 
         if not success:
-            if args.target.startswith(("http://", "https://")):
+            if isinstance(target, str) and target.startswith(("http://", "https://")):
                 logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
-                if await auditor.audit_modern_only(args.target):
+                if await auditor.audit_modern_only(target):
                     logger.info(
                         "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
                     )
                     log_audit_outcome(auditor)
                     if args.json:
-                        report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                        report = build_report(target_display, auditor.audit_data.transport_type, auditor)
                         sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
                     return
 
@@ -417,16 +510,16 @@ async def async_main() -> None:
                             f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
                             "only — pass a token to audit behind the gate."
                         )
-                    await auditor.audit_partial(args.target, reason=partial_reason)
+                    await auditor.audit_partial(target, reason=partial_reason)
                     log_audit_outcome(auditor)
                     if args.json:
-                        report = build_report(args.target, auditor.audit_data.transport_type, auditor)
+                        report = build_report(target_display, auditor.audit_data.transport_type, auditor)
                         sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
                     return
-            logger.error("Error connecting to the MCP server: %s", args.target)
+            logger.error("Error connecting to the MCP server: %s", target_display)
             sys.exit(2)
 
-        logger.info("Connected to the MCP server: %s", args.target)
+        logger.info("Connected to the MCP server: %s", target_display)
         logger.info("Transport: %s", transport)
 
         logger.info("Starting the audit...")
@@ -434,7 +527,7 @@ async def async_main() -> None:
         log_audit_outcome(auditor)
 
         if args.json:
-            report = build_report(args.target, transport, auditor)
+            report = build_report(target_display, transport, auditor)
             sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
     finally:
         await client.cleanup()
