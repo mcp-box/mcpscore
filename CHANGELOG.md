@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-02
+
+Any-language release: local MCP servers in Go, Java, C#, Rust — any runtime —
+can now be audited over stdio via `--stdio`, with secret-safe `--env`
+configuration. Plus resource-template collection with three new catalog
+rules, a new readiness rule for `supportedVersions`, and a tightened
+unsupported-version error check.
+
 ### Added
 
 - **`--stdio`: audit local MCP servers written in any language.** The flag
@@ -769,7 +777,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/mcp-box/mcpscore/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mcp-box/mcpscore/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/mcp-box/mcpscore/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mcp-box/mcpscore/compare/v1.1.0rc1...v1.1.0
