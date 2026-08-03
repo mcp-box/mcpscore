@@ -73,6 +73,7 @@ from .resource_templates import (
     ResourceTemplatesIconsValidRule,
     ResourceTemplatesMimeTypesValidRule,
     ResourceTemplatesNamesPresentRule,
+    ResourceTemplatesTitlesPresentRule,
     ResourceTemplatesUniqueRule,
     ResourceTemplatesUriTemplatesValidRule,
 )
@@ -163,6 +164,7 @@ __all__ = (
     "ResourceTemplatesIconsValidRule",
     "ResourceTemplatesMimeTypesValidRule",
     "ResourceTemplatesNamesPresentRule",
+    "ResourceTemplatesTitlesPresentRule",
     "ResourceTemplatesUniqueRule",
     "ResourceTemplatesUriTemplatesValidRule",
     "ResourcesAnnotationsValidRule",

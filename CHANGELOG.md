@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A LOW resource-template quality rule recommends human-readable display
+  titles for MCP 2025-06-18+ catalogs.
 - Three resource-template quality rules validate declared MIME types and
   annotations, and recommend descriptions that help clients and models
   understand parameterized resources.

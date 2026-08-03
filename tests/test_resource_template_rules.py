@@ -6,8 +6,10 @@ from mcpscore.rules import (
     ResourceTemplatesDescriptionPresentRule,
     ResourceTemplatesMimeTypesValidRule,
     ResourceTemplatesNamesPresentRule,
+    ResourceTemplatesTitlesPresentRule,
     ResourceTemplatesUniqueRule,
     ResourceTemplatesUriTemplatesValidRule,
+    RuleSeverity,
 )
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 from mcpscore.rules.resource_templates import is_valid_uri_template
@@ -20,6 +22,7 @@ def _template(
     description: str | None = "Description",
     mime_type: str | None = None,
     annotations: Annotations | None = None,
+    title: str | None = "Display title",
 ) -> ResourceTemplate:
     return ResourceTemplate(
         name=name,
@@ -27,6 +30,7 @@ def _template(
         description=description,
         mime_type=mime_type,
         annotations=annotations,
+        title=title,
     )
 
 
@@ -145,6 +149,35 @@ def test_description_rule_reports_missing_and_blank_descriptions() -> None:
     assert result.details == {"templates_without_description": ["missing/{id}", "blank/{id}"]}
 
 
+def test_titles_rule_is_scoped_to_revisions_that_define_title() -> None:
+    rule = ResourceTemplatesTitlesPresentRule()
+    assert rule.rule_id == "resource_templates_titles_present"
+    assert rule.severity == RuleSeverity.LOW
+    assert rule.min_spec_version == "2025-06-18"
+    assert not rule.applies_to("2025-03-26")
+    assert rule.applies_to("2025-06-18")
+
+
+def test_titles_rule_accepts_non_blank_titles() -> None:
+    templates = [
+        _template("users", "users/{id}", title="User profile"),
+        _template("files", "files/{path}", title="Project file"),
+    ]
+    result = ResourceTemplatesTitlesPresentRule().check(AuditData(resource_templates=templates))
+    assert result.passed
+    assert result.details == {"templates_without_title": []}
+
+
+def test_titles_rule_reports_missing_and_blank_titles() -> None:
+    templates = [
+        _template("missing", "missing/{id}", title=None),
+        _template("blank", "blank/{id}", title="  "),
+    ]
+    result = ResourceTemplatesTitlesPresentRule().check(AuditData(resource_templates=templates))
+    assert not result.passed
+    assert result.details == {"templates_without_title": ["missing/{id}", "blank/{id}"]}
+
+
 def test_template_rules_pass_when_capability_has_no_templates() -> None:
     for rule in (
         ResourceTemplatesUriTemplatesValidRule(),
@@ -153,6 +186,7 @@ def test_template_rules_pass_when_capability_has_no_templates() -> None:
         ResourceTemplatesMimeTypesValidRule(),
         ResourceTemplatesAnnotationsValidRule(),
         ResourceTemplatesDescriptionPresentRule(),
+        ResourceTemplatesTitlesPresentRule(),
     ):
         assert rule.check(AuditData(resource_templates=[])).passed
         assert rule.check(AuditData(resource_templates=None)).passed
@@ -170,6 +204,7 @@ def test_only_the_uniqueness_rule_skips_incomplete_catalogs() -> None:
     assert ResourceTemplatesMimeTypesValidRule().skip_reason(data) is None
     assert ResourceTemplatesAnnotationsValidRule().skip_reason(data) is None
     assert ResourceTemplatesDescriptionPresentRule().skip_reason(data) is None
+    assert ResourceTemplatesTitlesPresentRule().skip_reason(data) is None
     # A bad template on a fetched page is a finding even when pages are missing.
     assert ResourceTemplatesUriTemplatesValidRule().check(data).passed is False
 
@@ -189,5 +224,6 @@ def test_all_template_rules_skip_when_listing_produced_no_evidence() -> None:
             ResourceTemplatesMimeTypesValidRule(),
             ResourceTemplatesAnnotationsValidRule(),
             ResourceTemplatesDescriptionPresentRule(),
+            ResourceTemplatesTitlesPresentRule(),
         ):
             assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA

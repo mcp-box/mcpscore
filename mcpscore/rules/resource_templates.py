@@ -376,3 +376,36 @@ class ResourceTemplatesDescriptionPresentRule(ResourceTemplatesBaseRule):
             ),
             details={"templates_without_description": missing},
         )
+
+
+@register_rule
+class ResourceTemplatesTitlesPresentRule(ResourceTemplatesBaseRule):
+    """Low check: encourage human-readable display titles for resource templates."""
+
+    rule_id = "resource_templates_titles_present"
+    basis = "MCP 2026-07-28 Resources §Resource Templates (title: optional human-readable name for display)"
+    min_spec_version = "2025-06-18"
+    rule_order = 27
+
+    @property
+    def rule_name(self) -> str:
+        return "Resource Templates - All templates should have a display title"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
+        missing = [template.uri_template for template in templates if not (template.title and template.title.strip())]
+        passed = not missing
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ All resource templates have a display title"
+                if passed
+                else f"❌ Number of resource templates without a display title: {len(missing)}"
+            ),
+            details={"templates_without_title": missing},
+        )

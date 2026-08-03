@@ -47,7 +47,7 @@ The final score is reported as `earned/maximum` — higher means a better-qualit
 
 ## What it scores
 
-79 rules across four categories — the same four the report, the JSON output, and
+80 rules across four categories — the same four the report, the JSON output, and
 [mcpscore.dev](https://mcpscore.dev) show. Every rule cites the spec section or RFC it
 enforces; the full list is in the [rules reference](https://docs.mcpscore.dev/rules/).
 
@@ -55,7 +55,7 @@ enforces; the full list is in the [rules reference](https://docs.mcpscore.dev/ru
 name, title and version, advertised capabilities, and transport. Streamable HTTP is the
 current standard, so SSE-only servers get migration advice.
 
-**Tools Quality** (39 rules) — tool names (presence, uniqueness, format), titles,
+**Tools Quality** (40 rules) — tool names (presence, uniqueness, format), titles,
 descriptions of tools and their input properties, and JSON Schema validity of input and
 output schemas, including the 2026-07-28 `x-mcp-header` constraints — plus the
 equivalent catalog checks for prompts, resources, and resource templates: valid and
