@@ -82,3 +82,24 @@ def test_invalid_catalog_icon_fields_are_reported_without_payloads(
     assert invalid_detail["icon_index"] == 0
     assert invalid_detail["invalid_fields"] == ["src", "mimeType", "sizes"]
     assert oversized_src not in repr(result.details)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "",  # empty
+        "https://example.com/a b.png",  # embedded whitespace
+        "http://[::1",  # urlsplit raises ValueError (invalid IPv6 literal)
+        "example.com/icon.png",  # no scheme
+        "1http://example.com",  # scheme must start with a letter
+    ],
+)
+def test_invalid_src_variants_are_rejected(src: str) -> None:
+    """Reject every malformed-src shape via invalid_fields.
+
+    Includes the urlsplit ValueError path (invalid IPv6 literal), which must
+    classify as invalid rather than crash.
+    """
+    result = ToolsIconsValidRule().check(_tool([Icon(src=src)]))
+    assert not result.passed
+    assert result.details["invalid_icons"][0]["invalid_fields"] == ["src"]

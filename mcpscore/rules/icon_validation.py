@@ -11,7 +11,8 @@ class IconOwner(Protocol):
     """Catalog item carrying optional icons."""
 
     @property
-    def icons(self) -> list[Icon] | None: ...
+    def icons(self) -> list[Icon] | None:  # pragma: no cover — typing stub, never called
+        """Icons declared by the catalog item, if any."""
 
 
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
