@@ -55,7 +55,7 @@ enforces; the full list is in the [rules reference](https://docs.mcpscore.dev/ru
 name, title and version, advertised capabilities, and transport. Streamable HTTP is the
 current standard, so SSE-only servers get migration advice.
 
-**Tools Quality** (32 rules) — tool names (presence, uniqueness, format), titles,
+**Tools Quality** (36 rules) — tool names (presence, uniqueness, format), titles,
 descriptions of tools and their input properties, and JSON Schema validity of input and
 output schemas, including the 2026-07-28 `x-mcp-header` constraints — plus the
 equivalent catalog checks for prompts, resources, and resource templates: valid and
