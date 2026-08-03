@@ -1,5 +1,7 @@
 """Shared validation for MCP catalog icon declarations."""
 
+import base64
+import binascii
 import re
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -16,6 +18,14 @@ class IconOwner(Protocol):
 
 
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
+_URI_CHARACTER_RE = re.compile(r"^[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$")
+_INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_DATA_URI_RE = re.compile(
+    r"^data:(image/[A-Za-z0-9!#$&^_.+-]+)"
+    r"(?:;[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+%-]+)*"
+    r";base64,([A-Za-z0-9+/]*={0,2})$",
+    re.IGNORECASE,
+)
 _MIME_TYPE_ATOM = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
 _MIME_TYPE_QUOTED = r'"(?:[\t !#-\[\]-~]|\\[\t -~])*"'
 _MIME_TYPE_RE = re.compile(
@@ -45,11 +55,30 @@ def find_invalid_icons(items: list[tuple[str, IconOwner]]) -> list[dict[str, obj
 
 
 def _is_absolute_uri(value: str) -> bool:
-    """Return whether *value* has a syntactically valid URI scheme."""
-    if not value or any(character.isspace() for character in value):
+    """Return whether *value* is a usable absolute icon URI."""
+    if not value or _URI_CHARACTER_RE.fullmatch(value) is None or _INVALID_PERCENT_ESCAPE_RE.search(value) is not None:
         return False
     try:
-        scheme = urlsplit(value).scheme
+        parsed = urlsplit(value)
+        _ = parsed.port  # urlsplit validates ports lazily.
     except ValueError:
         return False
-    return bool(scheme and _URI_SCHEME_RE.fullmatch(scheme))
+    if not parsed.scheme or _URI_SCHEME_RE.fullmatch(parsed.scheme) is None:
+        return False
+    if parsed.scheme.lower() in {"http", "https"}:
+        return parsed.hostname is not None
+    if parsed.scheme.lower() == "data":
+        return _is_base64_image_data_uri(value)
+    return True
+
+
+def _is_base64_image_data_uri(value: str) -> bool:
+    """Return whether *value* embeds a base64-encoded image."""
+    match = _DATA_URI_RE.fullmatch(value)
+    if match is None or not match.group(2):
+        return False
+    try:
+        base64.b64decode(match.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return True
