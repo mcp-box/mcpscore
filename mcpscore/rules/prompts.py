@@ -4,6 +4,7 @@ from collections import Counter
 from mcp_types import Prompt
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .icon_validation import find_invalid_icons
 from .registry import register_rule
 
 
@@ -314,4 +315,38 @@ class PromptsTitlesPresentRule(PromptsBaseRule):
             passed=passed,
             message=message,
             details={"prompts_without_title": prompts_without_title},
+        )
+
+
+@register_rule
+class PromptsIconsValidRule(PromptsBaseRule):
+    """Low check: validate every declared prompt icon."""
+
+    rule_id = "prompts_icons_valid"
+    basis = "MCP 2026-07-28 Schema Reference §Common Types (Icon); Prompts §Prompt (icons)"
+    min_spec_version = "2025-11-25"
+    rule_order = 7
+
+    @property
+    def rule_name(self) -> str:
+        return "Prompts - Declared icons must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_prompts(self, prompts: list[Prompt]) -> RuleResult:
+        invalid_icons = find_invalid_icons([(prompt.name, prompt) for prompt in prompts])
+        passed = not invalid_icons
+        message = (
+            "✅ All declared prompt icons are valid"
+            if passed
+            else f"❌ Number of invalid prompt icons: {len(invalid_icons)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"invalid_icons": invalid_icons},
         )

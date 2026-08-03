@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Four MCP 2025-11-25+ catalog rules validate icon source URIs, optional MIME
+  types, and optional size tokens consistently across resources, resource
+  templates, prompts, and tools. Diagnostics identify only the catalog item
+  and icon index, keeping large embedded `data:` payloads out of audit
+  reports.
+
 ## [1.3.0] - 2026-08-02
 
 Any-language release: local MCP servers in Go, Java, C#, Rust — any runtime —

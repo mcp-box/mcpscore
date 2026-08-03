@@ -14,6 +14,7 @@ from .base import (
     requires_fields,
     requires_tools,
 )
+from .icon_validation import find_invalid_icons
 from .registry import register_rule
 
 
@@ -848,6 +849,40 @@ class ToolsAnnotationsPresentRule(ToolsBaseRule):
             passed=passed,
             message=message,
             details={"tools_without_annotations": tools_without_annotations},
+        )
+
+
+@register_rule
+class ToolsIconsValidRule(ToolsBaseRule):
+    """Low check: validate every declared tool icon."""
+
+    rule_id = "tools_icons_valid"
+    basis = "MCP 2026-07-28 Schema Reference §Common Types (Icon); Tools §Tool (icons)"
+    min_spec_version = "2025-11-25"
+    rule_order = 16
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Declared icons must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        invalid_icons = find_invalid_icons([(tool.name, tool) for tool in tools])
+        passed = not invalid_icons
+        message = (
+            "✅ All declared tool icons are valid"
+            if passed
+            else f"❌ Number of invalid tool icons: {len(invalid_icons)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"invalid_icons": invalid_icons},
         )
 
 
