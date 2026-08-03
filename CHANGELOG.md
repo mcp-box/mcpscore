@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Three resource-template quality rules validate declared MIME types and
+  annotations, and recommend descriptions that help clients and models
+  understand parameterized resources.
 - Four MCP 2025-11-25+ catalog rules validate icon source URIs, optional MIME
   types, and optional size tokens consistently across resources, resource
   templates, prompts, and tools. Diagnostics identify only the catalog item

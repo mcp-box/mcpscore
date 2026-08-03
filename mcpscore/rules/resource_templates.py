@@ -5,6 +5,7 @@ import re
 from mcp_types import ResourceTemplate
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .catalog_validation import is_iso_8601, is_valid_media_type
 from .icon_validation import find_invalid_icons
 from .registry import register_rule
 
@@ -264,4 +265,114 @@ class ResourceTemplatesIconsValidRule(ResourceTemplatesBaseRule):
             passed=passed,
             message=message,
             details={"invalid_icons": invalid_icons},
+        )
+
+
+@register_rule
+class ResourceTemplatesMimeTypesValidRule(ResourceTemplatesBaseRule):
+    """Medium check: validate every declared resource-template MIME type."""
+
+    rule_id = "resource_templates_mime_types_valid"
+    basis = "MCP 2026-07-28 Resources §Resource Templates (mimeType)"
+    rule_order = 24
+
+    @property
+    def rule_name(self) -> str:
+        return "Resource Templates - Declared MIME types must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
+        invalid = [
+            {"name": template.name, "mime_type": template.mime_type}
+            for template in templates
+            if template.mime_type is not None and not is_valid_media_type(template.mime_type)
+        ]
+        passed = not invalid
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ All declared resource-template MIME types are valid"
+                if passed
+                else f"❌ Number of resource templates with invalid MIME types: {len(invalid)}"
+            ),
+            details={"templates_with_invalid_mime_type": invalid},
+        )
+
+
+@register_rule
+class ResourceTemplatesAnnotationsValidRule(ResourceTemplatesBaseRule):
+    """Medium check: validate every declared resource-template annotation."""
+
+    rule_id = "resource_templates_annotations_valid"
+    basis = "MCP 2026-07-28 Resources §Resource Templates (annotations); Schema Reference §Annotations"
+    rule_order = 25
+
+    @property
+    def rule_name(self) -> str:
+        return "Resource Templates - Declared annotations must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
+        invalid = [
+            template.uri_template
+            for template in templates
+            if template.annotations is not None
+            and template.annotations.last_modified is not None
+            and not is_iso_8601(template.annotations.last_modified)
+        ]
+        passed = not invalid
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ All declared resource-template annotations are valid"
+                if passed
+                else f"❌ Number of resource templates with invalid annotations: {len(invalid)}"
+            ),
+            details={"templates_with_invalid_annotations": invalid},
+        )
+
+
+@register_rule
+class ResourceTemplatesDescriptionPresentRule(ResourceTemplatesBaseRule):
+    """Medium check: require a useful description for every resource template."""
+
+    rule_id = "resource_templates_description_present"
+    basis = "MCP 2026-07-28 Resources §Resource Templates (description improves the LLM's understanding)"
+    rule_order = 26
+
+    @property
+    def rule_name(self) -> str:
+        return "Resource Templates - All templates should have a description"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
+        missing = [
+            template.uri_template
+            for template in templates
+            if not (template.description and template.description.strip())
+        ]
+        passed = not missing
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ All resource templates have a description"
+                if passed
+                else f"❌ Number of resource templates without a description: {len(missing)}"
+            ),
+            details={"templates_without_description": missing},
         )
