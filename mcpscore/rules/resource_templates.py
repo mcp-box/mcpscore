@@ -5,6 +5,7 @@ import re
 from mcp_types import ResourceTemplate
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .icon_validation import find_invalid_icons
 from .registry import register_rule
 
 _PCT_ENCODED_RE = re.compile(r"%[0-9A-Fa-f]{2}")
@@ -229,4 +230,38 @@ class ResourceTemplatesNamesPresentRule(ResourceTemplatesBaseRule):
                 else f"❌ Number of resource templates without a name: {len(unnamed)}"
             ),
             details={"templates_without_name": unnamed},
+        )
+
+
+@register_rule
+class ResourceTemplatesIconsValidRule(ResourceTemplatesBaseRule):
+    """Low check: validate every declared resource-template icon."""
+
+    rule_id = "resource_templates_icons_valid"
+    basis = "MCP 2026-07-28 Schema Reference §Common Types (Icon); Resources §Resource Templates (icons)"
+    min_spec_version = "2025-11-25"
+    rule_order = 23
+
+    @property
+    def rule_name(self) -> str:
+        return "Resource Templates - Declared icons must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
+        invalid_icons = find_invalid_icons([(template.uri_template, template) for template in templates])
+        passed = not invalid_icons
+        message = (
+            "✅ All declared resource-template icons are valid"
+            if passed
+            else f"❌ Number of invalid resource-template icons: {len(invalid_icons)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"invalid_icons": invalid_icons},
         )

@@ -47,7 +47,7 @@ The final score is reported as `earned/maximum` — higher means a better-qualit
 
 ## What it scores
 
-72 rules across four categories — the same four the report, the JSON output, and
+76 rules across four categories — the same four the report, the JSON output, and
 [mcpscore.dev](https://mcpscore.dev) show. Every rule cites the spec section or RFC it
 enforces; the full list is in the [rules reference](https://docs.mcpscore.dev/rules/).
 

@@ -43,6 +43,7 @@ from .prompts import (
     PromptsArgumentNamesUniqueRule,
     PromptsArgumentsDocumentedRule,
     PromptsDescriptionPresentRule,
+    PromptsIconsValidRule,
     PromptsNamesUniqueRule,
     PromptsTitlesPresentRule,
 )
@@ -67,6 +68,7 @@ from .readiness import (
 )
 from .registry import RuleRegistry, create_all_rules
 from .resource_templates import (
+    ResourceTemplatesIconsValidRule,
     ResourceTemplatesNamesPresentRule,
     ResourceTemplatesUniqueRule,
     ResourceTemplatesUriTemplatesValidRule,
@@ -74,6 +76,7 @@ from .resource_templates import (
 from .resources import (
     ResourcesAnnotationsValidRule,
     ResourcesDescriptionPresentRule,
+    ResourcesIconsValidRule,
     ResourcesMimeTypesValidRule,
     ResourcesNamesPresentRule,
     ResourcesSizesValidRule,
@@ -99,6 +102,7 @@ from .tools import (
     ToolsAtLeastOneRule,
     ToolsDescriptionPresentRule,
     ToolsExecutionConsistentRule,
+    ToolsIconsValidRule,
     ToolsInputPropertiesDocumentedRule,
     ToolsInputSchemaValidRule,
     ToolsMcpHeadersPrimitiveTypesRule,
@@ -147,14 +151,17 @@ __all__ = (
     "PromptsArgumentNamesUniqueRule",
     "PromptsArgumentsDocumentedRule",
     "PromptsDescriptionPresentRule",
+    "PromptsIconsValidRule",
     "PromptsNamesUniqueRule",
     "PromptsTitlesPresentRule",
     "RemovedMethodsReadinessRule",
+    "ResourceTemplatesIconsValidRule",
     "ResourceTemplatesNamesPresentRule",
     "ResourceTemplatesUniqueRule",
     "ResourceTemplatesUriTemplatesValidRule",
     "ResourcesAnnotationsValidRule",
     "ResourcesDescriptionPresentRule",
+    "ResourcesIconsValidRule",
     "ResourcesMimeTypesValidRule",
     "ResourcesNamesPresentRule",
     "ResourcesSizesValidRule",
@@ -181,6 +188,7 @@ __all__ = (
     "ToolsAtLeastOneRule",
     "ToolsDescriptionPresentRule",
     "ToolsExecutionConsistentRule",
+    "ToolsIconsValidRule",
     "ToolsInputPropertiesDocumentedRule",
     "ToolsInputSchemaValidRule",
     "ToolsMcpHeadersPrimitiveTypesRule",

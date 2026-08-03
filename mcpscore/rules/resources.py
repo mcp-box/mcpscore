@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from mcp_types import Resource
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .icon_validation import find_invalid_icons
 from .registry import register_rule
 
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
@@ -406,4 +407,38 @@ class ResourcesTitlesPresentRule(ResourcesBaseRule):
             passed=passed,
             message=message,
             details={"resources_without_title": resources_without_title},
+        )
+
+
+@register_rule
+class ResourcesIconsValidRule(ResourcesBaseRule):
+    """Low check: validate every declared resource icon."""
+
+    rule_id = "resources_icons_valid"
+    basis = "MCP 2026-07-28 Schema Reference §Common Types (Icon); Resources §Resource (icons)"
+    min_spec_version = "2025-11-25"
+    rule_order = 9
+
+    @property
+    def rule_name(self) -> str:
+        return "Resources - Declared icons must be valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _check_resources(self, resources: list[Resource]) -> RuleResult:
+        invalid_icons = find_invalid_icons([(resource.uri, resource) for resource in resources])
+        passed = not invalid_icons
+        message = (
+            "✅ All declared resource icons are valid"
+            if passed
+            else f"❌ Number of invalid resource icons: {len(invalid_icons)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"invalid_icons": invalid_icons},
         )
