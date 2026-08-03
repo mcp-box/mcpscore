@@ -1,7 +1,5 @@
 """Shared validation for MCP catalog icon declarations."""
 
-import base64
-import binascii
 import re
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -73,12 +71,14 @@ def _is_absolute_uri(value: str) -> bool:
 
 
 def _is_base64_image_data_uri(value: str) -> bool:
-    """Return whether *value* embeds a base64-encoded image."""
+    """Return whether *value* embeds a base64-encoded image.
+
+    No decoding: the regex already constrains the payload to the base64
+    alphabet with at most two trailing ``=``, so strict validity (what
+    ``base64.b64decode(..., validate=True)`` would check) reduces to the
+    length being a multiple of four — O(1) on untrusted input of any size.
+    """
     match = _DATA_URI_RE.fullmatch(value)
     if match is None or not match.group(2):
         return False
-    try:
-        base64.b64decode(match.group(2), validate=True)
-    except (binascii.Error, ValueError):
-        return False
-    return True
+    return len(match.group(2)) % 4 == 0
