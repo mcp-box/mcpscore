@@ -475,6 +475,40 @@ def is_valid_schema(schema: dict[str, Any] | None) -> bool:
     return True
 
 
+def is_valid_output_schema(schema: dict[str, Any] | None) -> bool:
+    """Validate an ``outputSchema`` without requiring an object root.
+
+    From 2026-07-28 an output schema "can be any valid JSON Schema 2020-12",
+    so unlike ``is_valid_schema`` (input schemas keep their object-root
+    requirement in every revision) this accepts any root:
+
+    - combinators/references are valid top-level forms;
+    - an object-rooted schema gets the full object shape checks;
+    - any other root is accepted when its plain-string ``type`` (if present)
+      is a real JSON Schema type.
+
+    Whether a non-object root is *allowed on the negotiated revision* is a
+    separate, version-scoped question — ``tools_output_schema_root_object``
+    judges that for 2025-06-18..2025-11-25, so the two rules never
+    double-penalize one condition.
+
+    Args:
+        schema: The schema dictionary to validate
+
+    Returns:
+        bool: True if a schema is valid, False otherwise
+
+    """
+    if schema is None:
+        return False
+    if any(key in schema for key in ("anyOf", "oneOf", "allOf", "$ref")):
+        return True
+    if schema.get("type") == "object":
+        return is_valid_schema(schema)
+    root_type = schema.get("type")
+    return not isinstance(root_type, str) or root_type in _VALID_JSON_TYPES
+
+
 @register_rule
 class ToolsInputSchemaValidRule(ToolsBaseRule):
     """High check: Verify that each tool has a valid input schema."""
@@ -526,7 +560,9 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
 
     The MCP specification makes ``outputSchema`` optional — tools returning
     unstructured content simply omit it. Only tools that declare one are
-    validated.
+    validated. Validity here is root-agnostic (2026-07-28 allows any valid
+    JSON Schema root); the object-root restriction of earlier revisions is
+    the version-scoped ``tools_output_schema_root_object`` rule's job.
     """
 
     rule_id = "tools_output_schema_valid"
@@ -551,7 +587,9 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
 
         """
         tools_with_invalid_output_schema: list[str] = [
-            tool.name for tool in tools if tool.output_schema is not None and not is_valid_schema(tool.output_schema)
+            tool.name
+            for tool in tools
+            if tool.output_schema is not None and not is_valid_output_schema(tool.output_schema)
         ]
 
         passed = len(tools_with_invalid_output_schema) == 0

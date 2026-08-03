@@ -39,6 +39,7 @@ from mcpscore.rules.tools import (
     ToolsOutputSchemaRootObjectRule,
     ToolsOutputSchemaValidRule,
     ToolsTitlePresentRule,
+    is_valid_output_schema,
     is_valid_schema,
 )
 
@@ -198,7 +199,11 @@ def tool_with_invalid_output_schema() -> Tool:
             "required": [],
         },
         output_schema={
-            "type": "array",  # Wrong type
+            # An array root is VALID for output schemas since the 2026-08 split
+            # (the version question is tools_output_schema_root_object's job) —
+            # a malformed properties mapping is what invalidity means here.
+            "type": "object",
+            "properties": "not-a-mapping",
             "title": "Invalid Output",
         },
     )
@@ -1235,3 +1240,37 @@ class TestToolsOutputSchemaRootObjectRule:
         assert not result.passed
         assert result.details["tools_with_non_object_root"] == {"arr": "array", "untyped": "<absent>"}
         assert "2" in result.message
+
+
+class TestIsValidOutputSchema:
+    """Root-agnostic output-schema validity.
+
+    The root-vs-revision question belongs to
+    ``tools_output_schema_root_object``, not to this helper.
+    """
+
+    def test_array_root_is_valid(self):
+        assert is_valid_output_schema({"type": "array", "items": {"type": "object"}})
+
+    def test_scalar_and_untyped_roots_are_valid(self):
+        assert is_valid_output_schema({"type": "string"})
+        assert is_valid_output_schema({"description": "anything"})  # no type at root
+
+    def test_object_root_keeps_full_shape_checks(self):
+        assert is_valid_output_schema({"type": "object", "properties": {}})
+        assert not is_valid_output_schema({"type": "object", "properties": "nope"})
+        assert not is_valid_output_schema({"type": "object", "required": ["x"], "properties": {}})
+
+    def test_invalid_root_type_and_none_fail(self):
+        assert not is_valid_output_schema({"type": "tuple"})
+        assert not is_valid_output_schema(None)
+
+    def test_output_rule_accepts_array_root(self):
+        tool = Tool(name="t", input_schema={"type": "object"}, output_schema={"type": "array", "items": {}})
+        result = ToolsOutputSchemaValidRule().check(AuditData(tools=[tool]))
+        assert result.passed
+
+    def test_input_rule_still_requires_object_root(self):
+        tool = Tool(name="t", input_schema={"type": "array"}, output_schema=None)
+        result = ToolsInputSchemaValidRule().check(AuditData(tools=[tool]))
+        assert not result.passed
