@@ -36,8 +36,10 @@ from mcpscore.rules.tools import (
     ToolsNamePresentRule,
     ToolsNamesUniqueRule,
     ToolsNamesValidFormatRule,
+    ToolsOutputSchemaRootObjectRule,
     ToolsOutputSchemaValidRule,
     ToolsTitlePresentRule,
+    is_valid_output_schema,
     is_valid_schema,
 )
 
@@ -197,7 +199,11 @@ def tool_with_invalid_output_schema() -> Tool:
             "required": [],
         },
         output_schema={
-            "type": "array",  # Wrong type
+            # An array root is VALID for output schemas since the 2026-08 split
+            # (the version question is tools_output_schema_root_object's job) —
+            # a malformed properties mapping is what invalidity means here.
+            "type": "object",
+            "properties": "not-a-mapping",
             "title": "Invalid Output",
         },
     )
@@ -1200,3 +1206,71 @@ class TestToolsExecutionConsistentRule:
         rule = ToolsExecutionConsistentRule()
         data = AuditData(tools=None, capabilities=capabilities_full)
         assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestToolsOutputSchemaRootObjectRule:
+    """Version-scoped root-type restriction (2025-06-18 .. 2025-11-25)."""
+
+    def _tool(self, output_schema):
+        return Tool(name="t", input_schema={"type": "object"}, output_schema=output_schema)
+
+    def test_scoped_to_the_restriction_window(self):
+        rule = ToolsOutputSchemaRootObjectRule()
+        assert not rule.applies_to("2025-03-26")  # outputSchema does not exist yet
+        assert rule.applies_to("2025-06-18")
+        assert rule.applies_to("2025-11-25")
+        assert not rule.applies_to("2026-07-28")  # any root became legal
+
+    def test_object_rooted_and_absent_schemas_pass(self):
+        tools = [
+            self._tool({"type": "object", "properties": {}}),
+            Tool(name="none", input_schema={"type": "object"}),  # no outputSchema at all
+        ]
+        result = ToolsOutputSchemaRootObjectRule().check(AuditData(tools=tools))
+        assert result.passed
+        assert result.details == {"tools_with_non_object_root": {}}
+
+    def test_non_object_roots_fail_with_root_named(self):
+        tools = [
+            Tool(name="arr", input_schema={"type": "object"}, output_schema={"type": "array", "items": {}}),
+            Tool(name="untyped", input_schema={"type": "object"}, output_schema={"properties": {}}),
+            Tool(name="ok", input_schema={"type": "object"}, output_schema={"type": "object"}),
+        ]
+        result = ToolsOutputSchemaRootObjectRule().check(AuditData(tools=tools))
+        assert not result.passed
+        assert result.details["tools_with_non_object_root"] == {"arr": "array", "untyped": "<absent>"}
+        assert "2" in result.message
+
+
+class TestIsValidOutputSchema:
+    """Root-agnostic output-schema validity.
+
+    The root-vs-revision question belongs to
+    ``tools_output_schema_root_object``, not to this helper.
+    """
+
+    def test_array_root_is_valid(self):
+        assert is_valid_output_schema({"type": "array", "items": {"type": "object"}})
+
+    def test_scalar_and_untyped_roots_are_valid(self):
+        assert is_valid_output_schema({"type": "string"})
+        assert is_valid_output_schema({"description": "anything"})  # no type at root
+
+    def test_object_root_keeps_full_shape_checks(self):
+        assert is_valid_output_schema({"type": "object", "properties": {}})
+        assert not is_valid_output_schema({"type": "object", "properties": "nope"})
+        assert not is_valid_output_schema({"type": "object", "required": ["x"], "properties": {}})
+
+    def test_invalid_root_type_and_none_fail(self):
+        assert not is_valid_output_schema({"type": "tuple"})
+        assert not is_valid_output_schema(None)
+
+    def test_output_rule_accepts_array_root(self):
+        tool = Tool(name="t", input_schema={"type": "object"}, output_schema={"type": "array", "items": {}})
+        result = ToolsOutputSchemaValidRule().check(AuditData(tools=[tool]))
+        assert result.passed
+
+    def test_input_rule_still_requires_object_root(self):
+        tool = Tool(name="t", input_schema={"type": "array"}, output_schema=None)
+        result = ToolsInputSchemaValidRule().check(AuditData(tools=[tool]))
+        assert not result.passed

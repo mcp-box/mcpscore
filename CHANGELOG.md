@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New HIGH version-scoped rule `tools_output_schema_root_object`: on
+  revisions 2025-06-18 through 2025-11-25 the schema restricts `outputSchema`
+  to `type: "object"` at the root (any-root schemas became legal in
+  2026-07-28) — a non-object root on a legacy negotiation breaks clients
+  that compile declared schemas relying on that guarantee. Registry dry-run
+  2026-08-03: 143/436 sampled servers declare output schemas, zero violate —
+  pure forward protection as 2026-07-28 adoption spreads.
+
+### Changed
+
+- `tools_output_schema_valid` no longer requires an object root: from
+  2026-07-28 an output schema "can be any valid JSON Schema 2020-12", so a
+  modern server declaring an array-rooted schema was a false positive (input
+  schemas keep the object-root requirement — that literal persists in every
+  revision). The object-root question for 2025-06-18..2025-11-25 now belongs
+  exclusively to the new version-scoped rule, so one condition is never
+  penalized twice.
+
 ## [1.4.0] - 2026-08-03
 
 Catalog polish release: eight new rules — icon validation across all four
