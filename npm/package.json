@@ -1,6 +1,6 @@
 {
   "name": "@mcp-box/mcpscore",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Audit an MCP server and get a scored, actionable quality report in seconds. Node wrapper for the Python mcpscore CLI.",
   "bin": {
     "mcpscore": "bin/mcpscore.js"
@@ -33,7 +33,7 @@
     "developer-tools"
   ],
   "mcpscore": {
-    "pythonVersion": "1.3.0"
+    "pythonVersion": "1.4.0"
   },
   "publishConfig": {
     "access": "public"
