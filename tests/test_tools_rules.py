@@ -36,6 +36,7 @@ from mcpscore.rules.tools import (
     ToolsNamePresentRule,
     ToolsNamesUniqueRule,
     ToolsNamesValidFormatRule,
+    ToolsOutputSchemaRootObjectRule,
     ToolsOutputSchemaValidRule,
     ToolsTitlePresentRule,
     is_valid_schema,
@@ -1200,3 +1201,37 @@ class TestToolsExecutionConsistentRule:
         rule = ToolsExecutionConsistentRule()
         data = AuditData(tools=None, capabilities=capabilities_full)
         assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestToolsOutputSchemaRootObjectRule:
+    """Version-scoped root-type restriction (2025-06-18 .. 2025-11-25)."""
+
+    def _tool(self, output_schema):
+        return Tool(name="t", input_schema={"type": "object"}, output_schema=output_schema)
+
+    def test_scoped_to_the_restriction_window(self):
+        rule = ToolsOutputSchemaRootObjectRule()
+        assert not rule.applies_to("2025-03-26")  # outputSchema does not exist yet
+        assert rule.applies_to("2025-06-18")
+        assert rule.applies_to("2025-11-25")
+        assert not rule.applies_to("2026-07-28")  # any root became legal
+
+    def test_object_rooted_and_absent_schemas_pass(self):
+        tools = [
+            self._tool({"type": "object", "properties": {}}),
+            Tool(name="none", input_schema={"type": "object"}),  # no outputSchema at all
+        ]
+        result = ToolsOutputSchemaRootObjectRule().check(AuditData(tools=tools))
+        assert result.passed
+        assert result.details == {"tools_with_non_object_root": {}}
+
+    def test_non_object_roots_fail_with_root_named(self):
+        tools = [
+            Tool(name="arr", input_schema={"type": "object"}, output_schema={"type": "array", "items": {}}),
+            Tool(name="untyped", input_schema={"type": "object"}, output_schema={"properties": {}}),
+            Tool(name="ok", input_schema={"type": "object"}, output_schema={"type": "object"}),
+        ]
+        result = ToolsOutputSchemaRootObjectRule().check(AuditData(tools=tools))
+        assert not result.passed
+        assert result.details["tools_with_non_object_root"] == {"arr": "array", "untyped": "<absent>"}
+        assert "2" in result.message

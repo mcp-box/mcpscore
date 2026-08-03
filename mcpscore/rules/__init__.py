@@ -116,6 +116,7 @@ from .tools import (
     ToolsNamePresentRule,
     ToolsNamesUniqueRule,
     ToolsNamesValidFormatRule,
+    ToolsOutputSchemaRootObjectRule,
     ToolsOutputSchemaValidRule,
     ToolsTitlePresentRule,
 )
@@ -206,6 +207,7 @@ __all__ = (
     "ToolsNamePresentRule",
     "ToolsNamesUniqueRule",
     "ToolsNamesValidFormatRule",
+    "ToolsOutputSchemaRootObjectRule",
     "ToolsOutputSchemaValidRule",
     "ToolsTitlePresentRule",
     "UnsupportedVersionErrorReadinessRule",

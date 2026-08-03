@@ -570,6 +570,55 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
         )
 
 
+@register_rule
+class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
+    """High check: output schemas must be object-rooted where the revision requires it.
+
+    Through 2025-11-25 the schema literal restricts ``outputSchema`` to
+    ``type: "object"`` at the root ("Currently restricted to type: 'object'
+    at the root level"); any-root schemas became legal in 2026-07-28. A
+    server negotiating an older revision while declaring a non-object root
+    breaks clients that compile declared schemas relying on that guarantee
+    (e.g. the Go and Rust quickstart clients).
+    """
+
+    rule_id = "tools_output_schema_root_object"
+    basis = 'MCP 2025-11-25 Schema Reference §Tool (outputSchema "restricted to type: object at the root level")'
+    # outputSchema itself was introduced in 2025-06-18; the root restriction
+    # was lifted in 2026-07-28 — the rule applies only inside that window.
+    min_spec_version = "2025-06-18"
+    max_spec_version = "2025-11-25"
+    rule_order = 17
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Output schemas must be object-rooted on this revision"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        offending = {
+            tool.name: tool.output_schema.get("type", "<absent>")
+            for tool in tools
+            if tool.output_schema is not None and tool.output_schema.get("type") != "object"
+        }
+        passed = not offending
+        message = (
+            "✅ All declared output schemas are object-rooted"
+            if passed
+            else f"❌ Number of tools with a non-object output schema root: {len(offending)}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"tools_with_non_object_root": offending},
+        )
+
+
 class ToolsMcpHeadersBaseRule(ToolsBaseRule):
     """Base class for 2026 x-mcp-header definition rules."""
 
