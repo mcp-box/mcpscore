@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-03
+
+Catalog polish release: eight new rules — icon validation across all four
+catalog surfaces (tools, resources, resource templates, prompts) with strict
+URI/data-URI checking, plus resource-template quality checks (MIME types,
+annotations, descriptions, display titles) that bring templates to parity
+with the resources catalog. 80 rules total.
+
 ### Added
 
 - A LOW resource-template quality rule recommends human-readable display
@@ -790,7 +798,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/mcp-box/mcpscore/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/mcp-box/mcpscore/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mcp-box/mcpscore/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/mcp-box/mcpscore/compare/v1.1.0...v1.1.1
