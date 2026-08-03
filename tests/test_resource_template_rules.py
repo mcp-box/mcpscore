@@ -1,7 +1,10 @@
-from mcp_types import ResourceTemplate
+from mcp_types import Annotations, ResourceTemplate
 
 from mcpscore.rules import (
     AuditData,
+    ResourceTemplatesAnnotationsValidRule,
+    ResourceTemplatesDescriptionPresentRule,
+    ResourceTemplatesMimeTypesValidRule,
     ResourceTemplatesNamesPresentRule,
     ResourceTemplatesUniqueRule,
     ResourceTemplatesUriTemplatesValidRule,
@@ -10,8 +13,21 @@ from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 from mcpscore.rules.resource_templates import is_valid_uri_template
 
 
-def _template(name: str, uri_template: str) -> ResourceTemplate:
-    return ResourceTemplate(name=name, uriTemplate=uri_template)
+def _template(
+    name: str,
+    uri_template: str,
+    *,
+    description: str | None = "Description",
+    mime_type: str | None = None,
+    annotations: Annotations | None = None,
+) -> ResourceTemplate:
+    return ResourceTemplate(
+        name=name,
+        uriTemplate=uri_template,
+        description=description,
+        mime_type=mime_type,
+        annotations=annotations,
+    )
 
 
 def test_uri_template_validator_accepts_rfc_6570_levels() -> None:
@@ -74,11 +90,69 @@ def test_names_rule_rejects_blank_names() -> None:
     assert result.details == {"templates_without_name": ["files/{id}"]}
 
 
+def test_mime_types_rule_accepts_absent_and_valid_values() -> None:
+    templates = [
+        _template("unknown", "unknown/{id}"),
+        _template("text", "text/{id}", mime_type="text/plain"),
+        _template("parameter", "parameter/{id}", mime_type='text/plain; charset="utf-8"'),
+    ]
+    result = ResourceTemplatesMimeTypesValidRule().check(AuditData(resource_templates=templates))
+    assert result.passed
+    assert result.details == {"templates_with_invalid_mime_type": []}
+
+
+def test_mime_types_rule_reports_invalid_values() -> None:
+    templates = [
+        _template("missing-subtype", "one/{id}", mime_type="text"),
+        _template("blank", "two/{id}", mime_type=""),
+    ]
+    result = ResourceTemplatesMimeTypesValidRule().check(AuditData(resource_templates=templates))
+    assert not result.passed
+    assert result.details == {
+        "templates_with_invalid_mime_type": [
+            {"name": "missing-subtype", "mime_type": "text"},
+            {"name": "blank", "mime_type": ""},
+        ]
+    }
+
+
+def test_annotations_rule_accepts_absent_and_iso_8601_values() -> None:
+    templates = [
+        _template("none", "none/{id}"),
+        _template("date", "date/{id}", annotations=Annotations(last_modified="2026-08-03")),
+        _template("timestamp", "timestamp/{id}", annotations=Annotations(last_modified="2026-08-03T12:30:00Z")),
+    ]
+    result = ResourceTemplatesAnnotationsValidRule().check(AuditData(resource_templates=templates))
+    assert result.passed
+    assert result.details == {"templates_with_invalid_annotations": []}
+
+
+def test_annotations_rule_reports_invalid_last_modified() -> None:
+    template = _template("bad", "bad/{id}", annotations=Annotations(last_modified="3 August 2026"))
+    result = ResourceTemplatesAnnotationsValidRule().check(AuditData(resource_templates=[template]))
+    assert not result.passed
+    assert result.details == {"templates_with_invalid_annotations": ["bad/{id}"]}
+
+
+def test_description_rule_reports_missing_and_blank_descriptions() -> None:
+    templates = [
+        _template("good", "good/{id}", description="Fetch an item"),
+        _template("missing", "missing/{id}", description=None),
+        _template("blank", "blank/{id}", description="  "),
+    ]
+    result = ResourceTemplatesDescriptionPresentRule().check(AuditData(resource_templates=templates))
+    assert not result.passed
+    assert result.details == {"templates_without_description": ["missing/{id}", "blank/{id}"]}
+
+
 def test_template_rules_pass_when_capability_has_no_templates() -> None:
     for rule in (
         ResourceTemplatesUriTemplatesValidRule(),
         ResourceTemplatesUniqueRule(),
         ResourceTemplatesNamesPresentRule(),
+        ResourceTemplatesMimeTypesValidRule(),
+        ResourceTemplatesAnnotationsValidRule(),
+        ResourceTemplatesDescriptionPresentRule(),
     ):
         assert rule.check(AuditData(resource_templates=[])).passed
         assert rule.check(AuditData(resource_templates=None)).passed
@@ -93,6 +167,9 @@ def test_only_the_uniqueness_rule_skips_incomplete_catalogs() -> None:
     assert ResourceTemplatesUniqueRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
     assert ResourceTemplatesUriTemplatesValidRule().skip_reason(data) is None
     assert ResourceTemplatesNamesPresentRule().skip_reason(data) is None
+    assert ResourceTemplatesMimeTypesValidRule().skip_reason(data) is None
+    assert ResourceTemplatesAnnotationsValidRule().skip_reason(data) is None
+    assert ResourceTemplatesDescriptionPresentRule().skip_reason(data) is None
     # A bad template on a fetched page is a finding even when pages are missing.
     assert ResourceTemplatesUriTemplatesValidRule().check(data).passed is False
 
@@ -109,5 +186,8 @@ def test_all_template_rules_skip_when_listing_produced_no_evidence() -> None:
             ResourceTemplatesUriTemplatesValidRule(),
             ResourceTemplatesUniqueRule(),
             ResourceTemplatesNamesPresentRule(),
+            ResourceTemplatesMimeTypesValidRule(),
+            ResourceTemplatesAnnotationsValidRule(),
+            ResourceTemplatesDescriptionPresentRule(),
         ):
             assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA

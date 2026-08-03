@@ -1,25 +1,18 @@
 from abc import abstractmethod
 from collections import Counter
-from datetime import datetime
 import re
 from urllib.parse import urlsplit
 
 from mcp_types import Resource
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .catalog_validation import is_iso_8601, is_valid_media_type
 from .icon_validation import find_invalid_icons
 from .registry import register_rule
 
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
 _URI_CHARACTER_RE = re.compile(r"^[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$")
 _INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
-_MEDIA_TYPE_ATOM_PATTERN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
-_MEDIA_TYPE_QUOTED_VALUE = r'"(?:[\t !#-\[\]-~]|\\[\t -~])*"'
-_MEDIA_TYPE_RE = re.compile(
-    rf"^{_MEDIA_TYPE_ATOM_PATTERN}/{_MEDIA_TYPE_ATOM_PATTERN}"
-    rf"(?:[ \t]*;[ \t]*{_MEDIA_TYPE_ATOM_PATTERN}="
-    rf"(?:{_MEDIA_TYPE_ATOM_PATTERN}|{_MEDIA_TYPE_QUOTED_VALUE}))*$"
-)
 
 
 class ResourcesBaseRule(BaseRule):
@@ -215,7 +208,7 @@ class ResourcesMimeTypesValidRule(ResourcesBaseRule):
         resources_with_invalid_mime_type = [
             {"name": resource.name, "mime_type": resource.mime_type}
             for resource in resources
-            if resource.mime_type is not None and _MEDIA_TYPE_RE.fullmatch(resource.mime_type) is None
+            if resource.mime_type is not None and not is_valid_media_type(resource.mime_type)
         ]
         passed = not resources_with_invalid_mime_type
         message = (
@@ -255,7 +248,7 @@ class ResourcesAnnotationsValidRule(ResourcesBaseRule):
             for resource in resources
             if resource.annotations is not None
             and resource.annotations.last_modified is not None
-            and not _is_iso_8601(resource.annotations.last_modified)
+            and not is_iso_8601(resource.annotations.last_modified)
         ]
         passed = not resources_with_invalid_annotations
         message = (
@@ -270,17 +263,6 @@ class ResourcesAnnotationsValidRule(ResourcesBaseRule):
             message=message,
             details={"resources_with_invalid_annotations": resources_with_invalid_annotations},
         )
-
-
-def _is_iso_8601(value: str) -> bool:
-    """Return whether a value is a non-blank ISO 8601 date or timestamp."""
-    if not value or value != value.strip():
-        return False
-    try:
-        datetime.fromisoformat(value)
-    except ValueError:
-        return False
-    return True
 
 
 @register_rule

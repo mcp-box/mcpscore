@@ -68,7 +68,10 @@ from .readiness import (
 )
 from .registry import RuleRegistry, create_all_rules
 from .resource_templates import (
+    ResourceTemplatesAnnotationsValidRule,
+    ResourceTemplatesDescriptionPresentRule,
     ResourceTemplatesIconsValidRule,
+    ResourceTemplatesMimeTypesValidRule,
     ResourceTemplatesNamesPresentRule,
     ResourceTemplatesUniqueRule,
     ResourceTemplatesUriTemplatesValidRule,
@@ -155,7 +158,10 @@ __all__ = (
     "PromptsNamesUniqueRule",
     "PromptsTitlesPresentRule",
     "RemovedMethodsReadinessRule",
+    "ResourceTemplatesAnnotationsValidRule",
+    "ResourceTemplatesDescriptionPresentRule",
     "ResourceTemplatesIconsValidRule",
+    "ResourceTemplatesMimeTypesValidRule",
     "ResourceTemplatesNamesPresentRule",
     "ResourceTemplatesUniqueRule",
     "ResourceTemplatesUriTemplatesValidRule",
