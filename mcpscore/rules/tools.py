@@ -28,6 +28,13 @@ class ToolsBaseRule(BaseRule):
     group_name = "tools"
     group_order = 4
 
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip quality checks when a declared tools catalog is unavailable."""
+        declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
+        if declares_tools and audit_data.tools is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
     @requires_tools
     def check(self, tools: list[Tool] | None) -> RuleResult:
         """Execute the tools rule check.
@@ -91,6 +98,8 @@ class ToolsAtLeastOneRule(ToolsBaseRule):
         tools may live on a page that was never fetched. A non-empty partial
         listing proves presence, so the rule still judges (and passes) it.
         """
+        if reason := super().skip_reason(audit_data):
+            return reason
         if "tools" in audit_data.incomplete_listings and not audit_data.tools:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
@@ -186,6 +195,8 @@ class ToolsNamesUniqueRule(ToolsBaseRule):
         Uniqueness judged on a partial listing can produce a false pass —
         the duplicate may live on a page that was never fetched.
         """
+        if reason := super().skip_reason(audit_data):
+            return reason
         return SKIP_REASON_INSUFFICIENT_DATA if "tools" in audit_data.incomplete_listings else None
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:

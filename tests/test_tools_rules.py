@@ -21,6 +21,7 @@ import pytest
 
 from mcpscore.rules import AuditData, RuleSeverity
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.rules.registry import create_all_rules
 from mcpscore.rules.tools import (
     ToolsAnnotationsPresentRule,
     ToolsAtLeastOneRule,
@@ -408,15 +409,18 @@ class TestToolsBaseRule:
         with pytest.raises(TypeError):
             ToolsBaseRule()  # type: ignore[abstract]
 
-    def test_check_with_none_tools(self, valid_tool: Tool) -> None:
-        """Check method with None tools returns failed result."""
-        # Use a concrete implementation to test base behavior
-        rule = ToolsAtLeastOneRule()
-        result = rule.check(AuditData(tools=None))
-        assert result.passed is False
-        assert "not available" in result.message
-        assert result.details is not None
-        assert result.details["tools"] is None
+    def test_declared_but_unavailable_tools_skip_every_catalog_rule(self, capabilities_full) -> None:
+        """One failed tools/list must not fan out into failures across the tools rule pack."""
+        data = AuditData(tools=None, capabilities=capabilities_full)
+        rules = [rule for rule in create_all_rules() if isinstance(rule, ToolsBaseRule)]
+
+        assert rules
+        assert {rule.skip_reason(data) for rule in rules} == {SKIP_REASON_INSUFFICIENT_DATA}
+
+    def test_absent_optional_tools_catalog_does_not_claim_collection_failed(self, capabilities_missing) -> None:
+        """No declaration is distinct from a declared catalog that failed to load."""
+        data = AuditData(tools=None, capabilities=capabilities_missing)
+        assert ToolsAtLeastOneRule().skip_reason(data) is None
 
 
 # ============================================================================
@@ -820,10 +824,10 @@ class TestToolsAnnotationsPresentRule:
         assert result.details is not None
         assert result.details["tools_without_annotations"] == ["bad"]
 
-    def test_tools_none_fails(self) -> None:
-        """Fail: tools object unavailable (handled by the base rule)."""
-        result = ToolsAnnotationsPresentRule().check(AuditData(tools=None))
-        assert result.passed is False
+    def test_declared_tools_unavailable_skips(self, capabilities_full) -> None:
+        """A failed tools/list provides no annotations to judge."""
+        data = AuditData(tools=None, capabilities=capabilities_full)
+        assert ToolsAnnotationsPresentRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 # ============================================================================

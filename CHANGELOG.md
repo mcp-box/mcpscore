@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tool-quality rules now skip as `insufficient-data` when a server declares
+  the tools capability but `tools/list` produces no usable catalog. The
+  capability-consistency rule remains the single failure for that broken
+  promise, instead of one collection failure cascading across all 16 tools
+  rules. On the current specification, the 15 applicable rules represent 45
+  severity-weight points — roughly 30 percentage points in the full score.
+  Registry dry-run 2026-08-03: 2/436 sampled servers (about 0.5%) had this
+  state.
 - Auth-gated Streamable HTTP servers whose 401 surfaces as a status-less SDK
   error (e.g. Airtable, whose body parses as a JSON-RPC error) are now
   classified as `UNAUTHORIZED` via a single status-recovery
@@ -78,7 +86,8 @@ unsupported-version error check.
   (merged over the SDK's minimal default environment; values are never
   logged or reported). `--env NAME=VALUE` sets a value inline for
   non-sensitive config; the value-less `--env NAME` copies the value from
-  mcpscore's own environment, keeping secrets off every command line. Library consumers get the same via the new `StdioCommand`
+  mcpscore's own environment, keeping secrets off every command line. Library 
+  consumers get the same via the new `StdioCommand`
   dataclass accepted by `MCPClient.detect_and_connect`. The positional
   `.py`/`.js`/URL target is unchanged.
 
@@ -261,12 +270,12 @@ First stable release. Ships the day the MCP `2026-07-28` revision went final.
   server) 10 CRITICAL points for a legitimate design choice. They now compare
   the declaration against what the listing actually returns:
 
-  | declared | served | verdict |
-  |---|---|---|
-  | yes | yes (incl. empty) | ✅ pass |
-  | no | no | ✅ pass — the capability is only required of servers that support the feature |
-  | no | yes | ❌ fail — the real spec MUST |
-  | yes | listing did not answer | ❌ fail — clients will call it and fail |
+  | declared | served                 | verdict                                                                      |
+  |----------|------------------------|------------------------------------------------------------------------------|
+  | yes      | yes (incl. empty)      | ✅ pass                                                                       |
+  | no       | no                     | ✅ pass — the capability is only required of servers that support the feature |
+  | no       | yes                    | ❌ fail — the real spec MUST                                                  |
+  | yes      | listing did not answer | ❌ fail — clients will call it and fail                                       |
 
   Severity stays CRITICAL, because what remains is a genuine MUST violation.
 
