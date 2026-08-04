@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Auth-gated Streamable HTTP servers whose 401 surfaces as a status-less SDK
+  error (e.g. Airtable, whose body parses as a JSON-RPC error) are now
+  classified as `UNAUTHORIZED` via a single status-recovery
+  POST, instead of falling through to the legacy SSE transport and reporting
+  its `405 Method Not Allowed` as the failure. On any 401/403 the SSE
+  fallback is skipped entirely and the expected challenge is logged as an
+  info line, not a traceback — the credential-free partial audit runs as it
+  should. Genuine SSE fallback is preserved for non-auth HTTP failures.
+
 ### Added
 
 - New HIGH version-scoped rule `tools_output_schema_root_object`: on
