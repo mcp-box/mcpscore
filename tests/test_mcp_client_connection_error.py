@@ -6,6 +6,7 @@ message instead of a flat "could not connect".
 """
 
 from contextlib import AsyncExitStack
+import logging
 from unittest.mock import MagicMock, patch
 
 import httpx2
@@ -177,3 +178,113 @@ class TestDetectAndConnectPrefersInformativeFailure:
         assert success is False
         assert transport is None
         assert mcp_client.last_connection_error.reason == ConnectionErrorReason.UNAUTHORIZED
+
+
+class TestAuthGatedHttpFallback:
+    """Airtable-shaped gates: 401 evidence must skip SSE and classify cleanly."""
+
+    async def test_sse_skipped_when_http_attempt_classifies_unauthorized(self, caplog):
+        client = MCPClient()
+
+        async def fail_http(url):
+            client._record_failure(ConnectionErrorReason.UNAUTHORIZED, 401)
+            return False
+
+        with (
+            patch.object(client, "_connect_with_streamable_http", side_effect=fail_http),
+            patch.object(client, "_connect_with_sse") as sse,
+            caplog.at_level(logging.INFO),
+        ):
+            success, transport = await client.detect_and_connect("https://gated.example/mcp")
+
+        assert success is False
+        assert transport is None
+        sse.assert_not_called()
+        assert "skipping the legacy SSE fallback" in caplog.text
+        assert client.last_connection_error.reason is ConnectionErrorReason.UNAUTHORIZED
+
+    async def test_sse_fallback_preserved_for_non_auth_failures(self):
+        client = MCPClient()
+
+        async def fail_http(url):
+            client._record_failure(ConnectionErrorReason.NOT_MCP)
+            return False
+
+        async def fail_sse(url):
+            client._record_failure(ConnectionErrorReason.UNREACHABLE)
+            return False
+
+        with (
+            patch.object(client, "_connect_with_streamable_http", side_effect=fail_http),
+            patch.object(client, "_connect_with_sse", side_effect=fail_sse) as sse,
+        ):
+            success, _ = await client.detect_and_connect("https://down.example/mcp")
+
+        assert success is False
+        sse.assert_called_once()
+
+    async def test_statusless_sdk_error_recovers_401_and_skips_sse(self, monkeypatch, caplog):
+        """The Airtable shape: an SDK error with no HTTP status anywhere.
+
+        One anonymous POST recovers the 401, classification lands
+        UNAUTHORIZED, no traceback is logged, and the SSE fallback is skipped.
+        """
+        client = MCPClient()
+
+        async def recovered_401(url):
+            return 401
+
+        with (
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_http,
+            patch.object(client, "_recover_http_status", side_effect=recovered_401) as recover,
+            patch.object(client, "_connect_with_sse") as sse,
+            caplog.at_level(logging.INFO),
+        ):
+            # A statusless SDK failure: no HTTP status in the exception chain.
+            mock_http.return_value.__aenter__.side_effect = RuntimeError("Server returned an error response")
+            success, transport = await client.detect_and_connect("https://airtable.example/mcp")
+
+        assert success is False
+        assert transport is None
+        recover.assert_awaited_once()
+        sse.assert_not_called()
+        assert client.last_connection_error.reason is ConnectionErrorReason.UNAUTHORIZED
+        assert "Traceback" not in caplog.text
+        assert "requires authentication" in caplog.text
+
+    async def test_recovered_non_auth_status_does_not_relabel_the_failure(self, caplog):
+        """Never relabel the original failure with a recovered non-auth status.
+
+        A recovered 200 (HTTP-fine, MCP-broken endpoint) leaves classification
+        unclassified and the SSE fallback still runs.
+        """
+        client = MCPClient()
+
+        async def recovered_200(url):
+            return 200
+
+        with (
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_http,
+            patch.object(client, "_recover_http_status", side_effect=recovered_200),
+            patch.object(client, "_connect_with_sse") as sse,
+            caplog.at_level(logging.INFO),
+        ):
+            mock_http.return_value.__aenter__.side_effect = RuntimeError("bad MCP payload")
+            sse.return_value = False
+            success, _ = await client.detect_and_connect("https://broken.example/mcp")
+
+        assert success is False
+        # Non-auth failure: the fallback ladder is preserved.
+        sse.assert_called_once()
+        assert client.last_connection_error.reason is ConnectionErrorReason.UNKNOWN
+        assert client.last_connection_error.status_code is None
+
+    async def test_recover_http_status_returns_none_on_network_error(self):
+        """Recovery is best-effort: a network error yields None, not an exception."""
+        client = MCPClient()
+
+        with patch("mcpscore.mcp_client.httpx2.AsyncClient") as mock_cls:
+            mock_cls.return_value.__aenter__.side_effect = httpx2.ConnectError("refused")
+            status = await client._recover_http_status("https://unreachable.example/mcp")
+
+        assert status is None

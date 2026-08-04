@@ -238,6 +238,20 @@ class MCPClient:
                 return (True, MCPTransportType.STREAMABLE_HTTP)
             http_failure = self.last_connection_error
 
+            # An auth challenge proves an HTTP server answers this endpoint —
+            # the legacy SSE fallback would face the same gate (or a 405) and
+            # only add misleading diagnostics. Skip it; the caller runs the
+            # credential-free partial audit instead.
+            if http_failure is not None and http_failure.reason in (
+                ConnectionErrorReason.UNAUTHORIZED,
+                ConnectionErrorReason.FORBIDDEN,
+            ):
+                logger.info(
+                    "Endpoint requires authentication (HTTP %s) — skipping the legacy SSE fallback",
+                    http_failure.status_code or "401/403",
+                )
+                return (False, None)
+
             # Fall back to SSE
             logger.info("Streamable HTTP failed, trying SSE...")
             if await self.connect_to_server(MCPTransportType.SSE, server_path_or_url):
@@ -530,9 +544,15 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
-            logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
-            logger.debug("Error details: %s", e)
-            self._record_failure(reason_for_status(e.response.status_code), e.response.status_code)
+            status = e.response.status_code
+            if status in (401, 403):
+                # An auth challenge is an expected observation, not an error —
+                # the partial-audit path handles it. No traceback.
+                logger.info("Server requires authentication (HTTP %s): %s", status, server_url)
+            else:
+                logger.exception("HTTP error %s from server: %s", status, server_url)
+                logger.debug("Error details: %s", e)
+            self._record_failure(reason_for_status(status), status)
             return False
         except TimeoutError:
             logger.error("MCP initialize handshake timed out for server: %s", server_url)  # noqa: TRY400
@@ -543,9 +563,55 @@ class MCPClient:
             self._record_handshake_failure(server_url)
             return False
         except Exception as e:
-            logger.exception("Failed to connect to MCP server via Streamable HTTP")
-            self._record_unclassified_failure(e)
+            status = self._pending_http_status or extract_http_status(e)
+            if status is None:
+                # Some SDK failure shapes (e.g. a bare MCPError for a 401
+                # whose body parses as an error response) carry no HTTP
+                # status anywhere in the exception chain. Recover it with a
+                # single anonymous request so an auth gate classifies as
+                # UNAUTHORIZED instead of UNKNOWN. Only a recovered 401/403
+                # is trusted: the recovery is a *different* request, so any
+                # other status (a 200 from an HTTP-fine but MCP-broken
+                # endpoint, say) must not relabel the original failure.
+                recovered = await self._recover_http_status(server_url)
+                if recovered in (401, 403):
+                    status = recovered
+            if status in (401, 403):
+                logger.info("Server requires authentication (HTTP %s): %s", status, server_url)
+                self._record_failure(reason_for_status(status), status)
+            else:
+                logger.exception("Failed to connect to MCP server via Streamable HTTP")
+                self._record_unclassified_failure(e)
             return False
+
+    async def _recover_http_status(self, server_url: str) -> int | None:
+        """Recover the endpoint's HTTP status with one credential-free POST.
+
+        Used only when a connect attempt failed without an HTTP status
+        anywhere in its exception chain. Sends the same headers as the failed
+        attempt, invokes no tools, and never raises — a network error simply
+        returns None and classification falls back to UNKNOWN.
+        """
+        body = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "mcpscore", "version": "status-recovery"},
+            },
+        }
+        try:
+            async with httpx2.AsyncClient(timeout=10.0, headers=self.headers) as client:
+                response = await client.post(
+                    server_url,
+                    json=body,
+                    headers={"Accept": "application/json, text/event-stream"},
+                )
+                return response.status_code
+        except Exception:  # noqa: BLE001 — recovery is best-effort
+            return None
 
     async def _connect_with_sse(self, server_url: str) -> bool:
         """Establish SSE connection to MCP server.
