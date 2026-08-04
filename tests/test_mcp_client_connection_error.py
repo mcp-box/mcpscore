@@ -223,10 +223,10 @@ class TestAuthGatedHttpFallback:
         assert success is False
         sse.assert_called_once()
 
-    async def test_statusless_sdk_error_recovers_401_and_skips_sse(self, monkeypatch, caplog):
+    async def test_statusless_sdk_error_recovers_401_and_skips_sse(self, caplog):
         """The Airtable shape: an SDK error with no HTTP status anywhere.
 
-        One anonymous POST recovers the 401, classification lands
+        One status-recovery POST recovers the 401, classification lands
         UNAUTHORIZED, no traceback is logged, and the SSE fallback is skipped.
         """
         client = MCPClient()
@@ -298,6 +298,27 @@ class TestAuthGatedHttpFallback:
         recover.assert_not_called()
         assert client.last_connection_error.reason is ConnectionErrorReason.HTTP_ERROR
         assert client.last_connection_error.status_code == 500
+
+    async def test_recovery_mirrors_the_failed_attempt_headers(self):
+        """Recovery must send the caller's headers, credentials included.
+
+        It recovers the status *the failed attempt* would have reported. An
+        anonymous retry would answer a different question and could report a
+        gated endpoint's 401 as the caller's own token being refused — the
+        probe layer answers that question separately, anonymously by design.
+        """
+        client = MCPClient(headers={"Authorization": "Bearer caller-token", "X-Trace": "1"})
+
+        with patch("mcpscore.mcp_client.httpx2.AsyncClient") as mock_cls:
+            instance = mock_cls.return_value.__aenter__.return_value
+            instance.post.return_value = MagicMock(status_code=401)
+            status = await client._recover_http_status("https://gated.example/mcp")
+
+        assert status == 401
+        assert mock_cls.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer caller-token",
+            "X-Trace": "1",
+        }
 
     async def test_recover_http_status_returns_none_on_network_error(self):
         """Recovery is best-effort: a network error yields None, not an exception."""

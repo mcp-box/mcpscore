@@ -585,12 +585,21 @@ class MCPClient:
             return False
 
     async def _recover_http_status(self, server_url: str) -> int | None:
-        """Recover the endpoint's HTTP status with one credential-free POST.
+        """Recover the HTTP status of a failed connect attempt with one POST.
 
         Used only when a connect attempt failed without an HTTP status
-        anywhere in its exception chain. Sends the same headers as the failed
-        attempt, invokes no tools, and never raises — a network error simply
-        returns None and classification falls back to UNKNOWN.
+        anywhere in its exception chain. It **mirrors the failed attempt's
+        headers**, including any caller-supplied ``Authorization`` — this
+        recovers the status *that attempt* would have reported, which is the
+        only thing the caller may act on. Stripping the credential would
+        answer a different question ("is this endpoint gated?") and make a
+        401 from an anonymous request look like the user's own token being
+        refused; that gated-endpoint question is already answered separately
+        by the probe layer, whose unauthenticated probe runs anonymously by
+        design (``observed_auth_status``).
+
+        Invokes no tools and never raises — a network error simply returns
+        None and classification falls back to UNKNOWN.
         """
         body = {
             "jsonrpc": "2.0",
