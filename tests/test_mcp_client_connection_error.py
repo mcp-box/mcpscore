@@ -279,6 +279,26 @@ class TestAuthGatedHttpFallback:
         assert client.last_connection_error.reason is ConnectionErrorReason.UNKNOWN
         assert client.last_connection_error.status_code is None
 
+    async def test_status_already_in_the_exception_skips_recovery(self):
+        """Skip the recovery request when the failure already carries a status.
+
+        A 500 buried in the exception chain classifies directly; spending an
+        extra request on it would be pointless traffic.
+        """
+        client = MCPClient()
+
+        with (
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_http,
+            patch.object(client, "_recover_http_status") as recover,
+        ):
+            mock_http.return_value.__aenter__.side_effect = ExceptionGroup("transport", [_http_status_error(500)])
+            result = await client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, "https://boom.example/mcp")
+
+        assert result is False
+        recover.assert_not_called()
+        assert client.last_connection_error.reason is ConnectionErrorReason.HTTP_ERROR
+        assert client.last_connection_error.status_code == 500
+
     async def test_recover_http_status_returns_none_on_network_error(self):
         """Recovery is best-effort: a network error yields None, not an exception."""
         client = MCPClient()
