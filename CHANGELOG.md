@@ -86,7 +86,7 @@ unsupported-version error check.
   (merged over the SDK's minimal default environment; values are never
   logged or reported). `--env NAME=VALUE` sets a value inline for
   non-sensitive config; the value-less `--env NAME` copies the value from
-  mcpscore's own environment, keeping secrets off every command line. Library 
+  mcpscore's own environment, keeping secrets off every command line. Library
   consumers get the same via the new `StdioCommand`
   dataclass accepted by `MCPClient.detect_and_connect`. The positional
   `.py`/`.js`/URL target is unchanged.
