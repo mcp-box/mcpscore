@@ -32,7 +32,12 @@ schema version:
 The report's top-level shape: `schema_version`, `mcpscore_version`,
 `generated_at`, `target`, `transport`, `score`, `max_score`,
 `authenticated`, `partial`, `partial_reason`, `incomplete_listings[]`,
-`summary`, `results[]`, `skipped_rules[]`, `spec`, `readiness`.
+`server_info`, `summary`, `results[]`, `skipped_rules[]`, `spec`, `readiness`.
+
+`server_info` is either `null` when server identity could not be observed, or
+an object containing the `name` and `version` reported by the server during
+initialization or modern discovery. Baseline consumers can use it to distinguish
+a server release change from an mcpscore engine release change.
 
 ### CLI interface
 
