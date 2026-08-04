@@ -12,6 +12,7 @@ from mcpscore.probes import (
     ProbeResult,
     not_applicable_results,
 )
+from mcpscore.rules.tools import ToolsBaseRule
 from mcpscore.spec import Era
 
 URL = "https://modern.example/mcp"
@@ -235,6 +236,9 @@ class TestToolsListingAttempt:
         skipped = {s.rule_id for s in auditor.skipped_rules}
         assert "capability_tools_present" in failed
         assert "capability_tools_present" not in skipped
+        tool_quality_rules = {rule.rule_id for rule in auditor.rules if isinstance(rule, ToolsBaseRule)}
+        assert tool_quality_rules <= skipped
+        assert tool_quality_rules.isdisjoint(failed)
 
     async def test_absent_stateless_probe_is_not_an_attempt(self, stub_probes, monkeypatch: pytest.MonkeyPatch):
         """Defensive path: no stateless observation at all in the probe map."""
