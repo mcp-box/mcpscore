@@ -17,8 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all (`server_info` rules judging absent data, and the new `server_info`
   report field always `null`). The `_meta` location is now read first, with
   the legacy top-level key kept as a deliberate fallback for servers that
-  mirror the `initialize` shape. The unit-test and acceptance fixtures
-  emitted the legacy shape too, which is why nothing caught it; both are now
+  mirror the `initialize` shape, and a malformed value at the spec location
+  no longer shadows a usable legacy one. Every fixture simulating a
+  `server/discover` response emitted the legacy shape too — the modern-only
+  and probe unit tests here, and the modern and auth fixtures in the
+  acceptance corpus — which is why nothing caught it; all are now
   spec-accurate.
 
 - Tool-quality rules now skip as `insufficient-data` when a server declares

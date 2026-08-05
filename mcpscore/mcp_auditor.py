@@ -47,19 +47,28 @@ SERVER_INFO_META_KEY = "io.modelcontextprotocol/serverInfo"
 """Where 2026-07-28 puts serverInfo in a DiscoverResult (spec: `_meta`)."""
 
 
-def _discover_server_info(payload: dict) -> object | None:
-    """Return the serverInfo object from a DiscoverResult, spec location first.
+def _discover_server_info_candidates(payload: dict) -> tuple[object, ...]:
+    """Return serverInfo candidates from a DiscoverResult, spec location first.
 
     2026-07-28 carries it at ``_meta["io.modelcontextprotocol/serverInfo"]``;
     the top-level ``serverInfo`` key is the legacy ``initialize`` shape, kept
     as a fallback for servers that mirror it.
+
+    Both are returned rather than just the preferred one, so the caller can
+    fall through when the spec-located value is present but unusable (a
+    string, or an object missing ``name``/``version``). Preferring a
+    *malformed* spec value over a *valid* legacy one would discard identity
+    the server did supply — and this fallback exists precisely to be
+    tolerant of servers that have not moved the field yet.
     """
+    candidates: list[object] = []
     meta = payload.get("_meta")
-    if isinstance(meta, dict):
-        from_meta = meta.get(SERVER_INFO_META_KEY)
-        if from_meta is not None:
-            return from_meta
-    return payload.get("serverInfo")
+    if isinstance(meta, dict) and meta.get(SERVER_INFO_META_KEY) is not None:
+        candidates.append(meta[SERVER_INFO_META_KEY])
+    legacy = payload.get("serverInfo")
+    if legacy is not None:
+        candidates.append(legacy)
+    return tuple(candidates)
 
 
 class MCPAuditor:
@@ -265,6 +274,18 @@ class MCPAuditor:
         self._run_all_rules()
         return True
 
+    def _first_parseable(self, model: type, candidates: tuple[object, ...]):
+        """Parse candidates in order, returning the first that validates.
+
+        Used for serverInfo, where the spec location is preferred but a
+        malformed value there must not shadow a usable legacy one.
+        """
+        for candidate in candidates:
+            parsed = self._parse_payload_model(model, candidate)
+            if parsed is not None:
+                return parsed
+        return None
+
     def _populate_from_probe_payloads(self) -> None:
         """Extract session-equivalent audit data from probe payloads (best-effort).
 
@@ -292,7 +313,9 @@ class MCPAuditor:
                 self.audit_data.protocol_version = max(supported)
             else:
                 self.audit_data.protocol_version = (DRAFT or LATEST).version
-            self.audit_data.server_info = self._parse_payload_model(Implementation, _discover_server_info(payload))
+            self.audit_data.server_info = self._first_parseable(
+                Implementation, _discover_server_info_candidates(payload)
+            )
             self.audit_data.capabilities = self._parse_payload_model(ServerCapabilities, payload.get("capabilities"))
             instructions = payload.get("instructions")
             self.audit_data.instructions = instructions if isinstance(instructions, str) else None

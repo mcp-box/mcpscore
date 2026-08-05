@@ -128,6 +128,52 @@ async def test_legacy_top_level_server_info_is_still_accepted(stub_probes, monke
     assert auditor.get_audit_report()["server_info"] == {"name": "legacy-shaped", "version": "9.9"}
 
 
+class TestServerInfoCandidates:
+    """Candidate selection between the spec and legacy serverInfo locations.
+
+    serverInfo lives in `_meta` from 2026-07-28; the legacy top-level key is a
+    deliberate fallback. A malformed spec value must not shadow a usable
+    legacy one — the fallback exists to be tolerant, so it has to be tolerant
+    consistently.
+    """
+
+    KEY = "io.modelcontextprotocol/serverInfo"
+
+    def _parse(self, payload: dict):
+        auditor = MCPAuditor()
+        auditor.audit_data.probes = {
+            PROBE_DISCOVER: ProbeResult(
+                PROBE_DISCOVER,
+                ProbeOutcome.SUPPORTED,
+                {"supported_versions": ["2026-07-28"]},
+                payload={"capabilities": {}, **payload},
+            )
+        }
+        auditor._populate_from_probe_payloads()
+        return auditor.audit_data.server_info
+
+    def test_meta_without_the_key_falls_back_to_legacy(self):
+        info = self._parse({"_meta": {"unrelated": "x"}, "serverInfo": {"name": "legacy", "version": "1"}})
+        assert info is not None
+        assert info.name == "legacy"
+
+    def test_malformed_meta_value_does_not_shadow_a_valid_legacy_one(self):
+        info = self._parse({"_meta": {self.KEY: "not-an-object"}, "serverInfo": {"name": "legacy", "version": "1"}})
+        assert info is not None
+        assert info.name == "legacy"
+
+    def test_incomplete_meta_value_does_not_shadow_a_valid_legacy_one(self):
+        # A dict that fails Implementation validation (no name/version).
+        info = self._parse(
+            {"_meta": {self.KEY: {"title": "no name"}}, "serverInfo": {"name": "legacy", "version": "1"}}
+        )
+        assert info is not None
+        assert info.name == "legacy"
+
+    def test_unusable_everywhere_stays_none(self):
+        assert self._parse({"_meta": {self.KEY: "not-an-object"}}) is None
+
+
 async def _fake_tls(url: str) -> str:
     return "TLSv1.3"
 
