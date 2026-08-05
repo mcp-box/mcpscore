@@ -20,7 +20,10 @@ URL = "https://modern.example/mcp"
 DISCOVER_PAYLOAD = {
     "resultType": "complete",
     "supportedVersions": ["2025-11-25", "2026-07-28"],
-    "serverInfo": {"name": "modern-server", "version": "2.0", "title": "Modern Server"},
+    # 2026-07-28 carries serverInfo in the result's `_meta`; DiscoverResult has
+    # no top-level serverInfo field. Keep this shape spec-accurate — a fixture
+    # using the legacy top-level key hid a real extraction bug until 2026-08-04.
+    "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "modern-server", "version": "2.0"}},
     "capabilities": {"tools": {"listChanged": True}},
     "instructions": "Use the echo tool.",
     "ttlMs": 60000,
@@ -101,6 +104,74 @@ async def test_modern_only_audit_extracts_data_and_scores(stub_probes, monkeypat
     report = auditor.get_audit_report()
     assert report["spec"]["era"] == "modern"
     assert report["spec"]["negotiated_version"] == "2026-07-28"
+    assert report["server_info"] == {"name": "modern-server", "version": "2.0"}
+
+
+async def test_legacy_top_level_server_info_is_still_accepted(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    """Tolerance, deliberately: some servers mirror the `initialize` shape.
+
+    The spec location (`_meta`) wins when both are present; this pins that the
+    legacy top-level key still resolves rather than silently reading None.
+    """
+    legacy_payload = {
+        "resultType": "complete",
+        "supportedVersions": ["2026-07-28"],
+        "serverInfo": {"name": "legacy-shaped", "version": "9.9"},
+        "capabilities": {"tools": {"listChanged": False}},
+    }
+    stub_probes(_modern_probe_results(legacy_payload))
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+
+    assert auditor.get_audit_report()["server_info"] == {"name": "legacy-shaped", "version": "9.9"}
+
+
+class TestServerInfoCandidates:
+    """Candidate selection between the spec and legacy serverInfo locations.
+
+    serverInfo lives in `_meta` from 2026-07-28; the legacy top-level key is a
+    deliberate fallback. A malformed spec value must not shadow a usable
+    legacy one — the fallback exists to be tolerant, so it has to be tolerant
+    consistently.
+    """
+
+    KEY = "io.modelcontextprotocol/serverInfo"
+
+    def _parse(self, payload: dict):
+        auditor = MCPAuditor()
+        auditor.audit_data.probes = {
+            PROBE_DISCOVER: ProbeResult(
+                PROBE_DISCOVER,
+                ProbeOutcome.SUPPORTED,
+                {"supported_versions": ["2026-07-28"]},
+                payload={"capabilities": {}, **payload},
+            )
+        }
+        auditor._populate_from_probe_payloads()
+        return auditor.audit_data.server_info
+
+    def test_meta_without_the_key_falls_back_to_legacy(self):
+        info = self._parse({"_meta": {"unrelated": "x"}, "serverInfo": {"name": "legacy", "version": "1"}})
+        assert info is not None
+        assert info.name == "legacy"
+
+    def test_malformed_meta_value_does_not_shadow_a_valid_legacy_one(self):
+        info = self._parse({"_meta": {self.KEY: "not-an-object"}, "serverInfo": {"name": "legacy", "version": "1"}})
+        assert info is not None
+        assert info.name == "legacy"
+
+    def test_incomplete_meta_value_does_not_shadow_a_valid_legacy_one(self):
+        # A dict that fails Implementation validation (no name/version).
+        info = self._parse(
+            {"_meta": {self.KEY: {"title": "no name"}}, "serverInfo": {"name": "legacy", "version": "1"}}
+        )
+        assert info is not None
+        assert info.name == "legacy"
+
+    def test_unusable_everywhere_stays_none(self):
+        assert self._parse({"_meta": {self.KEY: "not-an-object"}}) is None
 
 
 async def _fake_tls(url: str) -> str:

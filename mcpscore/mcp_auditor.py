@@ -43,6 +43,34 @@ def has_authorization_credential(headers: dict[str, str] | None) -> bool:
     return any(name.lower() == "authorization" and value.strip() for name, value in (headers or {}).items())
 
 
+SERVER_INFO_META_KEY = "io.modelcontextprotocol/serverInfo"
+"""Where 2026-07-28 puts serverInfo in a DiscoverResult (spec: `_meta`)."""
+
+
+def _discover_server_info_candidates(payload: dict) -> tuple[object, ...]:
+    """Return serverInfo candidates from a DiscoverResult, spec location first.
+
+    2026-07-28 carries it at ``_meta["io.modelcontextprotocol/serverInfo"]``;
+    the top-level ``serverInfo`` key is the legacy ``initialize`` shape, kept
+    as a fallback for servers that mirror it.
+
+    Both are returned rather than just the preferred one, so the caller can
+    fall through when the spec-located value is present but unusable (a
+    string, or an object missing ``name``/``version``). Preferring a
+    *malformed* spec value over a *valid* legacy one would discard identity
+    the server did supply — and this fallback exists precisely to be
+    tolerant of servers that have not moved the field yet.
+    """
+    candidates: list[object] = []
+    meta = payload.get("_meta")
+    if isinstance(meta, dict) and meta.get(SERVER_INFO_META_KEY) is not None:
+        candidates.append(meta[SERVER_INFO_META_KEY])
+    legacy = payload.get("serverInfo")
+    if legacy is not None:
+        candidates.append(legacy)
+    return tuple(candidates)
+
+
 class MCPAuditor:
     """Orchestrates the MCP server audit process.
 
@@ -246,6 +274,18 @@ class MCPAuditor:
         self._run_all_rules()
         return True
 
+    def _first_parseable(self, model: type, candidates: tuple[object, ...]):
+        """Parse candidates in order, returning the first that validates.
+
+        Used for serverInfo, where the spec location is preferred but a
+        malformed value there must not shadow a usable legacy one.
+        """
+        for candidate in candidates:
+            parsed = self._parse_payload_model(model, candidate)
+            if parsed is not None:
+                return parsed
+        return None
+
     def _populate_from_probe_payloads(self) -> None:
         """Extract session-equivalent audit data from probe payloads (best-effort).
 
@@ -253,6 +293,13 @@ class MCPAuditor:
         the stateless tools/list carries the tools. Anything that fails to
         parse stays None — the corresponding rules then report it missing,
         which is accurate from the client's perspective.
+
+        Note where serverInfo lives: 2026-07-28 moved it into the result's
+        ``_meta`` under ``io.modelcontextprotocol/serverInfo`` (DiscoverResult
+        has no top-level ``serverInfo`` field at all). The legacy top-level
+        key is still accepted as a fallback, since servers mirroring the
+        ``initialize`` shape are common in the wild and reading it costs
+        nothing.
         """
         from mcp_types import Implementation, ServerCapabilities, Tool
 
@@ -266,7 +313,9 @@ class MCPAuditor:
                 self.audit_data.protocol_version = max(supported)
             else:
                 self.audit_data.protocol_version = (DRAFT or LATEST).version
-            self.audit_data.server_info = self._parse_payload_model(Implementation, payload.get("serverInfo"))
+            self.audit_data.server_info = self._first_parseable(
+                Implementation, _discover_server_info_candidates(payload)
+            )
             self.audit_data.capabilities = self._parse_payload_model(ServerCapabilities, payload.get("capabilities"))
             instructions = payload.get("instructions")
             self.audit_data.instructions = instructions if isinstance(instructions, str) else None
@@ -611,6 +660,8 @@ class MCPAuditor:
             - incomplete_listings: Listings (tools/resources/prompts) whose
               pagination did not complete, so completeness-dependent rules
               were skipped
+            - server_info: Server name and version observed during discovery
+              or initialization, or None when unavailable
             - spec: Negotiated/latest/readiness-target spec versions and the
               observed lifecycle era (legacy / modern / dual-era)
             - readiness: Independent readiness score for the next spec
@@ -635,6 +686,18 @@ class MCPAuditor:
             # page bound): their items were judged, but completeness-dependent
             # rules were skipped as insufficient-data.
             "incomplete_listings": sorted(self.audit_data.incomplete_listings),
+            # Keep this deliberately narrower than the SDK's Implementation
+            # model. Reports need stable server identity for baselines; copying
+            # the whole model would silently grow the public schema and could
+            # embed large icon data or future vendor fields.
+            "server_info": (
+                {
+                    "name": self.audit_data.server_info.name,
+                    "version": self.audit_data.server_info.version,
+                }
+                if self.audit_data.server_info is not None
+                else None
+            ),
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
             "skipped_rules": [s.to_dict() for s in self.skipped_rules],

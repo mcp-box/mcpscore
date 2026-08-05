@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Modern-lifecycle servers now report their identity. `server/discover`
+  carries `serverInfo` in the result's `_meta`
+  (`io.modelcontextprotocol/serverInfo`) — 2026-07-28 removed the top-level
+  field entirely — but the auditor only read the legacy top-level key, so
+  every spec-compliant modern server was audited with no server identity at
+  all (`server_info` rules judging absent data, and the new `server_info`
+  report field always `null`). The `_meta` location is now read first, with
+  the legacy top-level key kept as a deliberate fallback for servers that
+  mirror the `initialize` shape, and a malformed value at the spec location
+  no longer shadows a usable legacy one. Every fixture simulating a
+  `server/discover` response emitted the legacy shape too — the modern-only
+  and probe unit tests here, and the modern and auth fixtures in the
+  acceptance corpus — which is why nothing caught it; all are now
+  spec-accurate.
+
 - Tool-quality rules now skip as `insufficient-data` when a server declares
   the tools capability but `tools/list` produces no usable catalog. The
   capability-consistency rule remains the single failure for that broken
@@ -28,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- JSON reports now include `server_info` with the server-reported `name` and
+  `version` (or `null` when unavailable), allowing baselines to distinguish a
+  server release change from an mcpscore engine release change and providing
+  the live identity needed for future Server Card consistency checks.
 - New HIGH version-scoped rule `tools_output_schema_root_object`: on
   revisions 2025-06-18 through 2025-11-25 the schema restricts `outputSchema`
   to `type: "object"` at the root (any-root schemas became legal in

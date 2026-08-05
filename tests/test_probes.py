@@ -87,7 +87,11 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
                 "resultType": "complete",
                 "supportedVersions": ["2025-11-25", "2026-07-28"],
                 "capabilities": {},
-                "serverInfo": {"name": "modern", "version": "1.0"},
+                # 2026-07-28 carries serverInfo in the result's `_meta`;
+                # DiscoverResult has no top-level field. Keep fixtures
+                # spec-accurate — a legacy-shaped one hid a real extraction
+                # bug until 2026-08-04.
+                "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "modern", "version": "1.0"}},
                 "ttlMs": 60000,
                 "cacheScope": "public",
             },
@@ -661,7 +665,11 @@ async def test_probe_payloads_are_captured_for_data_extraction():
 
     discover_payload = results[PROBE_DISCOVER].payload
     assert discover_payload is not None
-    assert discover_payload["serverInfo"] == {"name": "modern", "version": "1.0"}
+    # The extractor reads the spec location; assert the shape it consumes.
+    assert discover_payload["_meta"]["io.modelcontextprotocol/serverInfo"] == {
+        "name": "modern",
+        "version": "1.0",
+    }
     stateless_payload = results[PROBE_STATELESS_LIST].payload
     assert stateless_payload is not None
     assert stateless_payload["tools"] == []

@@ -118,6 +118,7 @@ async def test_auditor_collects_data_and_scores():
     score, max_score = await auditor.audit(DummyClient(InitResult()))
     # Score is sum of passed rules' severity values
     assert score == RuleSeverity.HIGH
+    assert auditor.get_audit_report()["server_info"] == {"name": "n", "version": "1"}
     # Max score is sum of all rules' severity values
     assert max_score == (RuleSeverity.HIGH + RuleSeverity.MEDIUM)
 
@@ -782,6 +783,7 @@ async def test_get_audit_report():
     assert report["results"][0]["passed"] is True
     assert report["results"][1]["passed"] is False
     assert report["incomplete_listings"] == []
+    assert report["server_info"] is None
 
 
 async def test_stale_client_markers_do_not_leak_into_unattempted_listings():
