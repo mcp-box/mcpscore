@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-05
+
+Correctness release, driven by what real servers exposed. Modern-lifecycle
+servers now have their identity read from the spec's location (they had none
+before, costing five checks each), one failed `tools/list` no longer cascades
+into failures across the whole tools pack, and auth-gated servers whose 401
+arrives as a status-less SDK error are auditable instead of unreachable.
+Reports gain `server_info`; `outputSchema` root types are judged per spec
+revision. 81 rules.
+
 ### Fixed
 
 - Modern-lifecycle servers now report their identity. `server/discover`
@@ -857,7 +867,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/mcp-box/mcpscore/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/mcp-box/mcpscore/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/mcp-box/mcpscore/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mcp-box/mcpscore/compare/v1.1.1...v1.2.0
