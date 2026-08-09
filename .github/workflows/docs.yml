@@ -56,7 +56,10 @@ jobs:
           git diff --exit-code docs/rules.mdx
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: "22"
+          # Exact patch, not a floating major: an unchanged workflow should not
+          # start running on a new runtime because GitHub refreshed its image.
+          # Node 22 is LTS (Jod), in maintenance until 2027-04-30.
+          node-version: "22.23.2"
       - name: Check for broken links
         working-directory: docs
         run: npx --yes mint broken-links

@@ -39,7 +39,9 @@ jobs:
       # from the checked-out release source.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0  # zizmor: ignore[cache-poisoning]
         with:
-          node-version: "22"
+          # Exact patch: this is the release path, so the runtime it publishes
+          # from must not drift between an approved change and the actual run.
+          node-version: "22.23.2"
           registry-url: "https://registry.npmjs.org"
       # Node 22 bundles npm 10.x, but OIDC Trusted Publishing needs npm >=
       # 11.5.1. Without it, npm authenticates with setup-node's placeholder
