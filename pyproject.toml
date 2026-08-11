@@ -83,7 +83,7 @@ dev = [
     # gap means the local gate cannot see what CI enforces. A floating pin
     # (>=0.15.20) against pre-commit's 0.14.8 let `ruff --fix` strip a
     # `# noqa: S310` that CI still required — green locally, red on push.
-    "ruff==0.16.1",
+    "ruff==0.16.2",
 ]
 
 [tool.pyright]
