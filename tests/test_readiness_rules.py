@@ -638,8 +638,8 @@ class TestSepCitations:
         "readiness_2026_result_type": "SEP-2322",
         "readiness_2026_deprecated_features": "SEP-2577",
         "readiness_2026_tool_schema_dialect": "SEP-2106",
-        "readiness_2026_origin_validation": f"{STREAMABLE_HTTP_SPEC}#security-warning",
-        "readiness_2026_unknown_method_error": f"{STREAMABLE_HTTP_SPEC}#server-validation",
+        "readiness_2026_origin_validation": f"{STREAMABLE_HTTP_SPEC}#security-&-endpoint",
+        "readiness_2026_unknown_method_error": f"{STREAMABLE_HTTP_SPEC}#protocol-version-header",
         "readiness_2026_response_content_type": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
     }
 

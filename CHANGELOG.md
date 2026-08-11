@@ -15,10 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must receive HTTP 404 with JSON-RPC `-32601`
   (`readiness_2026_unknown_method_error`), and successful requests must return
   `application/json` or `text/event-stream`
-  (`readiness_2026_response_content_type`). All three are HIGH: the Origin
-  requirement is a spec MUST, but DNS rebinding is a browser-origin attack and
-  every server these rules score is a remote HTTPS endpoint, so it is defence in
-  depth rather than the exposure. The content-type rule reuses existing successful probe
+  (`readiness_2026_response_content_type`). All three are HIGH. The Origin
+  requirement is a spec MUST, and its weight depends on the target: for a
+  locally-bound or plain-`http://` server it is the direct DNS-rebinding
+  mitigation, while for a remote HTTPS server it is defence in depth. HIGH is a
+  single level covering both. The content-type rule reuses existing successful probe
   observations; the other two probes use harmless `tools/list` and invented
   method requests. Network failures and non-HTTP transports skip rather than
   fail.

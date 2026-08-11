@@ -81,6 +81,10 @@ must ignore it ("ignore it, and do not mint or echo session IDs")."""
 REMOVED_METHOD = "ping"
 """A method removed in 2026-07-28, used to probe for leaked legacy surface."""
 
+ORIGIN_PROBE_VALUE = "https://mcpscore.invalid"
+"""Foreign Origin sent by the Origin-validation probe; must never be an origin
+a real deployment would allow."""
+
 UNKNOWN_VERSION = "2099-01-01"
 """Deliberately unsupported version used by the unknown-version probe."""
 
@@ -728,22 +732,31 @@ async def _probe_origin_validation(client: httpx2.AsyncClient, url: str) -> Prob
         follow_redirects=False,
     )
 
+    # Decide on the control before sending anything spoofed. When the answer is
+    # already unknowable, the second request would add security-relevant traffic
+    # (and another timeout) to a server we cannot judge anyway.
+    if control.status_code in AUTH_GATED_STATUSES:
+        # The endpoint refuses the control too, so a 403 to the foreign Origin
+        # would say nothing about Origin handling. Not a failure — an
+        # unanswerable question.
+        unjudged: dict[str, Any] = {
+            "control_http_status": control.status_code,
+            "reason": "control request is access-controlled; Origin handling not observable",
+        }
+        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
+    if not 200 <= control.status_code < 300:
+        unjudged = {
+            "control_http_status": control.status_code,
+            "reason": f"control request was not accepted (HTTP {control.status_code})",
+        }
+        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
+
     headers = _request_headers(target, "tools/list")
-    headers["Origin"] = "https://mcpscore.invalid"
+    headers["Origin"] = ORIGIN_PROBE_VALUE
     response = await _post(client, url, body, headers, follow_redirects=False)
 
     details = _base_details(response)
     details["control_http_status"] = control.status_code
-
-    if control.status_code in AUTH_GATED_STATUSES:
-        # The endpoint refuses the control too, so its 403 (if any) says nothing
-        # about Origin handling. Not a failure — an unanswerable question.
-        details["reason"] = "control request is access-controlled; Origin handling not observable"
-        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, details)
-    if not 200 <= control.status_code < 300:
-        details["reason"] = f"control request was not accepted (HTTP {control.status_code})"
-        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, details)
-
     outcome = ProbeOutcome.SUPPORTED if response.status_code == 403 else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details)
 

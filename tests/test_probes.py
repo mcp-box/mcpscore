@@ -11,6 +11,7 @@ from mcpscore.probes import (
     ERROR_LEGACY_RESOURCE_NOT_FOUND,
     ERROR_UNSUPPORTED_PROTOCOL_VERSION,
     META_PREFIX,
+    ORIGIN_PROBE_VALUE,
     PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
     PROBE_HEADER_MISMATCH,
@@ -257,9 +258,15 @@ async def test_origin_probe_passes_only_when_the_control_is_accepted():
     origin = results[PROBE_ORIGIN_VALIDATION]
     assert origin.outcome is ProbeOutcome.SUPPORTED
     assert origin.details["control_http_status"] == 200
-    # The control really did go out without the header being probed.
-    assert None in seen
-    assert "https://mcpscore.invalid" in seen
+    # Other probes also call tools/list, so `seen` holds more than this probe's
+    # two requests. Pin what matters: the spoofed Origin was sent exactly once,
+    # and the request immediately before it carried none — that ordering is the
+    # control. Compared by equality, not substring, so it cannot pass on a URL
+    # that merely contains the probe value.
+    assert seen.count(ORIGIN_PROBE_VALUE) == 1
+    spoofed_at = seen.index(ORIGIN_PROBE_VALUE)
+    assert spoofed_at > 0
+    assert seen[spoofed_at - 1] is None
 
 
 async def test_unknown_method_probe_cannot_judge_an_auth_gated_server():

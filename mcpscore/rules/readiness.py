@@ -383,13 +383,14 @@ class OriginValidationRule(ProbeBackedReadinessRule):
 
     @property
     def severity(self) -> RuleSeverity:
-        # HIGH, not CRITICAL. The requirement is a spec MUST, but DNS rebinding
-        # is a browser-origin attack and the spec pairs this with "when running
-        # locally, bind only to localhost" — every server scored here is a
-        # remote HTTPS endpoint, where it is defence in depth rather than the
-        # exposure. 96% of modern-capable servers in the registry fail it, so at
-        # CRITICAL it would be a constant subtracted from every modern score
-        # rather than a signal that separates servers.
+        # HIGH, not CRITICAL — a single level covering two populations.
+        # For a locally-bound or plain-http:// target (both are auditable) this
+        # is the *direct* DNS-rebinding mitigation, which argues for CRITICAL.
+        # For the remote HTTPS servers that dominate the measured population it
+        # is defence in depth, and 96% of modern-capable registry servers fail
+        # it — at CRITICAL that becomes a constant subtracted from every modern
+        # score rather than a signal separating servers. HIGH is the compromise;
+        # revisit if local targets ever become a meaningful share of audits.
         return RuleSeverity.HIGH
 
     def check(self, audit_data: AuditData) -> RuleResult:
@@ -406,7 +407,7 @@ class OriginValidationRule(ProbeBackedReadinessRule):
             passed=passed,
             message=message,
             details={
-                "spec": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-warning",
+                "spec": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint",
                 "target_version": READINESS_TARGET,
                 **probe.details,
             },
@@ -443,7 +444,7 @@ class UnknownMethodErrorRule(ProbeBackedReadinessRule):
             passed=passed,
             message=message,
             details={
-                "spec": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation",
+                "spec": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#protocol-version-header",
                 "target_version": READINESS_TARGET,
                 **probe.details,
             },
