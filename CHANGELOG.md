@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   method requests. Network failures and non-HTTP transports skip rather than
   fail.
 
+  Both security probes judge only what they can actually observe. The `Origin`
+  probe first sends a control request *without* the foreign header: a lone HTTP
+  403 does not prove Origin validation, because 403 is also how an
+  access-controlled server refuses everyone, so the check reports
+  `not-applicable` unless the control shows the same request would otherwise be
+  accepted. The unknown-method probe reports `not-applicable` on 401/403 for the
+  same reason — a request that never reached method dispatch says nothing about
+  how the server answers an unknown method, and auth-gated servers are healthy.
+
 ## [1.5.0] - 2026-08-05
 
 Correctness release, driven by what real servers exposed. Modern-lifecycle

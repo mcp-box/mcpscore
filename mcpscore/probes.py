@@ -709,18 +709,41 @@ async def _probe_origin_validation(client: httpx2.AsyncClient, url: str) -> Prob
     Streamable HTTP servers MUST validate every supplied Origin to prevent DNS
     rebinding and MUST reject an invalid one with HTTP 403. The request uses
     ``tools/list`` and cannot invoke server-side tool behavior.
+
+    **A single 403 proves nothing**, because 403 is also how an access-controlled
+    server refuses everyone. Judged on its own, every server that rejects
+    unauthenticated callers would pass a CRITICAL security check it has not
+    earned — measured against the registry, 54 servers answer 403 to any
+    unauthenticated request. So this sends a control request *without* the
+    foreign Origin first, and only judges the server when that control shows the
+    same request would otherwise be accepted.
     """
     target = _target_version()
-    headers = _request_headers(target, "tools/list")
-    headers["Origin"] = "https://mcpscore.invalid"
-    response = await _post(
+    body = _request_body("tools/list", 10, _modern_meta(target))
+    control = await _post(
         client,
         url,
-        _request_body("tools/list", 10, _modern_meta(target)),
-        headers,
+        body,
+        _request_headers(target, "tools/list"),
         follow_redirects=False,
     )
+
+    headers = _request_headers(target, "tools/list")
+    headers["Origin"] = "https://mcpscore.invalid"
+    response = await _post(client, url, body, headers, follow_redirects=False)
+
     details = _base_details(response)
+    details["control_http_status"] = control.status_code
+
+    if control.status_code in AUTH_GATED_STATUSES:
+        # The endpoint refuses the control too, so its 403 (if any) says nothing
+        # about Origin handling. Not a failure — an unanswerable question.
+        details["reason"] = "control request is access-controlled; Origin handling not observable"
+        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, details)
+    if not 200 <= control.status_code < 300:
+        details["reason"] = f"control request was not accepted (HTTP {control.status_code})"
+        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, details)
+
     outcome = ProbeOutcome.SUPPORTED if response.status_code == 403 else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details)
 
@@ -741,6 +764,12 @@ async def _probe_unknown_method(client: httpx2.AsyncClient, url: str) -> ProbeRe
         _request_headers(target, method),
     )
     details = _base_details(response)
+    if response.status_code in AUTH_GATED_STATUSES:
+        # The request never reached method dispatch, so how this server answers
+        # an unknown method is unobservable. Auth-gated servers are healthy;
+        # failing them here would report an auth posture as a transport defect.
+        details["reason"] = "request is access-controlled; method dispatch not observable"
+        return ProbeResult(PROBE_UNKNOWN_METHOD, ProbeOutcome.NOT_APPLICABLE, details)
     correct = response.status_code == 404 and response.error_code == ERROR_METHOD_NOT_FOUND
     outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)

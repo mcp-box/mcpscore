@@ -170,10 +170,17 @@ async def test_legacy_server_is_unsupported_but_observed():
         PROBE_MISSING_RESOURCE,
         PROBE_SESSION_ID_ECHO,
         PROBE_REMOVED_METHOD,
-        PROBE_ORIGIN_VALIDATION,
         PROBE_UNKNOWN_METHOD,
     ):
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
+
+    # Not UNSUPPORTED: a legacy server rejects the modern control request, so
+    # its Origin handling was never exercised. Claiming "does not reject an
+    # invalid Origin" would assert something this probe did not observe. The
+    # rule skips legacy servers regardless, so no score depends on it.
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert origin.details["control_http_status"] == 400
 
     # The observation probe still succeeds against a legacy server.
     assert results[PROBE_UNAUTHENTICATED].outcome is ProbeOutcome.SUPPORTED
@@ -206,6 +213,75 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
     assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 307
     assert results[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.UNSUPPORTED
     assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
+
+
+async def test_origin_probe_cannot_judge_an_access_controlled_server():
+    """A 403 to everything is not Origin validation.
+
+    Regression: judged on a single response, every server that refuses
+    unauthenticated callers passed a CRITICAL DNS-rebinding check it had never
+    demonstrated. Verified against three live registry servers whose control
+    request — same body, no foreign Origin — also answered 403.
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "tools/list":
+            return httpx2.Response(403, json={"detail": "forbidden"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert origin.details["control_http_status"] == 403
+    assert "access-controlled" in origin.details["reason"]
+
+
+async def test_origin_probe_passes_only_when_the_control_is_accepted():
+    """403 for the foreign Origin *and* success without it is the real signal."""
+    seen: list[str | None] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "tools/list":
+            origin = request.headers.get("Origin")
+            seen.append(origin)
+            if origin == "https://mcpscore.invalid":
+                return httpx2.Response(403, json={"detail": "bad origin"})
+            return _rpc_result(body.get("id"), {"tools": [], "resultType": "complete"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_http_status"] == 200
+    # The control really did go out without the header being probed.
+    assert None in seen
+    assert "https://mcpscore.invalid" in seen
+
+
+async def test_unknown_method_probe_cannot_judge_an_auth_gated_server():
+    """401 says nothing about method dispatch — auth-gated servers are healthy.
+
+    Regression: 9 of 200 sampled registry servers answered 401 here and were
+    marked non-compliant on evidence about their auth posture, not their
+    transport.
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "mcpscore/unknown-method":
+            return httpx2.Response(401, json={"error": "invalid_token"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    unknown = results[PROBE_UNKNOWN_METHOD]
+    assert unknown.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert unknown.details["http_status"] == 401
+    assert "access-controlled" in unknown.details["reason"]
 
 
 class TestWellKnownUrls:
