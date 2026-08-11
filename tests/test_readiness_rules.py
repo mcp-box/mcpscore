@@ -315,7 +315,12 @@ class TestRequestContentTypeRule:
 
     def test_fail_when_successful_response_omits_content_type(self):
         probes = modern_probes(probe_stateless_list=ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {}))
-        assert not RequestContentTypeRule().check(AuditData(probes=probes)).passed
+        result = RequestContentTypeRule().check(AuditData(probes=probes))
+        assert not result.passed
+        # The absence is named rather than rendered as a bare `None`, which
+        # reads as a defect in the report instead of a finding about the server.
+        assert "no Content-Type header" in result.message
+        assert "None" not in result.message
 
     def test_skip_without_modern_support(self):
         assert (

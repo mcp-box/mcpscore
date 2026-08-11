@@ -494,10 +494,13 @@ class RequestContentTypeRule(ReadinessBaseRule):
             if self._media_type(probe.details.get("content_type")) not in {"application/json", "text/event-stream"}
         }
         passed = not invalid
+        # A missing header renders as `None`, which reads as a bug in the report
+        # rather than a finding about the server. Name the absence instead.
+        observed = ", ".join(f"{pid}: {value or 'no Content-Type header'}" for pid, value in sorted(invalid.items()))
         message = (
             "✅ Successful Streamable HTTP requests return application/json or text/event-stream"
             if passed
-            else f"❌ Successful Streamable HTTP responses use invalid content types: {invalid}"
+            else f"❌ Successful Streamable HTTP responses use invalid content types — {observed}"
         )
         return RuleResult(
             rule_name=self.rule_name,
