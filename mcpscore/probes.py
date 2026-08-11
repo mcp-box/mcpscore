@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx2
 
@@ -80,6 +81,10 @@ must ignore it ("ignore it, and do not mint or echo session IDs")."""
 
 REMOVED_METHOD = "ping"
 """A method removed in 2026-07-28, used to probe for leaked legacy surface."""
+
+UNKNOWN_METHOD_PREFIX = "mcpscore/unknown-method-"
+"""Prefix of the deliberately unimplemented method sent by the unknown-method
+probe; a random suffix is appended per probe so it cannot be pre-implemented."""
 
 ORIGIN_PROBE_VALUE = "https://mcpscore.invalid"
 """Foreign Origin sent by the Origin-validation probe; must never be an origin
@@ -769,7 +774,11 @@ async def _probe_unknown_method(client: httpx2.AsyncClient, url: str) -> ProbeRe
     namespaced to mcpscore to avoid colliding with a core MCP method.
     """
     target = _target_version()
-    method = "mcpscore/unknown-method"
+    # Randomised per probe: a fixed name could be implemented — deliberately or
+    # by accident — and would then pass the rule without the server actually
+    # handling unknown methods correctly. The readable prefix is kept so the
+    # request is identifiable in a server operator's logs.
+    method = f"{UNKNOWN_METHOD_PREFIX}{uuid4().hex[:12]}"
     response = await _post(
         client,
         url,

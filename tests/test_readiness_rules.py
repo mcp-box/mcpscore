@@ -32,7 +32,7 @@ from mcpscore.rules.readiness import (
     NoSessionIdReadinessRule,
     OriginValidationRule,
     RemovedMethodsReadinessRule,
-    RequestContentTypeRule,
+    ResponseContentTypeRule,
     ResultTypeReadinessRule,
     ServerDiscoverReadinessRule,
     StatelessRequestReadinessRule,
@@ -290,7 +290,7 @@ class TestCacheMetadataRule:
         assert CacheMetadataReadinessRule().skip_reason(data) == SKIP_REASON_REQUIRES_MODERN_SUPPORT
 
 
-class TestRequestContentTypeRule:
+class TestResponseContentTypeRule:
     def test_pass_with_json_and_sse_media_types(self):
         probes = modern_probes(
             probe_stateless_list=ProbeResult(
@@ -299,7 +299,7 @@ class TestRequestContentTypeRule:
                 {"content_type": "text/event-stream; charset=utf-8"},
             )
         )
-        assert RequestContentTypeRule().check(AuditData(probes=probes)).passed
+        assert ResponseContentTypeRule().check(AuditData(probes=probes)).passed
 
     def test_fail_when_successful_response_has_wrong_content_type(self):
         probes = modern_probes(
@@ -309,13 +309,13 @@ class TestRequestContentTypeRule:
                 {"content_type": "text/plain"},
             )
         )
-        result = RequestContentTypeRule().check(AuditData(probes=probes))
+        result = ResponseContentTypeRule().check(AuditData(probes=probes))
         assert not result.passed
         assert "text/plain" in result.message
 
     def test_fail_when_successful_response_omits_content_type(self):
         probes = modern_probes(probe_stateless_list=ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {}))
-        result = RequestContentTypeRule().check(AuditData(probes=probes))
+        result = ResponseContentTypeRule().check(AuditData(probes=probes))
         assert not result.passed
         # The absence is named rather than rendered as a bare `None`, which
         # reads as a defect in the report instead of a finding about the server.
@@ -324,12 +324,12 @@ class TestRequestContentTypeRule:
 
     def test_skip_without_modern_support(self):
         assert (
-            RequestContentTypeRule().skip_reason(AuditData(probes=legacy_probes()))
+            ResponseContentTypeRule().skip_reason(AuditData(probes=legacy_probes()))
             == SKIP_REASON_REQUIRES_MODERN_SUPPORT
         )
 
     def test_skip_without_probe_data(self):
-        assert RequestContentTypeRule().skip_reason(AuditData(probes=None)) == SKIP_REASON_INSUFFICIENT_DATA
+        assert ResponseContentTypeRule().skip_reason(AuditData(probes=None)) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 class TestResultTypeRule:

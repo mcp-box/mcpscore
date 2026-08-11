@@ -379,7 +379,7 @@ class OriginValidationRule(ProbeBackedReadinessRule):
 
     @property
     def rule_name(self) -> str:
-        return "Readiness 2026-07-28 - invalid Origin rejected"
+        return f"Readiness {READINESS_TARGET} - invalid Origin rejected"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -424,7 +424,7 @@ class UnknownMethodErrorRule(ProbeBackedReadinessRule):
 
     @property
     def rule_name(self) -> str:
-        return "Readiness 2026-07-28 - unknown method error"
+        return f"Readiness {READINESS_TARGET} - unknown method error"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -452,7 +452,7 @@ class UnknownMethodErrorRule(ProbeBackedReadinessRule):
 
 
 @register_rule
-class RequestContentTypeRule(ReadinessBaseRule):
+class ResponseContentTypeRule(ReadinessBaseRule):
     """Successful modern requests use JSON or SSE response content types."""
 
     rule_id = "readiness_2026_response_content_type"
@@ -460,7 +460,7 @@ class RequestContentTypeRule(ReadinessBaseRule):
 
     @property
     def rule_name(self) -> str:
-        return "Readiness 2026-07-28 - response content type"
+        return f"Readiness {READINESS_TARGET} - response content type"
 
     @property
     def severity(self) -> RuleSeverity:

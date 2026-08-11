@@ -9,6 +9,7 @@ from mcpscore.probes import (
     ERROR_HEADER_MISMATCH,
     ERROR_INVALID_PARAMS,
     ERROR_LEGACY_RESOURCE_NOT_FOUND,
+    ERROR_METHOD_NOT_FOUND,
     ERROR_UNSUPPORTED_PROTOCOL_VERSION,
     META_PREFIX,
     ORIGIN_PROBE_VALUE,
@@ -25,6 +26,7 @@ from mcpscore.probes import (
     PROBE_UNAUTHENTICATED,
     PROBE_UNKNOWN_METHOD,
     PROBE_UNKNOWN_VERSION,
+    UNKNOWN_METHOD_PREFIX,
     ProbeOutcome,
     ProbeResult,
     _fetch_auth_server_metadata,
@@ -202,7 +204,7 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
         body = json.loads(request.content) if request.method == "POST" else {}
         if request.headers.get("Origin") == "https://mcpscore.invalid":
             return httpx2.Response(307, headers={"location": "https://redirect.example/mcp"})
-        if body.get("method") == "mcpscore/unknown-method":
+        if str(body.get("method", "")).startswith(UNKNOWN_METHOD_PREFIX):
             return _rpc_result(body.get("id"), {"resultType": "complete"})
         return _modern_server_handler(request)
 
@@ -269,6 +271,28 @@ async def test_origin_probe_passes_only_when_the_control_is_accepted():
     assert seen[spoofed_at - 1] is None
 
 
+async def test_unknown_method_probe_uses_a_fresh_method_name_each_run():
+    """A fixed name could be pre-implemented and would pass without the behavior."""
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        method = str(body.get("method", ""))
+        if method.startswith(UNKNOWN_METHOD_PREFIX):
+            seen.append(method)
+            return _rpc_error(body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=404)
+        return _modern_server_handler(request)
+
+    first = await _run(handler)
+    second = await _run(handler)
+
+    assert first[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.SUPPORTED
+    assert second[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.SUPPORTED
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    assert all(m.startswith(UNKNOWN_METHOD_PREFIX) for m in seen)
+
+
 async def test_unknown_method_probe_cannot_judge_an_auth_gated_server():
     """401 says nothing about method dispatch — auth-gated servers are healthy.
 
@@ -279,7 +303,7 @@ async def test_unknown_method_probe_cannot_judge_an_auth_gated_server():
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content) if request.method == "POST" else {}
-        if body.get("method") == "mcpscore/unknown-method":
+        if str(body.get("method", "")).startswith(UNKNOWN_METHOD_PREFIX):
             return httpx2.Response(401, json={"error": "invalid_token"})
         return _modern_server_handler(request)
 
