@@ -9,19 +9,24 @@ from mcpscore.probes import (
     ERROR_HEADER_MISMATCH,
     ERROR_INVALID_PARAMS,
     ERROR_LEGACY_RESOURCE_NOT_FOUND,
+    ERROR_METHOD_NOT_FOUND,
     ERROR_UNSUPPORTED_PROTOCOL_VERSION,
     META_PREFIX,
+    ORIGIN_PROBE_VALUE,
     PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
+    PROBE_ORIGIN_VALIDATION,
     PROBE_REMOVED_METHOD,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
     PROBE_UNAUTHENTICATED,
+    PROBE_UNKNOWN_METHOD,
     PROBE_UNKNOWN_VERSION,
+    UNKNOWN_METHOD_PREFIX,
     ProbeOutcome,
     ProbeResult,
     _fetch_auth_server_metadata,
@@ -57,6 +62,8 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/.well-known/oauth-protected-resource/mcp":
             return httpx2.Response(200, json={"resource": URL, "authorization_servers": AUTH_SERVERS})
         return httpx2.Response(404)
+    if request.headers.get("Origin") == "https://mcpscore.invalid":
+        return httpx2.Response(403)
     body = json.loads(request.content)
     request_id = body.get("id")
     method = body["method"]
@@ -142,6 +149,7 @@ async def test_modern_server_supports_all_probed_behaviors():
 
     stateless = results[PROBE_STATELESS_LIST].details
     assert stateless["result_type"] == "complete"
+    assert stateless["content_type"] == "application/json"
 
     unknown = results[PROBE_UNKNOWN_VERSION].details
     assert unknown["supported"] == ["2026-07-28"]
@@ -149,6 +157,8 @@ async def test_modern_server_supports_all_probed_behaviors():
     assert unknown["data_well_formed"] is True
 
     assert results[PROBE_MISSING_RESOURCE].details["legacy_code_emitted"] is False
+    assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 403
+    assert results[PROBE_UNKNOWN_METHOD].details["error_code"] == -32601
 
 
 async def test_legacy_server_is_unsupported_but_observed():
@@ -163,8 +173,17 @@ async def test_legacy_server_is_unsupported_but_observed():
         PROBE_MISSING_RESOURCE,
         PROBE_SESSION_ID_ECHO,
         PROBE_REMOVED_METHOD,
+        PROBE_UNKNOWN_METHOD,
     ):
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
+
+    # Not UNSUPPORTED: a legacy server rejects the modern control request, so
+    # its Origin handling was never exercised. Claiming "does not reject an
+    # invalid Origin" would assert something this probe did not observe. The
+    # rule skips legacy servers regardless, so no score depends on it.
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert origin.details["control_http_status"] == 400
 
     # The observation probe still succeeds against a legacy server.
     assert results[PROBE_UNAUTHENTICATED].outcome is ProbeOutcome.SUPPORTED
@@ -178,6 +197,122 @@ async def test_legacy_server_is_unsupported_but_observed():
     auth = results[PROBE_AUTH_METADATA]
     assert auth.outcome is ProbeOutcome.UNSUPPORTED
     assert len(auth.details["urls_tried"]) == 2
+
+
+async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if request.headers.get("Origin") == "https://mcpscore.invalid":
+            return httpx2.Response(307, headers={"location": "https://redirect.example/mcp"})
+        if str(body.get("method", "")).startswith(UNKNOWN_METHOD_PREFIX):
+            return _rpc_result(body.get("id"), {"resultType": "complete"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_ORIGIN_VALIDATION].outcome is ProbeOutcome.UNSUPPORTED
+    # Security probes judge the target endpoint itself and never follow a
+    # redirect that could carry caller context to another origin.
+    assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 307
+    assert results[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
+
+
+async def test_origin_probe_cannot_judge_an_access_controlled_server():
+    """A 403 to everything is not Origin validation.
+
+    Regression: judged on a single response, every server that refuses
+    unauthenticated callers passed a CRITICAL DNS-rebinding check it had never
+    demonstrated. Verified against three live registry servers whose control
+    request — same body, no foreign Origin — also answered 403.
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "tools/list":
+            return httpx2.Response(403, json={"detail": "forbidden"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert origin.details["control_http_status"] == 403
+    assert "access-controlled" in origin.details["reason"]
+
+
+async def test_origin_probe_passes_only_when_the_control_is_accepted():
+    """403 for the foreign Origin *and* success without it is the real signal."""
+    seen: list[str | None] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "tools/list":
+            origin = request.headers.get("Origin")
+            seen.append(origin)
+            if origin == "https://mcpscore.invalid":
+                return httpx2.Response(403, json={"detail": "bad origin"})
+            return _rpc_result(body.get("id"), {"tools": [], "resultType": "complete"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_http_status"] == 200
+    # Other probes also call tools/list, so `seen` holds more than this probe's
+    # two requests. Pin what matters: the spoofed Origin was sent exactly once,
+    # and the request immediately before it carried none — that ordering is the
+    # control. Compared by equality, not substring, so it cannot pass on a URL
+    # that merely contains the probe value.
+    assert seen.count(ORIGIN_PROBE_VALUE) == 1
+    spoofed_at = seen.index(ORIGIN_PROBE_VALUE)
+    assert spoofed_at > 0
+    assert seen[spoofed_at - 1] is None
+
+
+async def test_unknown_method_probe_uses_a_fresh_method_name_each_run():
+    """A fixed name could be pre-implemented and would pass without the behavior."""
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        method = str(body.get("method", ""))
+        if method.startswith(UNKNOWN_METHOD_PREFIX):
+            seen.append(method)
+            return _rpc_error(body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=404)
+        return _modern_server_handler(request)
+
+    first = await _run(handler)
+    second = await _run(handler)
+
+    assert first[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.SUPPORTED
+    assert second[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.SUPPORTED
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    assert all(m.startswith(UNKNOWN_METHOD_PREFIX) for m in seen)
+
+
+async def test_unknown_method_probe_cannot_judge_an_auth_gated_server():
+    """401 says nothing about method dispatch — auth-gated servers are healthy.
+
+    Regression: 9 of 200 sampled registry servers answered 401 here and were
+    marked non-compliant on evidence about their auth posture, not their
+    transport.
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if str(body.get("method", "")).startswith(UNKNOWN_METHOD_PREFIX):
+            return httpx2.Response(401, json={"error": "invalid_token"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    unknown = results[PROBE_UNKNOWN_METHOD]
+    assert unknown.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert unknown.details["http_status"] == 401
+    assert "access-controlled" in unknown.details["reason"]
 
 
 class TestWellKnownUrls:

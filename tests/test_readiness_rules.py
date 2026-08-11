@@ -9,10 +9,12 @@ from mcpscore.probes import (
     PROBE_IDS,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
+    PROBE_ORIGIN_VALIDATION,
     PROBE_REMOVED_METHOD,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
     PROBE_UNAUTHENTICATED,
+    PROBE_UNKNOWN_METHOD,
     PROBE_UNKNOWN_VERSION,
     ProbeOutcome,
     ProbeResult,
@@ -28,12 +30,15 @@ from mcpscore.rules.readiness import (
     HeaderValidationReadinessRule,
     MetaValidationReadinessRule,
     NoSessionIdReadinessRule,
+    OriginValidationRule,
     RemovedMethodsReadinessRule,
+    ResponseContentTypeRule,
     ResultTypeReadinessRule,
     ServerDiscoverReadinessRule,
     StatelessRequestReadinessRule,
     SupportedVersionsReadinessRule,
     ToolSchemaDialectReadinessRule,
+    UnknownMethodErrorRule,
     UnsupportedVersionErrorReadinessRule,
 )
 from mcpscore.spec import Era
@@ -43,7 +48,13 @@ from .conftest import FakeLoggingCaps, FakeServerCapabilities
 
 def modern_probes(**overrides: ProbeResult) -> dict[str, ProbeResult]:
     """Probe observations of a fully 2026-ready server."""
-    good_hints = {"http_status": 200, "result_type": "complete", "ttl_ms": 60000, "cache_scope": "public"}
+    good_hints = {
+        "http_status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "result_type": "complete",
+        "ttl_ms": 60000,
+        "cache_scope": "public",
+    }
     results = {
         PROBE_DISCOVER: ProbeResult(
             PROBE_DISCOVER, ProbeOutcome.SUPPORTED, {**good_hints, "supported_versions": ["2026-07-28"]}
@@ -69,6 +80,14 @@ def modern_probes(**overrides: ProbeResult) -> dict[str, ProbeResult]:
             PROBE_REMOVED_METHOD,
             ProbeOutcome.SUPPORTED,
             {"http_status": 404, "error_code": -32601, "method_served": False},
+        ),
+        PROBE_ORIGIN_VALIDATION: ProbeResult(
+            PROBE_ORIGIN_VALIDATION, ProbeOutcome.SUPPORTED, {"http_status": 403, "content_type": None}
+        ),
+        PROBE_UNKNOWN_METHOD: ProbeResult(
+            PROBE_UNKNOWN_METHOD,
+            ProbeOutcome.SUPPORTED,
+            {"http_status": 404, "error_code": -32601, "content_type": "application/json"},
         ),
     }
     results.update(overrides)
@@ -115,6 +134,8 @@ class TestDetailProbeRules:
         HeaderValidationReadinessRule,
         UnsupportedVersionErrorReadinessRule,
         ErrorCodeMigrationReadinessRule,
+        OriginValidationRule,
+        UnknownMethodErrorRule,
     )
 
     def test_pass_against_modern_server(self):
@@ -144,6 +165,26 @@ class TestDetailProbeRules:
         rule = HeaderValidationReadinessRule()
         assert rule.skip_reason(data) is None
         assert not rule.check(data).passed
+
+    def test_origin_validation_fail_message(self):
+        probes = modern_probes(
+            probe_origin_validation=ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.UNSUPPORTED, {"http_status": 200})
+        )
+        result = OriginValidationRule().check(AuditData(probes=probes))
+        assert not result.passed
+        assert "DNS rebinding" in result.message
+
+    def test_unknown_method_fail_message(self):
+        probes = modern_probes(
+            probe_unknown_method=ProbeResult(
+                PROBE_UNKNOWN_METHOD,
+                ProbeOutcome.UNSUPPORTED,
+                {"http_status": 404, "error_code": -32600},
+            )
+        )
+        result = UnknownMethodErrorRule().check(AuditData(probes=probes))
+        assert not result.passed
+        assert "-32601" in result.message
 
     def test_unsupported_version_error_flags_missing_data(self):
         probes = modern_probes(
@@ -247,6 +288,48 @@ class TestCacheMetadataRule:
     def test_skip_without_modern_support(self):
         data = AuditData(probes=legacy_probes())
         assert CacheMetadataReadinessRule().skip_reason(data) == SKIP_REASON_REQUIRES_MODERN_SUPPORT
+
+
+class TestResponseContentTypeRule:
+    def test_pass_with_json_and_sse_media_types(self):
+        probes = modern_probes(
+            probe_stateless_list=ProbeResult(
+                PROBE_STATELESS_LIST,
+                ProbeOutcome.SUPPORTED,
+                {"content_type": "text/event-stream; charset=utf-8"},
+            )
+        )
+        assert ResponseContentTypeRule().check(AuditData(probes=probes)).passed
+
+    def test_fail_when_successful_response_has_wrong_content_type(self):
+        probes = modern_probes(
+            probe_stateless_list=ProbeResult(
+                PROBE_STATELESS_LIST,
+                ProbeOutcome.SUPPORTED,
+                {"content_type": "text/plain"},
+            )
+        )
+        result = ResponseContentTypeRule().check(AuditData(probes=probes))
+        assert not result.passed
+        assert "text/plain" in result.message
+
+    def test_fail_when_successful_response_omits_content_type(self):
+        probes = modern_probes(probe_stateless_list=ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {}))
+        result = ResponseContentTypeRule().check(AuditData(probes=probes))
+        assert not result.passed
+        # The absence is named rather than rendered as a bare `None`, which
+        # reads as a defect in the report instead of a finding about the server.
+        assert "no Content-Type header" in result.message
+        assert "None" not in result.message
+
+    def test_skip_without_modern_support(self):
+        assert (
+            ResponseContentTypeRule().skip_reason(AuditData(probes=legacy_probes()))
+            == SKIP_REASON_REQUIRES_MODERN_SUPPORT
+        )
+
+    def test_skip_without_probe_data(self):
+        assert ResponseContentTypeRule().skip_reason(AuditData(probes=None)) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 class TestResultTypeRule:
@@ -381,8 +464,8 @@ class TestReadinessScoringAxis:
         readiness_ids = {r.rule_id for r in auditor.readiness_results}
         main_ids = {r.rule_id for r in auditor.results}
         assert readiness_ids
-        assert all(rid.startswith("readiness_") for rid in readiness_ids)
-        assert not any(rid.startswith("readiness_") for rid in main_ids)
+        assert "readiness_2026_origin_validation" in readiness_ids
+        assert readiness_ids.isdisjoint(main_ids)
         assert auditor.readiness_max > 0
 
     def test_legacy_server_readiness_gateways_fail_details_skip(self):
@@ -407,7 +490,7 @@ class TestReadinessScoringAxis:
         assert report["spec"]["era"] == "legacy"
         assert report["readiness"]["max_score"] > 0
         assert report["readiness"]["score"] < report["readiness"]["max_score"]
-        assert all(r["rule_id"].startswith("readiness_") for r in report["readiness"]["results"])
+        assert {r["rule_id"] for r in report["readiness"]["results"]} == {r.rule_id for r in auditor.readiness_results}
 
 
 class TestLegacyLeakageRules:
@@ -529,7 +612,7 @@ class TestUncoveredBranches:
 
 
 class TestSepCitations:
-    """Every readiness rule must report the SEP that actually introduced its requirement.
+    """Every readiness rule must report its exact normative source.
 
     Verified against the 2026-07-28 changelog on 2026-07-28. This table is the
     guard that a `details["sep"]` truthiness check is not: `server/discover`
@@ -537,7 +620,8 @@ class TestSepCitations:
     SEP until it was caught by a launch-eve review.
     """
 
-    EXPECTED_SEP = {
+    STREAMABLE_HTTP_SPEC = "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http"
+    EXPECTED_CITATION = {
         # server/discover, statelessness, session removal, subscriptions/listen,
         # and the removed methods all land in SEP-2575 — except sessions.
         "readiness_2026_server_discover": "SEP-2575",
@@ -554,6 +638,9 @@ class TestSepCitations:
         "readiness_2026_result_type": "SEP-2322",
         "readiness_2026_deprecated_features": "SEP-2577",
         "readiness_2026_tool_schema_dialect": "SEP-2106",
+        "readiness_2026_origin_validation": f"{STREAMABLE_HTTP_SPEC}#security-&-endpoint",
+        "readiness_2026_unknown_method_error": f"{STREAMABLE_HTTP_SPEC}#protocol-version-header",
+        "readiness_2026_response_content_type": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
     }
 
     def test_every_readiness_rule_cites_the_right_sep(self):
@@ -569,9 +656,10 @@ class TestSepCitations:
         for rule in create_all_rules():
             if rule.group_name != READINESS_GROUP or rule.skip_reason(data) is not None:
                 continue
-            seen[rule.rule_id] = (rule.check(data).details or {}).get("sep")
+            details = rule.check(data).details or {}
+            seen[rule.rule_id] = details.get("sep") or details.get("spec")
 
-        # Key-set first so a new readiness rule missing from EXPECTED_SEP fails
+        # Key-set first so a new readiness rule missing from EXPECTED_CITATION fails
         # with a clear assertion, not a KeyError on the dict comprehension below.
-        assert set(seen) == set(self.EXPECTED_SEP), "readiness rule missing from the citation table"
-        assert seen == {rule_id: self.EXPECTED_SEP[rule_id] for rule_id in seen}
+        assert set(seen) == set(self.EXPECTED_CITATION), "readiness rule missing from the citation table"
+        assert seen == {rule_id: self.EXPECTED_CITATION[rule_id] for rule_id in seen}

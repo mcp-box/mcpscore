@@ -33,9 +33,11 @@ from mcpscore.probes import (
     PROBE_HEADER_MISMATCH,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
+    PROBE_ORIGIN_VALIDATION,
     PROBE_REMOVED_METHOD,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
+    PROBE_UNKNOWN_METHOD,
     PROBE_UNKNOWN_VERSION,
     REMOVED_METHOD,
     ProbeOutcome,
@@ -363,6 +365,153 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
                 "sep": "SEP-2549",
                 "target_version": READINESS_TARGET,
                 "observed": {pid: probe.details for pid, probe in supported.items()},
+            },
+        )
+
+
+@register_rule
+class OriginValidationRule(ProbeBackedReadinessRule):
+    """The HTTP endpoint rejects an invalid foreign Origin with HTTP 403."""
+
+    rule_id = "readiness_2026_origin_validation"
+    rule_order = 14
+    probe_id = PROBE_ORIGIN_VALIDATION
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - invalid Origin rejected"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        # HIGH, not CRITICAL — a single level covering two populations.
+        # For a locally-bound or plain-http:// target (both are auditable) this
+        # is the *direct* DNS-rebinding mitigation, which argues for CRITICAL.
+        # For the remote HTTPS servers that dominate the measured population it
+        # is defence in depth, and 96% of modern-capable registry servers fail
+        # it — at CRITICAL that becomes a constant subtracted from every modern
+        # score rather than a signal separating servers. HIGH is the compromise;
+        # revisit if local targets ever become a meaningful share of audits.
+        return RuleSeverity.HIGH
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        probe = self._probe(audit_data)
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        message = (
+            "✅ Streamable HTTP rejects an invalid foreign Origin with HTTP 403"
+            if passed
+            else "❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "spec": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint",
+                "target_version": READINESS_TARGET,
+                **probe.details,
+            },
+        )
+
+
+@register_rule
+class UnknownMethodErrorRule(ProbeBackedReadinessRule):
+    """Unknown RPC methods return HTTP 404 and JSON-RPC -32601."""
+
+    rule_id = "readiness_2026_unknown_method_error"
+    rule_order = 15
+    probe_id = PROBE_UNKNOWN_METHOD
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - unknown method error"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        probe = self._probe(audit_data)
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        message = (
+            "✅ Unknown RPC methods return HTTP 404 with JSON-RPC -32601"
+            if passed
+            else "❌ Unknown RPC methods do not return HTTP 404 with JSON-RPC -32601 (Method not found)"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "spec": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#protocol-version-header",
+                "target_version": READINESS_TARGET,
+                **probe.details,
+            },
+        )
+
+
+@register_rule
+class ResponseContentTypeRule(ReadinessBaseRule):
+    """Successful modern requests use JSON or SSE response content types."""
+
+    rule_id = "readiness_2026_response_content_type"
+    rule_order = 16
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - response content type"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless a successful modern gateway response can be inspected."""
+        probes = audit_data.probes or {}
+        if not has_modern_support(probes):
+            observed = [probes[pid] for pid in GATEWAY_PROBE_IDS if pid in probes]
+            if not observed or all(p.outcome in (ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE) for p in observed):
+                return SKIP_REASON_INSUFFICIENT_DATA
+            return SKIP_REASON_REQUIRES_MODERN_SUPPORT
+        return None
+
+    @staticmethod
+    def _media_type(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        return value.partition(";")[0].strip().lower()
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        probes = audit_data.probes or {}
+        successful = {
+            pid: probes[pid]
+            for pid in GATEWAY_PROBE_IDS
+            if pid in probes and probes[pid].outcome is ProbeOutcome.SUPPORTED
+        }
+        invalid = {
+            pid: probe.details.get("content_type")
+            for pid, probe in successful.items()
+            if self._media_type(probe.details.get("content_type")) not in {"application/json", "text/event-stream"}
+        }
+        passed = not invalid
+        # A missing header renders as `None`, which reads as a bug in the report
+        # rather than a finding about the server. Name the absence instead.
+        observed = ", ".join(f"{pid}: {value or 'no Content-Type header'}" for pid, value in sorted(invalid.items()))
+        message = (
+            "✅ Successful Streamable HTTP requests return application/json or text/event-stream"
+            if passed
+            else f"❌ Successful Streamable HTTP responses use invalid content types — {observed}"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "spec": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#sending-messages",
+                "target_version": READINESS_TARGET,
+                "observed": {pid: probe.details.get("content_type") for pid, probe in successful.items()},
             },
         )
 

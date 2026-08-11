@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx2
 
@@ -81,6 +82,14 @@ must ignore it ("ignore it, and do not mint or echo session IDs")."""
 REMOVED_METHOD = "ping"
 """A method removed in 2026-07-28, used to probe for leaked legacy surface."""
 
+UNKNOWN_METHOD_PREFIX = "mcpscore/unknown-method-"
+"""Prefix of the deliberately unimplemented method sent by the unknown-method
+probe; a random suffix is appended per probe so it cannot be pre-implemented."""
+
+ORIGIN_PROBE_VALUE = "https://mcpscore.invalid"
+"""Foreign Origin sent by the Origin-validation probe; must never be an origin
+a real deployment would allow."""
+
 UNKNOWN_VERSION = "2099-01-01"
 """Deliberately unsupported version used by the unknown-version probe."""
 
@@ -97,6 +106,8 @@ PROBE_UNAUTHENTICATED = "probe_unauthenticated"
 PROBE_SESSION_ID_ECHO = "probe_session_id_echo"
 PROBE_REMOVED_METHOD = "probe_removed_method"
 PROBE_AUTH_METADATA = "probe_auth_metadata"
+PROBE_ORIGIN_VALIDATION = "probe_origin_validation"
+PROBE_UNKNOWN_METHOD = "probe_unknown_method"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -109,6 +120,8 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_SESSION_ID_ECHO,
     PROBE_REMOVED_METHOD,
     PROBE_AUTH_METADATA,
+    PROBE_ORIGIN_VALIDATION,
+    PROBE_UNKNOWN_METHOD,
 )
 """Stable identifiers of all probes."""
 
@@ -258,6 +271,7 @@ async def _post(
     headers: dict[str, str],
     *,
     anonymous: bool = False,
+    follow_redirects: bool = True,
 ) -> _ProbeResponse:
     """POST a probe request, optionally stripping the caller's Authorization.
 
@@ -267,11 +281,13 @@ async def _post(
     clients itself, anonymous probes additionally run on a client that carries
     no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop here also
     covers caller-injected clients whose defaults it cannot control.
+    ``follow_redirects`` may be disabled for security checks that must judge
+    the target endpoint itself without forwarding caller context elsewhere.
     """
     request = client.build_request("POST", url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
     if anonymous:
         request.headers.pop("Authorization", None)
-    response = await client.send(request)
+    response = await client.send(request, follow_redirects=follow_redirects)
     return _ProbeResponse(
         status_code=response.status_code,
         headers=dict(response.headers),
@@ -304,6 +320,7 @@ async def _probe_discover(client: httpx2.AsyncClient, url: str) -> ProbeResult:
         _request_headers(target, "server/discover"),
     )
     details = _base_details(response)
+    details["content_type"] = response.headers.get("content-type")
     result = response.result
     if result is not None and isinstance(result.get("supportedVersions"), list):
         details["supported_versions"] = result["supportedVersions"]
@@ -328,6 +345,7 @@ async def _probe_stateless_list(client: httpx2.AsyncClient, url: str) -> ProbeRe
         _request_headers(target, "tools/list"),
     )
     details = _base_details(response)
+    details["content_type"] = response.headers.get("content-type")
     result = response.result
     if result is not None and isinstance(result.get("tools"), list):
         details["result_type"] = result.get("resultType")
@@ -694,6 +712,91 @@ async def _probe_removed_method(client: httpx2.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_REMOVED_METHOD, outcome, details)
 
 
+async def _probe_origin_validation(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+    """Send a harmless list request with an invalid foreign ``Origin``.
+
+    Streamable HTTP servers MUST validate every supplied Origin to prevent DNS
+    rebinding and MUST reject an invalid one with HTTP 403. The request uses
+    ``tools/list`` and cannot invoke server-side tool behavior.
+
+    **A single 403 proves nothing**, because 403 is also how an access-controlled
+    server refuses everyone. Judged on its own, every server that rejects
+    unauthenticated callers would pass a CRITICAL security check it has not
+    earned — measured against the registry, 54 servers answer 403 to any
+    unauthenticated request. So this sends a control request *without* the
+    foreign Origin first, and only judges the server when that control shows the
+    same request would otherwise be accepted.
+    """
+    target = _target_version()
+    body = _request_body("tools/list", 10, _modern_meta(target))
+    control = await _post(
+        client,
+        url,
+        body,
+        _request_headers(target, "tools/list"),
+        follow_redirects=False,
+    )
+
+    # Decide on the control before sending anything spoofed. When the answer is
+    # already unknowable, the second request would add security-relevant traffic
+    # (and another timeout) to a server we cannot judge anyway.
+    if control.status_code in AUTH_GATED_STATUSES:
+        # The endpoint refuses the control too, so a 403 to the foreign Origin
+        # would say nothing about Origin handling. Not a failure — an
+        # unanswerable question.
+        unjudged: dict[str, Any] = {
+            "control_http_status": control.status_code,
+            "reason": "control request is access-controlled; Origin handling not observable",
+        }
+        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
+    if not 200 <= control.status_code < 300:
+        unjudged = {
+            "control_http_status": control.status_code,
+            "reason": f"control request was not accepted (HTTP {control.status_code})",
+        }
+        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
+
+    headers = _request_headers(target, "tools/list")
+    headers["Origin"] = ORIGIN_PROBE_VALUE
+    response = await _post(client, url, body, headers, follow_redirects=False)
+
+    details = _base_details(response)
+    details["control_http_status"] = control.status_code
+    outcome = ProbeOutcome.SUPPORTED if response.status_code == 403 else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details)
+
+
+async def _probe_unknown_method(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+    """Send a side-effect-free request for a deliberately unknown RPC method.
+
+    Modern Streamable HTTP servers MUST return HTTP 404 together with JSON-RPC
+    ``-32601`` (Method not found). The deliberately non-standard method name is
+    namespaced to mcpscore to avoid colliding with a core MCP method.
+    """
+    target = _target_version()
+    # Randomised per probe: a fixed name could be implemented — deliberately or
+    # by accident — and would then pass the rule without the server actually
+    # handling unknown methods correctly. The readable prefix is kept so the
+    # request is identifiable in a server operator's logs.
+    method = f"{UNKNOWN_METHOD_PREFIX}{uuid4().hex[:12]}"
+    response = await _post(
+        client,
+        url,
+        _request_body(method, 11, _modern_meta(target)),
+        _request_headers(target, method),
+    )
+    details = _base_details(response)
+    if response.status_code in AUTH_GATED_STATUSES:
+        # The request never reached method dispatch, so how this server answers
+        # an unknown method is unobservable. Auth-gated servers are healthy;
+        # failing them here would report an auth posture as a transport defect.
+        details["reason"] = "request is access-controlled; method dispatch not observable"
+        return ProbeResult(PROBE_UNKNOWN_METHOD, ProbeOutcome.NOT_APPLICABLE, details)
+    correct = response.status_code == 404 and response.error_code == ERROR_METHOD_NOT_FOUND
+    outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
+
+
 _PROBES = {
     PROBE_DISCOVER: _probe_discover,
     PROBE_STATELESS_LIST: _probe_stateless_list,
@@ -705,6 +808,8 @@ _PROBES = {
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_REMOVED_METHOD: _probe_removed_method,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
+    PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
+    PROBE_UNKNOWN_METHOD: _probe_unknown_method,
 }
 
 
