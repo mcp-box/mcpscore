@@ -459,7 +459,7 @@ class TestReadinessScoringAxis:
         readiness_ids = {r.rule_id for r in auditor.readiness_results}
         main_ids = {r.rule_id for r in auditor.results}
         assert readiness_ids
-        assert "transport_origin_validation" in readiness_ids
+        assert "readiness_2026_origin_validation" in readiness_ids
         assert readiness_ids.isdisjoint(main_ids)
         assert auditor.readiness_max > 0
 
@@ -633,9 +633,9 @@ class TestSepCitations:
         "readiness_2026_result_type": "SEP-2322",
         "readiness_2026_deprecated_features": "SEP-2577",
         "readiness_2026_tool_schema_dialect": "SEP-2106",
-        "transport_origin_validation": f"{STREAMABLE_HTTP_SPEC}#security-warning",
-        "transport_unknown_method_error": f"{STREAMABLE_HTTP_SPEC}#server-validation",
-        "transport_request_content_type_valid": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
+        "readiness_2026_origin_validation": f"{STREAMABLE_HTTP_SPEC}#security-warning",
+        "readiness_2026_unknown_method_error": f"{STREAMABLE_HTTP_SPEC}#server-validation",
+        "readiness_2026_response_content_type": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
     }
 
     def test_every_readiness_rule_cites_the_right_sep(self):

@@ -9,11 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Three modern Streamable HTTP rules validate security and interoperability
-  without invoking tools: invalid foreign `Origin` values must receive HTTP
-  403, unknown RPC methods must receive HTTP 404 with JSON-RPC `-32601`, and
-  successful requests must return `application/json` or
-  `text/event-stream`. The content-type rule reuses existing successful probe
+- Three modern Streamable HTTP readiness rules validate security and
+  interoperability without invoking tools: invalid foreign `Origin` values must
+  receive HTTP 403 (`readiness_2026_origin_validation`), unknown RPC methods
+  must receive HTTP 404 with JSON-RPC `-32601`
+  (`readiness_2026_unknown_method_error`), and successful requests must return
+  `application/json` or `text/event-stream`
+  (`readiness_2026_response_content_type`). All three are HIGH: the Origin
+  requirement is a spec MUST, but DNS rebinding is a browser-origin attack and
+  every server these rules score is a remote HTTPS endpoint, so it is defence in
+  depth rather than the exposure. The content-type rule reuses existing successful probe
   observations; the other two probes use harmless `tools/list` and invented
   method requests. Network failures and non-HTTP transports skip rather than
   fail.

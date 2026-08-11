@@ -373,17 +373,24 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
 class OriginValidationRule(ProbeBackedReadinessRule):
     """The HTTP endpoint rejects an invalid foreign Origin with HTTP 403."""
 
-    rule_id = "transport_origin_validation"
+    rule_id = "readiness_2026_origin_validation"
     rule_order = 14
     probe_id = PROBE_ORIGIN_VALIDATION
 
     @property
     def rule_name(self) -> str:
-        return "Transport - invalid Origin rejected"
+        return "Readiness 2026-07-28 - invalid Origin rejected"
 
     @property
     def severity(self) -> RuleSeverity:
-        return RuleSeverity.CRITICAL
+        # HIGH, not CRITICAL. The requirement is a spec MUST, but DNS rebinding
+        # is a browser-origin attack and the spec pairs this with "when running
+        # locally, bind only to localhost" — every server scored here is a
+        # remote HTTPS endpoint, where it is defence in depth rather than the
+        # exposure. 96% of modern-capable servers in the registry fail it, so at
+        # CRITICAL it would be a constant subtracted from every modern score
+        # rather than a signal that separates servers.
+        return RuleSeverity.HIGH
 
     def check(self, audit_data: AuditData) -> RuleResult:
         probe = self._probe(audit_data)
@@ -410,13 +417,13 @@ class OriginValidationRule(ProbeBackedReadinessRule):
 class UnknownMethodErrorRule(ProbeBackedReadinessRule):
     """Unknown RPC methods return HTTP 404 and JSON-RPC -32601."""
 
-    rule_id = "transport_unknown_method_error"
+    rule_id = "readiness_2026_unknown_method_error"
     rule_order = 15
     probe_id = PROBE_UNKNOWN_METHOD
 
     @property
     def rule_name(self) -> str:
-        return "Transport - unknown method error"
+        return "Readiness 2026-07-28 - unknown method error"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -447,12 +454,12 @@ class UnknownMethodErrorRule(ProbeBackedReadinessRule):
 class RequestContentTypeRule(ReadinessBaseRule):
     """Successful modern requests use JSON or SSE response content types."""
 
-    rule_id = "transport_request_content_type_valid"
+    rule_id = "readiness_2026_response_content_type"
     rule_order = 16
 
     @property
     def rule_name(self) -> str:
-        return "Transport - response content type"
+        return "Readiness 2026-07-28 - response content type"
 
     @property
     def severity(self) -> RuleSeverity:
