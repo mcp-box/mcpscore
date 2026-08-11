@@ -97,6 +97,8 @@ PROBE_UNAUTHENTICATED = "probe_unauthenticated"
 PROBE_SESSION_ID_ECHO = "probe_session_id_echo"
 PROBE_REMOVED_METHOD = "probe_removed_method"
 PROBE_AUTH_METADATA = "probe_auth_metadata"
+PROBE_ORIGIN_VALIDATION = "probe_origin_validation"
+PROBE_UNKNOWN_METHOD = "probe_unknown_method"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -109,6 +111,8 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_SESSION_ID_ECHO,
     PROBE_REMOVED_METHOD,
     PROBE_AUTH_METADATA,
+    PROBE_ORIGIN_VALIDATION,
+    PROBE_UNKNOWN_METHOD,
 )
 """Stable identifiers of all probes."""
 
@@ -258,6 +262,7 @@ async def _post(
     headers: dict[str, str],
     *,
     anonymous: bool = False,
+    follow_redirects: bool = True,
 ) -> _ProbeResponse:
     """POST a probe request, optionally stripping the caller's Authorization.
 
@@ -267,11 +272,13 @@ async def _post(
     clients itself, anonymous probes additionally run on a client that carries
     no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop here also
     covers caller-injected clients whose defaults it cannot control.
+    ``follow_redirects`` may be disabled for security checks that must judge
+    the target endpoint itself without forwarding caller context elsewhere.
     """
     request = client.build_request("POST", url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
     if anonymous:
         request.headers.pop("Authorization", None)
-    response = await client.send(request)
+    response = await client.send(request, follow_redirects=follow_redirects)
     return _ProbeResponse(
         status_code=response.status_code,
         headers=dict(response.headers),
@@ -304,6 +311,7 @@ async def _probe_discover(client: httpx2.AsyncClient, url: str) -> ProbeResult:
         _request_headers(target, "server/discover"),
     )
     details = _base_details(response)
+    details["content_type"] = response.headers.get("content-type")
     result = response.result
     if result is not None and isinstance(result.get("supportedVersions"), list):
         details["supported_versions"] = result["supportedVersions"]
@@ -328,6 +336,7 @@ async def _probe_stateless_list(client: httpx2.AsyncClient, url: str) -> ProbeRe
         _request_headers(target, "tools/list"),
     )
     details = _base_details(response)
+    details["content_type"] = response.headers.get("content-type")
     result = response.result
     if result is not None and isinstance(result.get("tools"), list):
         details["result_type"] = result.get("resultType")
@@ -694,6 +703,49 @@ async def _probe_removed_method(client: httpx2.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_REMOVED_METHOD, outcome, details)
 
 
+async def _probe_origin_validation(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+    """Send a harmless list request with an invalid foreign ``Origin``.
+
+    Streamable HTTP servers MUST validate every supplied Origin to prevent DNS
+    rebinding and MUST reject an invalid one with HTTP 403. The request uses
+    ``tools/list`` and cannot invoke server-side tool behavior.
+    """
+    target = _target_version()
+    headers = _request_headers(target, "tools/list")
+    headers["Origin"] = "https://mcpscore.invalid"
+    response = await _post(
+        client,
+        url,
+        _request_body("tools/list", 10, _modern_meta(target)),
+        headers,
+        follow_redirects=False,
+    )
+    details = _base_details(response)
+    outcome = ProbeOutcome.SUPPORTED if response.status_code == 403 else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details)
+
+
+async def _probe_unknown_method(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+    """Send a side-effect-free request for a deliberately unknown RPC method.
+
+    Modern Streamable HTTP servers MUST return HTTP 404 together with JSON-RPC
+    ``-32601`` (Method not found). The deliberately non-standard method name is
+    namespaced to mcpscore to avoid colliding with a core MCP method.
+    """
+    target = _target_version()
+    method = "mcpscore/unknown-method"
+    response = await _post(
+        client,
+        url,
+        _request_body(method, 11, _modern_meta(target)),
+        _request_headers(target, method),
+    )
+    details = _base_details(response)
+    correct = response.status_code == 404 and response.error_code == ERROR_METHOD_NOT_FOUND
+    outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
+
+
 _PROBES = {
     PROBE_DISCOVER: _probe_discover,
     PROBE_STATELESS_LIST: _probe_stateless_list,
@@ -705,6 +757,8 @@ _PROBES = {
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_REMOVED_METHOD: _probe_removed_method,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
+    PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
+    PROBE_UNKNOWN_METHOD: _probe_unknown_method,
 }
 
 

@@ -17,10 +17,12 @@ from mcpscore.probes import (
     PROBE_IDS,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
+    PROBE_ORIGIN_VALIDATION,
     PROBE_REMOVED_METHOD,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
     PROBE_UNAUTHENTICATED,
+    PROBE_UNKNOWN_METHOD,
     PROBE_UNKNOWN_VERSION,
     ProbeOutcome,
     ProbeResult,
@@ -57,6 +59,8 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/.well-known/oauth-protected-resource/mcp":
             return httpx2.Response(200, json={"resource": URL, "authorization_servers": AUTH_SERVERS})
         return httpx2.Response(404)
+    if request.headers.get("Origin") == "https://mcpscore.invalid":
+        return httpx2.Response(403)
     body = json.loads(request.content)
     request_id = body.get("id")
     method = body["method"]
@@ -142,6 +146,7 @@ async def test_modern_server_supports_all_probed_behaviors():
 
     stateless = results[PROBE_STATELESS_LIST].details
     assert stateless["result_type"] == "complete"
+    assert stateless["content_type"] == "application/json"
 
     unknown = results[PROBE_UNKNOWN_VERSION].details
     assert unknown["supported"] == ["2026-07-28"]
@@ -149,6 +154,8 @@ async def test_modern_server_supports_all_probed_behaviors():
     assert unknown["data_well_formed"] is True
 
     assert results[PROBE_MISSING_RESOURCE].details["legacy_code_emitted"] is False
+    assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 403
+    assert results[PROBE_UNKNOWN_METHOD].details["error_code"] == -32601
 
 
 async def test_legacy_server_is_unsupported_but_observed():
@@ -163,6 +170,8 @@ async def test_legacy_server_is_unsupported_but_observed():
         PROBE_MISSING_RESOURCE,
         PROBE_SESSION_ID_ECHO,
         PROBE_REMOVED_METHOD,
+        PROBE_ORIGIN_VALIDATION,
+        PROBE_UNKNOWN_METHOD,
     ):
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
 
@@ -178,6 +187,25 @@ async def test_legacy_server_is_unsupported_but_observed():
     auth = results[PROBE_AUTH_METADATA]
     assert auth.outcome is ProbeOutcome.UNSUPPORTED
     assert len(auth.details["urls_tried"]) == 2
+
+
+async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if request.headers.get("Origin") == "https://mcpscore.invalid":
+            return httpx2.Response(307, headers={"location": "https://redirect.example/mcp"})
+        if body.get("method") == "mcpscore/unknown-method":
+            return _rpc_result(body.get("id"), {"resultType": "complete"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_ORIGIN_VALIDATION].outcome is ProbeOutcome.UNSUPPORTED
+    # Security probes judge the target endpoint itself and never follow a
+    # redirect that could carry caller context to another origin.
+    assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 307
+    assert results[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
 
 
 class TestWellKnownUrls:

@@ -23,8 +23,9 @@ def test_every_registered_rule_appears():
 
 def test_readiness_rules_are_in_their_own_section():
     output = generate_rules_doc.generate()
-    assert "## Readiness rules (separate score)" in output
-    readiness_section = output.split("## Readiness rules (separate score)")[1]
+    assert "## Readiness rules" in output
+    readiness_section = output.split("## Readiness rules")[1]
+    assert "For modern-lifecycle servers in full audits, they are also counted" in readiness_section
     assert "`readiness_2026_server_discover`" in readiness_section
 
 

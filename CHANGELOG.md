@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Three modern Streamable HTTP rules validate security and interoperability
+  without invoking tools: invalid foreign `Origin` values must receive HTTP
+  403, unknown RPC methods must receive HTTP 404 with JSON-RPC `-32601`, and
+  successful requests must return `application/json` or
+  `text/event-stream`. The content-type rule reuses existing successful probe
+  observations; the other two probes use harmless `tools/list` and invented
+  method requests. Network failures and non-HTTP transports skip rather than
+  fail.
+
 ## [1.5.0] - 2026-08-05
 
 Correctness release, driven by what real servers exposed. Modern-lifecycle

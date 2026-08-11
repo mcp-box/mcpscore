@@ -126,10 +126,11 @@ Every rule mcpscore runs, generated from the rule registry
 | `prompts_titles_present` | Prompts - All prompts should have a display title | LOW | 1 | 2025-06-18 – … |
 | `prompts_icons_valid` | Prompts - Declared icons must be valid | LOW | 1 | 2025-11-25 – … |
 
-## Readiness rules (separate score)
+## Readiness rules
 
 These rules assess readiness for MCP **2026-07-28** on the independent readiness
-axis — they never affect the main score. See the
+axis. For modern-lifecycle servers in full audits, they are also counted in the
+main score; legacy and partial audits keep them separate. See the
 [methodology](/methodology#the-readiness-score-separate-informative) for the
 normative citations behind each rule.
 
@@ -148,6 +149,9 @@ normative citations behind each rule.
 | `readiness_2026_no_session_id` | Readiness 2026-07-28 - no session IDs | HIGH | 3 | all versions |
 | `readiness_2026_removed_methods` | Readiness 2026-07-28 - removed methods | MEDIUM | 2 | all versions |
 | `readiness_2026_supported_versions` | Readiness 2026-07-28 - supported versions listed | HIGH | 3 | all versions |
+| `transport_origin_validation` | Transport - invalid Origin rejected | CRITICAL | 5 | all versions |
+| `transport_unknown_method_error` | Transport - unknown method error | HIGH | 3 | all versions |
+| `transport_request_content_type_valid` | Transport - response content type | HIGH | 3 | all versions |
 
 ## Retired rules
 

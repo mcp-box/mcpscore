@@ -32,10 +32,11 @@ Every rule mcpscore runs, generated from the rule registry
 """
 
 READINESS_HEADER = """\
-## Readiness rules (separate score)
+## Readiness rules
 
 These rules assess readiness for MCP **{target}** on the independent readiness
-axis — they never affect the main score. See the
+axis. For modern-lifecycle servers in full audits, they are also counted in the
+main score; legacy and partial audits keep them separate. See the
 [methodology](/methodology#the-readiness-score-separate-informative) for the
 normative citations behind each rule.
 
