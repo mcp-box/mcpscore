@@ -1,5 +1,6 @@
 """Unit tests for MCPClient session operations error paths."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from mcp import InitializeResult, ListPromptsResult, ListResourcesResult, ListToolsResult
@@ -302,6 +303,43 @@ class TestMCPClientSessionOperations:
 
         assert result is None
         assert mock_connected_client.incomplete_listings == {"tools"}
+
+    async def test_a_stalled_server_cannot_hang_a_listing(self, mock_connected_client, monkeypatch, caplog):
+        """A server that accepts the request and never answers must not stall forever.
+
+        This is the shape the 1.3.0 production-readiness review found (F-001)
+        and the shape the 2026-08 registry sweep hit: 113 of 10,522 endpoints
+        connect and then never complete. Before the listing budget, this test
+        would hang until the suite timed out rather than fail.
+        """
+        monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", 0.25)
+
+        async def never_answers(*_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+        mock_connected_client.session.list_tools.side_effect = never_answers
+
+        result = await asyncio.wait_for(mock_connected_client.list_tools(), timeout=5)
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+
+    async def test_listing_budget_keeps_pages_already_collected(self, mock_connected_client, monkeypatch, caplog):
+        """Exhausting the budget mid-listing degrades to partial, not to nothing."""
+        monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", 0.3)
+
+        async def one_page_then_stall(*_args, **_kwargs):
+            if mock_connected_client.session.list_prompts.call_count <= 1:
+                return ListPromptsResult(prompts=[Prompt(name="one")], nextCursor="second")
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable: the budget must fire first")
+
+        mock_connected_client.session.list_prompts.side_effect = one_page_then_stall
+
+        result = await asyncio.wait_for(mock_connected_client.list_prompts(), timeout=5)
+
+        assert [prompt.name for prompt in result] == ["one"]
+        assert mock_connected_client.incomplete_listings == {"prompts"}
 
     async def test_page_budget_stops_unbounded_prompt_listing(self, mock_connected_client, monkeypatch, caplog):
         """A server that always advances its cursor is still bounded."""

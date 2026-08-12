@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcpscore.enums import MCPTransportType
-from mcpscore.mcp_client import MCPClient
+from mcpscore.mcp_client import REQUEST_TIMEOUT_S, MCPClient
 
 
 def _mock_http_transport(mock_client, mock_session):
@@ -50,6 +50,28 @@ class TestHandshakeDuringConnect:
             # initialize() returns the cached handshake result without a second call
             assert await mcp_client.initialize() is init_result
             mock_session.initialize.assert_awaited_once()
+
+    async def test_session_is_opened_with_a_request_deadline(self, mcp_client):
+        """Every in-session request must be bounded, not just the handshake.
+
+        The SDK's `read_timeout_seconds` defaults to None, so omitting it lets a
+        server that accepts the connection and never answers `tools/list` stall
+        an audit indefinitely (production-readiness review F-001). Asserted on
+        the constructor argument because no listing test can see it: a mocked
+        session answers instantly whether or not the deadline was passed.
+        """
+        mock_session = AsyncMock()
+        mock_session.initialize.return_value = MagicMock()
+
+        with (
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_client,
+            patch("mcpscore.mcp_client.ClientSession", return_value=mock_session) as mock_session_cls,
+        ):
+            _mock_http_transport(mock_client, mock_session)
+
+            assert await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, "https://example.com/mcp")
+
+        assert mock_session_cls.call_args.kwargs["read_timeout_seconds"] == REQUEST_TIMEOUT_S
 
     async def test_connect_fails_when_handshake_raises(self, mcp_client):
         mock_session = AsyncMock()
