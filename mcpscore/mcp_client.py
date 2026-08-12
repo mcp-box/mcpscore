@@ -834,10 +834,19 @@ class MCPClient:
         deadline = time.monotonic() + LISTING_TIMEOUT_S
 
         for page_number in range(MAX_LISTING_PAGES):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                # Budget spent. A partial listing is evidence, not a failure —
-                # the same degradation a mid-listing error already produces.
+            # Clamp each page to whatever budget is left; at zero, wait_for
+            # raises immediately. One branch therefore covers both "this page
+            # stalled" and "the budget is already spent" — an earlier version
+            # had a separate pre-check that the clamp made unreachable.
+            remaining = max(deadline - time.monotonic(), 0)
+            try:
+                response = await asyncio.wait_for(
+                    fetch_page() if page_number == 0 else fetch_page(params=PaginatedRequestParams(cursor=cursor)),
+                    timeout=remaining,
+                )
+            except TimeoutError:
+                # A partial listing is evidence, not a failure — the same
+                # degradation a mid-listing error already produces.
                 self.incomplete_listings.add(listing_name)
                 logger.warning(
                     "Stopped listing %s after %.0fs (%d page(s) collected) — listing budget exhausted",
@@ -846,11 +855,6 @@ class MCPClient:
                     page_number,
                 )
                 return None if page_number == 0 else items
-            try:
-                response = await asyncio.wait_for(
-                    fetch_page() if page_number == 0 else fetch_page(params=PaginatedRequestParams(cursor=cursor)),
-                    timeout=remaining,
-                )
             except Exception:
                 self.incomplete_listings.add(listing_name)
                 logger.exception("Failed to list %s from the MCP server", listing_name)

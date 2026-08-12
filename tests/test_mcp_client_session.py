@@ -341,6 +341,41 @@ class TestMCPClientSessionOperations:
         assert [prompt.name for prompt in result] == ["one"]
         assert mock_connected_client.incomplete_listings == {"prompts"}
 
+    async def test_budget_stops_a_listing_whose_pages_each_succeed_slowly(
+        self, mock_connected_client, monkeypatch, caplog
+    ):
+        """The case the total budget exists for, which per-request deadlines miss.
+
+        A server that answers every page just inside the request deadline never
+        triggers a per-request timeout, so without a total budget it could hold
+        an audit for MAX_LISTING_PAGES times that deadline. Here each page
+        succeeds, and the budget — not a stalled request — ends the listing.
+        """
+        monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", 0.25)
+
+        async def slow_but_successful_page(*_args, **_kwargs):
+            await asyncio.sleep(0.15)
+            return ListToolsResult(tools=[Tool(name="slow", inputSchema={})], nextCursor="more")
+
+        mock_connected_client.session.list_tools.side_effect = slow_but_successful_page
+
+        result = await asyncio.wait_for(mock_connected_client.list_tools(), timeout=5)
+
+        # Pages that did arrive are kept: a partial listing is evidence.
+        assert [tool.name for tool in result] == ["slow"]
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        assert "listing budget exhausted" in caplog.text
+
+    async def test_budget_exhausted_before_any_page_returns_none(self, mock_connected_client, monkeypatch):
+        """No page ever arrived, so the listing is unavailable rather than partial."""
+        monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", -1.0)
+
+        result = await asyncio.wait_for(mock_connected_client.list_tools(), timeout=5)
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        mock_connected_client.session.list_tools.assert_not_awaited()
+
     async def test_page_budget_stops_unbounded_prompt_listing(self, mock_connected_client, monkeypatch, caplog):
         """A server that always advances its cursor is still bounded."""
         monkeypatch.setattr("mcpscore.mcp_client.MAX_LISTING_PAGES", 2)
