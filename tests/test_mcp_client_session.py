@@ -4,7 +4,16 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from mcp import InitializeResult, ListPromptsResult, ListResourcesResult, ListToolsResult
-from mcp_types import ListResourceTemplatesResult, Prompt, Resource, ResourceTemplate, Tool
+from mcp.shared.exceptions import MCPError
+from mcp_types import (
+    INTERNAL_ERROR,
+    REQUEST_TIMEOUT,
+    ListResourceTemplatesResult,
+    Prompt,
+    Resource,
+    ResourceTemplate,
+    Tool,
+)
 import pytest
 
 from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
@@ -304,7 +313,7 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert mock_connected_client.incomplete_listings == {"tools"}
 
-    async def test_a_stalled_server_cannot_hang_a_listing(self, mock_connected_client, monkeypatch, caplog):
+    async def test_a_stalled_server_cannot_hang_a_listing(self, mock_connected_client, monkeypatch):
         """A server that accepts the request and never answers must not stall forever.
 
         This is the shape the 1.3.0 production-readiness review found (F-001)
@@ -324,7 +333,7 @@ class TestMCPClientSessionOperations:
         assert result is None
         assert mock_connected_client.incomplete_listings == {"tools"}
 
-    async def test_listing_budget_keeps_pages_already_collected(self, mock_connected_client, monkeypatch, caplog):
+    async def test_listing_budget_keeps_pages_already_collected(self, mock_connected_client, monkeypatch):
         """Exhausting the budget mid-listing degrades to partial, not to nothing."""
         monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", 0.3)
 
@@ -372,9 +381,42 @@ class TestMCPClientSessionOperations:
 
         result = await asyncio.wait_for(mock_connected_client.list_tools(), timeout=5)
 
+        # Deliberately not asserting the fetch was never *called*: wait_for
+        # evaluates fetch_page() before applying the timeout, so AsyncMock
+        # records a call even though nothing was awaited. What matters is that
+        # no page was collected and the listing is marked incomplete.
         assert result is None
         assert mock_connected_client.incomplete_listings == {"tools"}
-        mock_connected_client.session.list_tools.assert_not_awaited()
+        assert mock_connected_client.session.list_tools.await_count == 0
+
+    async def test_sdk_request_timeout_is_reported_as_a_timeout(self, mock_connected_client, caplog):
+        """The SDK's own deadline is the common stall, and must not read as a crash.
+
+        A silent server trips `ClientSession(read_timeout_seconds=...)` first,
+        which raises MCPError(-32001). That used to fall into the generic
+        handler and log a full traceback saying "Failed to list", making the
+        ordinary case the noisiest line in the log.
+        """
+        mock_connected_client.session.list_tools.side_effect = MCPError(
+            code=REQUEST_TIMEOUT, message="Request 'tools/list' timed out"
+        )
+
+        result = await mock_connected_client.list_tools()
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        assert "did not answer within" in caplog.text
+        assert "Traceback" not in caplog.text
+
+    async def test_non_timeout_mcp_errors_still_surface_as_failures(self, mock_connected_client, caplog):
+        """Only the timeout code is treated as a stall; other MCPErrors are faults."""
+        mock_connected_client.session.list_tools.side_effect = MCPError(code=INTERNAL_ERROR, message="boom")
+
+        result = await mock_connected_client.list_tools()
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        assert "Failed to list tools" in caplog.text
 
     async def test_page_budget_stops_unbounded_prompt_listing(self, mock_connected_client, monkeypatch, caplog):
         """A server that always advances its cursor is still bounded."""

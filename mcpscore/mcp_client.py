@@ -20,7 +20,16 @@ from mcp import (
 from mcp.client.sse import sse_client
 from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp_types import ListResourceTemplatesResult, PaginatedRequestParams, Prompt, Resource, ResourceTemplate, Tool
+from mcp.shared.exceptions import MCPError
+from mcp_types import (
+    REQUEST_TIMEOUT,
+    ListResourceTemplatesResult,
+    PaginatedRequestParams,
+    Prompt,
+    Resource,
+    ResourceTemplate,
+    Tool,
+)
 
 from .enums import ConnectionErrorReason, MCPTransportType
 
@@ -844,20 +853,33 @@ class MCPClient:
                     fetch_page() if page_number == 0 else fetch_page(params=PaginatedRequestParams(cursor=cursor)),
                     timeout=remaining,
                 )
-            except TimeoutError:
-                # A partial listing is evidence, not a failure — the same
-                # degradation a mid-listing error already produces.
+            except Exception as exc:
+                # One handler, three diagnoses. Timeouts are a server that
+                # stopped answering, not a protocol fault, and must not read as
+                # a crash — the SDK's own request timeout arrives as
+                # MCPError(-32001) and is the *common* stall, so leaving it in
+                # the generic branch made the ordinary case the noisiest line in
+                # the log. Everything else keeps the original traceback.
                 self.incomplete_listings.add(listing_name)
-                logger.warning(
-                    "Stopped listing %s after %.0fs (%d page(s) collected) — listing budget exhausted",
-                    listing_name,
-                    LISTING_TIMEOUT_S,
-                    page_number,
-                )
-                return None if page_number == 0 else items
-            except Exception:
-                self.incomplete_listings.add(listing_name)
-                logger.exception("Failed to list %s from the MCP server", listing_name)
+                if isinstance(exc, TimeoutError):
+                    # Our clamp: the server kept answering, but the total budget
+                    # for this listing ran out.
+                    logger.warning(
+                        "Stopped listing %s after %.0fs (%d page(s) collected) — listing budget exhausted",
+                        listing_name,
+                        LISTING_TIMEOUT_S,
+                        page_number,
+                    )
+                elif isinstance(exc, MCPError) and exc.code == REQUEST_TIMEOUT:
+                    # The session deadline: this server went silent on one request.
+                    logger.warning(
+                        "Stopped listing %s: server did not answer within %.0fs (%d page(s) collected)",
+                        listing_name,
+                        REQUEST_TIMEOUT_S,
+                        page_number,
+                    )
+                else:
+                    logger.exception("Failed to list %s from the MCP server", listing_name)
                 # None means the listing yielded nothing at all; once any page
                 # succeeded the collected items — even zero of them — are
                 # partial evidence and must not degrade to "unavailable".
