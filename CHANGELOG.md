@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An unresponsive server can no longer stall an audit indefinitely.** The MCP
+  session was opened without `read_timeout_seconds` (SDK default `None`), so a
+  server that accepted a connection and then never answered `tools/list`,
+  `resources/list`, `resources/templates/list` or `prompts/list` held the audit
+  forever. `MAX_LISTING_PAGES` bounded how many pages could succeed but bounded
+  no time, and stdio and SSE have no transport-level read timeout to fall back
+  on. Sessions now carry a 60s per-request deadline, and each paginated listing
+  has a 180s total budget so page count cannot multiply it. A listing that runs
+  out of budget degrades to a partial result — the existing
+  `incomplete_listings` behaviour — rather than failing the audit. The `timeout`
+  argument to `MCPClient` documented itself as a connection timeout while only
+  governing the handshake; its docstring now says so.
+
 ### Added
 
 - Three modern Streamable HTTP readiness rules validate security and

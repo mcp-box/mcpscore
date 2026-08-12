@@ -20,7 +20,16 @@ from mcp import (
 from mcp.client.sse import sse_client
 from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp_types import ListResourceTemplatesResult, PaginatedRequestParams, Prompt, Resource, ResourceTemplate, Tool
+from mcp.shared.exceptions import MCPError
+from mcp_types import (
+    REQUEST_TIMEOUT,
+    ListResourceTemplatesResult,
+    PaginatedRequestParams,
+    Prompt,
+    Resource,
+    ResourceTemplate,
+    Tool,
+)
 
 from .enums import ConnectionErrorReason, MCPTransportType
 
@@ -63,6 +72,27 @@ class StdioCommand:
 
 HANDSHAKE_TIMEOUT_S = 30
 """Default timeout for the MCP initialize handshake performed during connect."""
+
+REQUEST_TIMEOUT_S = 60.0
+"""Deadline for every in-session request (catalog listings and re-initialize).
+
+Passed to ``ClientSession(read_timeout_seconds=...)``, whose SDK default is
+``None`` — without it a server that accepts a connection and then never answers
+``tools/list`` stalls an audit forever. ``MAX_LISTING_PAGES`` bounds how many
+pages can succeed; it bounds no time at all, and stdio and SSE have no
+transport-level read timeout to fall back on.
+
+Sized to match the HTTP transport's 60s read timeout, so the session deadline
+does not fire before the transport's own on HTTP servers."""
+
+LISTING_TIMEOUT_S = 180.0
+"""Total budget for one paginated listing, across all of its pages.
+
+Per-request deadlines alone still permit ``MAX_LISTING_PAGES`` times the request
+deadline — a server that answers every page one second before the timeout would
+hold an audit for hours. A partial listing is already a first-class outcome
+(``incomplete_listings``), so exhausting this budget degrades rather than
+fails."""
 
 MAX_LISTING_PAGES = 100
 """Safety bound for a single paginated MCP listing."""
@@ -178,7 +208,10 @@ class MCPClient:
         """Initialize a new MCP client instance.
 
         Args:
-            timeout: Connection timeout in seconds (None for no timeout)
+            timeout: Deadline in seconds for the MCP ``initialize`` handshake
+                during connect (None uses ``HANDSHAKE_TIMEOUT_S``). It does not
+                govern in-session requests, which are bounded by
+                ``REQUEST_TIMEOUT_S`` and ``LISTING_TIMEOUT_S``.
             headers: Extra HTTP headers sent on every request to an HTTP(S)
                 server, e.g. ``{"Authorization": "Bearer …"}`` to audit an
                 auth-gated server. Ignored for stdio transports. Values are
@@ -322,7 +355,9 @@ class MCPClient:
             start_time = time.perf_counter()
             streams = await stack.enter_async_context(transport_cm)
             read_stream, write_stream = streams[0], streams[1]
-            session: ClientSession = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            session: ClientSession = await stack.enter_async_context(
+                ClientSession(read_stream, write_stream, read_timeout_seconds=REQUEST_TIMEOUT_S)
+            )
             init_result: InitializeResult = await asyncio.wait_for(
                 session.initialize(),
                 timeout=self.timeout or HANDSHAKE_TIMEOUT_S,
@@ -805,17 +840,46 @@ class MCPClient:
         seen_cursors: set[str] = set()
         cursor: str | None = None
         self.incomplete_listings.discard(listing_name)
+        deadline = time.monotonic() + LISTING_TIMEOUT_S
 
         for page_number in range(MAX_LISTING_PAGES):
+            # Clamp each page to whatever budget is left; at zero, wait_for
+            # raises immediately. One branch therefore covers both "this page
+            # stalled" and "the budget is already spent" — an earlier version
+            # had a separate pre-check that the clamp made unreachable.
+            remaining = max(deadline - time.monotonic(), 0)
             try:
-                response = (
-                    await fetch_page()
-                    if page_number == 0
-                    else await fetch_page(params=PaginatedRequestParams(cursor=cursor))
+                response = await asyncio.wait_for(
+                    fetch_page() if page_number == 0 else fetch_page(params=PaginatedRequestParams(cursor=cursor)),
+                    timeout=remaining,
                 )
-            except Exception:
+            except Exception as exc:
+                # One handler, three diagnoses. Timeouts are a server that
+                # stopped answering, not a protocol fault, and must not read as
+                # a crash — the SDK's own request timeout arrives as
+                # MCPError(-32001) and is the *common* stall, so leaving it in
+                # the generic branch made the ordinary case the noisiest line in
+                # the log. Everything else keeps the original traceback.
                 self.incomplete_listings.add(listing_name)
-                logger.exception("Failed to list %s from the MCP server", listing_name)
+                if isinstance(exc, TimeoutError):
+                    # Our clamp: the server kept answering, but the total budget
+                    # for this listing ran out.
+                    logger.warning(
+                        "Stopped listing %s after %.0fs (%d page(s) collected) — listing budget exhausted",
+                        listing_name,
+                        LISTING_TIMEOUT_S,
+                        page_number,
+                    )
+                elif isinstance(exc, MCPError) and exc.code == REQUEST_TIMEOUT:
+                    # The session deadline: this server went silent on one request.
+                    logger.warning(
+                        "Stopped listing %s: server did not answer within %.0fs (%d page(s) collected)",
+                        listing_name,
+                        REQUEST_TIMEOUT_S,
+                        page_number,
+                    )
+                else:
+                    logger.exception("Failed to list %s from the MCP server", listing_name)
                 # None means the listing yielded nothing at all; once any page
                 # succeeded the collected items — even zero of them — are
                 # partial evidence and must not degrade to "unavailable".

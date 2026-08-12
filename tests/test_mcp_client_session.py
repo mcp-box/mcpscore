@@ -1,9 +1,19 @@
 """Unit tests for MCPClient session operations error paths."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from mcp import InitializeResult, ListPromptsResult, ListResourcesResult, ListToolsResult
-from mcp_types import ListResourceTemplatesResult, Prompt, Resource, ResourceTemplate, Tool
+from mcp.shared.exceptions import MCPError
+from mcp_types import (
+    INTERNAL_ERROR,
+    REQUEST_TIMEOUT,
+    ListResourceTemplatesResult,
+    Prompt,
+    Resource,
+    ResourceTemplate,
+    Tool,
+)
 import pytest
 
 from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
@@ -302,6 +312,111 @@ class TestMCPClientSessionOperations:
 
         assert result is None
         assert mock_connected_client.incomplete_listings == {"tools"}
+
+    async def test_a_stalled_server_cannot_hang_a_listing(self, mock_connected_client, monkeypatch):
+        """A server that accepts the request and never answers must not stall forever.
+
+        This is the shape the 1.3.0 production-readiness review found (F-001)
+        and the shape the 2026-08 registry sweep hit: 113 of 10,522 endpoints
+        connect and then never complete. Before the listing budget, this test
+        would hang until the suite timed out rather than fail.
+        """
+        monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", 0.25)
+
+        async def never_answers(*_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+        mock_connected_client.session.list_tools.side_effect = never_answers
+
+        result = await asyncio.wait_for(mock_connected_client.list_tools(), timeout=5)
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+
+    async def test_listing_budget_keeps_pages_already_collected(self, mock_connected_client, monkeypatch):
+        """Exhausting the budget mid-listing degrades to partial, not to nothing."""
+        monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", 0.3)
+
+        async def one_page_then_stall(*_args, **_kwargs):
+            if mock_connected_client.session.list_prompts.call_count <= 1:
+                return ListPromptsResult(prompts=[Prompt(name="one")], nextCursor="second")
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable: the budget must fire first")
+
+        mock_connected_client.session.list_prompts.side_effect = one_page_then_stall
+
+        result = await asyncio.wait_for(mock_connected_client.list_prompts(), timeout=5)
+
+        assert [prompt.name for prompt in result] == ["one"]
+        assert mock_connected_client.incomplete_listings == {"prompts"}
+
+    async def test_budget_stops_a_listing_whose_pages_each_succeed_slowly(
+        self, mock_connected_client, monkeypatch, caplog
+    ):
+        """The case the total budget exists for, which per-request deadlines miss.
+
+        A server that answers every page just inside the request deadline never
+        triggers a per-request timeout, so without a total budget it could hold
+        an audit for MAX_LISTING_PAGES times that deadline. Here each page
+        succeeds, and the budget — not a stalled request — ends the listing.
+        """
+        monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", 0.25)
+
+        async def slow_but_successful_page(*_args, **_kwargs):
+            await asyncio.sleep(0.15)
+            return ListToolsResult(tools=[Tool(name="slow", inputSchema={})], nextCursor="more")
+
+        mock_connected_client.session.list_tools.side_effect = slow_but_successful_page
+
+        result = await asyncio.wait_for(mock_connected_client.list_tools(), timeout=5)
+
+        # Pages that did arrive are kept: a partial listing is evidence.
+        assert [tool.name for tool in result] == ["slow"]
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        assert "listing budget exhausted" in caplog.text
+
+    async def test_budget_exhausted_before_any_page_returns_none(self, mock_connected_client, monkeypatch):
+        """No page ever arrived, so the listing is unavailable rather than partial."""
+        monkeypatch.setattr("mcpscore.mcp_client.LISTING_TIMEOUT_S", -1.0)
+
+        result = await asyncio.wait_for(mock_connected_client.list_tools(), timeout=5)
+
+        # Deliberately not asserting the fetch was never *called*: wait_for
+        # evaluates fetch_page() before applying the timeout, so AsyncMock
+        # records a call even though nothing was awaited. What matters is that
+        # no page was collected and the listing is marked incomplete.
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        assert mock_connected_client.session.list_tools.await_count == 0
+
+    async def test_sdk_request_timeout_is_reported_as_a_timeout(self, mock_connected_client, caplog):
+        """The SDK's own deadline is the common stall, and must not read as a crash.
+
+        A silent server trips `ClientSession(read_timeout_seconds=...)` first,
+        which raises MCPError(-32001). That used to fall into the generic
+        handler and log a full traceback saying "Failed to list", making the
+        ordinary case the noisiest line in the log.
+        """
+        mock_connected_client.session.list_tools.side_effect = MCPError(
+            code=REQUEST_TIMEOUT, message="Request 'tools/list' timed out"
+        )
+
+        result = await mock_connected_client.list_tools()
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        assert "did not answer within" in caplog.text
+        assert "Traceback" not in caplog.text
+
+    async def test_non_timeout_mcp_errors_still_surface_as_failures(self, mock_connected_client, caplog):
+        """Only the timeout code is treated as a stall; other MCPErrors are faults."""
+        mock_connected_client.session.list_tools.side_effect = MCPError(code=INTERNAL_ERROR, message="boom")
+
+        result = await mock_connected_client.list_tools()
+
+        assert result is None
+        assert mock_connected_client.incomplete_listings == {"tools"}
+        assert "Failed to list tools" in caplog.text
 
     async def test_page_budget_stops_unbounded_prompt_listing(self, mock_connected_client, monkeypatch, caplog):
         """A server that always advances its cursor is still bounded."""
