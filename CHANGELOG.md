@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The source distribution's tests can be collected.** The sdist shipped
+  `tests/` without `scripts/`, so two maintainer-only tests that import from
+  `scripts/` failed at collection — pytest could not even start against the
+  published archive. Those two files are now excluded from the sdist (they test
+  our release tooling, not this package), and every include pattern is anchored,
+  which also stops a lone `npm/README.md` being shipped from an otherwise-absent
+  subtree. Verified by building the sdist and running its suite inside it.
+- **A clean checkout can run `make all`.** `pre-commit` drives the gate but was
+  undeclared, so it resolved from whatever happened to be on `PATH` and a fresh
+  `uv sync --all-groups` failed with `Failed to spawn: pre-commit`. It is now
+  pinned in the dev group. The check target also sets the same `SKIP` as CI, so
+  it no longer fails on `main` via the `no-commit-to-branch` hook while claiming
+  to mirror CI; the hook still runs on real commits.
+- **One CLI test no longer leaves the process.** It called `async_main()`
+  against `https://example.com/mcp` without replacing `MCPClient`, so it
+  performed real transport detection — measured at 8 live connections on port
+  443 — while passing regardless, since it only asserts the welcome banner. It
+  now injects the existing mocked client and auditor.
+- **The npm wrapper can no longer publish before PyPI.** The npm package is a
+  launcher that runs `mcpscore==<version>` through `uvx`/`pipx`, and both
+  publish workflows fire on the same release event with no ordering, so npm
+  could expose a version whose Python dependency was still propagating — or had
+  failed to publish at all. The npm job now waits for the pinned version to appear on the **PyPI simple
+  index** — reusing `wait_for_pypi_index` from `scripts/release.py`, because the
+  JSON metadata endpoint goes green before the index uv and pip actually
+  resolve against. It also refuses to publish unless the release *tag* is plain
+  semver and matches **both** the wrapper's own version and its
+  `mcpscore.pythonVersion` pin — the latter is what the launcher actually runs,
+  so a stale pin would publish a new npm version that starts an old CLI, and
+  would make the PyPI wait pass instantly against the already-published old
+  version. Pre-releases skip npm version sync, so a pre-release tag still
+  carries the previous stable manifest version.
+
 - **An unresponsive server can no longer stall an audit indefinitely.** The MCP
   session was opened without `read_timeout_seconds` (SDK default `None`), so a
   server that accepted a connection and then never answered `tools/list`,
