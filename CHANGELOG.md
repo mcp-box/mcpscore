@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-13
+
 ### Fixed
 
 - **The source distribution's tests can be collected.** The sdist shipped
@@ -41,7 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   would make the PyPI wait pass instantly against the already-published old
   version. Pre-releases skip npm version sync, so a pre-release tag still
   carries the previous stable manifest version.
-
 - **An unresponsive server can no longer stall an audit indefinitely.** The MCP
   session was opened without `read_timeout_seconds` (SDK default `None`), so a
   server that accepted a connection and then never answered `tools/list`,
@@ -941,7 +942,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/mcp-box/mcpscore/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/mcp-box/mcpscore/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/mcp-box/mcpscore/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/mcp-box/mcpscore/compare/v1.2.0...v1.3.0

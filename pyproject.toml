@@ -1,5 +1,10 @@
+# Bounded, not floating. PEP 517 builds in an isolated environment that the
+# lockfile does not constrain, so an unbounded requirement means two builds of
+# the same tag can use different backend versions — the artifact is not
+# reproducible from the source it claims to come from. The upper bound is the
+# major: a backend major is where output-affecting changes land.
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.32.0,<2"]
 build-backend = "hatchling.build"
 
 # The sdist must be usable by downstream distributors (Debian, conda-forge,
@@ -33,7 +38,7 @@ packages = ["mcpscore"]
 
 [project]
 name = "mcpscore"
-version = "1.5.0"
+version = "1.6.0"
 description = "Audit an MCP server and get a scored, actionable quality report in seconds."
 authors = [{ name = "Alex Akimov"}]
 license = "MIT"
