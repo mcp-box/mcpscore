@@ -79,7 +79,19 @@ jobs:
             echo "::error::npm/package.json is ${manifest} but the tag is ${version} — refusing to publish a mismatched wrapper"
             exit 1
           fi
-          echo "tag ${RELEASE_TAG} and manifest ${manifest} agree"
+          # `pythonVersion` is the field that decides behaviour: the wrapper
+          # runs `mcpscore==<pythonVersion>`, so a stale pin publishes a new npm
+          # version that launches an OLD CLI — immutably. It also makes the
+          # PyPI wait below meaningless, since it would resolve instantly
+          # against the already-published old version. `check_npm_version_sync`
+          # in scripts/release.py enforces the same pair at preflight; this
+          # repeats it for releases not created through that script.
+          pinned="$(node -p 'require("./npm/package.json").mcpscore.pythonVersion')"
+          if [ "$pinned" != "$version" ]; then
+            echo "::error::npm wrapper pins mcpscore==${pinned} but the tag is ${version} — it would launch the wrong CLI"
+            exit 1
+          fi
+          echo "tag ${RELEASE_TAG}, manifest ${manifest} and python pin ${pinned} all agree"
       # Reuses scripts/release.py rather than reimplementing the poll. That
       # function exists because `/pypi/<pkg>/<version>/json` goes green BEFORE
       # the simple index, and the simple index is what uv and pip resolve

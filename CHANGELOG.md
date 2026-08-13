@@ -35,8 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index** — reusing `wait_for_pypi_index` from `scripts/release.py`, because the
   JSON metadata endpoint goes green before the index uv and pip actually
   resolve against. It also refuses to publish unless the release *tag* is plain
-  semver and matches the wrapper manifest: pre-releases skip npm version sync,
-  so a pre-release tag still carries the previous stable manifest version.
+  semver and matches **both** the wrapper's own version and its
+  `mcpscore.pythonVersion` pin — the latter is what the launcher actually runs,
+  so a stale pin would publish a new npm version that starts an old CLI, and
+  would make the PyPI wait pass instantly against the already-published old
+  version. Pre-releases skip npm version sync, so a pre-release tag still
+  carries the previous stable manifest version.
 
 - **An unresponsive server can no longer stall an audit indefinitely.** The MCP
   session was opened without `read_timeout_seconds` (SDK default `None`), so a
