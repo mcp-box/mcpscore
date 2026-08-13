@@ -31,12 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launcher that runs `mcpscore==<version>` through `uvx`/`pipx`, and both
   publish workflows fire on the same release event with no ordering, so npm
   could expose a version whose Python dependency was still propagating — or had
-  failed to publish at all. The npm job now waits for the pinned version to be
-  resolvable on the PyPI JSON API before publishing, and refuses to publish a
-  version that is not plain semver (a PEP 440 pre-release ships PyPI-only, and
-  the manual recovery path previously published regardless).
-
-### Fixed
+  failed to publish at all. The npm job now waits for the pinned version to appear on the **PyPI simple
+  index** — reusing `wait_for_pypi_index` from `scripts/release.py`, because the
+  JSON metadata endpoint goes green before the index uv and pip actually
+  resolve against. It also refuses to publish unless the release *tag* is plain
+  semver and matches the wrapper manifest: pre-releases skip npm version sync,
+  so a pre-release tag still carries the previous stable manifest version.
 
 - **An unresponsive server can no longer stall an audit indefinitely.** The MCP
   session was opened without `read_timeout_seconds` (SDK default `None`), so a
