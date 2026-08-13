@@ -2,14 +2,30 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# The sdist must be usable by downstream distributors (Debian, conda-forge,
+# nixpkgs) who build from it and run the shipped suite. Two rules follow:
+#
+#  1. Anchor every file pattern. Unanchored "README.md" also matched
+#     npm/README.md, shipping a lone file from a subtree the sdist otherwise
+#     omits.
+#  2. Ship no test that cannot be collected from the archive. The two excluded
+#     files exercise scripts/ — our release tooling, not this package — so they
+#     are maintainer-only, and including scripts/ just to satisfy them would
+#     ship release machinery to end users. Verified by building the sdist and
+#     running pytest inside it; before this, collection failed outright with
+#     ModuleNotFoundError for `generate_rules_doc` and `release`.
 [tool.hatch.build.targets.sdist]
 include = [
-    "mcpscore",
-    "tests",
-    "README.md",
-    "MISSION.md",
-    "LICENSE",
-    "pyproject.toml",
+    "/mcpscore",
+    "/tests",
+    "/README.md",
+    "/MISSION.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
+exclude = [
+    "/tests/test_generate_rules_doc.py",
+    "/tests/test_release_script.py",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -84,6 +100,12 @@ dev = [
     # (>=0.15.20) against pre-commit's 0.14.8 let `ruff --fix` strip a
     # `# noqa: S310` that CI still required — green locally, red on push.
     "ruff==0.16.2",
+    # `make all` runs the hooks through pre-commit, so a clean `uv sync
+    # --all-groups` must provide it — undeclared, it resolved from whatever
+    # happened to be on PATH, and a fresh clone failed with
+    # "Failed to spawn: pre-commit". Exact for the same reason as ruff above:
+    # the gate has to be reproducible, not "whatever the machine has".
+    "pre-commit==4.6.0",
 ]
 
 [tool.pyright]

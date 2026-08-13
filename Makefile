@@ -12,7 +12,11 @@ format: ## Auto-format code
 
 .PHONY: precommit
 precommit: ## Run the pinned pre-commit hooks — the same gate CI's lint job runs
-	uv run pre-commit run --all-files
+# SKIP mirrors .github/workflows/ci.yml exactly. Without it this target is not
+# the CI mirror it claims to be: `no-commit-to-branch` fails every run on main,
+# and `typecheck` would run pyright twice (the `typecheck` target already does).
+# The hook stays active for real commits — this skips it for the check only.
+	SKIP=no-commit-to-branch,typecheck uv run pre-commit run --all-files
 
 .PHONY: lint
 lint: precommit ## Lint code (no auto-fix): CI's hooks, then the working tree

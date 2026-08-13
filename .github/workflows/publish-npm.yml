@@ -49,6 +49,39 @@ jobs:
       # official npm package — deterministic, no lockfile to install from.
       - name: Upgrade npm for Trusted Publishing
         run: npm install -g npm@11.18.0  # zizmor: ignore[adhoc-packages]
+      # The wrapper is a launcher, not a Node implementation: it runs
+      # `mcpscore==<pythonVersion>` through uvx/pipx. Publishing before that
+      # version is resolvable on PyPI ships a package that cannot run — and npm
+      # publishes are immutable. Both workflows fire on the same release event
+      # with no ordering between them, so wait here rather than assume.
+      # A PEP 440 pre-release (1.6.0b1) is not valid npm semver and ships
+      # without a wrapper. The `if:` above lets a manual dispatch through
+      # unconditionally so a failed release can be recovered — so the tag has
+      # to be checked here instead, or a recovery run aimed at a pre-release
+      # tag publishes something npm cannot express.
+      - name: Reject pre-release versions
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./npm/package.json").version')"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::npm/package.json version '${version}' is not plain semver — pre-releases ship PyPI-only"
+            exit 1
+          fi
+          echo "version ${version} is plain semver"
+      - name: Wait for the pinned PyPI version to be resolvable
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./npm/package.json").mcpscore.pythonVersion')"
+          echo "waiting for mcpscore==${version} on PyPI"
+          for attempt in $(seq 1 40); do
+            if curl -fsSL "https://pypi.org/pypi/mcpscore/${version}/json" > /dev/null; then
+              echo "mcpscore==${version} is resolvable after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::mcpscore==${version} is not on PyPI after 10 minutes — not publishing an unusable npm package"
+          exit 1
       - name: Publish with provenance
         working-directory: npm
         run: npm publish --access public --provenance

@@ -711,10 +711,28 @@ class TestVersionFlag:
         assert captured.out.strip() == f"mcpscore {_mcpscore_version()}"
         assert "Welcome" not in captured.out + captured.err
 
-    async def test_normal_runs_still_greet(self, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture) -> None:
-        """Moving the parse ahead of the banner must not drop it from real audits."""
+    async def test_normal_runs_still_greet(
+        self,
+        monkeypatch: MonkeyPatch,
+        caplog: LogCaptureFixture,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """Moving the parse ahead of the banner must not drop it from real audits.
+
+        The client and auditor are injected because this test only cares about
+        the banner: unpatched, `async_main()` performed real transport detection
+        against example.com. Measured with a socket guard, that was **8 live
+        connections on port 443** — and the test still passed, so nothing ever
+        drew attention to it. See AGENTS.md on hermetic tests.
+        """
         monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp"])
-        with caplog.at_level(logging.INFO), contextlib.suppress(SystemExit):
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+            contextlib.suppress(SystemExit),
+        ):
             await async_main()
 
         assert "Welcome to mcpscore!" in caplog.text
