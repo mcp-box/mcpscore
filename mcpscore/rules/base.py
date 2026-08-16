@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 
     from mcp_types import Implementation, Prompt, Resource, ResourceTemplate, ServerCapabilities, Tool
 
+    from mcpscore.packages import PackageMetadata
+
     from ..enums import MCPTransportType
     from ..probes import ProbeResult
 
@@ -131,6 +133,12 @@ class AuditData:
     # Sessionless probe observations (see mcpscore.probes), keyed by probe_id.
     # None until the auditor's probe-collection phase has run.
     probes: dict[str, ProbeResult] | None = None
+
+    # Package-registry metadata, for a package audit (mcpscore --package).
+    # None for every server audit — the packaging rules are the only ones that
+    # read it, and they are the only rules a package audit runs. Nothing here
+    # comes from executing the package; see mcpscore.packages.
+    package: PackageMetadata | None = None
 
     # Partial audit: no server session was available (e.g. an auth-gated
     # server), so only probe-derived rules were scored and session-dependent

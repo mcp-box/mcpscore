@@ -38,6 +38,15 @@ from .capabilities import (
     CapabilityToolsListChangedRule,
     CapabilityToolsPresentRule,
 )
+from .packaging import (
+    PACKAGING_GROUP,
+    PackageDescriptionPresentRule,
+    PackageLicenseDeclaredRule,
+    PackageNotWithdrawnRule,
+    PackageRepositoryDeclaredRule,
+    PackageResolvesRule,
+    PackageVersionResolvesRule,
+)
 from .prompts import (
     PromptsArgumentNamesPresentRule,
     PromptsArgumentNamesUniqueRule,
@@ -128,6 +137,7 @@ from .transport import (
 )
 
 __all__ = (
+    "PACKAGING_GROUP",
     "AllowedVersionRule",
     "AuditData",
     "AuthAuthorizationServersHttpsRule",
@@ -156,6 +166,12 @@ __all__ = (
     "MetaValidationReadinessRule",
     "NoSessionIdReadinessRule",
     "OriginValidationRule",
+    "PackageDescriptionPresentRule",
+    "PackageLicenseDeclaredRule",
+    "PackageNotWithdrawnRule",
+    "PackageRepositoryDeclaredRule",
+    "PackageResolvesRule",
+    "PackageVersionResolvesRule",
     "PromptsArgumentNamesPresentRule",
     "PromptsArgumentNamesUniqueRule",
     "PromptsArgumentsDocumentedRule",

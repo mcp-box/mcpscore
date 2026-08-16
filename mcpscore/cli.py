@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, NoReturn
 from mcpscore import MCPAuditor, MCPClient, StdioCommand
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
+from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
 from mcpscore.probes import observed_auth_status
 
 if TYPE_CHECKING:
@@ -73,6 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
             "every mcpscore option before it. Replaces the positional target. The command runs "
             "directly (no shell). Never pass secrets as arguments — the command line appears as "
             "the report's target (and in the process list); use the value-less --env NAME form."
+        ),
+    )
+    parser.add_argument(
+        "--package",
+        metavar="COORDINATE",
+        help=(
+            "Score a published package instead of a running server: --package npm:@scope/name, "
+            "--package npm:name@1.2.3, --package pypi:name==1.2.3. Reads the registry's metadata "
+            "only — the package is never downloaded and never executed, so no install hook runs. "
+            "Judges how the server is PUBLISHED (resolves, versioned, licensed, source-linked), "
+            "not whether it speaks MCP; for that, run the server with --stdio. The two scores "
+            "come from disjoint rule sets and are not comparable."
         ),
     )
     parser.add_argument(
@@ -243,19 +256,30 @@ def parse_env_vars(pairs: list[str]) -> dict[str, str]:
     return env
 
 
-def resolve_target(args: argparse.Namespace) -> str | StdioCommand:
-    """Resolve the audit target from the positional target and --stdio.
+def resolve_target(args: argparse.Namespace) -> str | StdioCommand | PackageCoordinate:
+    """Resolve the audit target from the positional target, --stdio and --package.
 
-    Exactly one of the two must be given; --env only makes sense with
-    --stdio (a URL or bare script target spawns no configurable process).
+    Exactly one of the three must be given; --env only makes sense with
+    --stdio (a URL, bare script target or package coordinate spawns no
+    configurable process — and --package spawns no process at all).
 
     Returns:
-        The URL / script path string, or a StdioCommand for --stdio.
+        The URL / script path string, a StdioCommand for --stdio, or a
+        PackageCoordinate for --package.
 
     Raises:
         ValueError: On any invalid combination (message is user-facing).
 
     """
+    if args.package is not None:
+        if args.target is not None or args.stdio is not None:
+            raise ValueError("give either a target, --stdio, or --package — not more than one")
+        if args.env:
+            raise ValueError("--env only applies to --stdio servers; --package never runs the package")
+        try:
+            return PackageCoordinate.parse(args.package)
+        except InvalidCoordinateError as e:
+            raise ValueError(str(e)) from None
     if args.stdio is not None:
         if args.target is not None:
             raise ValueError("give either a target or --stdio, not both")
@@ -269,7 +293,7 @@ def resolve_target(args: argparse.Namespace) -> str | StdioCommand:
     if args.env:
         raise ValueError("--env only applies to --stdio servers")
     if args.target is None:
-        raise ValueError("a target is required: a URL, a .py/.js path, or --stdio <command>")
+        raise ValueError("a target is required: a URL, a .py/.js path, --stdio <command>, or --package <coordinate>")
     return args.target
 
 
@@ -279,6 +303,39 @@ def _mcpscore_version() -> str:
         return version("mcpscore")
     except PackageNotFoundError:  # pragma: no cover - only without package metadata
         return "unknown"
+
+
+async def run_package_audit(args: argparse.Namespace, coordinate: PackageCoordinate) -> int:
+    """Score a package coordinate and report it. Returns the process exit code.
+
+    Its own entry point rather than a branch inside the server flow: there is no
+    client to connect, no transport to detect and no session to clean up — the
+    whole run is one HTTPS GET against a package registry.
+
+    Exit codes match the server flow's meaning: 0 audited, 2 could not look the
+    package up (the analogue of "could not connect").
+    """
+    auditor = MCPAuditor()
+    await auditor.audit_package(coordinate)
+    report = auditor.get_audit_report()
+    package = report["package"]
+
+    logger.info("")
+    if package["outcome"] == "error":
+        logger.error("Could not read %s metadata: %s", package["registry"], package["error"])
+        return 2
+
+    logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
+    logger.info(
+        "Packaging audit of %s — metadata only, the package was not downloaded or run.",
+        coordinate.display,
+    )
+    logger.info("This scores how the server is published, not whether it speaks MCP; use --stdio for that.")
+
+    if args.json:
+        full = build_report(coordinate.display, None, auditor)
+        sys.stdout.write(json.dumps(full, indent=2, default=str) + "\n")
+    return 0
 
 
 def log_audit_outcome(auditor: MCPAuditor) -> None:
@@ -418,6 +475,11 @@ async def async_main() -> None:
         sys.exit(1)
 
     logger.info("Welcome to mcpscore!")
+
+    # A package audit shares no machinery with a server audit past this point:
+    # no headers, no OAuth, no client, no transport detection, no cleanup.
+    if isinstance(target, PackageCoordinate):
+        sys.exit(await run_package_audit(args, target))
 
     try:
         headers = collect_headers(args)
