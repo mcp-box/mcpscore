@@ -24,6 +24,7 @@ from mcpscore.packages import (
     PackageCoordinate,
     PackageOutcome,
     PackageRegistry,
+    _metadata_url,
     fetch_package_metadata,
 )
 
@@ -128,6 +129,47 @@ class TestCoordinateParsing:
     )
     def test_display_round_trips(self, raw, expected):
         assert PackageCoordinate.parse(raw).display == expected
+
+
+class TestCoordinateInvariant:
+    """`version` is None or a non-empty string, however the coordinate was built.
+
+    `parse` rejects `npm:server@`, but the dataclass is also constructed
+    directly — the calibration tooling does `version=pkg.get("version")` straight
+    from registry JSON, and a web backend would do the same from a request body.
+    A blank version reaching the module broke three things at once.
+    """
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"])
+    def test_blank_version_becomes_unpinned(self, blank):
+        coordinate = PackageCoordinate(registry=PackageRegistry.PYPI, identifier="example", version=blank)
+
+        assert coordinate.version is None
+
+    def test_surrounding_whitespace_is_stripped(self):
+        assert PackageCoordinate(PackageRegistry.NPM, "example", " 1.2.3 ").version == "1.2.3"
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_a_blank_version_does_not_corrupt_the_metadata_url(self, blank):
+        # Was `https://pypi.org/pypi/example//json` — a 404 that would then be
+        # reported as "the pinned version does not exist".
+        coordinate = PackageCoordinate(PackageRegistry.PYPI, "example", blank)
+
+        assert _metadata_url(coordinate) == "https://pypi.org/pypi/example/json"
+
+    @pytest.mark.parametrize(
+        "coordinate",
+        [
+            PackageCoordinate(PackageRegistry.NPM, "@scope/server", ""),
+            PackageCoordinate(PackageRegistry.NPM, "@scope/server", "1.2.3"),
+            PackageCoordinate(PackageRegistry.PYPI, "example", ""),
+            PackageCoordinate(PackageRegistry.PYPI, "example", "1.2.3"),
+        ],
+    )
+    def test_display_always_round_trips_through_parse(self, coordinate):
+        # A blank version used to render `pypi:example==`, which parse now
+        # rejects — so the coordinate could not survive its own string form.
+        assert PackageCoordinate.parse(coordinate.display) == coordinate
 
 
 class TestNpmMetadata:

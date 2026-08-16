@@ -99,6 +99,28 @@ class PackageCoordinate:
     registry: PackageRegistry
     identifier: str
     version: str | None = None
+    """None means unpinned. Never the empty string — see __post_init__."""
+
+    def __post_init__(self) -> None:
+        """Collapse a blank version to None so `unpinned` has one representation.
+
+        ``parse`` rejects ``npm:server@``, but this dataclass is also built
+        directly — the acceptance/calibration tooling does
+        ``version=pkg.get("version")`` straight from registry JSON, and a web
+        backend would do the same from a request body. A ``""`` version reaching
+        the rest of the module is a bug in three places at once: ``_metadata_url``
+        builds ``…/pypi/name//json`` (a 404 reported as "that version does not
+        exist"), ``display`` emits ``pypi:name==`` which ``parse`` now rejects, so
+        the coordinate no longer round-trips, and ``package_version_resolves``
+        judges a pin the caller never made.
+
+        Normalizing here rather than at each site makes "version is None or a
+        non-empty string" an invariant of the type itself.
+        """
+        if self.version is not None and not self.version.strip():
+            object.__setattr__(self, "version", None)
+        elif self.version is not None:
+            object.__setattr__(self, "version", self.version.strip())
 
     @classmethod
     def parse(cls, raw: str) -> PackageCoordinate:
