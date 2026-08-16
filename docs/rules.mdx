@@ -13,6 +13,24 @@ Every rule mcpscore runs, generated from the rule registry
   excluded from the maximum score (see the
   [methodology](/methodology#multi-spec-version-scoring)).
 
+## Packaging rules
+
+These rules apply **only** to `mcpscore --package <coordinate>`, which reads a
+published package's registry metadata and never downloads or runs it. They are
+the only rules a package audit runs, and no server audit runs any of them — the
+two judge different targets, so their scores share no denominator. A package
+audit says how well a server is *published*; run the server with `--stdio` to
+score whether it speaks MCP.
+
+| Rule ID | Name | Severity | Weight | Applies to |
+|---|---|---|---|---|
+| `package_resolves` | Package - Resolves on its registry | CRITICAL | 5 | all versions |
+| `package_version_resolves` | Package - Pinned version resolves | HIGH | 3 | all versions |
+| `package_not_withdrawn` | Package - Release not withdrawn | HIGH | 3 | all versions |
+| `package_repository_declared` | Package - Source repository declared | MEDIUM | 2 | all versions |
+| `package_license_declared` | Package - License declared | MEDIUM | 2 | all versions |
+| `package_description_present` | Package - Description present | LOW | 1 | all versions |
+
 ## Protocol Version
 
 | Rule ID | Name | Severity | Weight | Applies to |

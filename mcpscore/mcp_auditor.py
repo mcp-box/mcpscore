@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
+from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
 from .probes import (
     PROBE_DISCOVER,
     PROBE_STATELESS_LIST,
@@ -24,6 +25,7 @@ from .probes import (
 )
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
 from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
+from .rules.packaging import PACKAGING_GROUP
 from .spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
@@ -182,6 +184,51 @@ class MCPAuditor:
         self.readiness_results = []
         self.era = None
         self.readiness_promoted = False
+
+    async def audit_package(self, coordinate: PackageCoordinate) -> tuple[int, int]:
+        """Score a package from its registry metadata. Nothing is downloaded or run.
+
+        Half the MCP registry ships as an npm or PyPI package with no remote
+        endpoint, so a URL-only auditor can say nothing about it. This path
+        fetches the package's published metadata and judges how the server is
+        packaged — whether it resolves, whether the pinned version exists,
+        whether it is withdrawn, and whether it declares a source repository,
+        a license and a description.
+
+        It deliberately does **not** execute the package: no tarball or wheel is
+        downloaded, no install hook runs. That makes it safe on any surface,
+        including a public web service, and it is the whole reason this path
+        exists separately from ``--stdio`` (which does run the server, under the
+        user's own privileges, and judges the protocol instead).
+
+        Args:
+            coordinate: The package to look up.
+
+        Returns:
+            (score, max_score) over the packaging rules only. This is NOT
+            comparable to a server audit's score — the rule sets are disjoint
+            and so are their denominators.
+
+        """
+        self._reset_run_state()
+        metadata = await fetch_package_metadata(coordinate)
+        self.audit_data.package = metadata
+        # No session, no transport, no negotiated version: a package coordinate
+        # names something installable, not something running. Every rule that
+        # would read those fields is out of this run's rule set entirely.
+        logger.info("📦 Auditing package %s", coordinate.display)
+        if metadata.outcome is PackageOutcome.ERROR:
+            logger.warning(
+                "Could not read %s metadata for %s: %s",
+                coordinate.registry.value,
+                coordinate.identifier,
+                metadata.error,
+            )
+        elif metadata.resolved_version:
+            logger.info("Resolved version: %s", metadata.resolved_version)
+
+        self._run_all_rules()
+        return self.score, self.max_score
 
     async def audit_modern_only(self, url: str) -> bool:
         """Audit a modern-only HTTP server via probes, without a legacy session.
@@ -372,6 +419,22 @@ class MCPAuditor:
             return False
         return all(getattr(self.audit_data, name, None) is None for name in names)
 
+    def _rules_for_target(self) -> list[BaseRule]:
+        """Return the rules that apply to the kind of target this run audited.
+
+        A package audit and a server audit judge different things, so they run
+        disjoint rule sets rather than one set with half of it skipped. Listing
+        six ``not-applicable`` packaging skips on every HTTPS report would be
+        noise — the server has no package and never could — and the reverse
+        holds for a package, which has no session, transport or TLS to judge.
+
+        The two scores therefore share no denominator, which is the honest
+        result: a package audit says how well a server is *published*, not
+        whether it speaks MCP.
+        """
+        auditing_package = self.audit_data.package is not None
+        return [rule for rule in self.rules if (rule.group_name == PACKAGING_GROUP) == auditing_package]
+
     def _run_all_rules(self) -> None:
         """Execute all applicable audit rules and update the audit score.
 
@@ -398,7 +461,7 @@ class MCPAuditor:
         self.readiness_promoted = self.era in (Era.MODERN, Era.DUAL) and not self.audit_data.partial
 
         readiness_header_emitted = False
-        for rule in sorted(self.rules, key=lambda r: r.sort_order):
+        for rule in sorted(self._rules_for_target(), key=lambda r: r.sort_order):
             if rule.group_name == READINESS_GROUP and not readiness_header_emitted:
                 readiness_header_emitted = True
                 logger.info("")
@@ -698,6 +761,11 @@ class MCPAuditor:
                 if self.audit_data.server_info is not None
                 else None
             ),
+            # Present only for a package audit (mcpscore --package), and its
+            # presence is the marker that this report's score comes from the
+            # packaging rules alone — a different denominator from a server
+            # audit's, since the two rule sets are disjoint.
+            "package": self._package_report(),
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
             "skipped_rules": [s.to_dict() for s in self.skipped_rules],
@@ -717,6 +785,33 @@ class MCPAuditor:
                 "results": [res.to_dict() for res in self.readiness_results],
                 "skipped": sum(1 for s in self.skipped_rules if s.group_name == READINESS_GROUP),
             },
+        }
+
+    def _package_report(self) -> dict | None:
+        """Serialize the audited package coordinate and what the registry said.
+
+        Deliberately narrower than PackageMetadata: the report carries identity
+        and the facts the rules judged, not the publisher's full document. A
+        packument can be megabytes, and copying it would grow the public report
+        schema by everything npm chooses to add.
+        """
+        package = self.audit_data.package
+        if package is None:
+            return None
+        return {
+            "registry": package.coordinate.registry.value,
+            "identifier": package.coordinate.identifier,
+            "requested_version": package.coordinate.version,
+            "resolved_version": package.resolved_version,
+            "outcome": package.outcome.value,
+            "error": package.error,
+            "repository_url": package.repository_url,
+            "license": package.license,
+            "published_at": (package.published_at.isoformat() if package.published_at is not None else None),
+            "withdrawn": package.yanked,
+            # Metadata only: a package audit never downloads or executes the
+            # package, so this score judges publishing, not protocol behavior.
+            "executed": False,
         }
 
     def get_audit_summary(self) -> dict:

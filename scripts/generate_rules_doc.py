@@ -10,6 +10,7 @@ from pathlib import Path
 
 from mcpscore.rules import create_all_rules
 from mcpscore.rules.base import READINESS_GROUP, BaseRule
+from mcpscore.rules.packaging import PACKAGING_GROUP
 from mcpscore.rules.retired import RETIRED_RULES
 from mcpscore.spec import DRAFT, LATEST
 
@@ -39,6 +40,19 @@ axis. For modern-lifecycle servers in full audits, they are also counted in the
 main score; legacy and partial audits keep them separate. See the
 [methodology](/methodology#the-readiness-score-separate-informative) for the
 normative citations behind each rule.
+
+"""
+
+
+PACKAGING_HEADER = """\
+## Packaging rules
+
+These rules apply **only** to `mcpscore --package <coordinate>`, which reads a
+published package's registry metadata and never downloads or runs it. They are
+the only rules a package audit runs, and no server audit runs any of them — the
+two judge different targets, so their scores share no denominator. A package
+audit says how well a server is *published*; run the server with `--stdio` to
+score whether it speaks MCP.
 
 """
 
@@ -87,6 +101,8 @@ def generate() -> str:
     for group_name, rules in groups.items():
         if group_name == READINESS_GROUP:
             lines.append(READINESS_HEADER.format(target=(DRAFT or LATEST).version))
+        elif group_name == PACKAGING_GROUP:
+            lines.append(PACKAGING_HEADER)
         else:
             lines.append(f"## {group_name.replace('_', ' ').title()}\n\n")
         lines.append("| Rule ID | Name | Severity | Weight | Applies to |\n")

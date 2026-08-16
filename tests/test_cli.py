@@ -30,7 +30,9 @@ from mcpscore.cli import (
     main,
     parse_env_vars,
     resolve_target,
+    run_package_audit,
 )
+from mcpscore.packages import PackageCoordinate, PackageMetadata, PackageOutcome
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture
@@ -1437,6 +1439,77 @@ class TestOAuthCliFlow:
             with pytest.raises(SystemExit) as exc:
                 await async_main()
             assert exc.value.code == 1
+
+
+class TestPackageCliFlow:
+    """--package: score a published package without ever running it."""
+
+    def test_resolve_target_parses_a_coordinate(self) -> None:
+        args = build_parser().parse_args(["--package", "npm:@scope/server@1.2.3"])
+        target = resolve_target(args)
+        assert isinstance(target, PackageCoordinate)
+        assert target.identifier == "@scope/server"
+        assert target.version == "1.2.3"
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["server.py", "--package", "npm:server"],
+            ["--package", "npm:server", "--stdio", "./srv"],
+        ],
+    )
+    def test_resolve_target_rejects_package_with_another_target(self, argv: list[str]) -> None:
+        with pytest.raises(ValueError, match="not more than one"):
+            resolve_target(build_parser().parse_args(argv))
+
+    def test_resolve_target_rejects_env_with_package(self) -> None:
+        # --env configures a process; --package never starts one.
+        args = build_parser().parse_args(["--package", "npm:server", "--env", "A=1"])
+        with pytest.raises(ValueError, match="never runs the package"):
+            resolve_target(args)
+
+    def test_resolve_target_surfaces_a_bad_coordinate_as_a_usage_error(self) -> None:
+        # InvalidCoordinateError is a ValueError, so async_main's existing
+        # usage-error handler reports it and exits 1 rather than tracing.
+        args = build_parser().parse_args(["--package", "cargo:server"])
+        with pytest.raises(ValueError, match="Unsupported package registry"):
+            resolve_target(args)
+
+    async def test_run_package_audit_emits_json_and_exits_zero(
+        self, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        async def fake_fetch(coordinate, client=None):
+            return PackageMetadata(
+                coordinate=coordinate,
+                outcome=PackageOutcome.OK,
+                resolved_version="1.0.0",
+                description="d",
+                license="MIT",
+                repository_url="https://github.com/example/server",
+            )
+
+        monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+        args = build_parser().parse_args(["--json", "--package", "npm:server"])
+
+        code = await run_package_audit(args, PackageCoordinate.parse("npm:server"))
+
+        assert code == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == "npm:server"
+        assert report["transport"] is None
+        assert report["package"]["executed"] is False
+        assert report["score"] == report["max_score"] == 16
+
+    async def test_run_package_audit_exits_two_when_the_registry_is_unreachable(self, monkeypatch: MonkeyPatch) -> None:
+        async def fake_fetch(coordinate, client=None):
+            return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.ERROR, error="ConnectError")
+
+        monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+        args = build_parser().parse_args(["--package", "npm:server"])
+
+        # 2 is the server flow's "could not connect" code; an unreachable
+        # registry is the same class of failure, not a zero-scoring package.
+        assert await run_package_audit(args, PackageCoordinate.parse("npm:server")) == 2
 
 
 class TestStdioCommandCliFlow:

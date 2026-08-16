@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--package`: score an npm or PyPI package without running it.** Half the MCP
+  registry — 9,832 of 20,016 active servers in the 2026-08 crawl — ships as a
+  package and speaks stdio, with no URL to point an auditor at.
+  `mcpscore --package npm:@scope/server`, `--package npm:name@1.2.3` and
+  `--package pypi:name==1.2.3` fetch the registry's published metadata and score
+  how the server is *packaged*: whether it resolves, whether a pinned version
+  exists, whether the release has been withdrawn (PyPI yank / npm deprecate),
+  and whether it declares a source repository, a license and a description.
+
+  **The package is never downloaded and never executed** — no tarball, no wheel,
+  no install hook — so this is safe to run against anything, including packages
+  you have not reviewed. It therefore says nothing about whether the server
+  speaks MCP correctly; run the server with `--stdio` for that.
+
+  Six new rules in a `packaging` group. They are the *only* rules a package
+  audit runs, and no server audit runs any of them: the two judge different
+  targets, so their scores share no denominator and existing reports are
+  unchanged. A dry run against 120 packages listed in the MCP registry measured
+  pass rates of 100% (resolves), 99% (version resolves), 95% (not withdrawn),
+  93% (license), 83% (repository) and 100% (description) — the pack is lenient
+  by design at this stage, with the source-repository check the main
+  discriminator. The JSON report gains a `package` block whose `executed: false`
+  records what the score is and is not based on.
+
 ## [1.6.0] - 2026-08-13
 
 ### Fixed
