@@ -1500,6 +1500,49 @@ class TestPackageCliFlow:
         assert report["package"]["executed"] is False
         assert report["score"] == report["max_score"] == 16
 
+    async def test_run_package_audit_without_json_prints_no_report(
+        self, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        async def fake_fetch(coordinate, client=None):
+            return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.OK, resolved_version="1.0.0")
+
+        monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+        args = build_parser().parse_args(["--package", "npm:server"])
+
+        code = await run_package_audit(args, PackageCoordinate.parse("npm:server"))
+
+        assert code == 0
+        # Logs go to stderr; stdout stays clean so `--json` alone is parseable.
+        assert capsys.readouterr().out == ""
+
+    async def test_async_main_routes_a_package_target_and_exits(
+        self, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The whole CLI path, end to end: no client is ever constructed."""
+
+        async def fake_fetch(coordinate, client=None):
+            return PackageMetadata(
+                coordinate=coordinate,
+                outcome=PackageOutcome.OK,
+                resolved_version="1.0.0",
+                description="d",
+                license="MIT",
+                repository_url="https://github.com/example/server",
+            )
+
+        def exploding_client(*args, **kwargs):  # pragma: no cover - must not run
+            raise AssertionError("a package audit must not construct an MCPClient")
+
+        monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+        monkeypatch.setattr("mcpscore.cli.MCPClient", exploding_client)
+        monkeypatch.setattr("sys.argv", ["mcpscore", "--json", "--package", "pypi:example"])
+
+        with pytest.raises(SystemExit) as exit_info:
+            await async_main()
+
+        assert exit_info.value.code == 0
+        assert json.loads(capsys.readouterr().out)["target"] == "pypi:example"
+
     async def test_run_package_audit_exits_two_when_the_registry_is_unreachable(self, monkeypatch: MonkeyPatch) -> None:
         async def fake_fetch(coordinate, client=None):
             return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.ERROR, error="ConnectError")

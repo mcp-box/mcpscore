@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you have not reviewed. It therefore says nothing about whether the server
   speaks MCP correctly; run the server with `--stdio` for that.
 
+  **No credential ever reaches a package registry.** The fetch builds a bare
+  request and disables client auth, so a caller's `Authorization`, cookies and
+  custom headers cannot follow an audit to npm or PyPI — a guarantee that holds
+  even when an authenticated client is passed in. The response is read with a
+  hard size cap applied *while streaming*, so an oversized or endless document
+  is refused rather than buffered.
+
   Six new rules in a `packaging` group. They are the *only* rules a package
   audit runs, and no server audit runs any of them: the two judge different
   targets, so their scores share no denominator and existing reports are

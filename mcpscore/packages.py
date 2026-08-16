@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+import json
 import logging
 import re
 from typing import Any
@@ -135,17 +136,25 @@ class PackageCoordinate:
 
         if registry is PackageRegistry.NPM:
             # rpartition, not partition: a scope's leading @ is part of the name.
-            name, sep, version = remainder.rpartition("@")
-            if not sep or not name:  # no version, or the @ was the scope marker
-                name, version = remainder, ""
+            head, separator, tail = remainder.rpartition("@")
+            # `head` is empty when the only @ was the scope marker (@scope/name).
+            pinned = bool(separator and head)
+            name, version = (head, tail) if pinned else (remainder, "")
             pattern = _NPM_NAME
         else:
-            name, sep, version = remainder.partition("==")
+            head, separator, tail = remainder.partition("==")
+            pinned = bool(separator)
+            name, version = (head, tail) if pinned else (remainder, "")
             pattern = _PYPI_NAME
 
         name, version = name.strip(), version.strip()
         if not pattern.match(name):
             raise InvalidCoordinateError(f"{registry.value} package name {name!r} is not a usable package name")
+        if pinned and not version:
+            # `npm:server@` / `pypi:server==` — the separator says a version was
+            # meant. Silently auditing the latest release would answer a
+            # different question than the one asked.
+            raise InvalidCoordinateError(f"Missing version after the separator in {raw!r}")
         return cls(registry=registry, identifier=name, version=version or None)
 
     @property
@@ -197,18 +206,38 @@ class PackageMetadata:
         return self.outcome is PackageOutcome.OK
 
 
+# `[git+]ssh://[user@]host[:port]/path` — the form npm writes for a private or
+# SSH-cloned remote.
+_SSH_REMOTE = re.compile(r"^(?:git\+)?ssh://(?:[^@/]+@)?(?P<host>[^/:]+)(?::\d+)?/(?P<path>.+)$")
+# `user@host:path` — git's scp-like shorthand, which has no scheme at all.
+_SCP_REMOTE = re.compile(r"^[^@/\s]+@(?P<host>[^:/\s]+):(?P<path>[^\s]+)$")
+
+
 def _first_url(*candidates: object) -> str | None:
-    """Return the first candidate that looks like an http(s) URL."""
+    """Return the first candidate that names a source repository, as a URL.
+
+    Publishers write git remotes half a dozen ways. An SSH remote is still a
+    declared repository — turning it into its browsable https form is right,
+    whereas stripping the scheme leaves a bare `host/path` that no longer looks
+    like a URL and scores the package as having no source at all.
+    """
     for candidate in candidates:
-        if isinstance(candidate, str):
-            cleaned = candidate.strip()
-            # npm writes git remotes as `git+https://…`, and `git://…` for old
-            # packages. Normalize the browsable form; a bare `git://` URL is
-            # still a declared repository.
-            for prefix in ("git+", "git+ssh://git@", "ssh://git@"):
-                cleaned = cleaned.removeprefix(prefix)
-            if cleaned.startswith(("https://", "http://", "git://")):
-                return cleaned.removesuffix(".git")
+        if not isinstance(candidate, str):
+            continue
+        cleaned = candidate.strip()
+        if not cleaned:
+            continue
+
+        ssh = _SSH_REMOTE.match(cleaned) or _SCP_REMOTE.match(cleaned)
+        if ssh:
+            cleaned = f"https://{ssh['host']}/{ssh['path']}"
+        else:
+            # npm's `git+https://…` prefix is a transport hint, not part of the
+            # address. `git://` is left alone — it is a real scheme.
+            cleaned = cleaned.removeprefix("git+")
+
+        if cleaned.startswith(("https://", "http://", "git://")):
+            return cleaned.removesuffix(".git")
     return None
 
 
@@ -374,43 +403,87 @@ async def fetch_package_metadata(
         return await _fetch(coordinate, owned)
 
 
+async def _read_bounded(response: httpx2.Response) -> bytes | None:
+    """Read at most MAX_METADATA_BYTES from a streaming response, else None.
+
+    Streaming rather than touching ``response.content``: the latter buffers and
+    decompresses the whole body first, so a size check after it has already
+    happened rejects a document the process has already paid for. This stops
+    reading the moment the cap is passed.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > MAX_METADATA_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def _fetch(coordinate: PackageCoordinate, client: httpx2.AsyncClient) -> PackageMetadata:
     url = _metadata_url(coordinate)
-    request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=FETCH_TIMEOUT_S)
-    # These are public documents on a third-party host; a caller credential
-    # meant for the audited server must never leak to a package registry.
-    request.headers.pop("Authorization", None)
+    oversized = PackageMetadata(
+        coordinate=coordinate,
+        outcome=PackageOutcome.ERROR,
+        error=f"metadata larger than {MAX_METADATA_BYTES} bytes",
+    )
+
+    # A bare Request, NOT client.build_request: build_request merges the
+    # client's default headers and cookies, and client.send re-applies the
+    # client's `auth`. Popping Authorization off a built request therefore does
+    # not make it credential-free — a caller's Basic auth came back on send().
+    # Constructing the request from nothing and passing auth=None is what
+    # actually guarantees that a credential meant for the audited MCP server
+    # never reaches a package registry. A test pins all three channels.
+    request = httpx2.Request(
+        "GET",
+        url,
+        headers={"Accept": "application/json"},
+        extensions={"timeout": httpx2.Timeout(FETCH_TIMEOUT_S).as_dict()},
+    )
     try:
-        response = await client.send(request)
+        response = await client.send(request, auth=None, stream=True)
     except (httpx2.HTTPError, httpx2.InvalidURL) as exc:
         logger.info("Could not reach %s for %s: %s", url, coordinate.display, type(exc).__name__)
         return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.ERROR, error=type(exc).__name__)
 
-    if response.status_code == 404:
-        # PyPI answers 404 for both an unknown project and an unknown version of
-        # a known one; only a versioned request can mean the latter.
-        outcome = (
-            PackageOutcome.VERSION_NOT_FOUND
-            if coordinate.registry is PackageRegistry.PYPI and coordinate.version is not None
-            else PackageOutcome.NOT_FOUND
-        )
-        return PackageMetadata(coordinate=coordinate, outcome=outcome)
-    if response.status_code != 200:
-        return PackageMetadata(
-            coordinate=coordinate,
-            outcome=PackageOutcome.ERROR,
-            error=f"HTTP {response.status_code}",
-        )
+    try:
+        if response.status_code == 404:
+            # PyPI answers 404 for both an unknown project and an unknown
+            # version of a known one; only a versioned request can mean the
+            # latter.
+            outcome = (
+                PackageOutcome.VERSION_NOT_FOUND
+                if coordinate.registry is PackageRegistry.PYPI and coordinate.version is not None
+                else PackageOutcome.NOT_FOUND
+            )
+            return PackageMetadata(coordinate=coordinate, outcome=outcome)
+        if response.status_code != 200:
+            return PackageMetadata(
+                coordinate=coordinate,
+                outcome=PackageOutcome.ERROR,
+                error=f"HTTP {response.status_code}",
+            )
 
-    if len(response.content) > MAX_METADATA_BYTES:
-        return PackageMetadata(
-            coordinate=coordinate,
-            outcome=PackageOutcome.ERROR,
-            error=f"metadata larger than {MAX_METADATA_BYTES} bytes",
-        )
+        # Reject on a declared length before reading a byte, when the registry
+        # sends one; _read_bounded still guards a lying or absent header.
+        declared = response.headers.get("Content-Length")
+        if declared is not None and declared.isdigit() and int(declared) > MAX_METADATA_BYTES:
+            return oversized
+
+        try:
+            body = await _read_bounded(response)
+        except (httpx2.HTTPError, httpx2.InvalidURL) as exc:
+            logger.info("Could not read %s for %s: %s", url, coordinate.display, type(exc).__name__)
+            return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.ERROR, error=type(exc).__name__)
+        if body is None:
+            return oversized
+    finally:
+        await response.aclose()
 
     try:
-        document = response.json()
+        document = json.loads(body)
     except ValueError:
         return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.ERROR, error="malformed JSON")
     if not isinstance(document, dict):

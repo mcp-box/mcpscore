@@ -32,12 +32,26 @@ schema version:
 The report's top-level shape: `schema_version`, `mcpscore_version`,
 `generated_at`, `target`, `transport`, `score`, `max_score`,
 `authenticated`, `partial`, `partial_reason`, `incomplete_listings[]`,
-`server_info`, `summary`, `results[]`, `skipped_rules[]`, `spec`, `readiness`.
+`server_info`, `package`, `summary`, `results[]`, `skipped_rules[]`, `spec`,
+`readiness`.
 
 `server_info` is either `null` when server identity could not be observed, or
 an object containing the `name` and `version` reported by the server during
 initialization or modern discovery. Baseline consumers can use it to distinguish
 a server release change from an mcpscore engine release change.
+
+`package` is `null` for every server audit. It is an object only for a package
+audit (`mcpscore --package <coordinate>`), and **its presence is the marker that
+this report's score is not comparable to a server report's**: a package audit
+runs the packaging rules and nothing else, so `score`/`max_score` come from a
+different, disjoint rule set. Consumers that compare or aggregate scores must
+branch on it. The object carries `registry`, `identifier`, `requested_version`,
+`resolved_version`, `outcome`, `error`, `repository_url`, `license`,
+`published_at`, `withdrawn`, and `executed` — the last is always `false` and
+records that the package was read from its registry, never downloaded or run.
+
+For a package audit `transport` is `null` and `spec.negotiated_version` is
+`null`: a coordinate names something installable, not something running.
 
 ### CLI interface
 

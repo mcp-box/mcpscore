@@ -191,6 +191,25 @@ class TestAuditPackage:
         assert len(report["results"]) == 6
         assert report["readiness"]["max_score"] == 0
 
+    async def test_a_missing_package_scores_only_the_resolution_rule(self, monkeypatch):
+        """Covers the no-resolved-version path through audit_package's logging."""
+
+        async def fake_fetch(coordinate, client=None):
+            return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.NOT_FOUND)
+
+        monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+        auditor = MCPAuditor()
+
+        score, max_score = await auditor.audit_package(NPM_COORDINATE)
+        report = auditor.get_audit_report()
+
+        # 0 of the 5-point CRITICAL resolution rule; the other five skipped, so
+        # they are absent from the denominator entirely.
+        assert (score, max_score) == (0, 5)
+        assert report["package"]["outcome"] == "not-found"
+        assert report["package"]["resolved_version"] is None
+        assert len(report["skipped_rules"]) == 5
+
     async def test_server_audits_report_no_package_section(self, monkeypatch):
         auditor = MCPAuditor()
         auditor.audit_data = AuditData(protocol_version="2025-11-25")

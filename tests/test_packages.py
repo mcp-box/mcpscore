@@ -105,6 +105,11 @@ class TestCoordinateParsing:
             "npm:   ",
             "npm:../../etc/passwd",  # path traversal
             "pypi:has spaces",
+            # A separator with nothing after it asked for a version; auditing
+            # the latest release instead would answer a different question.
+            "npm:server@",
+            "npm:@scope/server@",
+            "pypi:server==",
             "oci:ghcr.io/example/server",  # deliberately unsupported
         ],
     )
@@ -179,6 +184,44 @@ class TestNpmMetadata:
         # The registry needs the slash encoded; leaving it raw would address a
         # different path entirely.
         assert seen == ["https://registry.npmjs.org/%40scope%2Fserver"]
+
+    @pytest.mark.parametrize(
+        ("declared", "expected"),
+        [
+            ("git+https://github.com/example/server.git", "https://github.com/example/server"),
+            # SSH remotes are declared repositories too. Stripping their scheme
+            # left a bare `host/path` that failed the URL check, scoring these
+            # packages as having no source at all.
+            ("git+ssh://git@github.com/example/server.git", "https://github.com/example/server"),
+            ("ssh://git@github.com/example/server.git", "https://github.com/example/server"),
+            ("ssh://git@gitlab.com:2222/example/server.git", "https://gitlab.com/example/server"),
+            ("git@github.com:example/server.git", "https://github.com/example/server"),
+            ("git://github.com/example/server.git", "git://github.com/example/server"),
+            ("https://github.com/example/server", "https://github.com/example/server"),
+        ],
+    )
+    async def test_repository_remote_forms_are_all_recognized(self, declared, expected):
+        document = {**NPM_PACKUMENT, "repository": {"type": "git", "url": declared}}
+        async with _client(_json_handler(document)) as client:
+            meta = await fetch_package_metadata(PackageCoordinate.parse("npm:@scope/server"), client)
+
+        assert meta.repository_url == expected
+
+    @pytest.mark.parametrize(
+        "declared",
+        [
+            "",  # present but empty
+            "   ",
+            "not-a-url-at-all",
+            "mailto:maintainer@example.com",
+        ],
+    )
+    async def test_unusable_repository_values_score_as_absent(self, declared):
+        document = {**NPM_PACKUMENT, "repository": {"type": "git", "url": declared}, "homepage": None}
+        async with _client(_json_handler(document)) as client:
+            meta = await fetch_package_metadata(PackageCoordinate.parse("npm:@scope/server"), client)
+
+        assert meta.repository_url is None
 
     async def test_legacy_object_license_shape_is_read(self):
         document = {**NPM_PACKUMENT, "versions": {"2.0.0": {"license": {"type": "BSD-3-Clause"}}}}
@@ -331,20 +374,97 @@ class TestFetchFailuresAreData:
         assert meta.outcome is PackageOutcome.ERROR
         assert "larger than" in (meta.error or "")
 
-    async def test_caller_authorization_never_reaches_a_package_registry(self):
+    async def test_no_caller_credential_reaches_a_package_registry(self):
+        """Three separate channels, all of which leaked before 2026-08-16.
+
+        Popping Authorization off a `client.build_request` result looked
+        sufficient and was not: `build_request` merges the client's default
+        headers and cookies, and `client.send` re-applies the client's `auth`.
+        A client carrying Basic auth put `Authorization` straight back on the
+        wire. The fix is a bare Request plus `auth=None`; this test fails
+        against the popping version.
+        """
         seen: list[httpx2.Headers] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request.headers)
             return httpx2.Response(200, json=NPM_PACKUMENT)
 
-        # A credential meant for the audited MCP server must not leak to npm.
         async with httpx2.AsyncClient(
-            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer sekret"}
+            transport=httpx2.MockTransport(handler),
+            headers={"Authorization": "Bearer sekret", "X-Api-Key": "also-secret"},
+            auth=("user", "password"),
+            cookies={"session": "sekret-cookie"},
         ) as client:
             await fetch_package_metadata(PackageCoordinate.parse("npm:server"), client)
 
-        assert "authorization" not in {name.lower() for name in seen[0]}
+        sent = {name.lower() for name in seen[0]}
+        assert not sent & {"authorization", "cookie", "x-api-key"}
+        # Only what the fetch itself needs.
+        assert sent <= {"accept", "host"}
+
+    async def test_oversized_body_is_refused_without_buffering_it_all(self):
+        """The cap must stop the read, not judge it after the fact.
+
+        `response.content` buffers and decompresses the whole body first, so a
+        size check afterwards rejects a document the process already paid for.
+        This handler yields far more than the cap in chunks and asserts we
+        stopped early.
+        """
+        yielded = 0
+        chunk = b"x" * 64 * 1024
+
+        async def stream_body():
+            nonlocal yielded
+            for _ in range(200):  # 12.8 MB if fully consumed
+                yielded += len(chunk)
+                yield chunk
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, content=stream_body())
+
+        async with _client(handler) as client:
+            meta = await fetch_package_metadata(PackageCoordinate.parse("npm:server"), client)
+
+        assert meta.outcome is PackageOutcome.ERROR
+        assert "larger than" in (meta.error or "")
+        # Stopped near the cap rather than consuming all 12.8 MB.
+        assert yielded <= MAX_METADATA_BYTES + len(chunk)
+
+    async def test_declared_content_length_is_refused_before_reading(self):
+        read = False
+
+        async def stream_body():
+            nonlocal read
+            read = True
+            yield b"{}"
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(
+                200,
+                headers={"Content-Length": str(MAX_METADATA_BYTES + 1)},
+                content=stream_body(),
+            )
+
+        async with _client(handler) as client:
+            meta = await fetch_package_metadata(PackageCoordinate.parse("npm:server"), client)
+
+        assert meta.outcome is PackageOutcome.ERROR
+        assert read is False
+
+    async def test_transport_error_midway_through_the_body_is_data(self):
+        async def stream_body():
+            yield b'{"name":'
+            raise httpx2.ReadError("connection dropped")
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, content=stream_body())
+
+        async with _client(handler) as client:
+            meta = await fetch_package_metadata(PackageCoordinate.parse("npm:server"), client)
+
+        assert meta.outcome is PackageOutcome.ERROR
+        assert meta.error == "ReadError"
 
     async def test_creates_its_own_client_when_none_is_given(self, monkeypatch):
         transport = httpx2.MockTransport(_json_handler(NPM_PACKUMENT))
