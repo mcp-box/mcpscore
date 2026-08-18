@@ -352,9 +352,24 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
 
     logger.info("")
     if report["partial"]:
+        scored = len(report["results"])
+        considered = scored + len(report["skipped_rules"])
         logger.info("⚠️  Partial audit (%s).", report["partial_reason"])
         logger.info("Only the auth, TLS, and transport surface was scored — not comparable to a full audit.")
-    logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
+        # The qualifier goes on the SAME line as the number. A partial audit of
+        # a well-configured auth-gated server scores 25/25, and the caveat above
+        # does not survive the screenshot — the number is what gets pasted into
+        # a chat or a slide (external feedback, 2026-08-18). Saying how many
+        # checks actually ran is what makes "25/25" interpretable.
+        logger.info(
+            "Audit finished. PARTIAL score: %s/%s from %s of %s checks — not comparable to a full audit.",
+            report["score"],
+            report["max_score"],
+            scored,
+            considered,
+        )
+    else:
+        logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
     logger.info(
         "Spec: %s negotiated (latest: %s) · era: %s",
         spec["negotiated_version"] or "unknown",

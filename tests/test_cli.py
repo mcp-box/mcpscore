@@ -27,6 +27,7 @@ from mcpscore.cli import (
     async_main,
     build_parser,
     build_report,
+    log_audit_outcome,
     main,
     parse_env_vars,
     resolve_target,
@@ -1439,6 +1440,55 @@ class TestOAuthCliFlow:
             with pytest.raises(SystemExit) as exc:
                 await async_main()
             assert exc.value.code == 1
+
+
+class TestPartialAuditOutcomeLine:
+    """A partial score must not read as a perfect one.
+
+    An auth-gated server with a correct auth posture scores 25/25, and the
+    number is what gets screenshotted and pasted — a caveat on the line above
+    does not travel with it (external feedback, 2026-08-18). The qualifier and
+    the count of checks that actually ran belong on the same line as the score.
+    """
+
+    def _outcome_lines(self, caplog: LogCaptureFixture, **overrides) -> list[str]:
+        auditor = MagicMock(spec=MCPAuditor)
+        auditor.get_audit_report = MagicMock(return_value=_report_payload(**overrides))
+        with caplog.at_level(logging.INFO, logger="mcpscore.cli"):
+            log_audit_outcome(auditor)
+        return [record.getMessage() for record in caplog.records]
+
+    def test_partial_puts_the_qualifier_on_the_score_line(self, caplog: LogCaptureFixture) -> None:
+        lines = self._outcome_lines(
+            caplog,
+            score=25,
+            max_score=25,
+            partial=True,
+            partial_reason="Server requires authentication (HTTP 401)",
+            results=[{"rule_id": f"r{i}"} for i in range(9)],
+            skipped_rules=[{"rule_id": f"s{i}"} for i in range(73)],
+        )
+
+        score_line = next(line for line in lines if "25/25" in line)
+        # Everything a reader needs is on this one line, because this is the
+        # line that survives a crop.
+        assert "PARTIAL" in score_line
+        assert "9 of 82 checks" in score_line
+        assert "not comparable to a full audit" in score_line
+
+    def test_partial_never_prints_a_bare_final_score(self, caplog: LogCaptureFixture) -> None:
+        lines = self._outcome_lines(
+            caplog, score=25, max_score=25, partial=True, partial_reason="auth", results=[], skipped_rules=[]
+        )
+
+        # The exact string a full audit prints must not appear for a partial one.
+        assert not [line for line in lines if line.startswith("Audit finished. Final score:")]
+
+    def test_full_audit_line_is_unchanged(self, caplog: LogCaptureFixture) -> None:
+        lines = self._outcome_lines(caplog, score=127, max_score=136)
+
+        assert "Audit finished. Final score: 127/136" in lines
+        assert not [line for line in lines if "PARTIAL" in line]
 
 
 class TestPackageCliFlow:
