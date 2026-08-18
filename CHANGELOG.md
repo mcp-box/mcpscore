@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A partial audit no longer prints a bare `N/N`.** An auth-gated server with a
+  correct authorization posture scores `25/25`, which read as a perfect result:
+  the caveat printed above it does not travel when someone screenshots or pastes
+  the number. The score line now carries the qualifier and the check count
+  itself:
+
+  ```
+  Audit finished. PARTIAL score: 25/25 from 9 of 68 checks — not comparable to a full audit.
+  ```
+
+  The count is main-axis on both sides, matching the score it qualifies;
+  readiness reports its own totals on its own line. Full audits are unchanged —
+  they still print `Audit finished. Final score: N/M`.
+
 ### Added
 
 - **`--package`: score an npm or PyPI package without running it.** Half the MCP

@@ -352,8 +352,15 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
 
     logger.info("")
     if report["partial"]:
-        scored = len(report["results"])
-        considered = scored + len(report["skipped_rules"])
+        # Main axis only, both sides. `results` holds main-axis results while
+        # `skipped_rules` holds every skip including readiness ones, so
+        # len(results) + len(skipped_rules) counts readiness skips in the
+        # denominator without counting the readiness checks that ran in the
+        # numerator — a ratio belonging to neither axis. The summary already
+        # separates them, and the score being qualified here is the main-axis
+        # score; readiness reports its own totals on its own line below.
+        scored = report["summary"]["total"]
+        considered = scored + report["summary"]["skipped"]
         logger.info("⚠️  Partial audit (%s).", report["partial_reason"])
         logger.info("Only the auth, TLS, and transport surface was scored — not comparable to a full audit.")
         # The qualifier goes on the SAME line as the number. A partial audit of

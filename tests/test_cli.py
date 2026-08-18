@@ -1458,23 +1458,50 @@ class TestPartialAuditOutcomeLine:
             log_audit_outcome(auditor)
         return [record.getMessage() for record in caplog.records]
 
+    _LINEAR_PARTIAL = {
+        "score": 25,
+        "max_score": 25,
+        "partial": True,
+        "partial_reason": "Server requires authentication (HTTP 401)",
+        "results": [{"rule_id": f"main{i}"} for i in range(9)],
+        "skipped_rules": (
+            [{"rule_id": f"main_skip{i}", "group_name": "auth"} for i in range(59)]
+            + [{"rule_id": f"ready_skip{i}", "group_name": "readiness"} for i in range(14)]
+        ),
+        "summary": {"total": 9, "passed": 9, "failed": 0, "skipped": 59, "by_severity": {}},
+        "readiness": {
+            "score": 0,
+            "max_score": 10,
+            "counted_in_main": False,
+            "results": [{"rule_id": f"ready{i}"} for i in range(2)],
+            "skipped": 14,
+        },
+    }
+
     def test_partial_puts_the_qualifier_on_the_score_line(self, caplog: LogCaptureFixture) -> None:
-        lines = self._outcome_lines(
-            caplog,
-            score=25,
-            max_score=25,
-            partial=True,
-            partial_reason="Server requires authentication (HTTP 401)",
-            results=[{"rule_id": f"r{i}"} for i in range(9)],
-            skipped_rules=[{"rule_id": f"s{i}"} for i in range(73)],
-        )
+        lines = self._outcome_lines(caplog, **self._LINEAR_PARTIAL)
 
         score_line = next(line for line in lines if "25/25" in line)
         # Everything a reader needs is on this one line, because this is the
         # line that survives a crop.
         assert "PARTIAL" in score_line
-        assert "9 of 82 checks" in score_line
         assert "not comparable to a full audit" in score_line
+
+    def test_partial_count_stays_on_the_main_axis(self, caplog: LogCaptureFixture) -> None:
+        """The ratio must not straddle the two scoring axes.
+
+        `results` is main-axis only while `skipped_rules` carries readiness
+        skips too, so `len(results) + len(skipped_rules)` would count 14
+        readiness skips in the denominator while omitting the 2 readiness
+        checks that ran from the numerator — a ratio describing neither axis
+        (it read "9 of 82"). The score being qualified is the main-axis score;
+        readiness reports its own totals on its own line.
+        """
+        lines = self._outcome_lines(caplog, **self._LINEAR_PARTIAL)
+
+        score_line = next(line for line in lines if "25/25" in line)
+        assert "9 of 68 checks" in score_line
+        assert "82" not in score_line
 
     def test_partial_never_prints_a_bare_final_score(self, caplog: LogCaptureFixture) -> None:
         lines = self._outcome_lines(
