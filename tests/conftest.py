@@ -88,12 +88,18 @@ def as_dict(obj: Any) -> dict[str, Any] | dict | MappingProxyType[str, Any] | di
 
 @pytest.fixture(autouse=True)
 def _no_network_probes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep unit tests hermetic: stub the auditor's sessionless probe runner.
+    """Keep unit tests hermetic: stub BOTH of the auditor's probe runners.
 
-    audit() probes the target URL over HTTP; unit tests must never hit the
-    network. Probe behavior itself is tested in test_probes.py with a
-    MockTransport-backed client, and tests that need a different auditor-level
-    stub re-patch mcp_auditor.run_all_probes themselves.
+    audit() probes the target — over HTTP for URL targets, and by launching a
+    sibling process for stdio targets; unit tests must do neither. Probe
+    behavior itself is tested in test_probes.py with a MockTransport-backed
+    client and in test_stdio_probes.py with a real fixture subprocess; tests
+    that need a different auditor-level stub re-patch the runner themselves.
+
+    Both runners are stubbed for the same reason: a mock client's auto-created
+    ``stdio_params`` is truthy, so an unstubbed ``run_stdio_probes`` would be
+    reached from any stdio-shaped unit test — and any future I/O phase added to
+    ``_collect_probes`` belongs in this net too.
     """
     from mcpscore import mcp_auditor
     from mcpscore.probes import not_applicable_results
@@ -101,4 +107,8 @@ def _no_network_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     async def stubbed_run_all_probes(url: str, client: Any = None, headers: Any = None) -> dict:
         return not_applicable_results(reason="stubbed in unit tests")
 
+    async def stubbed_run_stdio_probes(params: Any) -> dict:
+        return not_applicable_results(reason="stubbed in unit tests")
+
     monkeypatch.setattr(mcp_auditor, "run_all_probes", stubbed_run_all_probes)
+    monkeypatch.setattr(mcp_auditor, "run_stdio_probes", stubbed_run_stdio_probes)

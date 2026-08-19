@@ -59,8 +59,9 @@ def _params(*, legacy: bool = False) -> StdioServerParameters:
 
 
 # Module-scoped and synchronous on purpose: each call launches one subprocess
-# per probe, and the pytest-asyncio loop is function-scoped, so an async
-# module fixture would be a scope mismatch. Probing once per mode keeps the
+# for the whole probe suite (test_probe_suite_launches_one_sibling_process pins
+# that), and the pytest-asyncio loop is function-scoped, so an async module
+# fixture would be a scope mismatch. Probing once per mode keeps the
 # real-process coverage without paying for it in every test.
 @pytest.fixture(scope="module")
 def modern_probes():
@@ -118,10 +119,16 @@ class TestModernStdioServer:
         """A stdio server answering both lifecycles is dual-era, not legacy."""
         assert detect_era("2025-11-25", modern_probes) is Era.DUAL
 
-    async def test_auditor_dispatches_stdio_probes_and_reports_dual_era(self):
+    async def test_auditor_dispatches_stdio_probes_and_reports_dual_era(self, monkeypatch):
         """Regression: the auditor must actually use the retained launch parameters."""
+        from mcpscore import mcp_auditor as mcp_auditor_module
         from mcpscore.mcp_auditor import MCPAuditor
         from mcpscore.mcp_client import MCPClient
+
+        # Opt back out of conftest's hermetic stub: this test exists precisely
+        # to prove the auditor reaches the real stdio probe runner, and it runs
+        # against the local fixture subprocess, not the network.
+        monkeypatch.setattr(mcp_auditor_module, "run_stdio_probes", run_stdio_probes)
 
         client = MCPClient()
         client.stdio_params = _params()
