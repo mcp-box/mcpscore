@@ -42,6 +42,7 @@ The final score is reported as `earned/maximum` — higher means a better-qualit
 - **Auto-detection**: Picks the right transport automatically — tries Streamable HTTP first, falls back to SSE for URLs
 - **Real handshake verification**: A connection only counts once the server completes the MCP `initialize` handshake — pointing it at a non-MCP endpoint fails cleanly
 - **Any-language**: Audits MCP servers in any language via STDIO — `.py`/`.js` files directly, everything else (Go, Java, C#, Rust, ...) via `--stdio <command>`
+- **Package audits**: `--package npm:<name>` / `pypi:<name>` scores how a server is *published* — resolves, versioned, not withdrawn, source-linked, licensed, described — from registry metadata alone. The package is never downloaded and never executed
 - **Severity-based reporting**: Rules categorized as CRITICAL, HIGH, MEDIUM, or LOW
 - **Library-friendly**: Fully typed (`py.typed`); use `MCPClient` + `MCPAuditor` programmatically
 
@@ -70,9 +71,13 @@ metadata, the RFC 8414 authorization-server chain, and whether PKCE (S256) is en
 A gated server is scored on this surface without credentials — see
 [auditing authenticated servers](https://docs.mcpscore.dev/authenticated-servers/).
 
-**Readiness** (13 rules) — how ready the server is for the 2026-07-28 MCP spec revision,
+**Readiness** (16 rules) — how ready the server is for the 2026-07-28 MCP spec revision,
 reported on its own axis. For servers already speaking the new lifecycle those points
 also count toward the main score; for everyone else the axis stays informative.
+
+Package audits (`--package`) run six **Packaging** rules instead — a separate rule set
+with its own denominator, never mixed into a server score: a package audit says how well
+a server is published, not whether it speaks MCP.
 
 ## Requirements
 
@@ -130,7 +135,7 @@ Transport: stdio
 Starting the audit...
 ✅ Protocol version '2025-11-25' is one of the allowed versions
 ✅ Protocol version '2025-11-25' is not deprecated
-❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28'
+❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28', and no stateless-lifecycle support was observed
 ✅ Server name is present: 'weather'
 ✅ Server version is present: '1.17.0'
 ❌ Server title is not present in server info
