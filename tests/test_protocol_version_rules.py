@@ -146,6 +146,13 @@ class TestLatestVersionRuleJudgesEvidence:
 
         assert LatestVersionRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
+    def test_defensive_check_result_when_protocol_version_is_missing(self):
+        """Direct callers still receive a clear failure after bypassing applicability."""
+        result = LatestVersionRule().check(AuditData(protocol_version=None))
+
+        assert result.passed is False
+        assert result.details == {"protocol_version": None}
+
     def test_unrelated_probe_does_not_make_the_gateway_observable(self):
         """An HTTP/auth observation cannot prove absence of modern support."""
         probes = not_applicable_results("not observed")

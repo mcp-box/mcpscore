@@ -37,11 +37,10 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
 from subprocess import DEVNULL
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
-    from typing import TextIO
 
     from mcp import StdioServerParameters
 from urllib.parse import urlsplit
@@ -1112,7 +1111,9 @@ async def run_stdio_probes(params: StdioServerParameters) -> dict[str, ProbeResu
         # safe environment allowlist, process-tree termination, pipe draining,
         # and cancellation shielding. Diagnostics from the sibling process are
         # suppressed so they cannot interleave with the audit's own output.
-        errlog = cast("TextIO", DEVNULL)
+        # The SDK annotates errlog as TextIO but forwards it to the subprocess
+        # API, where DEVNULL is the native cross-platform sentinel.
+        errlog: TextIO = cast("Any", DEVNULL)
         async with stdio_client(params, errlog=errlog) as (read_stream, write_stream):
             target = _StdioTarget(read_stream, write_stream)
             results.extend([await run_one(probe_id, target) for probe_id in STDIO_PROBE_IDS])
