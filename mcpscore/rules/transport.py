@@ -1,5 +1,13 @@
 from ..enums import MCPTransportType
-from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+)
 from .registry import register_rule
 
 
@@ -27,7 +35,9 @@ class StreamableHTTPTransportRule(BaseRule):
         never confirms which MCP transport the server speaks, so the rule
         cannot judge (transport_type is None) and must not claim a pass.
         """
-        if audit_data.partial and audit_data.transport_type is None:
+        if audit_data.transport_type == MCPTransportType.STDIO:
+            return SKIP_REASON_NOT_APPLICABLE
+        if audit_data.transport_type is None or audit_data.url is None:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
@@ -51,15 +61,8 @@ class StreamableHTTPTransportRule(BaseRule):
             RuleResult indicating pass/fail
 
         """
-        # For stdio connections, remote transport checks are not applicable
-        if transport_type == MCPTransportType.STDIO or url is None:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="[INFO] Remote transport check not applicable for stdio connections",
-                details={"transport_type": transport_type},
-            )
+        assert transport_type is not None  # noqa: S101 — skip_reason guarantees transport data
+        assert url is not None  # noqa: S101 — skip_reason guarantees a remote URL
 
         if transport_type == MCPTransportType.STREAMABLE_HTTP:
             return RuleResult(

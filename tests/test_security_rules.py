@@ -10,6 +10,7 @@ from mcpscore.rules import (
     RuleSeverity,
     TLSEnabledRule,
 )
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 
 
 class TestTLSEnabledRule:
@@ -59,12 +60,18 @@ class TestTLSEnabledRule:
 
     def test_stdio_transport_not_applicable(self, rule):
         """Test that TLS check is not applicable for stdio."""
-        audit_data = AuditData(url=None, tls_verified=None, tls_version=None)
+        audit_data = AuditData(transport_type=MCPTransportType.STDIO)
 
-        result = rule.check(audit_data)
+        assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
 
-        assert result.passed is True
-        assert "not applicable" in result.message.lower()
+    def test_missing_remote_tls_observation_is_insufficient_data(self, rule):
+        audit_data = AuditData(
+            transport_type=MCPTransportType.STREAMABLE_HTTP,
+            url="https://example.com/mcp",
+            tls_verified=None,
+        )
+
+        assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 class TestMalformedRequestHandlingRule:
@@ -113,19 +120,13 @@ class TestMalformedRequestHandlingRule:
         """Test that stdio transport is not tested."""
         audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STDIO)
 
-        result = rule.check(audit_data)
-
-        assert result.passed is True
-        assert "not tested" in result.message.lower()
+        assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
 
     def test_no_error_response_captured(self, rule):
         """Test when no error response was captured."""
         audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STREAMABLE_HTTP)
 
-        result = rule.check(audit_data)
-
-        assert result.passed is True
-        assert "not performed" in result.message.lower()
+        assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 class TestErrorDataLeakRule:
@@ -201,10 +202,12 @@ class TestErrorDataLeakRule:
         assert "❌" in result.message
 
     def test_no_error_response(self, rule):
-        """Test when no error response is provided."""
-        audit_data = AuditData(error_response=None)
+        """Test that an absent remote error response is insufficient data."""
+        audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STREAMABLE_HTTP)
 
-        result = rule.check(audit_data)
+        assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
 
-        assert result.passed is True
-        assert "No error response" in result.message
+    def test_stdio_transport_not_applicable(self, rule):
+        audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STDIO)
+
+        assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE

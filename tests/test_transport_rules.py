@@ -8,6 +8,7 @@ from mcpscore.rules import (
     RuleSeverity,
     StreamableHTTPTransportRule,
 )
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 
 
 class TestStreamableHTTPTransportRule:
@@ -42,10 +43,7 @@ class TestStreamableHTTPTransportRule:
         """Test that the remote transport check is not applicable for stdio."""
         audit_data = AuditData(transport_type=MCPTransportType.STDIO, url=None)
 
-        result = rule.check(audit_data)
-
-        assert result.passed is True
-        assert "not applicable" in result.message.lower()
+        assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
 
     def test_unknown_transport_type(self, rule):
         """Test handling of unknown transport type."""
@@ -60,7 +58,4 @@ class TestStreamableHTTPTransportRule:
         """Test when URL is None for HTTP transport."""
         audit_data = AuditData(transport_type=MCPTransportType.STREAMABLE_HTTP, url=None)
 
-        result = rule.check(audit_data)
-
-        assert result.passed is True
-        assert "not applicable" in result.message.lower()
+        assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
