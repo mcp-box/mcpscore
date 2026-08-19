@@ -44,7 +44,7 @@ of three reasons:
 | Skip reason | Meaning |
 |---|---|
 | `not-applicable` | The rule's spec-version range excludes the negotiated version (e.g. a rule for behavior your revision doesn't define) |
-| `insufficient-data` | The observations the rule needs are unavailable (e.g. a network probe errored, or probes don't run for this transport) — the rule can neither pass nor fail |
+| `insufficient-data` | The observations the rule needs are unavailable (e.g. a probe errored, or the probe's subject doesn't exist on this transport) — the rule can neither pass nor fail |
 | `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support — the gateway rules already carry that verdict; repeating it per detail would pile on noise |
 
 ## How an audit runs
@@ -68,6 +68,14 @@ of three reasons:
    Each one exists to check a documented MUST — for example, the spec requires
    HTTP 403 for an invalid `Origin` and HTTP 404 with JSON-RPC `-32601` for an
    unknown method.
+
+   **stdio servers are probed too.** The 2026-07-28 lifecycle is stateless — a
+   request carries its own `_meta` envelope and needs no handshake — so "does
+   this server speak the new revision?" is a JSON-RPC question, answerable over
+   stdio. Each stdio probe launches its own short-lived server process, separate
+   from the audit's session. The probes whose *subject* is an HTTP construct
+   (`Origin`, `Mcp-Session-Id`, header/body agreement, the well-known auth
+   documents) are recorded as not applicable rather than run.
 4. **Evaluate** — every registered rule runs against the collected data and probe
    observations. See the [Rules Reference](/rules) for the full list.
 

@@ -22,6 +22,7 @@ from .probes import (
     has_modern_support,
     not_applicable_results,
     run_all_probes,
+    run_stdio_probes,
 )
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
 from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
@@ -582,19 +583,31 @@ class MCPAuditor:
                 writer.close()
 
     async def _collect_probes(self) -> None:
-        """Run the sessionless HTTP probes and store their observations.
+        """Run the sessionless probes and store their observations.
 
         Probes observe spec behaviors outside the negotiated session (e.g.
-        2026-07-28 stateless-lifecycle support) — see mcpscore.probes. They
-        are HTTP-only: stdio audits record NOT_APPLICABLE results so rules
-        can distinguish "not probed" from "not collected".
+        2026-07-28 stateless-lifecycle support) — see mcpscore.probes.
+
+        Both transports are probed. The modern lifecycle is stateless, so
+        "does this server speak 2026-07-28?" is a JSON-RPC question, not an
+        HTTP one, and a stdio server answers it perfectly well; only the
+        probes whose subject is an HTTP construct stay NOT_APPLICABLE there.
+        A stdio audit that could not be probed at all (no launch parameters —
+        the connection failed, or a test injected a bare client) records
+        NOT_APPLICABLE for everything, so rules can still distinguish "not
+        probed" from "not collected".
         """
         url = self.audit_data.url
-        if url is None or not url.startswith(("http://", "https://")):
-            self.audit_data.probes = not_applicable_results(reason="probes require an HTTP(S) transport")
+        if url is not None and url.startswith(("http://", "https://")):
+            self.audit_data.probes = await run_all_probes(url, headers=self.headers)
             return
 
-        self.audit_data.probes = await run_all_probes(url, headers=self.headers)
+        stdio_params = self.mcp_client.stdio_params if self.mcp_client is not None else None
+        if stdio_params is not None:
+            self.audit_data.probes = await run_stdio_probes(stdio_params)
+            return
+
+        self.audit_data.probes = not_applicable_results(reason="no probeable transport was established")
 
     async def _collect_init_result(self) -> None:
         """Collect initialization data from the MCP server.

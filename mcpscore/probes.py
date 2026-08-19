@@ -1,10 +1,10 @@
-"""Sessionless HTTP probes for spec behaviors outside the negotiated session.
+"""Sessionless probes for spec behaviors outside the negotiated session.
 
 The SDK session in `mcp_client` speaks one negotiated protocol version; it
 cannot observe what *else* a server supports (e.g. "does this stateful
 2025-11-25 server also answer a stateless 2026-07-28 request?"). Probes fill
-that gap: each one issues raw JSON-RPC-over-HTTP requests (no SDK session)
-and records an observation for rules to consume via ``AuditData.probes``.
+that gap: each one issues raw JSON-RPC requests (no SDK session) and records
+an observation for rules to consume via ``AuditData.probes``.
 
 Probe outcomes are data, never errors: a server rejecting a probe is exactly
 as informative as one accepting it. Network failures become
@@ -13,8 +13,19 @@ instead of failing the server.
 
 Probes target the newest draft spec revision from the registry
 (:data:`mcpscore.spec.DRAFT`), falling back to the latest final revision.
-All probes are HTTP-only: for stdio servers the auditor records
-``NOT_APPLICABLE`` results instead of running them.
+
+**Transports.** The modern lifecycle is stateless — a request carries its own
+``_meta`` envelope and needs no handshake — so most probes are questions about
+JSON-RPC, not about HTTP, and run over stdio just as well. Probes therefore
+take a *target* (:class:`_HttpTarget` or :class:`_StdioTarget`) rather than an
+HTTP client. The exceptions are the probes whose subject *is* an HTTP
+construct — headers, status codes, ``Origin``, the well-known auth documents:
+those are listed in :data:`HTTP_ONLY_PROBE_IDS` and record
+``NOT_APPLICABLE`` on stdio.
+
+Because there is no HTTP status over stdio, ``_ProbeResponse.status_code`` is
+``None`` there and paired "HTTP 4xx *and* JSON-RPC code" requirements reduce to
+their JSON-RPC half — see :func:`_http_status_is`.
 """
 
 from __future__ import annotations
@@ -25,10 +36,12 @@ from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable, Iterable
+
+    from mcp import StdioServerParameters
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -41,16 +54,22 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AUTH_GATED_STATUSES",
     "GATEWAY_PROBE_IDS",
+    "HTTP_ONLY_PROBE_IDS",
     "PROBE_IDS",
     "ProbeOutcome",
     "ProbeResult",
     "detect_era",
     "has_modern_support",
+    "not_applicable_results",
     "run_all_probes",
+    "run_stdio_probes",
 ]
 
 PROBE_TIMEOUT_S = 10.0
 """Per-request timeout for a single probe."""
+
+_TERMINATE_TIMEOUT_S = 2.0
+"""Grace period a stdio probe subprocess gets to exit before it is killed."""
 
 META_PREFIX = "io.modelcontextprotocol/"
 """Prefix of the reserved ``_meta`` keys carrying per-request context (2026-07-28)."""
@@ -125,6 +144,29 @@ PROBE_IDS: tuple[str, ...] = (
 )
 """Stable identifiers of all probes."""
 
+HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
+    {
+        PROBE_HEADER_MISMATCH,
+        PROBE_UNAUTHENTICATED,
+        PROBE_SESSION_ID_ECHO,
+        PROBE_AUTH_METADATA,
+        PROBE_ORIGIN_VALIDATION,
+    }
+)
+"""Probes whose *subject* is an HTTP construct, so they cannot run over stdio.
+
+Not "probes that happen to use HTTP" — every probe does that over an HTTP
+target. These ask questions that only exist in HTTP: the ``Mcp-Method`` header
+contradicting the body (SEP-2243), the unauthenticated status and
+``WWW-Authenticate`` challenge, the removed ``Mcp-Session-Id`` header, the
+RFC 9728/8414 well-known documents, and ``Origin`` validation against DNS
+rebinding. Over stdio they record ``NOT_APPLICABLE``, which is the honest
+answer: there is no such thing to get wrong.
+"""
+
+STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
+"""Probes that run over stdio — the ones judging JSON-RPC, not HTTP."""
+
 _ANONYMOUS_PROBE_IDS = frozenset({PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA})
 """Probes that must see the server as an unauthenticated client does.
 
@@ -177,9 +219,15 @@ class ProbeResult:
 
 @dataclass(frozen=True)
 class _ProbeResponse:
-    """Parsed HTTP response to a probe request."""
+    """Parsed response to a probe request, from either transport."""
 
-    status_code: int
+    status_code: int | None
+    """HTTP status, or None when the transport has no HTTP layer (stdio).
+
+    None is not "unknown" — it means the question does not exist for this
+    transport, and paired status/JSON-RPC requirements reduce to their
+    JSON-RPC half (:func:`_http_status_is`)."""
+
     headers: dict[str, str]
     payload: dict[str, Any] | None
     """The JSON-RPC message, parsed from a JSON body or the first SSE data
@@ -206,6 +254,18 @@ class _ProbeResponse:
     def result(self) -> dict[str, Any] | None:
         result = self.payload.get("result") if isinstance(self.payload, dict) else None
         return result if isinstance(result, dict) else None
+
+
+@dataclass(frozen=True)
+class _HttpProbeResponse(_ProbeResponse):
+    """A response from an HTTP target, where a status code always exists.
+
+    Narrowing the field here (rather than asserting at each use) is what lets
+    the HTTP-only probes keep comparing statuses directly while the shared
+    ``_ProbeResponse`` stays honest that stdio has none.
+    """
+
+    status_code: int
 
 
 def _client_version() -> str:
@@ -264,35 +324,176 @@ def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-async def _post(
-    client: httpx2.AsyncClient,
-    url: str,
-    body: dict,
-    headers: dict[str, str],
-    *,
-    anonymous: bool = False,
-    follow_redirects: bool = True,
-) -> _ProbeResponse:
-    """POST a probe request, optionally stripping the caller's Authorization.
+class _ProbeTarget(Protocol):
+    """What a probe needs to ask a server one sessionless question."""
 
-    When ``anonymous``, remove any caller-supplied ``Authorization`` header so
-    the probe observes the server's unauthenticated behavior even when a token
-    was provided via --token/--header. When ``run_all_probes`` created the
-    clients itself, anonymous probes additionally run on a client that carries
-    no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop here also
-    covers caller-injected clients whose defaults it cannot control.
-    ``follow_redirects`` may be disabled for security checks that must judge
-    the target endpoint itself without forwarding caller context elsewhere.
+    async def post(
+        self,
+        body: dict,
+        headers: dict[str, str],
+        *,
+        anonymous: bool = False,
+        follow_redirects: bool = True,
+    ) -> _ProbeResponse:
+        """Send one JSON-RPC request and return the parsed response."""
+        ...
+
+
+@dataclass(frozen=True)
+class _HttpTarget:
+    """A probe target reached over HTTP(S)."""
+
+    client: httpx2.AsyncClient
+    url: str
+
+    async def post(
+        self,
+        body: dict,
+        headers: dict[str, str],
+        *,
+        anonymous: bool = False,
+        follow_redirects: bool = True,
+    ) -> _HttpProbeResponse:
+        """POST a probe request, optionally stripping the caller's Authorization.
+
+        When ``anonymous``, remove any caller-supplied ``Authorization`` header
+        so the probe observes the server's unauthenticated behavior even when a
+        token was provided via --token/--header. When ``run_all_probes`` created
+        the clients itself, anonymous probes additionally run on a client that
+        carries no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop
+        here also covers caller-injected clients whose defaults it cannot
+        control. ``follow_redirects`` may be disabled for security checks that
+        must judge the target endpoint itself without forwarding caller context
+        elsewhere.
+        """
+        request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
+        if anonymous:
+            request.headers.pop("Authorization", None)
+        response = await self.client.send(request, follow_redirects=follow_redirects)
+        return _HttpProbeResponse(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            payload=_parse_payload(response),
+        )
+
+
+@dataclass(frozen=True)
+class _StdioTarget:
+    """A probe target reached by launching the server as a subprocess.
+
+    Each request gets its **own** process. That is not wasteful bookkeeping —
+    it is what makes these probes sessionless in the same sense as the HTTP
+    ones. The audit's own SDK session has already sent ``initialize`` on its
+    process, and a server that negotiated the legacy lifecycle there may
+    reasonably refuse a modern request on the same connection (the reverse
+    rejection is explicit in the Python SDK). Reusing either connection would
+    measure the connection's history rather than the server's capability.
     """
-    request = client.build_request("POST", url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
-    if anonymous:
-        request.headers.pop("Authorization", None)
-    response = await client.send(request, follow_redirects=follow_redirects)
-    return _ProbeResponse(
-        status_code=response.status_code,
-        headers=dict(response.headers),
-        payload=_parse_payload(response),
-    )
+
+    params: StdioServerParameters
+
+    async def post(
+        self,
+        body: dict,
+        headers: dict[str, str],
+        *,
+        anonymous: bool = False,
+        follow_redirects: bool = True,
+    ) -> _ProbeResponse:
+        """Launch the server, exchange one JSON-RPC message, and shut it down.
+
+        ``headers``, ``anonymous`` and ``follow_redirects`` are HTTP concepts
+        with no stdio equivalent and are accepted only to satisfy the shared
+        target interface. They are deliberately ignored: probes that actually
+        depend on them are HTTP-only (:data:`HTTP_ONLY_PROBE_IDS`) and never
+        reach this transport.
+        """
+        del headers, anonymous, follow_redirects
+
+        env = dict(self.params.env) if self.params.env is not None else None
+        process = await asyncio.create_subprocess_exec(
+            self.params.command,
+            *self.params.args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            # The server's diagnostics are its own; forwarding them would
+            # interleave a probed server's logs into the audit's output.
+            stderr=asyncio.subprocess.DEVNULL,
+            cwd=self.params.cwd,
+            env=env,
+        )
+        try:
+            payload = await asyncio.wait_for(
+                self._exchange(process, body),
+                timeout=PROBE_TIMEOUT_S,
+            )
+        finally:
+            await _terminate(process)
+        return _ProbeResponse(status_code=None, headers={}, payload=payload)
+
+    async def _exchange(self, process: asyncio.subprocess.Process, body: dict) -> dict[str, Any] | None:
+        """Write one request and read until the matching response arrives.
+
+        Returns the matching JSON-RPC message, or None when the server closed
+        without answering. Non-matching lines are skipped rather than treated
+        as the answer: a server is free to emit notifications (or plain noise)
+        on stdout before it replies, and taking the first line would misread
+        that as a malformed response.
+        """
+        stdin, stdout = process.stdin, process.stdout
+        assert stdin is not None  # noqa: S101 — PIPE requested above
+        assert stdout is not None  # noqa: S101 — PIPE requested above
+        encoded = json.dumps(body).encode(self.params.encoding, errors=self.params.encoding_error_handler)
+        stdin.write(encoded + b"\n")
+        await stdin.drain()
+        stdin.close()
+
+        request_id = body.get("id")
+        while True:
+            line = await stdout.readline()
+            if not line:
+                return None
+            try:
+                message = json.loads(line.decode(self.params.encoding, errors=self.params.encoding_error_handler))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if isinstance(message, dict) and message.get("id") == request_id:
+                return message
+
+
+async def _terminate(process: asyncio.subprocess.Process) -> None:
+    """Stop a probe subprocess, escalating to SIGKILL if it ignores termination.
+
+    A probed server that hangs must not hang the audit: every probe is already
+    bounded by ``PROBE_TIMEOUT_S``, and this bounds the teardown too. Leaving a
+    stuck child behind would outlive the CLI itself.
+    """
+    if process.returncode is not None:
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:  # pragma: no cover - the process exited between the check and here
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=_TERMINATE_TIMEOUT_S)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:  # pragma: no cover - raced with its own exit
+            return
+        await process.wait()
+
+
+def _http_status_is(response: _ProbeResponse, expected: int) -> bool:
+    """Whether the HTTP status matches — vacuously true when there is no HTTP.
+
+    Several spec requirements pair a JSON-RPC error code with an HTTP status
+    ("MUST be rejected with -32602 and HTTP 400"). Over stdio only the
+    JSON-RPC half of that requirement exists, so the status half is satisfied
+    rather than failed. Judging a stdio server against an HTTP status it has
+    no way to send is exactly the bug this transport split exists to fix.
+    """
+    return response.status_code is None or response.status_code == expected
 
 
 def _base_details(response: _ProbeResponse) -> dict[str, Any]:
@@ -305,19 +506,17 @@ def _base_details(response: _ProbeResponse) -> dict[str, Any]:
     return details
 
 
-async def _probe_discover(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_discover(target: _ProbeTarget) -> ProbeResult:
     """``server/discover`` — mandatory for modern servers (SEP-2575).
 
     SUPPORTED when the server returns a DiscoverResult carrying
     ``supportedVersions``; the details also record the caching hints so the
     cache-metadata rule can check them.
     """
-    target = _target_version()
-    response = await _post(
-        client,
-        url,
-        _request_body("server/discover", 1, _modern_meta(target)),
-        _request_headers(target, "server/discover"),
+    target_version = _target_version()
+    response = await target.post(
+        _request_body("server/discover", 1, _modern_meta(target_version)),
+        _request_headers(target_version, "server/discover"),
     )
     details = _base_details(response)
     details["content_type"] = response.headers.get("content-type")
@@ -331,18 +530,16 @@ async def _probe_discover(client: httpx2.AsyncClient, url: str) -> ProbeResult:
     return ProbeResult(PROBE_DISCOVER, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_stateless_list(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_stateless_list(target: _ProbeTarget) -> ProbeResult:
     """Modern ``tools/list`` with required ``_meta``, no prior ``initialize`` (SEP-2575).
 
     SUPPORTED when the server returns a tools result; details record
     ``resultType`` and the caching hints for the dependent rules.
     """
-    target = _target_version()
-    response = await _post(
-        client,
-        url,
-        _request_body("tools/list", 2, _modern_meta(target)),
-        _request_headers(target, "tools/list"),
+    target_version = _target_version()
+    response = await target.post(
+        _request_body("tools/list", 2, _modern_meta(target_version)),
+        _request_headers(target_version, "tools/list"),
     )
     details = _base_details(response)
     details["content_type"] = response.headers.get("content-type")
@@ -355,41 +552,37 @@ async def _probe_stateless_list(client: httpx2.AsyncClient, url: str) -> ProbeRe
     return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_malformed_meta(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_malformed_meta(target: _ProbeTarget) -> ProbeResult:
     """Send a modern request missing a required ``_meta`` field.
 
     The spec: a request missing any required field MUST be rejected with
     JSON-RPC ``-32602`` and HTTP 400. SUPPORTED when the server does exactly
     that; anything else (including happily serving the request) is UNSUPPORTED.
     """
-    target = _target_version()
-    meta = _modern_meta(target)
+    target_version = _target_version()
+    meta = _modern_meta(target_version)
     del meta[f"{META_PREFIX}clientCapabilities"]
-    response = await _post(
-        client,
-        url,
+    response = await target.post(
         _request_body("tools/list", 3, meta),
-        _request_headers(target, "tools/list"),
+        _request_headers(target_version, "tools/list"),
     )
     details = _base_details(response)
-    correct = response.status_code == 400 and response.error_code == ERROR_INVALID_PARAMS
+    correct = _http_status_is(response, 400) and response.error_code == ERROR_INVALID_PARAMS
     outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_MALFORMED_META, outcome, details)
 
 
-async def _probe_header_mismatch(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_header_mismatch(target: _HttpTarget) -> ProbeResult:
     """Send a request whose ``Mcp-Method`` header contradicts the body method (SEP-2243).
 
     Servers MUST reject header/body mismatches with HTTP 400 and JSON-RPC
     ``-32020`` (HeaderMismatch). Uses ``tools/list`` in the body (never
     ``tools/call`` — probes must not risk invoking real tools).
     """
-    target = _target_version()
-    headers = _request_headers(target, "prompts/list")  # deliberately != body method
-    response = await _post(
-        client,
-        url,
-        _request_body("tools/list", 4, _modern_meta(target)),
+    target_version = _target_version()
+    headers = _request_headers(target_version, "prompts/list")  # deliberately != body method
+    response = await target.post(
+        _request_body("tools/list", 4, _modern_meta(target_version)),
         headers,
     )
     details = _base_details(response)
@@ -398,7 +591,7 @@ async def _probe_header_mismatch(client: httpx2.AsyncClient, url: str) -> ProbeR
     return ProbeResult(PROBE_HEADER_MISMATCH, outcome, details)
 
 
-async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_unknown_version(target: _ProbeTarget) -> ProbeResult:
     """Send a modern request naming a fabricated protocol version.
 
     Modern servers MUST reject it with ``-32022`` (UnsupportedProtocolVersion)
@@ -407,9 +600,7 @@ async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeR
     which version to retry with, so a bare ``-32022`` records
     ``data_well_formed: false`` and stays UNSUPPORTED.
     """
-    response = await _post(
-        client,
-        url,
+    response = await target.post(
         _request_body("tools/list", 5, _modern_meta(UNKNOWN_VERSION)),
         _request_headers(UNKNOWN_VERSION, "tools/list"),
     )
@@ -434,7 +625,7 @@ async def _probe_unknown_version(client: httpx2.AsyncClient, url: str) -> ProbeR
     return ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_missing_resource(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_missing_resource(target: _ProbeTarget) -> ProbeResult:
     """``resources/read`` for a deliberately nonexistent URI (SEP-2164).
 
     From 2026-07-28 the missing-resource error is standard ``-32602``; the
@@ -442,12 +633,10 @@ async def _probe_missing_resource(client: httpx2.AsyncClient, url: str) -> Probe
     observed; the raw code is always recorded (the error-code-migration rule
     also flags undefined codes in the reserved -32020..-32099 range).
     """
-    target = _target_version()
-    response = await _post(
-        client,
-        url,
-        _request_body("resources/read", 6, _modern_meta(target), params={"uri": MISSING_RESOURCE_URI}),
-        _request_headers(target, "resources/read", name=MISSING_RESOURCE_URI),
+    target_version = _target_version()
+    response = await target.post(
+        _request_body("resources/read", 6, _modern_meta(target_version), params={"uri": MISSING_RESOURCE_URI}),
+        _request_headers(target_version, "resources/read", name=MISSING_RESOURCE_URI),
     )
     details = _base_details(response)
     details["legacy_code_emitted"] = response.error_code == ERROR_LEGACY_RESOURCE_NOT_FOUND
@@ -455,19 +644,17 @@ async def _probe_missing_resource(client: httpx2.AsyncClient, url: str) -> Probe
     return ProbeResult(PROBE_MISSING_RESOURCE, outcome, details)
 
 
-async def _probe_unauthenticated(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
     """One unauthenticated request, recording status and ``WWW-Authenticate``.
 
     This is a pure observation probe (it feeds the auth-posture rules):
     SUPPORTED means "an HTTP response was observed", whatever its status —
     the details carry the status code and any authentication challenge.
     """
-    target = _target_version()
-    response = await _post(
-        client,
-        url,
-        _request_body("tools/list", 7, _modern_meta(target)),
-        _request_headers(target, "tools/list"),
+    target_version = _target_version()
+    response = await target.post(
+        _request_body("tools/list", 7, _modern_meta(target_version)),
+        _request_headers(target_version, "tools/list"),
         anonymous=True,
     )
     details = _base_details(response)
@@ -614,7 +801,7 @@ async def _fetch_auth_server_metadata(client: httpx2.AsyncClient, issuer: str, d
         details["auth_server_metadata_error"] = last_error
 
 
-async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
     """Fetch the auth-discovery chain (RFC 9728 PRM → RFC 8414 AS metadata).
 
     Observation probe feeding the auth-posture rules: SUPPORTED when a
@@ -635,9 +822,9 @@ async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeRes
     details: dict[str, Any] = {"urls_tried": []}
     reached = False
     last_error: str | None = None
-    for candidate in _well_known_urls(url):
+    for candidate in _well_known_urls(target.url):
         details["urls_tried"].append(candidate)
-        status, metadata, error = await _try_get_json_anonymous(client, candidate)
+        status, metadata, error = await _try_get_json_anonymous(target.client, candidate)
         if error is not None:
             last_error = error
             details.setdefault("unreachable_locations", []).append(candidate)
@@ -659,7 +846,7 @@ async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeRes
             # observe http too rather than skipping the metadata check entirely.
             first = next((s for s in (servers or []) if _is_http_url(s)), None)
             if first is not None:
-                await _fetch_auth_server_metadata(client, first, details)
+                await _fetch_auth_server_metadata(target.client, first, details)
             return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
     if not reached:
         # Keep what was established (urls_tried, unreachable_locations) — an
@@ -668,7 +855,7 @@ async def _probe_auth_metadata(client: httpx2.AsyncClient, url: str) -> ProbeRes
     return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.UNSUPPORTED, details)
 
 
-async def _probe_session_id_echo(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_session_id_echo(target: _HttpTarget) -> ProbeResult:
     """Send a modern request carrying a spurious ``Mcp-Session-Id`` header.
 
     ``Mcp-Session-Id`` is removed in 2026-07-28; servers serving modern
@@ -676,10 +863,10 @@ async def _probe_session_id_echo(client: httpx2.AsyncClient, url: str) -> ProbeR
     when the request is served normally with no session ID in the response —
     echoing/minting one is leaked legacy session bookkeeping.
     """
-    target = _target_version()
-    headers = _request_headers(target, "tools/list")
+    target_version = _target_version()
+    headers = _request_headers(target_version, "tools/list")
     headers["Mcp-Session-Id"] = SESSION_ID_PROBE_VALUE
-    response = await _post(client, url, _request_body("tools/list", 8, _modern_meta(target)), headers)
+    response = await target.post(_request_body("tools/list", 8, _modern_meta(target_version)), headers)
     details = _base_details(response)
     result = response.result
     served = result is not None and isinstance(result.get("tools"), list)
@@ -691,28 +878,26 @@ async def _probe_session_id_echo(client: httpx2.AsyncClient, url: str) -> ProbeR
     return ProbeResult(PROBE_SESSION_ID_ECHO, outcome, details)
 
 
-async def _probe_removed_method(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_removed_method(target: _ProbeTarget) -> ProbeResult:
     """Send a modern request for a method removed in the target revision (``ping``).
 
     Removed methods are unknown methods: the server MUST respond with HTTP 404
     and JSON-RPC ``-32601`` (Method not found). A server that still *serves*
     the method is leaking removed legacy surface.
     """
-    target = _target_version()
-    response = await _post(
-        client,
-        url,
-        _request_body(REMOVED_METHOD, 9, _modern_meta(target)),
-        _request_headers(target, REMOVED_METHOD),
+    target_version = _target_version()
+    response = await target.post(
+        _request_body(REMOVED_METHOD, 9, _modern_meta(target_version)),
+        _request_headers(target_version, REMOVED_METHOD),
     )
     details = _base_details(response)
     details["method_served"] = response.payload is not None and "result" in response.payload
-    correct = response.status_code == 404 and response.error_code == ERROR_METHOD_NOT_FOUND
+    correct = _http_status_is(response, 404) and response.error_code == ERROR_METHOD_NOT_FOUND
     outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_REMOVED_METHOD, outcome, details)
 
 
-async def _probe_origin_validation(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
     """Send a harmless list request with an invalid foreign ``Origin``.
 
     Streamable HTTP servers MUST validate every supplied Origin to prevent DNS
@@ -727,13 +912,11 @@ async def _probe_origin_validation(client: httpx2.AsyncClient, url: str) -> Prob
     foreign Origin first, and only judges the server when that control shows the
     same request would otherwise be accepted.
     """
-    target = _target_version()
-    body = _request_body("tools/list", 10, _modern_meta(target))
-    control = await _post(
-        client,
-        url,
+    target_version = _target_version()
+    body = _request_body("tools/list", 10, _modern_meta(target_version))
+    control = await target.post(
         body,
-        _request_headers(target, "tools/list"),
+        _request_headers(target_version, "tools/list"),
         follow_redirects=False,
     )
 
@@ -756,9 +939,9 @@ async def _probe_origin_validation(client: httpx2.AsyncClient, url: str) -> Prob
         }
         return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
 
-    headers = _request_headers(target, "tools/list")
+    headers = _request_headers(target_version, "tools/list")
     headers["Origin"] = ORIGIN_PROBE_VALUE
-    response = await _post(client, url, body, headers, follow_redirects=False)
+    response = await target.post(body, headers, follow_redirects=False)
 
     details = _base_details(response)
     details["control_http_status"] = control.status_code
@@ -766,24 +949,22 @@ async def _probe_origin_validation(client: httpx2.AsyncClient, url: str) -> Prob
     return ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details)
 
 
-async def _probe_unknown_method(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
     """Send a side-effect-free request for a deliberately unknown RPC method.
 
     Modern Streamable HTTP servers MUST return HTTP 404 together with JSON-RPC
     ``-32601`` (Method not found). The deliberately non-standard method name is
     namespaced to mcpscore to avoid colliding with a core MCP method.
     """
-    target = _target_version()
+    target_version = _target_version()
     # Randomised per probe: a fixed name could be implemented — deliberately or
     # by accident — and would then pass the rule without the server actually
     # handling unknown methods correctly. The readable prefix is kept so the
     # request is identifiable in a server operator's logs.
     method = f"{UNKNOWN_METHOD_PREFIX}{uuid4().hex[:12]}"
-    response = await _post(
-        client,
-        url,
-        _request_body(method, 11, _modern_meta(target)),
-        _request_headers(target, method),
+    response = await target.post(
+        _request_body(method, 11, _modern_meta(target_version)),
+        _request_headers(target_version, method),
     )
     details = _base_details(response)
     if response.status_code in AUTH_GATED_STATUSES:
@@ -792,30 +973,42 @@ async def _probe_unknown_method(client: httpx2.AsyncClient, url: str) -> ProbeRe
         # failing them here would report an auth posture as a transport defect.
         details["reason"] = "request is access-controlled; method dispatch not observable"
         return ProbeResult(PROBE_UNKNOWN_METHOD, ProbeOutcome.NOT_APPLICABLE, details)
-    correct = response.status_code == 404 and response.error_code == ERROR_METHOD_NOT_FOUND
+    correct = _http_status_is(response, 404) and response.error_code == ERROR_METHOD_NOT_FOUND
     outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
 
 
-_PROBES = {
+_TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {
     PROBE_DISCOVER: _probe_discover,
     PROBE_STATELESS_LIST: _probe_stateless_list,
     PROBE_MALFORMED_META: _probe_malformed_meta,
-    PROBE_HEADER_MISMATCH: _probe_header_mismatch,
     PROBE_UNKNOWN_VERSION: _probe_unknown_version,
     PROBE_MISSING_RESOURCE: _probe_missing_resource,
+    PROBE_REMOVED_METHOD: _probe_removed_method,
+    PROBE_UNKNOWN_METHOD: _probe_unknown_method,
+}
+"""Probes that judge JSON-RPC behavior, and so run over any transport."""
+
+_HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = {
+    PROBE_HEADER_MISMATCH: _probe_header_mismatch,
     PROBE_UNAUTHENTICATED: _probe_unauthenticated,
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
-    PROBE_REMOVED_METHOD: _probe_removed_method,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
     PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
-    PROBE_UNKNOWN_METHOD: _probe_unknown_method,
+}
+"""Probes whose subject is an HTTP construct (see HTTP_ONLY_PROBE_IDS)."""
+
+# A probe accepting any target also accepts an HTTP one, so the merged map is
+# keyed on the narrower parameter type.
+_HTTP_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = {
+    **_TRANSPORT_AGNOSTIC_PROBES,
+    **_HTTP_ONLY_PROBES,
 }
 
 
-def not_applicable_results(reason: str) -> dict[str, ProbeResult]:
-    """NOT_APPLICABLE results for every probe (e.g. for stdio servers)."""
-    return {probe_id: ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, {"reason": reason}) for probe_id in PROBE_IDS}
+def not_applicable_results(reason: str, probe_ids: Iterable[str] = PROBE_IDS) -> dict[str, ProbeResult]:
+    """NOT_APPLICABLE results for the given probes (all of them by default)."""
+    return {probe_id: ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, {"reason": reason}) for probe_id in probe_ids}
 
 
 GATEWAY_PROBE_IDS: tuple[str, ...] = (PROBE_DISCOVER, PROBE_STATELESS_LIST)
@@ -906,7 +1099,7 @@ async def run_all_probes(
 
     async def run_one(probe_id: str, http_client: httpx2.AsyncClient) -> ProbeResult:
         try:
-            return await _PROBES[probe_id](http_client, url)
+            return await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url))
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             logger.info("Probe %s failed against %s: %s", probe_id, url, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
@@ -922,3 +1115,38 @@ async def run_all_probes(
         httpx2.AsyncClient(follow_redirects=True) as anon_client,
     ):
         return await run_with(lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client)
+
+
+async def run_stdio_probes(params: StdioServerParameters) -> dict[str, ProbeResult]:
+    """Run the transport-agnostic probes against a local stdio MCP server.
+
+    The modern lifecycle is stateless, so "does this server speak 2026-07-28?"
+    is answerable over stdio exactly as over HTTP: send the request, read the
+    reply. Each probe launches its own short-lived process (see
+    :class:`_StdioTarget`), so the observations are independent of the audit's
+    own session — and of each other.
+
+    Probes in :data:`HTTP_ONLY_PROBE_IDS` are recorded ``NOT_APPLICABLE``:
+    their subject does not exist on this transport.
+
+    Args:
+        params: Fully-resolved command, arguments and environment of the
+            server, as used for the audit's own stdio connection.
+
+    Returns:
+        Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
+
+    """
+
+    async def run_one(probe_id: str) -> ProbeResult:
+        try:
+            return await _TRANSPORT_AGNOSTIC_PROBES[probe_id](_StdioTarget(params))
+        except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
+            logger.info("Probe %s failed against %s: %s", probe_id, params.command, e)
+            return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
+
+    results = await asyncio.gather(*(run_one(probe_id) for probe_id in STDIO_PROBE_IDS))
+    return {
+        **not_applicable_results("probe subject is HTTP-specific", HTTP_ONLY_PROBE_IDS),
+        **{result.probe_id: result for result in results},
+    }

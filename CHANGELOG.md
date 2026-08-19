@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **stdio servers are now probed for 2026-07-28 support instead of being assumed
+  to lack it.** The probes were HTTP-only, so a local server that fully spoke the
+  modern lifecycle was scored as though it did not — and, worse, the audit still
+  printed a readiness fraction as if it had looked.
+
+  The cause is that 2026-07-28 removed the `initialize` handshake in favor of a
+  stateless per-request envelope. No handshake can negotiate it, so on the
+  current SDKs every server correctly settles on `2025-11-25` and modern support
+  is observable *only* by sending a modern request. Since mcpscore only sent
+  those over HTTP, a stdio audit reported:
+
+  ```
+  ❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28'
+  ⏭️ Skipping rule 'readiness_2026_server_discover': insufficient-data   (×13)
+  Readiness for MCP 2026-07-28: 3/3 (informative — not part of the main score)
+  ```
+
+  Every one of those lines was wrong about a server that answers modern requests
+  perfectly well, and `3/3` — the three checks needing no probe — read as a clean
+  bill of health for thirteen checks that never ran.
+
+  Seven probes now run over stdio, each in its own short-lived server process:
+  `server/discover`, the stateless list, `_meta` validation, unknown-version
+  rejection, missing-resource codes, removed methods, and unknown methods. The
+  five whose subject *is* an HTTP construct — `Origin` validation, `Mcp-Session-Id`,
+  header/body agreement, the unauthenticated challenge, and the RFC 9728/8414
+  well-known documents — are recorded `not-applicable`, which is the honest
+  answer rather than a failure.
+
+  Consequences for stdio audits: the era is now reported accurately (a server
+  answering both lifecycles is `dual-era`, not `legacy`), readiness rules are
+  actually evaluated, and per the existing promotion policy readiness counts in
+  the main score for modern-lifecycle servers — so both the score and its
+  denominator change for stdio targets. HTTP audits are unaffected (verified by
+  re-auditing the same live server before and after: identical score, era and
+  readiness).
+
+- **`protocol_version_latest` judges what a server speaks, not what it
+  negotiated.** The rule compared the handshake result against the latest
+  revision unconditionally, which made it *unpassable* for any server on a
+  current SDK — a MEDIUM penalty no one could avoid. It now passes when the
+  probes observe modern-lifecycle support, still fails a server where the probes
+  looked and found none, and skips as `insufficient-data` when no probe observed
+  anything rather than guessing.
+
+- **`readiness_2026_response_content_type` no longer fails stdio servers** for
+  the absence of a `Content-Type` header the transport has no way to send; it
+  skips as `not-applicable`. Readiness messages that name a paired HTTP status
+  (`-32602` *and* HTTP 400) now omit the HTTP half on stdio, where only the
+  JSON-RPC half was checked.
+
 ### Changed
 
 - **A partial audit no longer prints a bare `N/N`.** An auth-gated server with a
