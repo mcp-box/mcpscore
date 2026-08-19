@@ -89,7 +89,14 @@ in the report tail:
 ⚠️  Partial audit (Server requires authentication (HTTP 401); scored the
 unauthenticated surface only — pass a token to audit behind the gate.).
 Only the auth, TLS, and transport surface was scored — not comparable to a full audit.
+Audit finished. PARTIAL score: 25/25 from 9 of 68 checks — not comparable to a full audit.
 ```
+
+The score line carries the qualifier and the check count deliberately: `25/25`
+on its own reads as a perfect result, and the number is what gets pasted into a
+chat or a slide while the lines above it do not travel with it. The count is
+what makes the ratio interpretable — 9 of 68 main-axis checks could run without
+credentials. Readiness reports its own totals on its own line.
 
 <Note>
 A partial score covers fewer checks than a full audit, so the two are **not
