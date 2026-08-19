@@ -384,18 +384,22 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
         spec["era"] or "unknown",
     )
     if readiness["max_score"] > 0:
+        assessed = len(readiness.get("results", []))
+        skipped = readiness.get("skipped", 0)
+        coverage = f"; {assessed} of {assessed + skipped} checks assessed" if skipped else ""
         logger.info(
-            "Readiness for MCP %s: %s/%s (%s)",
+            "Readiness for MCP %s: %s/%s (%s%s)",
             spec["readiness_target"],
             readiness["score"],
             readiness["max_score"],
             "counted in the main score — modern-lifecycle server"
             if readiness.get("counted_in_main")
             else "informative — not part of the main score",
+            coverage,
         )
     else:
         logger.info(
-            "Readiness for MCP %s: not assessed (no probe observations for this transport)",
+            "Readiness for MCP %s: not assessed (no usable probe observations)",
             spec["readiness_target"],
         )
 

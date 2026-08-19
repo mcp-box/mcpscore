@@ -124,8 +124,8 @@ against whichever kind of audit the workflow actually runs.
 
 <Note>
 The readiness gate only applies when the server was actually assessed for
-readiness. A stdio server audited without probes reports no readiness score, and
-`min-readiness` is skipped rather than failing the build.
+readiness. HTTP and stdio servers are both probed; if the modern lifecycle could
+not be observed at all, `min-readiness` is skipped rather than failing the build.
 </Note>
 
 ### Use the outputs in later steps

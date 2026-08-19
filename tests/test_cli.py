@@ -919,6 +919,30 @@ class TestLogAuditOutcome:
 
         assert "not assessed" in caplog.text
 
+    def test_readiness_fraction_discloses_skipped_checks(self, caplog: LogCaptureFixture) -> None:
+        """A perfect-looking fraction must not imply that every check ran."""
+        auditor = MagicMock(spec=MCPAuditor)
+        auditor.get_audit_report = MagicMock(
+            return_value=_report_payload(
+                readiness={
+                    "score": 3,
+                    "max_score": 3,
+                    "counted_in_main": False,
+                    "results": [{"rule_id": "one"}, {"rule_id": "two"}, {"rule_id": "three"}],
+                    "skipped": 13,
+                }
+            )
+        )
+
+        with caplog.at_level(logging.INFO, logger="mcpscore.cli"):
+            log_audit_outcome(auditor)
+
+        readiness_line = next(
+            record.getMessage() for record in caplog.records if "Readiness for MCP" in record.getMessage()
+        )
+        assert "3/3" in readiness_line
+        assert "3 of 16 checks assessed" in readiness_line
+
 
 class TestCollectHeaders:
     """Tests for --header / --token / MCPSCORE_TOKEN parsing."""

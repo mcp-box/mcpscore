@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **stdio audits now probe the stateless MCP 2026-07-28 lifecycle.** Seven
+  transport-independent JSON-RPC probes run on one short-lived, no-handshake
+  process through the SDK's cross-platform stdio transport; the five
+  HTTP-specific probes remain not applicable. A
+  dual-era stdio server is therefore reported and scored as dual-era instead
+  of being assigned an unavoidable `protocol_version_latest` failure and a
+  misleading readiness result based only on unprobed checks.
+- **`protocol_version_latest` now judges observed lifecycle support.** A legacy
+  handshake capped at `2025-11-25` passes when gateway probes demonstrate
+  `2026-07-28` support, fails when those probes explicitly reject it, and skips
+  when the modern gateway could not be observed.
+- **Readiness summaries disclose skipped checks.** The CLI qualifies a readiness
+  fraction with the number of checks assessed whenever any were skipped, and
+  JSON reports expose `readiness.assessed`, `readiness.skipped`, and
+  `readiness.total`.
+
 ### Changed
 
 - **A partial audit no longer prints a bare `N/N`.** An auth-gated server with a

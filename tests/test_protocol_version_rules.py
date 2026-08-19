@@ -1,10 +1,19 @@
 from mcpscore.enums import MCPProtocolVersion
+from mcpscore.probes import (
+    GATEWAY_PROBE_IDS,
+    PROBE_IDS,
+    PROBE_UNAUTHENTICATED,
+    ProbeOutcome,
+    ProbeResult,
+    not_applicable_results,
+)
 from mcpscore.rules import (
     AllowedVersionRule,
     AuditData,
     DeprecatedVersionRule,
     LatestVersionRule,
 )
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 
 
 def test_allowed_version_rule_passes_for_known_versions():
@@ -80,3 +89,79 @@ def test_latest_version_rule_passes_for_newer_unreleased_version():
     result = rule.check(AuditData(protocol_version="2099-01-01"))
     assert result.passed
     assert "newer" in result.message
+
+
+class TestLatestVersionRuleJudgesEvidence:
+    """`protocol_version_latest` asks what the server speaks, not what it negotiated.
+
+    2026-07-28 removed the ``initialize`` handshake, so the latest revision is
+    unreachable through version negotiation. Judging the negotiated version
+    against it made the rule unpassable for every current server — a MEDIUM
+    penalty nobody could avoid. The probes supply the missing evidence.
+    """
+
+    @staticmethod
+    def _probes(*, modern: bool) -> dict[str, ProbeResult]:
+        outcome = ProbeOutcome.SUPPORTED if modern else ProbeOutcome.UNSUPPORTED
+        return {
+            probe_id: ProbeResult(probe_id, outcome if probe_id in GATEWAY_PROBE_IDS else ProbeOutcome.UNSUPPORTED, {})
+            for probe_id in PROBE_IDS
+        }
+
+    def test_passes_when_probes_show_modern_support(self):
+        """The regression: a handshake-capped server that does speak the latest."""
+        rule = LatestVersionRule()
+        data = AuditData(protocol_version="2025-11-25", probes=self._probes(modern=True))
+
+        assert rule.skip_reason(data) is None
+        result = rule.check(data)
+        assert result.passed
+        assert result.details["modern_lifecycle_support"] is True
+
+    def test_still_fails_a_server_with_no_modern_support(self):
+        """The rule keeps its teeth: probes looked, and found nothing."""
+        rule = LatestVersionRule()
+        data = AuditData(protocol_version="2025-11-25", probes=self._probes(modern=False))
+
+        assert rule.skip_reason(data) is None
+        assert not rule.check(data).passed
+
+    def test_skips_when_no_probe_observed_anything(self):
+        """With no evidence either way the rule must not guess.
+
+        Every probe NOT_APPLICABLE is the pre-fix stdio situation; scoring it
+        as a failure is precisely the bug.
+        """
+        rule = LatestVersionRule()
+        data = AuditData(
+            protocol_version="2025-11-25",
+            probes=not_applicable_results("probes did not run"),
+        )
+
+        assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_skips_when_no_protocol_version_was_observed(self):
+        """An unreachable target has no version to judge and must not fail."""
+        data = AuditData(protocol_version=None)
+
+        assert LatestVersionRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_unrelated_probe_does_not_make_the_gateway_observable(self):
+        """An HTTP/auth observation cannot prove absence of modern support."""
+        probes = not_applicable_results("not observed")
+        probes[PROBE_UNAUTHENTICATED] = ProbeResult(
+            PROBE_UNAUTHENTICATED,
+            ProbeOutcome.SUPPORTED,
+            {"http_status": 401},
+        )
+        data = AuditData(protocol_version="2025-11-25", probes=probes)
+
+        assert LatestVersionRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_a_latest_negotiation_needs_no_probes(self):
+        """A server that negotiated the latest is judged without any probe data."""
+        rule = LatestVersionRule()
+        data = AuditData(protocol_version=MCPProtocolVersion.Latest.value)
+
+        assert rule.skip_reason(data) is None
+        assert rule.check(data).passed

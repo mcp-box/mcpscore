@@ -22,7 +22,11 @@ from mcpscore.probes import (
     not_applicable_results,
 )
 from mcpscore.rules import AuditData
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_REQUIRES_MODERN_SUPPORT
+from mcpscore.rules.base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    SKIP_REASON_REQUIRES_MODERN_SUPPORT,
+)
 from mcpscore.rules.readiness import (
     CacheMetadataReadinessRule,
     DeprecatedFeaturesReadinessRule,
@@ -121,7 +125,7 @@ class TestGatewayRules:
 
     def test_skipped_when_probes_not_applicable(self):
         data = AuditData(probes=not_applicable_results(reason="stdio"))
-        assert ServerDiscoverReadinessRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+        assert ServerDiscoverReadinessRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
 
     def test_skipped_when_probes_missing(self):
         data = AuditData(probes=None)
@@ -491,6 +495,8 @@ class TestReadinessScoringAxis:
         assert report["readiness"]["max_score"] > 0
         assert report["readiness"]["score"] < report["readiness"]["max_score"]
         assert {r["rule_id"] for r in report["readiness"]["results"]} == {r.rule_id for r in auditor.readiness_results}
+        assert report["readiness"]["assessed"] == len(auditor.readiness_results)
+        assert report["readiness"]["total"] == report["readiness"]["assessed"] + report["readiness"]["skipped"]
 
 
 class TestLegacyLeakageRules:
