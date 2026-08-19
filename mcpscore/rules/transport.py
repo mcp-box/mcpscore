@@ -29,11 +29,11 @@ class StreamableHTTPTransportRule(BaseRule):
     rule_order = 1
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip in a partial audit where no transport was established.
+        """Skip when a remote transport cannot be judged.
 
-        A partial audit reaches the server only over raw probe requests; it
-        never confirms which MCP transport the server speaks, so the rule
-        cannot judge (transport_type is None) and must not claim a pass.
+        Remote transport quality does not apply to stdio. A missing transport
+        or URL leaves insufficient evidence, including in partial audits that
+        reach a server only through raw probe requests.
         """
         if audit_data.transport_type == MCPTransportType.STDIO:
             return SKIP_REASON_NOT_APPLICABLE

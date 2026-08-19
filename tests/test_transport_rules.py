@@ -22,6 +22,7 @@ class TestStreamableHTTPTransportRule:
         """Test that the current-standard Streamable HTTP transport passes."""
         audit_data = AuditData(transport_type=MCPTransportType.STREAMABLE_HTTP, url="https://example.com/mcp")
 
+        assert rule.skip_reason(audit_data) is None
         result = rule.check(audit_data)
 
         assert result.passed is True

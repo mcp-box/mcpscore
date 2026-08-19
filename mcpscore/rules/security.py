@@ -213,7 +213,11 @@ class ErrorDataLeakRule(BaseRule):
     rule_order = 3
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when there is no remote error response whose contents can be judged."""
+        """Skip when there is no remote error response whose contents can be judged.
+
+        Unlike malformed-request behavior, content leakage can be judged from
+        an observed response even when the exact remote transport is unknown.
+        """
         if audit_data.transport_type == MCPTransportType.STDIO:
             return SKIP_REASON_NOT_APPLICABLE
         if audit_data.error_response is None:

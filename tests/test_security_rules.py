@@ -30,6 +30,16 @@ class TestTLSEnabledRule:
         assert "✅" in result.message
         assert result.severity == RuleSeverity.CRITICAL
 
+    def test_https_with_verified_tls_and_unknown_version_passes(self, rule):
+        """A verified TLS connection remains valid when version probing yields no version."""
+        audit_data = AuditData(url="https://example.com/mcp", tls_verified=True, tls_version=None)
+
+        assert rule.skip_reason(audit_data) is None
+        result = rule.check(audit_data)
+
+        assert result.passed is True
+        assert result.message == "✅ Server uses HTTPS with valid TLS"
+
     def test_http_without_tls_fails(self, rule):
         """Test that HTTP without TLS fails."""
         audit_data = AuditData(url="http://example.com/mcp", tls_verified=False, tls_version=None)
@@ -64,6 +74,11 @@ class TestTLSEnabledRule:
 
         assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
 
+    def test_missing_remote_url_is_insufficient_data(self, rule):
+        audit_data = AuditData(transport_type=MCPTransportType.STREAMABLE_HTTP, url=None)
+
+        assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
+
     def test_missing_remote_tls_observation_is_insufficient_data(self, rule):
         audit_data = AuditData(
             transport_type=MCPTransportType.STREAMABLE_HTTP,
@@ -88,6 +103,7 @@ class TestMalformedRequestHandlingRule:
             transport_type=MCPTransportType.STREAMABLE_HTTP,
         )
 
+        assert rule.skip_reason(audit_data) is None
         result = rule.check(audit_data)
 
         assert result.passed is True
@@ -142,6 +158,7 @@ class TestErrorDataLeakRule:
             error_response='{"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}'
         )
 
+        assert rule.skip_reason(audit_data) is None
         result = rule.check(audit_data)
 
         assert result.passed is True
