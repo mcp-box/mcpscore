@@ -31,6 +31,7 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -429,6 +430,21 @@ class _StdioTarget:
             )
         finally:
             await _terminate(process)
+
+        if payload is None:
+            # No answer at all — the pipe closed first. This MUST raise rather
+            # than return an empty response, so the probe records ERROR ("could
+            # not verify") and dependent rules skip.
+            #
+            # Returning payload=None instead would make the gateway rules judge
+            # the server UNSUPPORTED, i.e. fail it at CRITICAL severity for a
+            # refusal nobody observed. Worse, the choice between the two was
+            # previously a race: writing to a process that has already exited
+            # raises on some platforms and silently buffers on others, so the
+            # same server scored differently run to run. Raising here is what
+            # makes the outcome depend on the server rather than on timing.
+            msg = "server closed its output without answering the probe"
+            raise ConnectionError(msg)
         return _ProbeResponse(status_code=None, headers={}, payload=payload)
 
     async def _exchange(self, process: asyncio.subprocess.Process, body: dict) -> dict[str, Any] | None:
@@ -462,26 +478,52 @@ class _StdioTarget:
 
 
 async def _terminate(process: asyncio.subprocess.Process) -> None:
-    """Stop a probe subprocess, escalating to SIGKILL if it ignores termination.
+    """Stop a probe subprocess and reap it, escalating to SIGKILL if needed.
 
     A probed server that hangs must not hang the audit: every probe is already
     bounded by ``PROBE_TIMEOUT_S``, and this bounds the teardown too. Leaving a
     stuck child behind would outlive the CLI itself.
+
+    Signalling a process that has already exited raises, and *which* exception
+    is platform-specific — ``ProcessLookupError`` on POSIX, a plain ``OSError``
+    (access denied) on Windows, where the exit is also reported later. Both are
+    caught: the process being gone is the outcome this function wants.
+
+    The final ``wait()`` is unconditional and outside the signalling branch. An
+    unreaped child raises ``ResourceWarning: subprocess N is still running`` at
+    garbage-collection time, which under this project's ``filterwarnings =
+    ["error"]`` fails the run far from its cause.
     """
-    if process.returncode is not None:
-        return
-    try:
-        process.terminate()
-    except ProcessLookupError:  # pragma: no cover - the process exited between the check and here
-        return
-    try:
-        await asyncio.wait_for(process.wait(), timeout=_TERMINATE_TIMEOUT_S)
-    except TimeoutError:
+    if process.returncode is None:
         try:
-            process.kill()
-        except ProcessLookupError:  # pragma: no cover - raced with its own exit
-            return
-        await process.wait()
+            process.terminate()
+        except OSError:  # already exited (ProcessLookupError is an OSError)
+            pass
+        else:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=_TERMINATE_TIMEOUT_S)
+            except TimeoutError:
+                with contextlib.suppress(OSError):  # may exit between timeout and kill
+                    process.kill()
+    await process.wait()
+    await _close_pipes(process)
+
+
+async def _close_pipes(process: asyncio.subprocess.Process) -> None:
+    """Drain the exited process's stdout so its transport can close.
+
+    A matched response usually leaves unread bytes in the pipe, and a transport
+    with an open pipe stays alive after the process is gone — surfacing as
+    ``ResourceWarning: loop is closed`` when it is finally collected. The
+    process is already dead here, so the read returns at EOF promptly; it is
+    still bounded, because a probe must never be able to block the audit.
+    """
+    if process.stdout is None:  # pragma: no cover - PIPE is always requested
+        return
+    # ValueError covers a chatty server overflowing the stream's buffer limit.
+    # Nothing raised here is a finding about the server — this is cleanup.
+    with contextlib.suppress(TimeoutError, ValueError, OSError):
+        await asyncio.wait_for(process.stdout.read(), timeout=_TERMINATE_TIMEOUT_S)
 
 
 def _http_status_is(response: _ProbeResponse, expected: int) -> bool:

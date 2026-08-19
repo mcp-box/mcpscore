@@ -153,12 +153,42 @@ class TestProbeFailureIsData:
 
         assert results[PROBE_DISCOVER].outcome is ProbeOutcome.ERROR
 
-    async def test_server_that_answers_nothing_is_unsupported(self):
-        """A server that reads the request and closes without replying did refuse."""
+    async def test_server_that_answers_nothing_is_also_an_error(self):
+        """Silence is not a refusal.
+
+        A legacy server *answers* -32601, which is UNSUPPORTED — a real
+        observation. One that closes without a word was never observed
+        refusing anything, so it must not be failed at CRITICAL severity by
+        the gateway rules.
+        """
         params = StdioServerParameters(command=sys.executable, args=["-c", "import sys; sys.stdin.read()"])
         results = await run_stdio_probes(params)
 
-        assert results[PROBE_DISCOVER].outcome is ProbeOutcome.UNSUPPORTED
+        assert results[PROBE_DISCOVER].outcome is ProbeOutcome.ERROR
+
+    @pytest.mark.parametrize(
+        ("label", "args"),
+        [
+            ("exits before reading", ["-c", "pass"]),
+            ("reads then closes", ["-c", "import sys; sys.stdin.read()"]),
+        ],
+    )
+    async def test_outcome_does_not_depend_on_timing(self, label, args):
+        """The same server must score the same way every run.
+
+        Writing to a process that has already exited raises on some platforms
+        and silently buffers on others, and even on one machine it depends on
+        whether the child has finished exiting. That made an identical server
+        alternate between ERROR (rules skip) and UNSUPPORTED (gateway rules
+        fail it at CRITICAL) — a score that moved run to run. Repeating the
+        probe is the only way to see it; a single call passes either way.
+        """
+        outcomes = set()
+        for _ in range(10):
+            results = await run_stdio_probes(StdioServerParameters(command=sys.executable, args=args))
+            outcomes.add(results[PROBE_DISCOVER].outcome)
+
+        assert outcomes == {ProbeOutcome.ERROR}, f"{label} produced varying outcomes: {outcomes}"
 
 
 class TestHttpStatusIsTransportAware:
@@ -253,10 +283,54 @@ class TestStdioTeardown:
             stderr=asyncio.subprocess.DEVNULL,
         )
         assert process.stdout is not None
-        assert await process.stdout.readline() == b"ready\n"
+        # .strip(): Windows translates "\n" to "\r\n" on a text-mode stdout.
+        assert (await process.stdout.readline()).strip() == b"ready"
 
         await probes_module._terminate(process)
 
         # -SIGKILL, not -SIGTERM: proof the escalation actually happened rather
         # than the child dying politely.
         assert process.returncode == -signal.SIGKILL
+
+
+class TestTerminateSurvivesPlatformSignalErrors:
+    """Signalling an already-exited process raises, and differently per platform.
+
+    POSIX raises `ProcessLookupError`; Windows raises a plain `OSError` (access
+    denied) and reports the exit later. An uncaught one escapes `_terminate`,
+    which runs in a `finally` — so the child is never reaped and surfaces later
+    as `ResourceWarning: subprocess N is still running`, failing the run under
+    `filterwarnings = ["error"]` far from the cause.
+    """
+
+    class _AlreadyExited:
+        """A process object that behaves like a Windows child that just died."""
+
+        def __init__(self, error: OSError) -> None:
+            self.returncode = None
+            self.stdout = None
+            self._error = error
+            self.waited = False
+
+        def terminate(self) -> None:
+            raise self._error
+
+        async def wait(self) -> int:
+            self.waited = True
+            self.returncode = 0
+            return 0
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(ProcessLookupError(), id="posix-process-lookup"),
+            pytest.param(PermissionError(5, "Access is denied"), id="windows-access-denied"),
+        ],
+    )
+    async def test_the_child_is_still_reaped(self, error):
+        from mcpscore.probes import _terminate
+
+        process = self._AlreadyExited(error)
+        await _terminate(process)  # type: ignore[arg-type]  — a deliberate stand-in
+
+        assert process.waited, "an unreaped child leaks and trips ResourceWarning at GC"
