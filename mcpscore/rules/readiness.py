@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import Draft202012Validator
 
+from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
     GATEWAY_PROBE_IDS,
     PROBE_DISCOVER,
@@ -48,6 +49,7 @@ from mcpscore.spec import DRAFT, LATEST
 from .base import (
     READINESS_GROUP,
     SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
     SKIP_REASON_REQUIRES_MODERN_SUPPORT,
     AuditData,
     BaseRule,
@@ -65,6 +67,17 @@ READINESS_TARGET = (DRAFT or LATEST).version
 _JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
 _VALID_CACHE_SCOPES = frozenset({"public", "private"})
+
+
+def _http_clause(audit_data: AuditData, text: str) -> str:
+    """Return an HTTP-status clause, or nothing when there is no HTTP layer.
+
+    Several 2026-07-28 requirements pair a JSON-RPC error code with an HTTP
+    status. Over stdio only the JSON-RPC half exists and only it was checked
+    (see ``_http_status_is`` in mcpscore.probes), so naming a status in the
+    message would claim an observation that was never made.
+    """
+    return "" if audit_data.transport_type is MCPTransportType.STDIO else text
 
 
 class ReadinessBaseRule(BaseRule):
@@ -92,7 +105,9 @@ class ProbeBackedReadinessRule(ReadinessBaseRule):
         """
         probes = audit_data.probes or {}
         result = probes.get(self.probe_id)
-        if result is None or result.outcome in (ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE):
+        if result is not None and result.outcome is ProbeOutcome.NOT_APPLICABLE:
+            return SKIP_REASON_NOT_APPLICABLE
+        if result is None or result.outcome is ProbeOutcome.ERROR:
             return SKIP_REASON_INSUFFICIENT_DATA
         if self.requires_modern_support and not has_modern_support(probes):
             return SKIP_REASON_REQUIRES_MODERN_SUPPORT
@@ -260,11 +275,14 @@ class MetaValidationReadinessRule(ProbeBackedReadinessRule):
         probe = self._probe(audit_data)
         passed = probe.outcome is ProbeOutcome.SUPPORTED
         if passed:
-            message = "✅ Server rejects requests missing required _meta fields with -32602 and HTTP 400"
+            message = (
+                "✅ Server rejects requests missing required _meta fields with -32602"
+                f"{_http_clause(audit_data, ' and HTTP 400')}"
+            )
         else:
             message = (
                 "❌ Server does not reject a request missing required _meta fields with "
-                "-32602 (Invalid params) and HTTP 400, as the spec requires"
+                f"-32602 (Invalid params){_http_clause(audit_data, ' and HTTP 400')}, as the spec requires"
             )
         return RuleResult(
             rule_name=self.rule_name,
@@ -434,9 +452,12 @@ class UnknownMethodErrorRule(ProbeBackedReadinessRule):
         probe = self._probe(audit_data)
         passed = probe.outcome is ProbeOutcome.SUPPORTED
         message = (
-            "✅ Unknown RPC methods return HTTP 404 with JSON-RPC -32601"
+            f"✅ Unknown RPC methods return JSON-RPC -32601{_http_clause(audit_data, ' with HTTP 404')}"
             if passed
-            else "❌ Unknown RPC methods do not return HTTP 404 with JSON-RPC -32601 (Method not found)"
+            else (
+                "❌ Unknown RPC methods do not return JSON-RPC -32601 (Method not found)"
+                f"{_http_clause(audit_data, ' with HTTP 404')}"
+            )
         )
         return RuleResult(
             rule_name=self.rule_name,
@@ -467,7 +488,16 @@ class ResponseContentTypeRule(ReadinessBaseRule):
         return RuleSeverity.HIGH
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip unless a successful modern gateway response can be inspected."""
+        """Skip unless a successful modern gateway response can be inspected.
+
+        The gateway probes run over stdio too, but this rule judges a
+        *Streamable HTTP* response header. A stdio server sends no headers at
+        all, so an absent Content-Type there is not a finding — it is the
+        question not applying. Judging it anyway would fail every stdio server
+        for a header the transport has no way to send.
+        """
+        if audit_data.transport_type is MCPTransportType.STDIO:
+            return SKIP_REASON_NOT_APPLICABLE
         probes = audit_data.probes or {}
         if not has_modern_support(probes):
             observed = [probes[pid] for pid in GATEWAY_PROBE_IDS if pid in probes]
@@ -862,7 +892,10 @@ class RemovedMethodsReadinessRule(ProbeBackedReadinessRule):
         probe = self._probe(audit_data)
         passed = probe.outcome is ProbeOutcome.SUPPORTED
         if passed:
-            message = f"✅ Removed method '{REMOVED_METHOD}' is rejected with HTTP 404 and -32601"
+            message = (
+                f"✅ Removed method '{REMOVED_METHOD}' is rejected with "
+                f"-32601{_http_clause(audit_data, ' and HTTP 404')}"
+            )
         elif probe.details.get("method_served"):
             message = (
                 f"❌ Server still serves '{REMOVED_METHOD}', which is removed in {READINESS_TARGET} — "
@@ -870,7 +903,8 @@ class RemovedMethodsReadinessRule(ProbeBackedReadinessRule):
             )
         else:
             message = (
-                f"❌ Removed method '{REMOVED_METHOD}' is not rejected with HTTP 404 and -32601 "
+                f"❌ Removed method '{REMOVED_METHOD}' is not rejected with "
+                f"-32601{_http_clause(audit_data, ' and HTTP 404')} "
                 "(Method not found) as the spec requires"
             )
         return RuleResult(

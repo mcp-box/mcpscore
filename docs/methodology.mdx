@@ -43,8 +43,8 @@ of three reasons:
 
 | Skip reason | Meaning |
 |---|---|
-| `not-applicable` | The rule's spec-version range excludes the negotiated version (e.g. a rule for behavior your revision doesn't define) |
-| `insufficient-data` | The observations the rule needs are unavailable (e.g. a network probe errored, or probes don't run for this transport) — the rule can neither pass nor fail |
+| `not-applicable` | The rule's requirement does not exist for the negotiated version or transport (e.g. an HTTP-header rule during a stdio audit) |
+| `insufficient-data` | The observations the rule needs are unavailable (e.g. a probe errored) — the rule can neither pass nor fail |
 | `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support — the gateway rules already carry that verdict; repeating it per detail would pile on noise |
 
 ## How an audit runs
@@ -54,7 +54,7 @@ of three reasons:
    real MCP handshake.
 2. **Collect** — protocol version, server info, capabilities, tools, resources,
    prompts, TLS details.
-3. **Probe** (HTTP/HTTPS servers only) — a set of sessionless requests observing
+3. **Probe** — a set of sessionless requests observing
    behavior outside the negotiated session, e.g. whether the server also speaks the
    next spec revision's stateless lifecycle. Probes are read-only by design:
    **mcpscore never invokes `tools/call` against your server**, so an audit can never
@@ -68,6 +68,12 @@ of three reasons:
    Each one exists to check a documented MUST — for example, the spec requires
    HTTP 403 for an invalid `Origin` and HTTP 404 with JSON-RPC `-32601` for an
    unknown method.
+
+   The modern lifecycle is stateless, so its JSON-RPC behaviors are probed over
+   stdio too. The suite launches one short-lived sibling process through the MCP
+   SDK's stdio transport and sends no `initialize` handshake. Questions that only
+   exist in HTTP—such as `Origin`, headers, status codes, sessions, and auth
+   metadata—are recorded as not applicable for stdio rather than failed.
 4. **Evaluate** — every registered rule runs against the collected data and probe
    observations. See the [Rules Reference](/rules) for the full list.
 
@@ -138,6 +144,11 @@ Two things worth knowing about how these run:
   that a modern-lifecycle server's `score`/`max_score` now include the
   readiness points; check `readiness.counted_in_main` to know which mode
   scored a given audit.
+
+The human-readable readiness line includes how many checks were assessed whenever
+any were skipped. JSON consumers get the same coverage explicitly as
+`readiness.assessed`, `readiness.skipped`, and `readiness.total`; a perfect
+severity-weighted fraction never implies that every readiness check ran.
 
 <Note>
 **Citations re-verified 2026-07-28** — the 2026-07-28 revision was published final

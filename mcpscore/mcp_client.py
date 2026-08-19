@@ -233,6 +233,12 @@ class MCPClient:
         self.url: str | None = None
         self.connection_time_ms: int | None = None
 
+        # Fully-resolved launch parameters of a stdio server, kept so the
+        # sessionless probes can start their own short-lived processes. The
+        # audit's own process has already completed a legacy handshake, and a
+        # probe must observe the server, not this connection's history.
+        self.stdio_params: StdioServerParameters | None = None
+
         # Why the most recent failed connect attempt failed (None while
         # connected or before any attempt). Lets callers report an actionable
         # reason instead of a generic "could not connect".
@@ -498,6 +504,7 @@ class MCPClient:
         """
         try:
             await self._establish_session(stdio_client(server_params), MCPTransportType.STDIO, url=None)
+            self.stdio_params = server_params
             return True
         except FileNotFoundError as e:
             logger.exception(missing_hint)

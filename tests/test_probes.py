@@ -1,4 +1,4 @@
-"""Tests for the sessionless HTTP probe layer."""
+"""Tests for the sessionless probe layer."""
 
 import json
 
@@ -30,6 +30,7 @@ from mcpscore.probes import (
     ProbeOutcome,
     ProbeResult,
     _fetch_auth_server_metadata,
+    _HttpTarget,
     _well_known_urls,
     not_applicable_results,
     run_all_probes,
@@ -727,7 +728,7 @@ def test_probe_result_to_dict():
     }
 
 
-async def test_auditor_records_not_applicable_probes_for_stdio(monkeypatch):
+async def test_auditor_records_not_applicable_without_probeable_transport(monkeypatch):
     from mcpscore.mcp_auditor import MCPAuditor
 
     auditor = MCPAuditor()
@@ -886,12 +887,12 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
     from mcpscore import probes as probes_module
 
     def make_stub(probe_id: str):
-        async def stub(client: httpx2.AsyncClient, url: str) -> ProbeResult:
+        async def stub(target: object) -> ProbeResult:
             return ProbeResult(probe_id, ProbeOutcome.SUPPORTED, {"stubbed": True})
 
         return stub
 
-    monkeypatch.setattr(probes_module, "_PROBES", {pid: make_stub(pid) for pid in PROBE_IDS})
+    monkeypatch.setattr(probes_module, "_HTTP_PROBES", {pid: make_stub(pid) for pid in PROBE_IDS})
 
     results = await run_all_probes(URL)  # no client injected -> own-client branch
 
@@ -953,7 +954,7 @@ class TestAnonymousProbes:
         async with httpx2.AsyncClient(
             transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
         ) as client:
-            result = await _probe_unauthenticated(client, URL)
+            result = await _probe_unauthenticated(_HttpTarget(client, URL))
 
         # The probe reached the server without the bearer, so it saw the 401 challenge.
         assert seen_auth["post"] is None
@@ -976,7 +977,7 @@ class TestAnonymousProbes:
             )
 
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
-            result = await _probe_unauthenticated(client, URL)
+            result = await _probe_unauthenticated(_HttpTarget(client, URL))
 
         assert result.outcome is ProbeOutcome.SUPPORTED
         assert result.details["http_status"] == 401
