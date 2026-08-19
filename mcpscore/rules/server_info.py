@@ -267,10 +267,10 @@ class ServerWebsiteUrlPresentRule(ServerInfoBaseRule):
         website_url = getattr(server_info, "website_url", None)
         if website_url:
             passed = True
-            message = f"✅ Server website URL is present: '{website_url}'"
+            message = f"✅ Server websiteUrl is present: '{website_url}'"
         else:
             passed = False
-            message = "❌ Server website URL (websiteUrl) is not present in server info"
+            message = "❌ Server websiteUrl is not present in server info"
 
         return RuleResult(
             rule_name=self.rule_name,
