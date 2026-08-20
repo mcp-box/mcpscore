@@ -2,7 +2,15 @@ import re
 from typing import ClassVar
 
 from ..enums import MCPTransportType
-from .base import BaseRule, RuleResult, RuleSeverity, requires_fields
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+)
 from .registry import register_rule
 
 
@@ -21,6 +29,16 @@ class TLSEnabledRule(BaseRule):
     group_name = "security"
     group_order = 3
     rule_order = 1
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when TLS does not apply or its remote observation is missing."""
+        if audit_data.transport_type == MCPTransportType.STDIO:
+            return SKIP_REASON_NOT_APPLICABLE
+        if audit_data.url is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if audit_data.url.startswith("https://") and audit_data.tls_verified is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
 
     @property
     def rule_name(self) -> str:
@@ -43,15 +61,7 @@ class TLSEnabledRule(BaseRule):
             RuleResult indicating pass/fail
 
         """
-        # For stdio connections, TLS check is not applicable
-        if url is None:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="✅ TLS check not applicable for stdio transport",
-                details={"reason": "stdio_transport"},
-            )
+        assert url is not None  # noqa: S101 — skip_reason guarantees a remote URL
 
         # Check if URL uses HTTPS
         if not url.startswith("https://"):
@@ -116,6 +126,14 @@ class MalformedRequestHandlingRule(BaseRule):
     group_order = 3
     rule_order = 2
 
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the remote malformed-request probe did not run."""
+        if audit_data.transport_type == MCPTransportType.STDIO:
+            return SKIP_REASON_NOT_APPLICABLE
+        if audit_data.transport_type is None or audit_data.error_response is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
     @property
     def rule_name(self) -> str:
         return "Malformed Request Handling"
@@ -136,25 +154,8 @@ class MalformedRequestHandlingRule(BaseRule):
             RuleResult indicating pass/fail
 
         """
-        # For stdio, this test may not be applicable
-        if transport_type == MCPTransportType.STDIO:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="✅ Malformed request handling not tested for stdio transport",
-                details={"reason": "stdio_transport"},
-            )
-
-        # If no error response was captured, we couldn't test this
-        if error_response is None:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="[INFO] Malformed request handling test not performed",
-                details={"reason": "test_not_performed"},
-            )
+        assert transport_type is not None  # noqa: S101 — skip_reason guarantees remote transport data
+        assert error_response is not None  # noqa: S101 — skip_reason guarantees a probe response
 
         # Check if response looks like a proper JSON-RPC error
         # Expected format: {"jsonrpc": "2.0", "error": {...}, "id": ...}
@@ -211,6 +212,18 @@ class ErrorDataLeakRule(BaseRule):
     group_order = 3
     rule_order = 3
 
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when there is no remote error response whose contents can be judged.
+
+        Unlike malformed-request behavior, content leakage can be judged from
+        an observed response even when the exact remote transport is unknown.
+        """
+        if audit_data.transport_type == MCPTransportType.STDIO:
+            return SKIP_REASON_NOT_APPLICABLE
+        if audit_data.error_response is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
     # Patterns that indicate sensitive data leakage
     SENSITIVE_PATTERNS: ClassVar[list[tuple[str, str]]] = [
         (r"/home/\w+", "file path"),
@@ -244,14 +257,7 @@ class ErrorDataLeakRule(BaseRule):
             RuleResult indicating pass/fail
 
         """
-        if error_response is None:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="[INFO] No error response to analyze",
-                details={"reason": "no_error_response"},
-            )
+        assert error_response is not None  # noqa: S101 — skip_reason guarantees a response to inspect
 
         # Check for sensitive data patterns
         leaks_found = []

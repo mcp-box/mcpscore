@@ -1,7 +1,17 @@
 """Tests for spec-version rule applicability and auditor skip behavior."""
 
+from mcpscore.enums import MCPTransportType
 from mcpscore.mcp_auditor import MCPAuditor
-from mcpscore.rules import AuditData, BaseRule, RuleResult, RuleSeverity
+from mcpscore.rules import (
+    AuditData,
+    BaseRule,
+    ErrorDataLeakRule,
+    MalformedRequestHandlingRule,
+    RuleResult,
+    RuleSeverity,
+    StreamableHTTPTransportRule,
+    TLSEnabledRule,
+)
 from mcpscore.rules.base import SKIP_REASON_NOT_APPLICABLE, SkippedRule
 
 
@@ -129,3 +139,25 @@ class TestAuditorSkipsNonApplicableRules:
         report = auditor.get_audit_report()
         assert report["skipped_rules"] == []
         assert report["summary"]["skipped"] == 0
+
+    def test_stdio_remote_only_rules_are_skipped_and_score_zero_of_zero(self):
+        auditor = MCPAuditor()
+        auditor.rules = [
+            TLSEnabledRule(),
+            MalformedRequestHandlingRule(),
+            ErrorDataLeakRule(),
+            StreamableHTTPTransportRule(),
+        ]
+        auditor.audit_data = AuditData(transport_type=MCPTransportType.STDIO)
+
+        auditor._run_all_rules()
+
+        assert auditor.results == []
+        assert auditor.score == 0
+        assert auditor.max_score == 0
+        assert {rule.rule_id: rule.reason for rule in auditor.skipped_rules} == {
+            "security_tls_enabled": SKIP_REASON_NOT_APPLICABLE,
+            "security_malformed_request_handling": SKIP_REASON_NOT_APPLICABLE,
+            "security_error_data_leak": SKIP_REASON_NOT_APPLICABLE,
+            "transport_streamable_http": SKIP_REASON_NOT_APPLICABLE,
+        }

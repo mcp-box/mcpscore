@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Remote-only checks no longer award ten unearned points to stdio
+  servers.** TLS, malformed-request handling, error-data-leak, and Streamable
+  HTTP transport rules now skip as not applicable for stdio instead of
+  returning passing results. Missing observations for remote audits skip as
+  insufficient data rather than manufacturing a pass.
+
 ## [1.7.0] - 2026-08-19
 
 ### Fixed
