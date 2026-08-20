@@ -20,7 +20,7 @@ from mcp_types import Tool, ToolAnnotations, ToolExecution
 import pytest
 
 from mcpscore.rules import AuditData, RuleSeverity
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from mcpscore.rules.registry import create_all_rules
 from mcpscore.rules.tools import (
     ToolsAnnotationsPresentRule,
@@ -421,6 +421,17 @@ class TestToolsBaseRule:
         """No declaration is distinct from a declared catalog that failed to load."""
         data = AuditData(tools=None, capabilities=capabilities_missing)
         assert ToolsAtLeastOneRule().skip_reason(data) is None
+
+    def test_empty_complete_catalog_skips_every_quality_rule(self) -> None:
+        data = AuditData(tools=[])
+        quality_rules = [
+            rule
+            for rule in create_all_rules()
+            if isinstance(rule, ToolsBaseRule) and not isinstance(rule, ToolsAtLeastOneRule)
+        ]
+
+        assert quality_rules
+        assert {rule.skip_reason(data) for rule in quality_rules} == {SKIP_REASON_NOT_APPLICABLE}
 
 
 # ============================================================================
@@ -1199,11 +1210,10 @@ class TestToolsExecutionConsistentRule:
         assert result.details is not None
         assert result.details["task_tools"] == ["runner"]
 
-    def test_no_tools_at_all_passes(self):
-        """No tools capability declared → nothing to check → runs and passes."""
+    def test_no_tools_at_all_skips(self):
+        """No tools means task-execution consistency has no subject to judge."""
         rule = ToolsExecutionConsistentRule()
-        assert rule.skip_reason(AuditData()) is None
-        assert rule.check(AuditData()).passed is True
+        assert rule.skip_reason(AuditData()) == SKIP_REASON_NOT_APPLICABLE
 
     def test_skips_when_tools_unavailable_despite_capability(self, capabilities_full):
         """A failed tools/list (tools None, capability declared) skips rather than false-passing."""

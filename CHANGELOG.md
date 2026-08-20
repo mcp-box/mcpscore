@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Empty catalogs no longer earn green quality passes.** A successful empty
+  tools, prompts, resources, or resource-templates listing now makes per-item
+  quality rules skip as not applicable and contribute 0/0. The dedicated
+  `tools_at_least_one` rule still judges and fails a complete empty tools
+  catalog; unavailable and empty partial listings remain insufficient data.
 - **Remote-only checks no longer award ten unearned points to stdio
   servers.** TLS, malformed-request handling, error-data-leak, and Streamable
   HTTP transport rules now skip as not applicable for stdio instead of

@@ -4,7 +4,15 @@ import re
 
 from mcp_types import ResourceTemplate
 
-from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+)
 from .catalog_validation import is_iso_8601, is_valid_media_type
 from .icon_validation import find_invalid_icons
 from .registry import register_rule
@@ -100,19 +108,16 @@ class ResourceTemplatesBaseRule(BaseRule):
         listing = "resource_templates"
         unavailable = audit_data.resource_templates is None and listing in audit_data.listings_attempted
         empty_partial = not audit_data.resource_templates and listing in audit_data.incomplete_listings
-        return SKIP_REASON_INSUFFICIENT_DATA if unavailable or empty_partial else None
+        if unavailable or empty_partial:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if not audit_data.resource_templates:
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
 
     @requires_fields("resource_templates")
     def check(self, templates: list[ResourceTemplate] | None) -> RuleResult:  # type: ignore[override]
         """Execute the rule, treating an absent optional catalog as not applicable."""
-        if not templates:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="✅ No resource templates to evaluate",
-                details={"resource_templates_count": 0},
-            )
+        assert templates  # noqa: S101 — skip_reason guarantees templates to judge
         return self._check_templates(templates)
 
     @abstractmethod
@@ -179,11 +184,9 @@ class ResourceTemplatesUniqueRule(ResourceTemplatesBaseRule):
         Uniqueness judged on a partial listing can produce a false pass — the
         duplicate may live on a page that was never fetched.
         """
-        return (
-            SKIP_REASON_INSUFFICIENT_DATA
-            if super().skip_reason(audit_data) is not None or "resource_templates" in audit_data.incomplete_listings
-            else None
-        )
+        if reason := super().skip_reason(audit_data):
+            return reason
+        return SKIP_REASON_INSUFFICIENT_DATA if "resource_templates" in audit_data.incomplete_listings else None
 
     def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
         counts = Counter(template.uri_template for template in templates)
