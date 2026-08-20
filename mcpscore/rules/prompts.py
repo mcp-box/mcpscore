@@ -3,7 +3,15 @@ from collections import Counter
 
 from mcp_types import Prompt
 
-from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+)
 from .icon_validation import find_invalid_icons
 from .registry import register_rule
 
@@ -11,15 +19,25 @@ from .registry import register_rule
 class PromptsBaseRule(BaseRule):
     """Base class for prompt-quality audit rules.
 
-    Prompts are an optional MCP capability, so these rules never penalize a
-    server that offers none: with no prompts there is nothing to evaluate and
-    the check passes as not-applicable. They grade only the *quality* of
-    prompts that are actually declared. (Whether a server *should* offer
-    prompts at all is handled by the capability-presence rules.)
+    Prompts are an optional MCP capability. With no prompts there is nothing
+    whose quality can be judged, so these rules skip as not applicable and add
+    no score weight. Capability consistency is judged separately.
     """
 
     group_name = "prompts"
     group_order = 8
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the prompt catalog is unavailable or has no prompts to judge."""
+        listing = "prompts"
+        declares_prompts = getattr(audit_data.capabilities, "prompts", None) is not None
+        unavailable = audit_data.prompts is None and (declares_prompts or listing in audit_data.listings_attempted)
+        empty_partial = not audit_data.prompts and listing in audit_data.incomplete_listings
+        if unavailable or empty_partial:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if not audit_data.prompts:
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
 
     @requires_fields("prompts")
     def check(self, prompts: list[Prompt] | None) -> RuleResult:  # type: ignore[override]
@@ -32,14 +50,7 @@ class PromptsBaseRule(BaseRule):
             RuleResult indicating whether the prompt check passed
 
         """
-        if not prompts:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="✅ No prompts to evaluate",
-                details={"prompts_count": 0},
-            )
+        assert prompts  # noqa: S101 — skip_reason guarantees prompts to judge
         return self._check_prompts(prompts)
 
     @abstractmethod
@@ -258,6 +269,8 @@ class PromptsNamesUniqueRule(PromptsBaseRule):
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip when pagination did not produce the complete prompt list."""
+        if reason := super().skip_reason(audit_data):
+            return reason
         return SKIP_REASON_INSUFFICIENT_DATA if "prompts" in audit_data.incomplete_listings else None
 
     def _check_prompts(self, prompts: list[Prompt]) -> RuleResult:

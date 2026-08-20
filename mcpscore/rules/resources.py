@@ -5,7 +5,15 @@ from urllib.parse import urlsplit
 
 from mcp_types import Resource
 
-from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity, requires_fields
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+)
 from .catalog_validation import is_iso_8601, is_valid_media_type
 from .icon_validation import find_invalid_icons
 from .registry import register_rule
@@ -18,15 +26,25 @@ _INVALID_PERCENT_ESCAPE_RE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 class ResourcesBaseRule(BaseRule):
     """Base class for resource-quality audit rules.
 
-    Resources are an optional MCP capability, so these rules never penalize a
-    server that offers none: with no resources there is nothing to evaluate and
-    the check passes as not-applicable. They grade only the *quality* of
-    resources that are actually declared. (Whether a server *should* offer
-    resources at all is handled by the capability-presence rules.)
+    Resources are an optional MCP capability. With no resources there is
+    nothing whose quality can be judged, so these rules skip as not applicable
+    and add no score weight. Capability consistency is judged separately.
     """
 
     group_name = "resources"
     group_order = 6
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the resource catalog is unavailable or has no resources to judge."""
+        listing = "resources"
+        declares_resources = getattr(audit_data.capabilities, "resources", None) is not None
+        unavailable = audit_data.resources is None and (declares_resources or listing in audit_data.listings_attempted)
+        empty_partial = not audit_data.resources and listing in audit_data.incomplete_listings
+        if unavailable or empty_partial:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if not audit_data.resources:
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
 
     @requires_fields("resources")
     def check(self, resources: list[Resource] | None) -> RuleResult:  # type: ignore[override]
@@ -39,14 +57,7 @@ class ResourcesBaseRule(BaseRule):
             RuleResult indicating whether the resource check passed
 
         """
-        if not resources:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="✅ No resources to evaluate",
-                details={"resources_count": 0},
-            )
+        assert resources  # noqa: S101 — skip_reason guarantees resources to judge
         return self._check_resources(resources)
 
     @abstractmethod
@@ -330,6 +341,8 @@ class ResourcesUrisUniqueRule(ResourcesBaseRule):
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip when pagination did not produce the complete resource list."""
+        if reason := super().skip_reason(audit_data):
+            return reason
         return SKIP_REASON_INSUFFICIENT_DATA if "resources" in audit_data.incomplete_listings else None
 
     def _check_resources(self, resources: list[Resource]) -> RuleResult:

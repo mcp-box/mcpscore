@@ -13,6 +13,7 @@ from mcpscore.rules import (
     TLSEnabledRule,
 )
 from mcpscore.rules.base import SKIP_REASON_NOT_APPLICABLE, SkippedRule
+from mcpscore.rules.registry import create_all_rules
 
 
 class VersionedRule(BaseRule):
@@ -161,3 +162,18 @@ class TestAuditorSkipsNonApplicableRules:
             "security_error_data_leak": SKIP_REASON_NOT_APPLICABLE,
             "transport_streamable_http": SKIP_REASON_NOT_APPLICABLE,
         }
+
+    def test_empty_catalog_quality_rules_are_skipped_and_score_zero_points(self):
+        auditor = MCPAuditor()
+        catalog_groups = {"tools", "prompts", "resources", "resource_templates"}
+        auditor.rules = [rule for rule in create_all_rules() if rule.group_name in catalog_groups]
+        auditor.audit_data = AuditData(tools=[], prompts=[], resources=[], resource_templates=[])
+
+        auditor._run_all_rules()
+
+        assert [result.rule_id for result in auditor.results] == ["tools_at_least_one"]
+        assert auditor.results[0].passed is False
+        assert auditor.score == 0
+        assert auditor.max_score == RuleSeverity.CRITICAL
+        assert len(auditor.skipped_rules) == len(auditor.rules) - 1
+        assert {rule.reason for rule in auditor.skipped_rules} == {SKIP_REASON_NOT_APPLICABLE}

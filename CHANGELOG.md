@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Empty catalogs no longer earn green quality passes.** A successful empty
+  tools, prompts, resources, or resource-templates listing now makes per-item
+  quality rules skip as not applicable and contribute 0/0. The dedicated
+  `tools_at_least_one` rule still judges and fails a complete empty tools
+  catalog; unavailable and empty partial listings remain insufficient data.
+
+  The bigger population is servers that never declare a capability at all:
+  those previously passed every quality rule for the absent catalog too ("✅ No
+  prompts to evaluate"), and now skip the same way. A tools-only server stops
+  earning ~24 vacuous prompt/resource/template passes, so scores move on almost
+  every server — e.g. DeepWiki 123/132 (93%) → 76/85 (89%). The removed credit
+  always scored 100%, so honest percentages are lower for any server that is
+  imperfect elsewhere; the points removed were never evidence of anything.
 - **Remote-only checks no longer award ten unearned points to stdio
   servers.** TLS, malformed-request handling, error-data-leak, and Streamable
   HTTP transport rules now skip as not applicable for stdio instead of

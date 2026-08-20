@@ -15,7 +15,7 @@ from mcpscore.rules import (
     ResourcesUrisValidRule,
     RuleSeverity,
 )
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 
 
 def _resource(
@@ -236,11 +236,26 @@ class TestResourcesDescriptionPresentRule:
         assert rule.severity == RuleSeverity.MEDIUM
         assert rule.group_name == "resources"
 
-    def test_no_resources_is_not_applicable_and_passes(self) -> None:
+    def test_no_resources_is_not_applicable_and_skips(self) -> None:
         """Optional capability: a server with no resources is not penalized."""
         rule = ResourcesDescriptionPresentRule()
-        assert rule.check(AuditData(resources=None)).passed
-        assert rule.check(AuditData(resources=[])).passed
+        assert rule.skip_reason(AuditData(resources=None)) == SKIP_REASON_NOT_APPLICABLE
+        assert rule.skip_reason(AuditData(resources=[])) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_unavailable_or_empty_partial_resources_are_insufficient_data(self) -> None:
+        rule = ResourcesDescriptionPresentRule()
+        unavailable = AuditData(resources=None, listings_attempted=frozenset({"resources"}))
+        empty_partial = AuditData(resources=[], incomplete_listings=frozenset({"resources"}))
+
+        assert rule.skip_reason(unavailable) == SKIP_REASON_INSUFFICIENT_DATA
+        assert rule.skip_reason(empty_partial) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_declared_but_unobserved_resources_are_insufficient_data(self, capabilities_full) -> None:
+        rule = ResourcesDescriptionPresentRule()
+
+        assert (
+            rule.skip_reason(AuditData(resources=None, capabilities=capabilities_full)) == SKIP_REASON_INSUFFICIENT_DATA
+        )
 
     def test_all_described_passes(self) -> None:
         rule = ResourcesDescriptionPresentRule()

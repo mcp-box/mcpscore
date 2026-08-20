@@ -1,12 +1,13 @@
 from abc import abstractmethod
 from collections import Counter
 import re
-from typing import Any
+from typing import Any, ClassVar
 
 from mcp_types import Tool
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
     AuditData,
     BaseRule,
     RuleResult,
@@ -27,12 +28,19 @@ class ToolsBaseRule(BaseRule):
 
     group_name = "tools"
     group_order = 4
+    judge_empty_catalog: ClassVar[bool] = False
+    """Whether this rule's subject is the absence of tools itself."""
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip quality checks when a declared tools catalog is unavailable."""
+        """Skip when the tools catalog is unavailable or has no tools to judge."""
+        listing = "tools"
         declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
-        if declares_tools and audit_data.tools is None:
+        unavailable = audit_data.tools is None and (declares_tools or listing in audit_data.listings_attempted)
+        empty_partial = not audit_data.tools and listing in audit_data.incomplete_listings
+        if unavailable or empty_partial:
             return SKIP_REASON_INSUFFICIENT_DATA
+        if not audit_data.tools and not self.judge_empty_catalog:
+            return SKIP_REASON_NOT_APPLICABLE
         return None
 
     @requires_tools
@@ -54,7 +62,7 @@ class ToolsBaseRule(BaseRule):
                 message="❌ Tools object is not available",
                 details={"tools": None},
             )
-
+        assert tools or self.judge_empty_catalog  # noqa: S101 — skip_reason gates empty quality catalogs
         return self._check_tools(tools)
 
     @abstractmethod
@@ -82,6 +90,7 @@ class ToolsAtLeastOneRule(ToolsBaseRule):
     rule_id = "tools_at_least_one"
     basis = "MCP 2025-11-25 Tools §Listing Tools (tools/list)"
     rule_order = 1
+    judge_empty_catalog = True
 
     @property
     def rule_name(self) -> str:
@@ -98,9 +107,10 @@ class ToolsAtLeastOneRule(ToolsBaseRule):
         tools may live on a page that was never fetched. A non-empty partial
         listing proves presence, so the rule still judges (and passes) it.
         """
-        if reason := super().skip_reason(audit_data):
-            return reason
-        if "tools" in audit_data.incomplete_listings and not audit_data.tools:
+        listing = "tools"
+        declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
+        unavailable = audit_data.tools is None and (declares_tools or listing in audit_data.listings_attempted)
+        if unavailable or (listing in audit_data.incomplete_listings and not audit_data.tools):
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
@@ -1002,16 +1012,20 @@ class ToolsExecutionConsistentRule(BaseRule):
     min_spec_version = "2025-11-25"
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when the tools list is unavailable despite a declared tools capability.
+        """Skip when the tools catalog is unavailable or has no tools to judge.
 
-        A failed ``tools/list`` (tools is None while the server declared the
-        tools capability) means this rule cannot judge consistency — the peer
-        tools rules already report the missing list, so re-passing here on an
-        empty fallback would be a false green.
+        A declared-but-unobserved catalog or an empty partial listing lacks
+        enough evidence to judge consistency. A complete empty catalog has no
+        tool whose execution metadata this rule can assess.
         """
+        listing = "tools"
         declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
-        if declares_tools and audit_data.tools is None:
+        unavailable = audit_data.tools is None and (declares_tools or listing in audit_data.listings_attempted)
+        empty_partial = not audit_data.tools and listing in audit_data.incomplete_listings
+        if unavailable or empty_partial:
             return SKIP_REASON_INSUFFICIENT_DATA
+        if not audit_data.tools:
+            return SKIP_REASON_NOT_APPLICABLE
         return None
 
     @property

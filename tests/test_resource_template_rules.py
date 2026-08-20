@@ -11,7 +11,7 @@ from mcpscore.rules import (
     ResourceTemplatesUriTemplatesValidRule,
     RuleSeverity,
 )
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from mcpscore.rules.resource_templates import is_valid_uri_template
 
 
@@ -178,7 +178,7 @@ def test_titles_rule_reports_missing_and_blank_titles() -> None:
     assert result.details == {"templates_without_title": ["missing/{id}", "blank/{id}"]}
 
 
-def test_template_rules_pass_when_capability_has_no_templates() -> None:
+def test_template_rules_skip_when_capability_has_no_templates() -> None:
     for rule in (
         ResourceTemplatesUriTemplatesValidRule(),
         ResourceTemplatesUniqueRule(),
@@ -188,8 +188,26 @@ def test_template_rules_pass_when_capability_has_no_templates() -> None:
         ResourceTemplatesDescriptionPresentRule(),
         ResourceTemplatesTitlesPresentRule(),
     ):
-        assert rule.check(AuditData(resource_templates=[])).passed
-        assert rule.check(AuditData(resource_templates=None)).passed
+        assert rule.skip_reason(AuditData(resource_templates=[])) == SKIP_REASON_NOT_APPLICABLE
+        assert rule.skip_reason(AuditData(resource_templates=None)) == SKIP_REASON_NOT_APPLICABLE
+
+
+def test_template_rules_treat_unavailable_or_empty_partial_catalog_as_insufficient() -> None:
+    rule = ResourceTemplatesUriTemplatesValidRule()
+    unavailable = AuditData(resource_templates=None, listings_attempted=frozenset({"resource_templates"}))
+    empty_partial = AuditData(resource_templates=[], incomplete_listings=frozenset({"resource_templates"}))
+
+    assert rule.skip_reason(unavailable) == SKIP_REASON_INSUFFICIENT_DATA
+    assert rule.skip_reason(empty_partial) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_declared_resources_with_unobserved_templates_are_insufficient(capabilities_full) -> None:
+    rule = ResourceTemplatesUriTemplatesValidRule()
+
+    assert (
+        rule.skip_reason(AuditData(resource_templates=None, capabilities=capabilities_full))
+        == SKIP_REASON_INSUFFICIENT_DATA
+    )
 
 
 def test_only_the_uniqueness_rule_skips_incomplete_catalogs() -> None:

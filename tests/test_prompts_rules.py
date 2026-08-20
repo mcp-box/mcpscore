@@ -12,7 +12,7 @@ from mcpscore.rules import (
     PromptsTitlesPresentRule,
     RuleSeverity,
 )
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 
 
 def _prompt(
@@ -30,10 +30,25 @@ class TestPromptsDescriptionPresentRule:
         assert rule.severity == RuleSeverity.MEDIUM
         assert rule.group_name == "prompts"
 
-    def test_no_prompts_is_not_applicable_and_passes(self) -> None:
+    def test_no_prompts_is_not_applicable_and_skips(self) -> None:
         rule = PromptsDescriptionPresentRule()
-        assert rule.check(AuditData(prompts=None)).passed
-        assert rule.check(AuditData(prompts=[])).passed
+        assert rule.skip_reason(AuditData(prompts=None)) == SKIP_REASON_NOT_APPLICABLE
+        assert rule.skip_reason(AuditData(prompts=[])) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_unavailable_or_empty_partial_prompts_are_insufficient_data(self) -> None:
+        rule = PromptsDescriptionPresentRule()
+        unavailable = AuditData(prompts=None, listings_attempted=frozenset({"prompts"}))
+        empty_partial = AuditData(prompts=[], incomplete_listings=frozenset({"prompts"}))
+
+        assert rule.skip_reason(unavailable) == SKIP_REASON_INSUFFICIENT_DATA
+        assert rule.skip_reason(empty_partial) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_declared_but_unobserved_prompts_are_insufficient_data(self, capabilities_full) -> None:
+        rule = PromptsDescriptionPresentRule()
+
+        assert (
+            rule.skip_reason(AuditData(prompts=None, capabilities=capabilities_full)) == SKIP_REASON_INSUFFICIENT_DATA
+        )
 
     def test_all_described_passes(self) -> None:
         rule = PromptsDescriptionPresentRule()
@@ -151,8 +166,9 @@ class TestPromptsArgumentsDocumentedRule:
         assert rule.rule_id == "prompts_arguments_documented"
         assert rule.severity == RuleSeverity.LOW
 
-    def test_no_prompts_passes(self) -> None:
-        assert PromptsArgumentsDocumentedRule().check(AuditData(prompts=None)).passed
+    def test_no_prompts_skips(self) -> None:
+        rule = PromptsArgumentsDocumentedRule()
+        assert rule.skip_reason(AuditData(prompts=None)) == SKIP_REASON_NOT_APPLICABLE
 
     def test_prompt_without_arguments_passes(self) -> None:
         """A prompt with no arguments has nothing to document."""
