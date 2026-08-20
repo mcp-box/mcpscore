@@ -201,6 +201,15 @@ def test_template_rules_treat_unavailable_or_empty_partial_catalog_as_insufficie
     assert rule.skip_reason(empty_partial) == SKIP_REASON_INSUFFICIENT_DATA
 
 
+def test_declared_resources_with_unobserved_templates_are_insufficient(capabilities_full) -> None:
+    rule = ResourceTemplatesUriTemplatesValidRule()
+
+    assert (
+        rule.skip_reason(AuditData(resource_templates=None, capabilities=capabilities_full))
+        == SKIP_REASON_INSUFFICIENT_DATA
+    )
+
+
 def test_only_the_uniqueness_rule_skips_incomplete_catalogs() -> None:
     """Per-item rules judge partial evidence; only uniqueness needs the full catalog."""
     data = AuditData(

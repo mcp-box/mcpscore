@@ -43,6 +43,13 @@ class TestPromptsDescriptionPresentRule:
         assert rule.skip_reason(unavailable) == SKIP_REASON_INSUFFICIENT_DATA
         assert rule.skip_reason(empty_partial) == SKIP_REASON_INSUFFICIENT_DATA
 
+    def test_declared_but_unobserved_prompts_are_insufficient_data(self, capabilities_full) -> None:
+        rule = PromptsDescriptionPresentRule()
+
+        assert (
+            rule.skip_reason(AuditData(prompts=None, capabilities=capabilities_full)) == SKIP_REASON_INSUFFICIENT_DATA
+        )
+
     def test_all_described_passes(self) -> None:
         rule = PromptsDescriptionPresentRule()
         result = rule.check(AuditData(prompts=[_prompt("a"), _prompt("b")]))

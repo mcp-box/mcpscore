@@ -37,7 +37,8 @@ class ResourcesBaseRule(BaseRule):
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip when the resource catalog is unavailable or has no resources to judge."""
         listing = "resources"
-        unavailable = audit_data.resources is None and listing in audit_data.listings_attempted
+        declares_resources = getattr(audit_data.capabilities, "resources", None) is not None
+        unavailable = audit_data.resources is None and (declares_resources or listing in audit_data.listings_attempted)
         empty_partial = not audit_data.resources and listing in audit_data.incomplete_listings
         if unavailable or empty_partial:
             return SKIP_REASON_INSUFFICIENT_DATA

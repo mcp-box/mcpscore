@@ -106,7 +106,10 @@ class ResourceTemplatesBaseRule(BaseRule):
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip when an attempted listing produced no evidence to judge."""
         listing = "resource_templates"
-        unavailable = audit_data.resource_templates is None and listing in audit_data.listings_attempted
+        declares_resources = getattr(audit_data.capabilities, "resources", None) is not None
+        unavailable = audit_data.resource_templates is None and (
+            declares_resources or listing in audit_data.listings_attempted
+        )
         empty_partial = not audit_data.resource_templates and listing in audit_data.incomplete_listings
         if unavailable or empty_partial:
             return SKIP_REASON_INSUFFICIENT_DATA

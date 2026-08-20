@@ -250,6 +250,13 @@ class TestResourcesDescriptionPresentRule:
         assert rule.skip_reason(unavailable) == SKIP_REASON_INSUFFICIENT_DATA
         assert rule.skip_reason(empty_partial) == SKIP_REASON_INSUFFICIENT_DATA
 
+    def test_declared_but_unobserved_resources_are_insufficient_data(self, capabilities_full) -> None:
+        rule = ResourcesDescriptionPresentRule()
+
+        assert (
+            rule.skip_reason(AuditData(resources=None, capabilities=capabilities_full)) == SKIP_REASON_INSUFFICIENT_DATA
+        )
+
     def test_all_described_passes(self) -> None:
         rule = ResourcesDescriptionPresentRule()
         result = rule.check(AuditData(resources=[_resource("a", "An A"), _resource("b", "A B")]))

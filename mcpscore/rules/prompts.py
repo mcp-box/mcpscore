@@ -30,7 +30,8 @@ class PromptsBaseRule(BaseRule):
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip when the prompt catalog is unavailable or has no prompts to judge."""
         listing = "prompts"
-        unavailable = audit_data.prompts is None and listing in audit_data.listings_attempted
+        declares_prompts = getattr(audit_data.capabilities, "prompts", None) is not None
+        unavailable = audit_data.prompts is None and (declares_prompts or listing in audit_data.listings_attempted)
         empty_partial = not audit_data.prompts and listing in audit_data.incomplete_listings
         if unavailable or empty_partial:
             return SKIP_REASON_INSUFFICIENT_DATA
