@@ -104,7 +104,7 @@ class ResourceTemplatesBaseRule(BaseRule):
     group_order = 7
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when an attempted listing produced no evidence to judge."""
+        """Skip when the template catalog is unavailable or has no templates to judge."""
         listing = "resource_templates"
         declares_resources = getattr(audit_data.capabilities, "resources", None) is not None
         unavailable = audit_data.resource_templates is None and (

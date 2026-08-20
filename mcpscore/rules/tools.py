@@ -1012,12 +1012,11 @@ class ToolsExecutionConsistentRule(BaseRule):
     min_spec_version = "2025-11-25"
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when the tools list is unavailable despite a declared tools capability.
+        """Skip when the tools catalog is unavailable or has no tools to judge.
 
-        A failed ``tools/list`` (tools is None while the server declared the
-        tools capability) means this rule cannot judge consistency — the peer
-        tools rules already report the missing list, so re-passing here on an
-        empty fallback would be a false green.
+        A declared-but-unobserved catalog or an empty partial listing lacks
+        enough evidence to judge consistency. A complete empty catalog has no
+        tool whose execution metadata this rule can assess.
         """
         listing = "tools"
         declares_tools = getattr(audit_data.capabilities, "tools", None) is not None

@@ -43,9 +43,15 @@ of three reasons:
 
 | Skip reason | Meaning |
 |---|---|
-| `not-applicable` | The rule's requirement does not exist for the negotiated version or transport (e.g. an HTTP-header rule during a stdio audit) |
+| `not-applicable` | The rule has no subject for this audit: its requirement does not exist for the negotiated version or transport, or an optional catalog has no items to judge |
 | `insufficient-data` | The observations the rule needs are unavailable (e.g. a probe errored) — the rule can neither pass nor fail |
 | `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support — the gateway rules already carry that verdict; repeating it per detail would pile on noise |
+
+For example, a successfully fetched empty tools, prompts, resources, or resource-template
+catalog gives per-item quality rules nothing to assess, so those rules contribute 0/0.
+If a declared catalog could not be fetched, or an incomplete listing returned no
+items, the same rules use `insufficient-data` because an item may exist but remain
+unobserved. A dedicated presence rule can still judge whether a complete catalog is empty.
 
 ## How an audit runs
 
