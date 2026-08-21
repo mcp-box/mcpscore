@@ -2,6 +2,9 @@ from collections.abc import Iterable
 from typing import Any
 
 from .base import BaseRule
+from .retired import RETIRED_RULES
+
+_RETIRED_IDS = frozenset(retired.rule_id for retired in RETIRED_RULES)
 
 
 class RuleRegistry:
@@ -21,18 +24,28 @@ class RuleRegistry:
         """Register a new rule class in the registry.
 
         Args:
-            cls: Rule class to register (must subclass BaseRule and have rule_id)
+            cls: Rule class to register (must subclass BaseRule and define a
+                non-empty ``rule_id`` of its own)
 
         Raises:
-            TypeError: If a class doesn't have rule_id or doesn't subclass BaseRule
-            ValueError: If rule_id is already registered
+            TypeError: If the class doesn't subclass BaseRule, or leaves
+                ``rule_id`` empty (``BaseRule`` defaults it to ``""``, so a
+                bare ``hasattr`` check can never fail — the check must be for
+                a non-empty value on the concrete class).
+            ValueError: If rule_id is already registered, or was retired —
+                retired ids are never reused (see ``rules/retired.py``).
 
         """
-        if not hasattr(cls, "rule_id"):
-            raise TypeError(f"{cls.__name__} must define `rule_id`")
         if not issubclass(cls, BaseRule):
             raise TypeError(f"{cls.__name__} must subclass BaseRule")
+        if not cls.rule_id:
+            raise TypeError(f"{cls.__name__} must define a non-empty `rule_id`")
 
+        if cls.rule_id in _RETIRED_IDS:
+            raise ValueError(
+                f"rule_id {cls.rule_id!r} is retired and can never be reused (see rules/retired.py); "
+                "a rule that means something different must take a new id"
+            )
         if cls.rule_id in self._types:
             raise ValueError(f"Duplicate rule_id: {cls.rule_id}")
         self._types[cls.rule_id] = cls

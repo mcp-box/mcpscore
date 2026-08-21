@@ -67,10 +67,6 @@ class DummyRule(BaseRule):
         self._severity = severity
 
     @property
-    def sort_order(self) -> int:
-        return 0
-
-    @property
     def rule_name(self) -> str:
         return "dummy"
 

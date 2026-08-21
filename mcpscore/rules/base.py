@@ -306,16 +306,6 @@ class BaseRule(ABC):
         # kwargs maybe used by subclasses to store additional data
         self.kwargs = kwargs
 
-    @property
-    def sort_order(self) -> int:
-        """Sort order of this rule.
-
-        Returns:
-            A numerical value used for sorting rules
-
-        """
-        return self.group_order * 1000 + self.rule_order
-
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Give a reason to skip this rule for this audit, or None to run it.
 
@@ -392,3 +382,30 @@ class BaseRule(ABC):
 
         """
         ...
+
+
+def rule_sort_key(rule: BaseRule) -> tuple[int, str, int, str]:
+    """Sort key implementing exactly the ordering the attributes document.
+
+    Lower ``group_order`` first; groups sharing a ``group_order`` sort
+    alphabetically by ``group_name``; within a group, ``rule_order`` then
+    ``rule_id``. Every tie-break is total, so the resulting order is
+    deterministic regardless of registration (import) order.
+
+    A module function, deliberately not a ``BaseRule`` property: the previous
+    ``sort_order`` property (``group_order * 1000 + rule_order``) had no
+    tie-breakers — equal keys fell back to import order, which made the
+    ``capabilities`` and ``security`` groups (both ``group_order`` 3)
+    interleave in report output — and, being overridable, let a subclass keep
+    returning the old ``int`` shape and blow up the mixed-key sort with a
+    ``TypeError``. Ordering is collection policy, not per-rule behavior, so
+    no subclass gets a say in it.
+
+    Args:
+        rule: The rule to derive the key for.
+
+    Returns:
+        The (group_order, group_name, rule_order, rule_id) sort key.
+
+    """
+    return (rule.group_order, rule.group_name, rule.rule_order, rule.rule_id)
