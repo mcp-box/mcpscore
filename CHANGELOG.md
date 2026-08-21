@@ -16,13 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (which share a `group_order`) interleaved in report output by import
   order. Groups are now contiguous and the order is deterministic. Scores,
   rule ids, and severities are unchanged — only the order of entries in
-  `results` (and the generated rules reference) moves. The undocumented
-  `BaseRule.sort_order` property is removed in the process: ordering is
-  collection policy, computed by the internal `rule_sort_key()` at the sort
-  sites, so a subclass override can no longer corrupt the sort.
+  `results` (and the generated rules reference) moves.
 - The rule registry now rejects an empty `rule_id` at registration (the
   inherited default made the old check unreachable) and refuses to register
   a retired `rule_id` — retired ids are never reused.
+
+### Removed
+
+- **`BaseRule.sort_order`.** Ordering is collection policy, now computed by
+  the internal `rule_sort_key()` at the sort sites, so a subclass override
+  can no longer corrupt the sort with a stale key shape. The Python class
+  surface is outside the [stability contract](https://docs.mcpscore.dev/stability)
+  (which covers the CLI, exit codes, the JSON report schema, and `rule_id`s,
+  and explicitly reserves result *positions* for change in any release) —
+  but if you imported `sort_order` anyway, sort with
+  `(rule.group_order, rule.group_name, rule.rule_order, rule.rule_id)`.
 
 ## [1.8.0] - 2026-08-20
 
