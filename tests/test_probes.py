@@ -251,6 +251,22 @@ async def test_invalid_payload_probes_reject_acceptance_and_server_errors():
 
 async def test_invalid_payload_probes_skip_when_auth_blocks_validation():
     def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            return httpx2.Response(403)
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    for probe_id in (PROBE_JSONRPC_BATCH, PROBE_MALFORMED_JSON):
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert "access-controlled" in results[probe_id].details["reason"]
+        assert results[probe_id].details["control_http_status"] == 403
+
+
+async def test_invalid_payload_auth_status_is_judged_when_control_succeeds():
+    """An invalid-only 401/403 is not evidence that the endpoint is auth-gated."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
         try:
             body = json.loads(request.content) if request.method == "POST" else {}
         except json.JSONDecodeError:
@@ -262,8 +278,24 @@ async def test_invalid_payload_probes_skip_when_auth_blocks_validation():
     results = await _run(handler)
 
     for probe_id in (PROBE_JSONRPC_BATCH, PROBE_MALFORMED_JSON):
-        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
-        assert "access-controlled" in results[probe_id].details["reason"]
+        assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED
+        assert results[probe_id].details["control_http_status"] == 200
+
+
+async def test_invalid_payload_probes_reject_unrelated_client_errors():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            body = json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            return httpx2.Response(429)
+        if isinstance(body, list):
+            return httpx2.Response(405)
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_JSONRPC_BATCH].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_MALFORMED_JSON].outcome is ProbeOutcome.UNSUPPORTED
 
 
 async def test_origin_probe_cannot_judge_an_access_controlled_server():

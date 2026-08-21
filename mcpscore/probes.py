@@ -964,41 +964,60 @@ async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
 
 
-def _invalid_http_payload_result(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
+def _invalid_http_payload_result(
+    probe_id: str,
+    response: _HttpProbeResponse,
+    control: _HttpProbeResponse,
+) -> ProbeResult:
     """Classify an intentionally invalid HTTP payload without overclaiming.
 
     The Streamable HTTP spec requires one JSON-RPC message per POST, but does
     not prescribe one response body or 4xx status for every parser failure.
-    Any client-error status is therefore compliant; accepting the body, a
-    redirect, or a server error is not.
+    HTTP 400, 415, and 422 are the conventional signals that the request body
+    itself was rejected. Other 4xx responses (for example 404, 405, or 429) do
+    not prove payload validation. A valid control request must also succeed so
+    an authentication policy or unavailable endpoint cannot earn a pass.
     """
     details = _base_details(response)
-    if response.status_code in AUTH_GATED_STATUSES:
-        details["reason"] = "request is access-controlled; payload validation not observable"
+    details["control_http_status"] = control.status_code
+    if control.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "control request is access-controlled; payload validation not observable"
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
-    outcome = ProbeOutcome.SUPPORTED if 400 <= response.status_code < 500 else ProbeOutcome.UNSUPPORTED
+    if not 200 <= control.status_code < 300:
+        details["reason"] = f"control request was not accepted (HTTP {control.status_code})"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    outcome = ProbeOutcome.SUPPORTED if response.status_code in {400, 415, 422} else ProbeOutcome.UNSUPPORTED
     return ProbeResult(probe_id, outcome, details)
 
 
 async def _probe_jsonrpc_batch(target: _HttpTarget) -> ProbeResult:
     """Send a one-element JSON-RPC batch, which Streamable HTTP forbids."""
     target_version = _target_version()
-    body = [_request_body("tools/list", 12, _modern_meta(target_version))]
+    request = _request_body("tools/list", 12, _modern_meta(target_version))
+    headers = _request_headers(target_version, "tools/list")
+    control = await target.post(request, headers, follow_redirects=False)
+    body = [request]
     response = await target.post_raw(
         json.dumps(body, separators=(",", ":")).encode(),
-        _request_headers(target_version, "tools/list"),
+        headers,
     )
-    return _invalid_http_payload_result(PROBE_JSONRPC_BATCH, response)
+    return _invalid_http_payload_result(PROBE_JSONRPC_BATCH, response, control)
 
 
 async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
     """Send truncated JSON and require a client-error response, never a 5xx."""
     target_version = _target_version()
+    headers = _request_headers(target_version, "tools/list")
+    control = await target.post(
+        _request_body("tools/list", 13, _modern_meta(target_version)),
+        headers,
+        follow_redirects=False,
+    )
     response = await target.post_raw(
         b'{"jsonrpc":"2.0","id":13,"method":"tools/list",',
-        _request_headers(target_version, "tools/list"),
+        headers,
     )
-    return _invalid_http_payload_result(PROBE_MALFORMED_JSON, response)
+    return _invalid_http_payload_result(PROBE_MALFORMED_JSON, response, control)
 
 
 _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {
