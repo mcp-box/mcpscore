@@ -9,7 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from mcpscore.rules import create_all_rules
-from mcpscore.rules.base import READINESS_GROUP, BaseRule
+from mcpscore.rules.base import READINESS_GROUP, BaseRule, rule_sort_key
 from mcpscore.rules.packaging import PACKAGING_GROUP
 from mcpscore.rules.retired import RETIRED_RULES
 from mcpscore.spec import DRAFT, LATEST
@@ -94,7 +94,7 @@ def _retired_table() -> list[str]:
 
 def generate() -> str:
     groups: dict[str, list[BaseRule]] = defaultdict(list)
-    for rule in sorted(create_all_rules(), key=lambda r: r.sort_order):
+    for rule in sorted(create_all_rules(), key=rule_sort_key):
         groups[rule.group_name].append(rule)
 
     lines = [HEADER]

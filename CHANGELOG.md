@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (which share a `group_order`) interleaved in report output by import
   order. Groups are now contiguous and the order is deterministic. Scores,
   rule ids, and severities are unchanged — only the order of entries in
-  `results` (and the generated rules reference) moves.
+  `results` (and the generated rules reference) moves. The undocumented
+  `BaseRule.sort_order` property is removed in the process: ordering is
+  collection policy, computed by the internal `rule_sort_key()` at the sort
+  sites, so a subclass override can no longer corrupt the sort.
 - The rule registry now rejects an empty `rule_id` at registration (the
   inherited default made the old check unreachable) and refuses to register
   a retired `rule_id` — retired ids are never reused.

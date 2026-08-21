@@ -1,11 +1,13 @@
 import pytest
 
+import mcpscore.rules as rules_pkg
 from mcpscore.rules import (
     AllowedVersionRule,
     CapabilityToolsPresentRule,
     RuleRegistry,
     create_all_rules,
 )
+from mcpscore.rules.base import rule_sort_key
 
 
 def test_registry_creates_all_rules():
@@ -95,7 +97,7 @@ def test_sort_order_implements_the_documented_ordering():
     rule_id. The old integer encoding had no tie-breakers, so `capabilities`
     and `security` (both group_order 3) interleaved by import order.
     """
-    ordered = sorted(create_all_rules(), key=lambda r: r.sort_order)
+    ordered = sorted(create_all_rules(), key=rule_sort_key)
 
     # Groups must be contiguous: once a group ends, it never reappears.
     seen_groups: list[str] = []
@@ -112,7 +114,7 @@ def test_sort_order_implements_the_documented_ordering():
 
     # Full determinism: no two rules share a complete sort key (rule_id is
     # unique, so this holds by construction — pin it anyway).
-    keys = [r.sort_order for r in ordered]
+    keys = [rule_sort_key(r) for r in ordered]
     assert len(keys) == len(set(keys))
 
 
@@ -122,10 +124,10 @@ def test_sort_order_is_independent_of_registration_order():
     Reversing creation order must not change the sorted result — the old
     encoding leaned on Python's stable sort, i.e. on import order.
     """
-    forward = sorted(create_all_rules(), key=lambda r: r.sort_order)
+    forward = sorted(create_all_rules(), key=rule_sort_key)
     reversed_creation = list(create_all_rules())
     reversed_creation.reverse()
-    reversed_creation.sort(key=lambda r: r.sort_order)
+    reversed_creation.sort(key=rule_sort_key)
     assert [r.rule_id for r in forward] == [r.rule_id for r in reversed_creation]
 
 
@@ -140,7 +142,6 @@ def test_every_concrete_rule_module_class_is_registered():
     import inspect
     import pkgutil
 
-    import mcpscore.rules as rules_pkg
     from mcpscore.rules.base import BaseRule
     from mcpscore.rules.registry import _registry
 

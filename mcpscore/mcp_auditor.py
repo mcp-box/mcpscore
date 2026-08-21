@@ -25,7 +25,7 @@ from .probes import (
     run_stdio_probes,
 )
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
-from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
+from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, rule_sort_key
 from .rules.packaging import PACKAGING_GROUP
 from .spec import DRAFT, LATEST, Era
 
@@ -462,7 +462,7 @@ class MCPAuditor:
         self.readiness_promoted = self.era in (Era.MODERN, Era.DUAL) and not self.audit_data.partial
 
         readiness_header_emitted = False
-        for rule in sorted(self._rules_for_target(), key=lambda r: r.sort_order):
+        for rule in sorted(self._rules_for_target(), key=rule_sort_key):
             if rule.group_name == READINESS_GROUP and not readiness_header_emitted:
                 readiness_header_emitted = True
                 logger.info("")
