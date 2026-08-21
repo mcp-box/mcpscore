@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Report rule order now matches its documentation.** Rules sort by
+  `(group_order, group_name, rule_order, rule_id)` — the tie-breaks the
+  attribute docs always promised. Previously the sort key was a single
+  integer with no tie-breakers, so the `capabilities` and `security` groups
+  (which share a `group_order`) interleaved in report output by import
+  order. Groups are now contiguous and the order is deterministic. Scores,
+  rule ids, and severities are unchanged — only the order of entries in
+  `results` (and the generated rules reference) moves.
+- The rule registry now rejects an empty `rule_id` at registration (the
+  inherited default made the old check unreachable) and refuses to register
+  a retired `rule_id` — retired ids are never reused.
+
 ## [1.8.0] - 2026-08-20
 
 ### Fixed

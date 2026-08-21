@@ -307,14 +307,25 @@ class BaseRule(ABC):
         self.kwargs = kwargs
 
     @property
-    def sort_order(self) -> int:
-        """Sort order of this rule.
+    def sort_order(self) -> tuple[int, str, int, str]:
+        """Sort key implementing exactly the ordering the attributes document.
+
+        Lower ``group_order`` first; groups sharing a ``group_order`` sort
+        alphabetically by ``group_name``; within a group, ``rule_order`` then
+        ``rule_id``. Every tie-break is total, so the resulting order is
+        deterministic regardless of registration (import) order.
+
+        The previous ``group_order * 1000 + rule_order`` integer had no
+        tie-breakers: equal keys fell back to import order, which made the
+        ``capabilities`` and ``security`` groups (both ``group_order`` 3)
+        interleave in report output, and silently required ``rule_order`` to
+        stay below 1000.
 
         Returns:
-            A numerical value used for sorting rules
+            The (group_order, group_name, rule_order, rule_id) sort key.
 
         """
-        return self.group_order * 1000 + self.rule_order
+        return (self.group_order, self.group_name, self.rule_order, self.rule_id)
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Give a reason to skip this rule for this audit, or None to run it.
