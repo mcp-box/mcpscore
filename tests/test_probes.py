@@ -17,6 +17,8 @@ from mcpscore.probes import (
     PROBE_DISCOVER,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
+    PROBE_JSONRPC_BATCH,
+    PROBE_MALFORMED_JSON,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
     PROBE_ORIGIN_VALIDATION,
@@ -65,7 +67,12 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(404)
     if request.headers.get("Origin") == "https://mcpscore.invalid":
         return httpx2.Response(403)
-    body = json.loads(request.content)
+    try:
+        body = json.loads(request.content)
+    except json.JSONDecodeError:
+        return _rpc_error(None, -32700, "Parse error")
+    if isinstance(body, list):
+        return _rpc_error(None, -32600, "Batch requests are not supported")
     request_id = body.get("id")
     method = body["method"]
     meta = body.get("params", {}).get("_meta", {})
@@ -118,7 +125,12 @@ def _legacy_server_handler(request: httpx2.Request) -> httpx2.Response:
     """Simulate a stateful 2025-11-25 server: no session → everything is an error."""
     if request.method == "GET":
         return httpx2.Response(404)
-    body = json.loads(request.content)
+    try:
+        body = json.loads(request.content)
+    except json.JSONDecodeError:
+        return _rpc_error(None, -32700, "Parse error")
+    if isinstance(body, list):
+        return _rpc_error(None, -32600, "Batch requests are not supported")
     if body["method"] == "resources/read":
         return _rpc_error(body.get("id"), ERROR_LEGACY_RESOURCE_NOT_FOUND, "Resource not found", http_status=200)
     return httpx2.Response(
@@ -217,6 +229,41 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
     assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 307
     assert results[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.UNSUPPORTED
     assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
+
+
+async def test_invalid_payload_probes_reject_acceptance_and_server_errors():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            body = json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            return httpx2.Response(500)
+        if isinstance(body, list):
+            return httpx2.Response(202)
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_JSONRPC_BATCH].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_JSONRPC_BATCH].details["http_status"] == 202
+    assert results[PROBE_MALFORMED_JSON].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_MALFORMED_JSON].details["http_status"] == 500
+
+
+async def test_invalid_payload_probes_skip_when_auth_blocks_validation():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            body = json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            return httpx2.Response(401)
+        if isinstance(body, list):
+            return httpx2.Response(403)
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    for probe_id in (PROBE_JSONRPC_BATCH, PROBE_MALFORMED_JSON):
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert "access-controlled" in results[probe_id].details["reason"]
 
 
 async def test_origin_probe_cannot_judge_an_access_controlled_server():

@@ -128,6 +128,8 @@ PROBE_REMOVED_METHOD = "probe_removed_method"
 PROBE_AUTH_METADATA = "probe_auth_metadata"
 PROBE_ORIGIN_VALIDATION = "probe_origin_validation"
 PROBE_UNKNOWN_METHOD = "probe_unknown_method"
+PROBE_JSONRPC_BATCH = "probe_jsonrpc_batch"
+PROBE_MALFORMED_JSON = "probe_malformed_json"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -142,6 +144,8 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_AUTH_METADATA,
     PROBE_ORIGIN_VALIDATION,
     PROBE_UNKNOWN_METHOD,
+    PROBE_JSONRPC_BATCH,
+    PROBE_MALFORMED_JSON,
 )
 """Stable identifiers of all probes."""
 
@@ -152,6 +156,8 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_SESSION_ID_ECHO,
         PROBE_AUTH_METADATA,
         PROBE_ORIGIN_VALIDATION,
+        PROBE_JSONRPC_BATCH,
+        PROBE_MALFORMED_JSON,
     }
 )
 """Probes whose *subject* is an HTTP construct, so they cannot run over stdio.
@@ -161,8 +167,9 @@ target. These ask questions that only exist in HTTP: the ``Mcp-Method`` header
 contradicting the body (SEP-2243), the unauthenticated status and
 ``WWW-Authenticate`` challenge, the removed ``Mcp-Session-Id`` header, the
 RFC 9728/8414 well-known documents, and ``Origin`` validation against DNS
-rebinding. Over stdio they record ``NOT_APPLICABLE``, which is the honest
-answer: there is no such thing to get wrong.
+rebinding, plus the one-message-per-HTTP-POST body contract. Over stdio they
+record ``NOT_APPLICABLE``, which is the honest answer: there is no such thing
+to get wrong.
 """
 
 STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
@@ -376,6 +383,27 @@ class _HttpTarget:
         if anonymous:
             request.headers.pop("Authorization", None)
         response = await self.client.send(request, follow_redirects=follow_redirects)
+        return _HttpProbeResponse(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            payload=_parse_payload(response),
+        )
+
+    async def post_raw(self, content: bytes, headers: dict[str, str]) -> _HttpProbeResponse:
+        """POST an intentionally invalid raw body without following redirects.
+
+        Only HTTP-specific negative probes use this path. Redirects stay off so
+        caller-supplied credentials cannot leave the audited endpoint while
+        mcpscore is sending malformed input.
+        """
+        request = self.client.build_request(
+            "POST",
+            self.url,
+            content=content,
+            headers=headers,
+            timeout=PROBE_TIMEOUT_S,
+        )
+        response = await self.client.send(request, follow_redirects=False)
         return _HttpProbeResponse(
             status_code=response.status_code,
             headers=dict(response.headers),
@@ -936,6 +964,43 @@ async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
 
 
+def _invalid_http_payload_result(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
+    """Classify an intentionally invalid HTTP payload without overclaiming.
+
+    The Streamable HTTP spec requires one JSON-RPC message per POST, but does
+    not prescribe one response body or 4xx status for every parser failure.
+    Any client-error status is therefore compliant; accepting the body, a
+    redirect, or a server error is not.
+    """
+    details = _base_details(response)
+    if response.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "request is access-controlled; payload validation not observable"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    outcome = ProbeOutcome.SUPPORTED if 400 <= response.status_code < 500 else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(probe_id, outcome, details)
+
+
+async def _probe_jsonrpc_batch(target: _HttpTarget) -> ProbeResult:
+    """Send a one-element JSON-RPC batch, which Streamable HTTP forbids."""
+    target_version = _target_version()
+    body = [_request_body("tools/list", 12, _modern_meta(target_version))]
+    response = await target.post_raw(
+        json.dumps(body, separators=(",", ":")).encode(),
+        _request_headers(target_version, "tools/list"),
+    )
+    return _invalid_http_payload_result(PROBE_JSONRPC_BATCH, response)
+
+
+async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
+    """Send truncated JSON and require a client-error response, never a 5xx."""
+    target_version = _target_version()
+    response = await target.post_raw(
+        b'{"jsonrpc":"2.0","id":13,"method":"tools/list",',
+        _request_headers(target_version, "tools/list"),
+    )
+    return _invalid_http_payload_result(PROBE_MALFORMED_JSON, response)
+
+
 _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {
     PROBE_DISCOVER: _probe_discover,
     PROBE_STATELESS_LIST: _probe_stateless_list,
@@ -953,6 +1018,8 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
     PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
+    PROBE_JSONRPC_BATCH: _probe_jsonrpc_batch,
+    PROBE_MALFORMED_JSON: _probe_malformed_json,
 }
 """Probes whose subject is an HTTP construct (see HTTP_ONLY_PROBE_IDS)."""
 

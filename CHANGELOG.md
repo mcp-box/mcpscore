@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Two safe modern Streamable HTTP probes verify invalid request-body handling
+  without invoking tools: JSON-RPC batch arrays and malformed JSON must be
+  rejected with a client-error response, not accepted, redirected, or turned
+  into a server error (`readiness_2026_jsonrpc_batch_rejected`,
+  `readiness_2026_malformed_json_rejected`). Auth-gated endpoints and stdio
+  skip because their HTTP payload validation cannot be observed.
+
 ### Fixed
 
 - **Report rule order now matches its documentation.** Rules sort by
