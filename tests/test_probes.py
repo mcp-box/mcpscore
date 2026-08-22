@@ -266,6 +266,22 @@ async def test_malformed_json_probe_skips_when_control_is_auth_blocked():
     assert result.details["control_http_status"] == 403
 
 
+async def test_malformed_json_probe_rejects_canned_parse_error_control():
+    """The malformed response means nothing unless valid JSON was parsed."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            return _rpc_error(None, -32700, "Parse error")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    result = results[PROBE_MALFORMED_JSON]
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert result.details["control_http_status"] == 400
+    assert "correlated JSON-RPC response" in result.details["reason"]
+
+
 async def test_malformed_json_auth_status_is_judged_when_control_succeeds():
     """An invalid-only 401/403 is not evidence that the endpoint is auth-gated."""
 

@@ -969,6 +969,23 @@ def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResp
         details["reason"] = "control request is access-controlled; payload validation not observable"
         return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
 
+    # The control proves that this endpoint parses valid JSON-RPC rather than
+    # returning one canned parse-error response for every POST. Modern servers
+    # return a result; legacy stateful servers may return an ordinary correlated
+    # error (for example -32600 because there is no session). A parse error or
+    # null/missing ID cannot prove the valid body was parsed.
+    control_payload = control.payload
+    control_is_correlated = (
+        isinstance(control_payload, dict)
+        and control_payload.get("jsonrpc") == "2.0"
+        and control_payload.get("id") == 13
+        and ("result" in control_payload or control.error is not None)
+        and control.error_code != -32700
+    )
+    if not control_is_correlated:
+        details["reason"] = "control did not return a correlated JSON-RPC response; payload parsing not observable"
+        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
+
     payload = response.payload
     correct = (
         isinstance(payload, dict)
