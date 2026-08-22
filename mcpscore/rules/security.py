@@ -116,7 +116,7 @@ class MalformedRequestHandlingRule(BaseRule):
     the request cannot be parsed. Its transport-agnostic specification does
     not prescribe an HTTP status, so this rule deliberately does not either.
 
-    Scoring: 5 points (MEDIUM)
+    Scoring: 2 points (MEDIUM)
     """
 
     rule_id = "security_malformed_request_handling"

@@ -164,9 +164,9 @@ target. These ask questions that only exist in HTTP: the ``Mcp-Method`` header
 contradicting the body (SEP-2243), the unauthenticated status and
 ``WWW-Authenticate`` challenge, the removed ``Mcp-Session-Id`` header, the
 RFC 9728/8414 well-known documents, and ``Origin`` validation against DNS
-    rebinding, plus raw malformed HTTP request bodies. Over stdio they record
-    ``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
-    malformed wire input through the SDK transport.
+rebinding, plus raw malformed HTTP request bodies. Over stdio they record
+``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
+malformed wire input through the SDK transport.
 """
 
 STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
