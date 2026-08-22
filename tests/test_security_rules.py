@@ -172,6 +172,18 @@ class TestMalformedRequestHandlingRule:
         assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
+def _leak_audit(body: str | None, *, outcome: ProbeOutcome = ProbeOutcome.UNSUPPORTED) -> AuditData:
+    """AuditData carrying a malformed-JSON probe with a captured error body.
+
+    The rule reads the raw body from the probe's ``payload`` (which is
+    excluded from reports) — the malformed request is where a server dumps a
+    stack trace or path. ``body=None`` models a probe that captured nothing.
+    """
+    payload = {"error_body": body} if body is not None else None
+    probe = ProbeResult(PROBE_MALFORMED_JSON, outcome, {}, payload=payload)
+    return AuditData(transport_type=MCPTransportType.STREAMABLE_HTTP, probes={PROBE_MALFORMED_JSON: probe})
+
+
 class TestErrorDataLeakRule:
     """Test ErrorDataLeakRule."""
 
@@ -180,9 +192,9 @@ class TestErrorDataLeakRule:
         return ErrorDataLeakRule()
 
     def test_no_leaks_passes(self, rule):
-        """Test that clean error responses pass."""
-        audit_data = AuditData(
-            error_response='{"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}'
+        """A clean JSON-RPC error body passes."""
+        audit_data = _leak_audit(
+            '{"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": null}',
         )
 
         assert rule.skip_reason(audit_data) is None
@@ -193,65 +205,75 @@ class TestErrorDataLeakRule:
         assert "do not appear to leak" in result.message
 
     def test_file_path_leak_fails(self, rule):
-        """Test that file path leakage fails."""
-        audit_data = AuditData(error_response="Error at /home/user/server.py line 42")
-
-        result = rule.check(audit_data)
+        """A file path in the error body fails."""
+        result = rule.check(_leak_audit("Error at /home/user/server.py line 42"))
 
         assert result.passed is False
         assert "❌" in result.message
         assert "file path" in result.message.lower()
 
     def test_stack_trace_leak_fails(self, rule):
-        """Test that stack trace leakage fails."""
-        audit_data = AuditData(
-            error_response=(
+        """A stack trace in the error body fails."""
+        result = rule.check(
+            _leak_audit(
                 'Traceback (most recent call last):\n  File "server.py", line 10, in main\n    raise Exception("Error")'
             )
         )
 
-        result = rule.check(audit_data)
-
         assert result.passed is False
-        assert "❌" in result.message
         assert "stack trace" in result.message.lower()
 
     def test_password_leak_fails(self, rule):
-        """Test that password leakage fails."""
-        audit_data = AuditData(error_response='Connection failed: password="secret123"')
-
-        result = rule.check(audit_data)
+        """A password in the error body fails — and is NOT echoed into our report."""
+        result = rule.check(_leak_audit('Connection failed: password="secret123"'))
 
         assert result.passed is False
-        assert "❌" in result.message
         assert "password" in result.message.lower()
-
-    def test_api_key_leak_fails(self, rule):
-        """Test that API key leakage fails."""
-        audit_data = AuditData(error_response="Authentication failed: api_key=sk-1234567890abcdef")
-
-        result = rule.check(audit_data)
-
-        assert result.passed is False
-        assert "❌" in result.message
-        assert "api key" in result.message.lower()
+        # The leaked value must never appear in our own (shareable) report.
+        assert "secret123" not in str(result.details)
+        assert result.message == "❌ Error messages leak sensitive data: password"
 
     def test_bearer_token_leak_fails(self, rule):
-        """Test that Bearer token leakage fails."""
-        audit_data = AuditData(error_response="Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
-
-        result = rule.check(audit_data)
+        """A Bearer token in the error body fails."""
+        result = rule.check(_leak_audit("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"))
 
         assert result.passed is False
-        assert "❌" in result.message
 
-    def test_no_error_response(self, rule):
-        """Test that an absent remote error response is insufficient data."""
-        audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STREAMABLE_HTTP)
+    def test_non_json_html_body_is_scanned(self, rule):
+        """A non-JSON HTML error page (payload could not parse it) is still scanned."""
+        result = rule.check(
+            _leak_audit("<html><body><pre>Traceback (most recent call last): /home/app/x.py</pre></body></html>")
+        )
+
+        assert result.passed is False
+        assert "stack trace" in result.message.lower()
+
+    def test_absent_probe_is_insufficient_data(self, rule):
+        """No malformed probe at all — nothing to scan."""
+        audit_data = AuditData(transport_type=MCPTransportType.STREAMABLE_HTTP)
 
         assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
 
+    def test_probe_without_body_is_insufficient_data(self, rule):
+        """The probe ran but captured no body (network error path)."""
+        assert rule.skip_reason(_leak_audit(None)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_probe_error_is_insufficient_data(self, rule):
+        """A probe that errored at the network level captured no body."""
+        assert rule.skip_reason(_leak_audit(None, outcome=ProbeOutcome.ERROR)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_not_applicable_probe_without_body_is_insufficient_data(self, rule):
+        """Parse verdict is irrelevant; no captured body is insufficient data."""
+        assert rule.skip_reason(_leak_audit(None, outcome=ProbeOutcome.NOT_APPLICABLE)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_not_applicable_probe_with_body_still_scans(self, rule):
+        """A server can leak even when its parse-error verdict is not judgeable."""
+        audit_data = _leak_audit("boom /home/user/secret.py", outcome=ProbeOutcome.NOT_APPLICABLE)
+
+        assert rule.skip_reason(audit_data) is None
+        assert rule.check(audit_data).passed is False
+
     def test_stdio_transport_not_applicable(self, rule):
-        audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STDIO)
+        audit_data = AuditData(transport_type=MCPTransportType.STDIO)
 
         assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE

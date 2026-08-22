@@ -128,7 +128,6 @@ class AuditData:
     tls_version: str | None = None
     connection_time_ms: int | None = None
     server_headers: dict[str, str] | None = None
-    error_response: str | None = None
 
     # Sessionless probe observations (see mcpscore.probes), keyed by probe_id.
     # None until the auditor's probe-collection phase has run.
