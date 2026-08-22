@@ -128,7 +128,6 @@ PROBE_REMOVED_METHOD = "probe_removed_method"
 PROBE_AUTH_METADATA = "probe_auth_metadata"
 PROBE_ORIGIN_VALIDATION = "probe_origin_validation"
 PROBE_UNKNOWN_METHOD = "probe_unknown_method"
-PROBE_JSONRPC_BATCH = "probe_jsonrpc_batch"
 PROBE_MALFORMED_JSON = "probe_malformed_json"
 
 PROBE_IDS: tuple[str, ...] = (
@@ -144,7 +143,6 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_AUTH_METADATA,
     PROBE_ORIGIN_VALIDATION,
     PROBE_UNKNOWN_METHOD,
-    PROBE_JSONRPC_BATCH,
     PROBE_MALFORMED_JSON,
 )
 """Stable identifiers of all probes."""
@@ -156,7 +154,6 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_SESSION_ID_ECHO,
         PROBE_AUTH_METADATA,
         PROBE_ORIGIN_VALIDATION,
-        PROBE_JSONRPC_BATCH,
         PROBE_MALFORMED_JSON,
     }
 )
@@ -167,9 +164,9 @@ target. These ask questions that only exist in HTTP: the ``Mcp-Method`` header
 contradicting the body (SEP-2243), the unauthenticated status and
 ``WWW-Authenticate`` challenge, the removed ``Mcp-Session-Id`` header, the
 RFC 9728/8414 well-known documents, and ``Origin`` validation against DNS
-rebinding, plus the one-message-per-HTTP-POST body contract. Over stdio they
-record ``NOT_APPLICABLE``, which is the honest answer: there is no such thing
-to get wrong.
+    rebinding, plus raw malformed HTTP request bodies. Over stdio they record
+    ``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
+    malformed wire input through the SDK transport.
 """
 
 STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
@@ -964,60 +961,44 @@ async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
 
 
-def _invalid_http_payload_result(
-    probe_id: str,
-    response: _HttpProbeResponse,
-    control: _HttpProbeResponse,
-) -> ProbeResult:
-    """Classify an intentionally invalid HTTP payload without overclaiming.
-
-    The Streamable HTTP spec requires one JSON-RPC message per POST, but does
-    not prescribe one response body or 4xx status for every parser failure.
-    HTTP 400, 415, and 422 are the conventional signals that the request body
-    itself was rejected. Other 4xx responses (for example 404, 405, or 429) do
-    not prove payload validation. A valid control request must also succeed so
-    an authentication policy or unavailable endpoint cannot earn a pass.
-    """
+def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResponse) -> ProbeResult:
+    """Judge JSON-RPC's normative malformed-JSON response, status-agnostically."""
     details = _base_details(response)
     details["control_http_status"] = control.status_code
     if control.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "control request is access-controlled; payload validation not observable"
-        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
     if not 200 <= control.status_code < 300:
         details["reason"] = f"control request was not accepted (HTTP {control.status_code})"
-        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
-    outcome = ProbeOutcome.SUPPORTED if response.status_code in {400, 415, 422} else ProbeOutcome.UNSUPPORTED
-    return ProbeResult(probe_id, outcome, details)
+        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
 
-
-async def _probe_jsonrpc_batch(target: _HttpTarget) -> ProbeResult:
-    """Send a one-element JSON-RPC batch, which Streamable HTTP forbids."""
-    target_version = _target_version()
-    request = _request_body("tools/list", 12, _modern_meta(target_version))
-    headers = _request_headers(target_version, "tools/list")
-    control = await target.post(request, headers, follow_redirects=False)
-    body = [request]
-    response = await target.post_raw(
-        json.dumps(body, separators=(",", ":")).encode(),
-        headers,
+    payload = response.payload
+    correct = (
+        isinstance(payload, dict)
+        and payload.get("jsonrpc") == "2.0"
+        and "id" in payload
+        and payload["id"] is None
+        and response.error_code == -32700
     )
-    return _invalid_http_payload_result(PROBE_JSONRPC_BATCH, response, control)
+    details["response_id_is_null"] = isinstance(payload, dict) and "id" in payload and payload["id"] is None
+    outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_MALFORMED_JSON, outcome, details)
 
 
 async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
-    """Send truncated JSON and require a client-error response, never a 5xx."""
+    """Send truncated JSON and require JSON-RPC Parse error with a null ID."""
     target_version = _target_version()
-    headers = _request_headers(target_version, "tools/list")
+    headers = _request_headers(target_version, "server/discover")
     control = await target.post(
-        _request_body("tools/list", 13, _modern_meta(target_version)),
+        _request_body("server/discover", 13, _modern_meta(target_version)),
         headers,
         follow_redirects=False,
     )
     response = await target.post_raw(
-        b'{"jsonrpc":"2.0","id":13,"method":"tools/list",',
+        b'{"jsonrpc":"2.0","id":13,"method":"server/discover",',
         headers,
     )
-    return _invalid_http_payload_result(PROBE_MALFORMED_JSON, response, control)
+    return _malformed_json_result(response, control)
 
 
 _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {
@@ -1037,7 +1018,6 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
     PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
-    PROBE_JSONRPC_BATCH: _probe_jsonrpc_batch,
     PROBE_MALFORMED_JSON: _probe_malformed_json,
 }
 """Probes whose subject is an HTTP construct (see HTTP_ONLY_PROBE_IDS)."""

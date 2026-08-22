@@ -7,7 +7,6 @@ from mcpscore.probes import (
     PROBE_DISCOVER,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
-    PROBE_JSONRPC_BATCH,
     PROBE_MALFORMED_JSON,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
@@ -34,8 +33,6 @@ from mcpscore.rules.readiness import (
     DeprecatedFeaturesReadinessRule,
     ErrorCodeMigrationReadinessRule,
     HeaderValidationReadinessRule,
-    JsonRpcBatchRejectedRule,
-    MalformedJsonRejectedRule,
     MetaValidationReadinessRule,
     NoSessionIdReadinessRule,
     OriginValidationRule,
@@ -97,9 +94,6 @@ def modern_probes(**overrides: ProbeResult) -> dict[str, ProbeResult]:
             ProbeOutcome.SUPPORTED,
             {"http_status": 404, "error_code": -32601, "content_type": "application/json"},
         ),
-        PROBE_JSONRPC_BATCH: ProbeResult(
-            PROBE_JSONRPC_BATCH, ProbeOutcome.SUPPORTED, {"http_status": 400, "error_code": -32600}
-        ),
         PROBE_MALFORMED_JSON: ProbeResult(
             PROBE_MALFORMED_JSON, ProbeOutcome.SUPPORTED, {"http_status": 400, "error_code": -32700}
         ),
@@ -150,8 +144,6 @@ class TestDetailProbeRules:
         ErrorCodeMigrationReadinessRule,
         OriginValidationRule,
         UnknownMethodErrorRule,
-        JsonRpcBatchRejectedRule,
-        MalformedJsonRejectedRule,
     )
 
     def test_pass_against_modern_server(self):
@@ -201,21 +193,6 @@ class TestDetailProbeRules:
         result = UnknownMethodErrorRule().check(AuditData(probes=probes))
         assert not result.passed
         assert "-32601" in result.message
-
-    def test_invalid_payload_rules_report_observed_status(self):
-        probes = modern_probes(
-            probe_jsonrpc_batch=ProbeResult(PROBE_JSONRPC_BATCH, ProbeOutcome.UNSUPPORTED, {"http_status": 200}),
-            probe_malformed_json=ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.UNSUPPORTED, {"http_status": 500}),
-        )
-        data = AuditData(probes=probes)
-
-        batch = JsonRpcBatchRejectedRule().check(data)
-        malformed = MalformedJsonRejectedRule().check(data)
-
-        assert not batch.passed
-        assert "HTTP 200" in batch.message
-        assert not malformed.passed
-        assert "HTTP 500" in malformed.message
 
     def test_unsupported_version_error_flags_missing_data(self):
         probes = modern_probes(
@@ -674,8 +651,6 @@ class TestSepCitations:
         "readiness_2026_origin_validation": f"{STREAMABLE_HTTP_SPEC}#security-&-endpoint",
         "readiness_2026_unknown_method_error": f"{STREAMABLE_HTTP_SPEC}#protocol-version-header",
         "readiness_2026_response_content_type": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
-        "readiness_2026_jsonrpc_batch_rejected": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
-        "readiness_2026_malformed_json_rejected": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
     }
 
     def test_every_readiness_rule_cites_the_right_sep(self):

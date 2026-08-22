@@ -2,6 +2,7 @@ import re
 from typing import ClassVar
 
 from ..enums import MCPTransportType
+from ..probes import PROBE_MALFORMED_JSON, ProbeOutcome
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
     SKIP_REASON_NOT_APPLICABLE,
@@ -109,28 +110,29 @@ class TLSEnabledRule(BaseRule):
 
 @register_rule
 class MalformedRequestHandlingRule(BaseRule):
-    """Check if the server handles malformed requests gracefully.
+    """Check the normative JSON-RPC response to malformed JSON.
 
-    A well-implemented server should return proper JSON-RPC error responses
-    for malformed requests instead of crashing or hanging.
+    JSON-RPC 2.0 requires Parse error (``-32700``) and a null response ID when
+    the request cannot be parsed. Its transport-agnostic specification does
+    not prescribe an HTTP status, so this rule deliberately does not either.
 
     Scoring: 5 points (MEDIUM)
     """
 
     rule_id = "security_malformed_request_handling"
-    basis = (
-        "MCP 2025-11-25 Transports §Sending Messages to the Server "
-        "(unacceptable input -> HTTP error / JSON-RPC error response)"
-    )
+    basis = "JSON-RPC 2.0 §Response Object / §Error Object (-32700 Parse error; unknown id is null)"
     group_name = "security"
     group_order = 3
     rule_order = 2
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when the remote malformed-request probe did not run."""
+        """Skip when the raw malformed-request response is unobservable."""
         if audit_data.transport_type == MCPTransportType.STDIO:
             return SKIP_REASON_NOT_APPLICABLE
-        if audit_data.transport_type is None or audit_data.error_response is None:
+        probe = (audit_data.probes or {}).get(PROBE_MALFORMED_JSON)
+        if probe is not None and probe.outcome is ProbeOutcome.NOT_APPLICABLE:
+            return SKIP_REASON_NOT_APPLICABLE
+        if probe is None or probe.outcome is ProbeOutcome.ERROR:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
@@ -142,54 +144,23 @@ class MalformedRequestHandlingRule(BaseRule):
     def severity(self) -> RuleSeverity:
         return RuleSeverity.MEDIUM
 
-    @requires_fields("error_response", "transport_type")
-    def check(self, error_response: str | None, transport_type: MCPTransportType | None) -> RuleResult:  # type: ignore[override]
-        """Check if server handles malformed requests properly.
-
-        Args:
-            error_response: Error response from malformed request test
-            transport_type: The transport type used
-
-        Returns:
-            RuleResult indicating pass/fail
-
-        """
-        assert transport_type is not None  # noqa: S101 — skip_reason guarantees remote transport data
-        assert error_response is not None  # noqa: S101 — skip_reason guarantees a probe response
-
-        # Check if response looks like a proper JSON-RPC error
-        # Expected format: {"jsonrpc": "2.0", "error": {...}, "id": ...}
-        is_json_rpc_error = '"jsonrpc"' in error_response and '"error"' in error_response
-
-        if is_json_rpc_error:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=True,
-                message="✅ Server returns proper JSON-RPC errors for malformed requests",
-                details={"error_response": error_response[:200]},  # Truncate for display
-            )
-
-        # Check for crash indicators
-        crash_indicators = ["crash", "panic", "exception", "traceback", "fatal", "segfault"]
-        has_crash = any(indicator in error_response.lower() for indicator in crash_indicators)
-
-        if has_crash:
-            return RuleResult(
-                rule_name=self.rule_name,
-                severity=self.severity,
-                passed=False,
-                message="❌ Server appears to crash or panic on malformed requests",
-                details={"error_response": error_response[:200]},
-            )
-
-        # Response exists but doesn't look like proper JSON-RPC error
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Require the exact JSON-RPC parse-error shape, independent of HTTP status."""
+        probe = (audit_data.probes or {})[PROBE_MALFORMED_JSON]
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
-            passed=False,
-            message="⚠️ Server does not return proper JSON-RPC error format for malformed requests",
-            details={"error_response": error_response[:200]},
+            passed=passed,
+            message=(
+                "✅ Malformed JSON returns JSON-RPC -32700 (Parse error) with a null ID"
+                if passed
+                else "❌ Malformed JSON does not return JSON-RPC -32700 (Parse error) with a null ID"
+            ),
+            details={
+                "spec": "https://www.jsonrpc.org/specification#response_object",
+                **probe.details,
+            },
         )
 
 

@@ -32,8 +32,6 @@ from mcpscore.probes import (
     GATEWAY_PROBE_IDS,
     PROBE_DISCOVER,
     PROBE_HEADER_MISMATCH,
-    PROBE_JSONRPC_BATCH,
-    PROBE_MALFORMED_JSON,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
     PROBE_ORIGIN_VALIDATION,
@@ -472,68 +470,6 @@ class UnknownMethodErrorRule(ProbeBackedReadinessRule):
                 **probe.details,
             },
         )
-
-
-class InvalidHttpPayloadRule(ProbeBackedReadinessRule):
-    """Base rule for invalid Streamable HTTP request-body probes."""
-
-    expected_input: ClassVar[str]
-
-    @property
-    def severity(self) -> RuleSeverity:
-        return RuleSeverity.MEDIUM
-
-    def check(self, audit_data: AuditData) -> RuleResult:
-        probe = self._probe(audit_data)
-        passed = probe.outcome is ProbeOutcome.SUPPORTED
-        observed = probe.details.get("http_status")
-        message = (
-            f"✅ Streamable HTTP rejects {self.expected_input} with a client error"
-            if passed
-            else f"❌ Streamable HTTP does not reject {self.expected_input} with a client error (HTTP {observed})"
-        )
-        return RuleResult(
-            rule_name=self.rule_name,
-            severity=self.severity,
-            passed=passed,
-            message=message,
-            details={
-                "spec": (
-                    "https://modelcontextprotocol.io/specification/2026-07-28/"
-                    "basic/transports/streamable-http#sending-messages"
-                ),
-                "target_version": READINESS_TARGET,
-                **probe.details,
-            },
-        )
-
-
-@register_rule
-class JsonRpcBatchRejectedRule(InvalidHttpPayloadRule):
-    """Streamable HTTP rejects a top-level JSON-RPC batch array."""
-
-    rule_id = "readiness_2026_jsonrpc_batch_rejected"
-    rule_order = 17
-    probe_id = PROBE_JSONRPC_BATCH
-    expected_input = "JSON-RPC batch bodies"
-
-    @property
-    def rule_name(self) -> str:
-        return f"Readiness {READINESS_TARGET} - JSON-RPC batches rejected"
-
-
-@register_rule
-class MalformedJsonRejectedRule(InvalidHttpPayloadRule):
-    """Streamable HTTP rejects malformed JSON without a server error."""
-
-    rule_id = "readiness_2026_malformed_json_rejected"
-    rule_order = 18
-    probe_id = PROBE_MALFORMED_JSON
-    expected_input = "malformed JSON bodies"
-
-    @property
-    def rule_name(self) -> str:
-        return f"Readiness {READINESS_TARGET} - malformed JSON rejected"
 
 
 @register_rule

@@ -447,10 +447,11 @@ async def test_audit_partial_scores_auth_and_skips_session(stub_probes, monkeypa
     # No transport was established, so the transport rule cannot claim a pass.
     assert "transport_streamable_http" not in scored
     assert skipped.get("transport_streamable_http") == "insufficient-data"
-    # error_response is never collected, so its rules must not auto-pass here.
+    # The malformed-input control is auth-gated, so that behavior is not
+    # applicable; the older error-leak rule still lacks response data.
     assert "security_malformed_request_handling" not in scored
     assert "security_error_data_leak" not in scored
-    assert skipped.get("security_malformed_request_handling") == "insufficient-data"
+    assert skipped.get("security_malformed_request_handling") == "not-applicable"
     assert skipped.get("security_error_data_leak") == "insufficient-data"
     # Transport left unverified in the audit data.
     assert auditor.audit_data.transport_type is None

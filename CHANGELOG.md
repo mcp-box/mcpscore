@@ -7,17 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Two safe modern Streamable HTTP probes verify invalid request-body handling
-  without invoking tools: JSON-RPC batch arrays and malformed JSON must be
-  rejected with a client-error response, not accepted, redirected, or turned
-  into a server error (`readiness_2026_jsonrpc_batch_rejected`,
-  `readiness_2026_malformed_json_rejected`). Auth-gated endpoints and stdio
-  skip because their HTTP payload validation cannot be observed.
-
 ### Fixed
 
+- **Malformed-request scoring now has normative evidence.** The existing
+  `security_malformed_request_handling` rule is backed by a safe raw probe and
+  requires the JSON-RPC 2.0 Parse error response (`-32700` with `id: null`).
+  HTTP status is deliberately not constrained because JSON-RPC is transport
+  agnostic. A successful mandatory `server/discover` control prevents auth,
+  endpoint, or optional-capability failures from becoming false verdicts.
 - **Report rule order now matches its documentation.** Rules sort by
   `(group_order, group_name, rule_order, rule_id)` — the tie-breaks the
   attribute docs always promised. Previously the sort key was a single
