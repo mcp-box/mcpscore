@@ -3,6 +3,7 @@
 import pytest
 
 from mcpscore.enums import MCPTransportType
+from mcpscore.probes import PROBE_MALFORMED_JSON, ProbeOutcome, ProbeResult
 from mcpscore.rules import (
     AuditData,
     ErrorDataLeakRule,
@@ -96,10 +97,21 @@ class TestMalformedRequestHandlingRule:
     def rule(self):
         return MalformedRequestHandlingRule()
 
-    def test_proper_json_rpc_error_passes(self, rule):
-        """Test that proper JSON-RPC error response passes."""
+    def test_parse_error_with_null_id_passes(self, rule):
         audit_data = AuditData(
-            error_response='{"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}',
+            probes={
+                PROBE_MALFORMED_JSON: ProbeResult(
+                    PROBE_MALFORMED_JSON,
+                    ProbeOutcome.SUPPORTED,
+                    {
+                        "http_status": 200,
+                        "error_code": -32700,
+                        "error_message": "server-controlled text that must not reach reports",
+                        "response_id_is_null": True,
+                        "control_http_status": 200,
+                    },
+                )
+            },
             transport_type=MCPTransportType.STREAMABLE_HTTP,
         )
 
@@ -110,10 +122,19 @@ class TestMalformedRequestHandlingRule:
         assert "✅" in result.message
         assert "JSON-RPC" in result.message
 
-    def test_crash_response_fails(self, rule):
-        """Test that crash responses fail."""
+        assert result.details["spec"] == "https://www.jsonrpc.org/specification#response_object"
+        assert result.details["control_http_status"] == 200
+        assert "error_message" not in result.details
+
+    def test_wrong_error_shape_fails(self, rule):
         audit_data = AuditData(
-            error_response="Server crash: Segmentation fault (core dumped)",
+            probes={
+                PROBE_MALFORMED_JSON: ProbeResult(
+                    PROBE_MALFORMED_JSON,
+                    ProbeOutcome.UNSUPPORTED,
+                    {"http_status": 400, "error_code": -32600, "response_id_is_null": True},
+                )
+            },
             transport_type=MCPTransportType.STREAMABLE_HTTP,
         )
 
@@ -121,26 +142,32 @@ class TestMalformedRequestHandlingRule:
 
         assert result.passed is False
         assert "❌" in result.message
-        assert "crash" in result.message.lower()
-
-    def test_non_json_rpc_error_fails(self, rule):
-        """Test that non-JSON-RPC error format fails."""
-        audit_data = AuditData(error_response="Error: Invalid input", transport_type=MCPTransportType.STREAMABLE_HTTP)
-
-        result = rule.check(audit_data)
-
-        assert result.passed is False
-        assert "⚠️" in result.message
+        assert "-32700" in result.message
 
     def test_stdio_transport_not_tested(self, rule):
         """Test that stdio transport is not tested."""
-        audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STDIO)
+        audit_data = AuditData(probes=None, transport_type=MCPTransportType.STDIO)
+
+        assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_no_probe_captured(self, rule):
+        audit_data = AuditData(probes=None, transport_type=MCPTransportType.STREAMABLE_HTTP)
+
+        assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_unobservable_probe_is_not_applicable(self, rule):
+        audit_data = AuditData(
+            probes={PROBE_MALFORMED_JSON: ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, {})},
+            transport_type=MCPTransportType.STREAMABLE_HTTP,
+        )
 
         assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
 
-    def test_no_error_response_captured(self, rule):
-        """Test when no error response was captured."""
-        audit_data = AuditData(error_response=None, transport_type=MCPTransportType.STREAMABLE_HTTP)
+    def test_probe_error_is_insufficient_data(self, rule):
+        audit_data = AuditData(
+            probes={PROBE_MALFORMED_JSON: ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.ERROR, {})},
+            transport_type=MCPTransportType.STREAMABLE_HTTP,
+        )
 
         assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
 

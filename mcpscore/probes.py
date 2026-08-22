@@ -128,6 +128,7 @@ PROBE_REMOVED_METHOD = "probe_removed_method"
 PROBE_AUTH_METADATA = "probe_auth_metadata"
 PROBE_ORIGIN_VALIDATION = "probe_origin_validation"
 PROBE_UNKNOWN_METHOD = "probe_unknown_method"
+PROBE_MALFORMED_JSON = "probe_malformed_json"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -142,6 +143,7 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_AUTH_METADATA,
     PROBE_ORIGIN_VALIDATION,
     PROBE_UNKNOWN_METHOD,
+    PROBE_MALFORMED_JSON,
 )
 """Stable identifiers of all probes."""
 
@@ -152,6 +154,7 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_SESSION_ID_ECHO,
         PROBE_AUTH_METADATA,
         PROBE_ORIGIN_VALIDATION,
+        PROBE_MALFORMED_JSON,
     }
 )
 """Probes whose *subject* is an HTTP construct, so they cannot run over stdio.
@@ -161,8 +164,9 @@ target. These ask questions that only exist in HTTP: the ``Mcp-Method`` header
 contradicting the body (SEP-2243), the unauthenticated status and
 ``WWW-Authenticate`` challenge, the removed ``Mcp-Session-Id`` header, the
 RFC 9728/8414 well-known documents, and ``Origin`` validation against DNS
-rebinding. Over stdio they record ``NOT_APPLICABLE``, which is the honest
-answer: there is no such thing to get wrong.
+rebinding, plus raw malformed HTTP request bodies. Over stdio they record
+``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
+malformed wire input through the SDK transport.
 """
 
 STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
@@ -376,6 +380,27 @@ class _HttpTarget:
         if anonymous:
             request.headers.pop("Authorization", None)
         response = await self.client.send(request, follow_redirects=follow_redirects)
+        return _HttpProbeResponse(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            payload=_parse_payload(response),
+        )
+
+    async def post_raw(self, content: bytes, headers: dict[str, str]) -> _HttpProbeResponse:
+        """POST an intentionally invalid raw body without following redirects.
+
+        Only HTTP-specific negative probes use this path. Redirects stay off so
+        caller-supplied credentials cannot leave the audited endpoint while
+        mcpscore is sending malformed input.
+        """
+        request = self.client.build_request(
+            "POST",
+            self.url,
+            content=content,
+            headers=headers,
+            timeout=PROBE_TIMEOUT_S,
+        )
+        response = await self.client.send(request, follow_redirects=False)
         return _HttpProbeResponse(
             status_code=response.status_code,
             headers=dict(response.headers),
@@ -936,6 +961,65 @@ async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
 
 
+def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResponse) -> ProbeResult:
+    """Judge JSON-RPC's normative malformed-JSON response, status-agnostically."""
+    details = _base_details(response)
+    details["control_http_status"] = control.status_code
+
+    # The control proves that this endpoint parses valid JSON-RPC rather than
+    # returning one canned parse-error response for every POST. Modern servers
+    # return a result; legacy stateful servers may return an ordinary correlated
+    # error (for example -32600 because there is no session). A parse error or
+    # null/missing ID cannot prove the valid body was parsed.
+    control_payload = control.payload
+    control_is_correlated = (
+        isinstance(control_payload, dict)
+        and control_payload.get("jsonrpc") == "2.0"
+        and control_payload.get("id") == 13
+        and ("result" in control_payload or control.error is not None)
+        and control.error_code != -32700
+    )
+    if not control_is_correlated:
+        details["reason"] = (
+            "control request is access-controlled; payload parsing not observable"
+            if control.status_code in AUTH_GATED_STATUSES
+            else "control did not return a correlated JSON-RPC response; payload parsing not observable"
+        )
+        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
+
+    payload = response.payload
+    error = response.error
+    correct = (
+        isinstance(payload, dict)
+        and payload.get("jsonrpc") == "2.0"
+        and "id" in payload
+        and payload["id"] is None
+        and response.error_code == -32700
+        and error is not None
+        and isinstance(error.get("message"), str)
+        and "result" not in payload
+    )
+    details["response_id_is_null"] = isinstance(payload, dict) and "id" in payload and payload["id"] is None
+    outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_MALFORMED_JSON, outcome, details)
+
+
+async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
+    """Send truncated JSON and require JSON-RPC Parse error with a null ID."""
+    target_version = _target_version()
+    headers = _request_headers(target_version, "server/discover")
+    control = await target.post(
+        _request_body("server/discover", 13, _modern_meta(target_version)),
+        headers,
+        follow_redirects=False,
+    )
+    response = await target.post_raw(
+        b'{"jsonrpc":"2.0","id":13,"method":"server/discover",',
+        headers,
+    )
+    return _malformed_json_result(response, control)
+
+
 _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {
     PROBE_DISCOVER: _probe_discover,
     PROBE_STATELESS_LIST: _probe_stateless_list,
@@ -953,6 +1037,7 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
     PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
+    PROBE_MALFORMED_JSON: _probe_malformed_json,
 }
 """Probes whose subject is an HTTP construct (see HTTP_ONLY_PROBE_IDS)."""
 

@@ -7,6 +7,7 @@ from mcpscore.probes import (
     PROBE_DISCOVER,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
+    PROBE_MALFORMED_JSON,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
     PROBE_ORIGIN_VALIDATION,
@@ -92,6 +93,9 @@ def modern_probes(**overrides: ProbeResult) -> dict[str, ProbeResult]:
             PROBE_UNKNOWN_METHOD,
             ProbeOutcome.SUPPORTED,
             {"http_status": 404, "error_code": -32601, "content_type": "application/json"},
+        ),
+        PROBE_MALFORMED_JSON: ProbeResult(
+            PROBE_MALFORMED_JSON, ProbeOutcome.SUPPORTED, {"http_status": 400, "error_code": -32700}
         ),
     }
     results.update(overrides)

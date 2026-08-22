@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Malformed-request scoring now has normative evidence.** The existing
+  `security_malformed_request_handling` rule is backed by a safe raw probe and
+  requires the JSON-RPC 2.0 Parse error response (`-32700` with `id: null`).
+  HTTP status is deliberately not constrained because JSON-RPC is transport
+  agnostic. A successful mandatory `server/discover` control prevents auth,
+  endpoint, or optional-capability failures from becoming false verdicts.
 - **Report rule order now matches its documentation.** Rules sort by
   `(group_order, group_name, rule_order, rule_id)` — the tie-breaks the
   attribute docs always promised. Previously the sort key was a single

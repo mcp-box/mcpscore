@@ -69,17 +69,21 @@ unobserved. A dedicated presence rule can still judge whether a complete catalog
    Several probes are *deliberately* malformed or security-relevant, because the
    spec defines how a server must answer them. Expect an audit to send a foreign
    `Origin` header, a request for an unknown RPC method, an unsupported protocol
-   version, a bogus session ID, and a request for a nonexistent resource. These
-   can look like probing in a WAF or access log; they read state and nothing more.
-   Each one exists to check a documented MUST — for example, the spec requires
-   HTTP 403 for an invalid `Origin` and HTTP 404 with JSON-RPC `-32601` for an
-   unknown method.
+   version, a bogus session ID, a request for a nonexistent resource, and one
+   truncated JSON body. These can look like probing in a WAF or access log; they
+   read state and nothing more. Each one exists to check a documented MUST — for
+   example, the spec requires HTTP 403 for an invalid `Origin`, HTTP 404 with
+   JSON-RPC `-32601` for an unknown method, and JSON-RPC requires malformed JSON
+   to produce `-32700` with a null ID.
 
-   The modern lifecycle is stateless, so its JSON-RPC behaviors are probed over
-   stdio too. The suite launches one short-lived sibling process through the MCP
-   SDK's stdio transport and sends no `initialize` handshake. Questions that only
-   exist in HTTP—such as `Origin`, headers, status codes, sessions, and auth
-   metadata—are recorded as not applicable for stdio rather than failed.
+   The modern lifecycle is stateless, so JSON-RPC behaviors that can be expressed
+   through the SDK are probed over stdio too. The suite launches one short-lived
+   sibling process through the MCP SDK's stdio transport and sends no `initialize`
+   handshake. The truncated-JSON probe currently runs only over HTTP because the
+   SDK path cannot inject malformed wire input safely; stdio therefore reports
+   insufficient evidence for that rule. Questions that only exist in HTTP—such
+   as `Origin`, headers, status codes, sessions, and auth metadata—are recorded as
+   not applicable for stdio rather than failed.
 4. **Evaluate** — every registered rule runs against the collected data and probe
    observations. See the [Rules Reference](/rules) for the full list.
 

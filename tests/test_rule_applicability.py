@@ -12,7 +12,7 @@ from mcpscore.rules import (
     StreamableHTTPTransportRule,
     TLSEnabledRule,
 )
-from mcpscore.rules.base import SKIP_REASON_NOT_APPLICABLE, SkippedRule
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, SkippedRule
 from mcpscore.rules.registry import create_all_rules
 
 
@@ -158,7 +158,7 @@ class TestAuditorSkipsNonApplicableRules:
         assert auditor.max_score == 0
         assert {rule.rule_id: rule.reason for rule in auditor.skipped_rules} == {
             "security_tls_enabled": SKIP_REASON_NOT_APPLICABLE,
-            "security_malformed_request_handling": SKIP_REASON_NOT_APPLICABLE,
+            "security_malformed_request_handling": SKIP_REASON_INSUFFICIENT_DATA,
             "security_error_data_leak": SKIP_REASON_NOT_APPLICABLE,
             "transport_streamable_http": SKIP_REASON_NOT_APPLICABLE,
         }
