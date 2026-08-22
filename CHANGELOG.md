@@ -9,12 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`security_error_data_leak` now runs.** It read a field (`error_response`)
+  that no code path ever produced, so it silently skipped on every audit. It
+  now scans the response body the malformed-request probe elicits — the
+  request most likely to make a server dump a stack trace, file path, or
+  secret — for sensitive-data leaks, and skips as insufficient data only when
+  no body was captured (stdio is not applicable). A leaked value is **never
+  echoed back into the report** (only the leak type and a count), because the
+  report is shareable and echoing the secret would re-leak it. Servers that
+  do not leak gain the 2 points they previously never had a chance to earn —
+  e.g. DeepWiki 76/85 → 78/87.
+- Corrected two stale rule docstrings that quoted an old severity-point scale
+  (`10 points (CRITICAL)` → 5, `5 points (MEDIUM)` → 2); the weights are
+  `RuleSeverity` (CRITICAL 5 / HIGH 3 / MEDIUM 2 / LOW 1).
 - **Malformed-request scoring now has normative evidence.** The existing
   `security_malformed_request_handling` rule is backed by a safe raw probe and
-  requires the JSON-RPC 2.0 Parse error response (`-32700` with `id: null`).
-  HTTP status is deliberately not constrained because JSON-RPC is transport
-  agnostic. A successful mandatory `server/discover` control prevents auth,
-  endpoint, or optional-capability failures from becoming false verdicts.
+  requires the JSON-RPC 2.0 Parse error response (`-32700` with a null **or
+  absent** `id` — the id is unknowable when the request never parsed, and a
+  registry calibration found conforming servers that omit it). HTTP status is
+  deliberately not constrained because JSON-RPC is transport agnostic. A
+  successful mandatory `server/discover` control prevents auth, endpoint, or
+  optional-capability failures from becoming false verdicts.
 - **Report rule order now matches its documentation.** Rules sort by
   `(group_order, group_name, rule_order, rule_id)` — the tie-breaks the
   attribute docs always promised. Previously the sort key was a single

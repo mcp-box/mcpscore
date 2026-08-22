@@ -211,7 +211,7 @@ async def test_legacy_server_is_unsupported_but_observed():
     assert malformed.outcome is ProbeOutcome.SUPPORTED
     assert malformed.details["control_http_status"] == 400
     assert malformed.details["error_code"] == -32700
-    assert malformed.details["response_id_is_null"] is True
+    assert malformed.details["response_id_absent_or_null"] is True
 
     # No well-known metadata anywhere → UNSUPPORTED, with both locations tried.
     auth = results[PROBE_AUTH_METADATA]
@@ -370,7 +370,7 @@ async def test_malformed_json_probe_accepts_normative_error_at_any_http_status()
     assert result.outcome is ProbeOutcome.SUPPORTED
     assert result.details["http_status"] == 200
     assert result.details["error_code"] == -32700
-    assert result.details["response_id_is_null"] is True
+    assert result.details["response_id_absent_or_null"] is True
 
 
 async def test_malformed_json_probe_requires_null_id():
@@ -385,7 +385,29 @@ async def test_malformed_json_probe_requires_null_id():
 
     result = results[PROBE_MALFORMED_JSON]
     assert result.outcome is ProbeOutcome.UNSUPPORTED
-    assert result.details["response_id_is_null"] is False
+    assert result.details["response_id_absent_or_null"] is False
+
+
+async def test_malformed_json_probe_accepts_a_missing_id():
+    """A correct -32700 with the id field OMITTED is accepted as null-equivalent.
+
+    The id is unknowable on a parse error, and the registry has real conforming
+    servers that omit it (calibration 2026-08-22).
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            # No "id" key at all — not even null.
+            return httpx2.Response(400, json={"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    result = results[PROBE_MALFORMED_JSON]
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["response_id_absent_or_null"] is True
 
 
 async def test_origin_probe_cannot_judge_an_access_controlled_server():
