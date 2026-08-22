@@ -410,6 +410,31 @@ async def test_malformed_json_probe_accepts_a_missing_id():
     assert result.details["response_id_absent_or_null"] is True
 
 
+async def test_malformed_json_probe_bounds_an_oversized_body():
+    """A hostile server returning a huge error body cannot exhaust memory.
+
+    The probe streams and stops reading at the 16 KB cap; the captured leak
+    body is bounded, and a leak near the start is still detected.
+    """
+    huge = "/home/user/secret.py leaked here " + ("A" * 5_000_000)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            return httpx2.Response(400, content=huge, headers={"content-type": "text/plain"})
+        return _modern_server_handler(request)
+
+    async with _client(handler) as client:
+        response, text = await _HttpTarget(client, URL).post_raw(
+            b'{"jsonrpc":"2.0","id":13,', {"Content-Type": "application/json"}
+        )
+
+    assert len(text) <= 16_384  # bounded, not the 5 MB the server sent
+    assert "/home/user/secret.py" in text  # leak near the start survives the cap
+    assert response.status_code == 400
+
+
 async def test_origin_probe_cannot_judge_an_access_controlled_server():
     """A 403 to everything is not Origin validation.
 

@@ -22,14 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected two stale rule docstrings that quoted an old severity-point scale
   (`10 points (CRITICAL)` → 5, `5 points (MEDIUM)` → 2); the weights are
   `RuleSeverity` (CRITICAL 5 / HIGH 3 / MEDIUM 2 / LOW 1).
-- **Malformed-request scoring now has normative evidence.** The existing
-  `security_malformed_request_handling` rule is backed by a safe raw probe and
-  requires the JSON-RPC 2.0 Parse error response (`-32700` with a null **or
-  absent** `id` — the id is unknowable when the request never parsed, and a
-  registry calibration found conforming servers that omit it). HTTP status is
-  deliberately not constrained because JSON-RPC is transport agnostic. A
-  successful mandatory `server/discover` control prevents auth, endpoint, or
-  optional-capability failures from becoming false verdicts.
+- **Malformed-request scoring now has real evidence.** The existing
+  `security_malformed_request_handling` rule is backed by a safe raw probe.
+  It enforces the JSON-RPC 2.0 Parse error code (`-32700`) as the normative
+  requirement, and **deliberately relaxes** one strict-JSON-RPC point: the
+  response `id` may be null **or absent** (the id is unknowable when the
+  request never parsed, and a registry calibration found conforming servers
+  that omit it) — a calibrated interoperability allowance, not full Response
+  Object conformance. HTTP status is deliberately not constrained because
+  JSON-RPC is transport agnostic. A successful mandatory `server/discover`
+  control prevents auth, endpoint, or optional-capability failures from
+  becoming false verdicts. The probe streams and bounds the response body
+  (16 KB) so a hostile server cannot exhaust memory on the deliberately
+  malformed request.
 - **Report rule order now matches its documentation.** Rules sort by
   `(group_order, group_name, rule_order, rule_id)` — the tie-breaks the
   attribute docs always promised. Previously the sort key was a single
@@ -52,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and explicitly reserves result *positions* for change in any release) —
   but if you imported `sort_order` anyway, sort with
   `(rule.group_order, rule.group_name, rule.rule_order, rule.rule_id)`.
+- **`AuditData.error_response`.** A dead constructor field — nothing in the
+  repo's history ever produced it, and its last reader
+  (`security_error_data_leak`) now scans the malformed-request probe's body
+  instead. Removed rather than kept as a phantom (its presence is what
+  produced the never-observed-behavior confusion in the first place). The
+  Python class surface is outside the stability contract as above; migration:
+  drop the kwarg — any code that constructed `AuditData(error_response=...)`
+  was setting a value no rule ever read.
 
 ## [1.8.0] - 2026-08-20
 

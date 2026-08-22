@@ -323,20 +323,24 @@ def _request_headers(protocol_version: str, method: str, name: str | None = None
     return headers
 
 
-def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
-    """Extract the JSON-RPC message from a JSON or SSE response body."""
-    content_type = response.headers.get("content-type", "")
+def _parse_payload_text(text: str, content_type: str) -> dict[str, Any] | None:
+    """Extract the JSON-RPC message from a JSON or SSE response body text."""
     try:
         if "text/event-stream" in content_type:
-            for line in response.text.splitlines():
+            for line in text.splitlines():
                 if line.startswith("data:"):
                     parsed = json.loads(line[len("data:") :].strip())
                     return parsed if isinstance(parsed, dict) else None
             return None
-        parsed = response.json()
+        parsed = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
+    """Extract the JSON-RPC message from a JSON or SSE response body."""
+    return _parse_payload_text(response.text, response.headers.get("content-type", ""))
 
 
 class _ProbeTarget(Protocol):
@@ -398,26 +402,38 @@ class _HttpTarget:
         caller-supplied credentials cannot leave the audited endpoint while
         mcpscore is sending malformed input.
 
-        Returns the parsed response and its raw body text (bounded) — the raw
-        text is the leak surface for ``security_error_data_leak``: a mishandled
-        parse error is where a server dumps a stack trace or a file path, and
-        that appears in a non-JSON body the parsed payload cannot carry.
+        The response is **streamed and bounded** to ``_RAW_BODY_SCAN_LIMIT``:
+        this probe deliberately provokes error handlers, exactly where a
+        hostile or broken server is most likely to return an unbounded body,
+        so reading is stopped at the cap rather than buffering the whole thing.
+        Returns the parsed response and its bounded raw body text — the raw
+        text is the leak surface for ``security_error_data_leak`` (a mishandled
+        parse error dumps a stack trace or file path into a non-JSON body the
+        parsed payload cannot carry).
         """
-        request = self.client.build_request(
+        async with self.client.stream(
             "POST",
             self.url,
             content=content,
             headers=headers,
             timeout=PROBE_TIMEOUT_S,
-        )
-        response = await self.client.send(request, follow_redirects=False)
+            follow_redirects=False,
+        ) as response:
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) >= _RAW_BODY_SCAN_LIMIT:
+                    break
+            status_code = response.status_code
+            response_headers = dict(response.headers)
+        text = bytes(body[:_RAW_BODY_SCAN_LIMIT]).decode("utf-8", errors="replace")
         return (
             _HttpProbeResponse(
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                payload=_parse_payload(response),
+                status_code=status_code,
+                headers=response_headers,
+                payload=_parse_payload_text(text, response_headers.get("content-type", "")),
             ),
-            response.text[:_RAW_BODY_SCAN_LIMIT],
+            text,
         )
 
 

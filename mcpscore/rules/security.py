@@ -110,21 +110,28 @@ class TLSEnabledRule(BaseRule):
 
 @register_rule
 class MalformedRequestHandlingRule(BaseRule):
-    """Check the normative JSON-RPC response to malformed JSON.
+    """Check the JSON-RPC response to malformed JSON.
 
-    JSON-RPC 2.0 requires Parse error (``-32700``) and a null response ID when
-    the request cannot be parsed. A *missing* id is accepted as equivalent to
-    null: the id is unknowable when the request never parsed, and no client
-    correlates a parse error by id (calibrated against the registry
-    2026-08-22 — several conforming servers omit it). The transport-agnostic
-    specification does not prescribe an HTTP status, so this rule does not
-    either.
+    The **normative** requirement this rule enforces is the JSON-RPC 2.0 Parse
+    error code (``-32700``). Strict JSON-RPC additionally requires the response
+    ``id`` to be present and null when the request id cannot be detected; this
+    rule **deliberately relaxes that one point** and also accepts an *absent*
+    id — the id is genuinely unknowable when the request never parsed, no
+    client correlates a parse error by id, and a registry calibration
+    (2026-08-22) found conforming servers that omit it. This is a calibrated
+    interoperability allowance, not full JSON-RPC Response Object conformance.
+    The transport-agnostic specification does not prescribe an HTTP status, so
+    this rule does not either.
 
     Scoring: 2 points (MEDIUM)
     """
 
     rule_id = "security_malformed_request_handling"
-    basis = "JSON-RPC 2.0 §Response Object / §Error Object (-32700 Parse error; unknown id is null)"
+    basis = (
+        "JSON-RPC 2.0 §Response Object / §Error Object: -32700 Parse error (enforced). "
+        "Strict JSON-RPC requires the id present and null; a null OR absent id is accepted "
+        "as a calibrated interoperability allowance."
+    )
     group_name = "security"
     group_order = 3
     rule_order = 2
