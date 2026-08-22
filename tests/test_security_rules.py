@@ -103,7 +103,13 @@ class TestMalformedRequestHandlingRule:
                 PROBE_MALFORMED_JSON: ProbeResult(
                     PROBE_MALFORMED_JSON,
                     ProbeOutcome.SUPPORTED,
-                    {"http_status": 200, "error_code": -32700, "response_id_is_null": True},
+                    {
+                        "http_status": 200,
+                        "error_code": -32700,
+                        "error_message": "server-controlled text that must not reach reports",
+                        "response_id_is_null": True,
+                        "control_http_status": 200,
+                    },
                 )
             },
             transport_type=MCPTransportType.STREAMABLE_HTTP,
@@ -117,6 +123,8 @@ class TestMalformedRequestHandlingRule:
         assert "JSON-RPC" in result.message
 
         assert result.details["spec"] == "https://www.jsonrpc.org/specification#response_object"
+        assert result.details["control_http_status"] == 200
+        assert "error_message" not in result.details
 
     def test_wrong_error_shape_fails(self, rule):
         audit_data = AuditData(

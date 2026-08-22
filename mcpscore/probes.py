@@ -968,9 +968,6 @@ def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResp
     if control.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "control request is access-controlled; payload validation not observable"
         return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
-    if not 200 <= control.status_code < 300:
-        details["reason"] = f"control request was not accepted (HTTP {control.status_code})"
-        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
 
     payload = response.payload
     correct = (

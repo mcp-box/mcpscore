@@ -205,6 +205,14 @@ async def test_legacy_server_is_unsupported_but_observed():
     assert results[PROBE_MISSING_RESOURCE].details["error_code"] == ERROR_LEGACY_RESOURCE_NOT_FOUND
     assert results[PROBE_MISSING_RESOURCE].details["legacy_code_emitted"] is True
 
+    # Malformed JSON is a transport-independent JSON-RPC requirement. A legacy
+    # server remains judgeable even though its valid modern control returns 400.
+    malformed = results[PROBE_MALFORMED_JSON]
+    assert malformed.outcome is ProbeOutcome.SUPPORTED
+    assert malformed.details["control_http_status"] == 400
+    assert malformed.details["error_code"] == -32700
+    assert malformed.details["response_id_is_null"] is True
+
     # No well-known metadata anywhere → UNSUPPORTED, with both locations tried.
     auth = results[PROBE_AUTH_METADATA]
     assert auth.outcome is ProbeOutcome.UNSUPPORTED

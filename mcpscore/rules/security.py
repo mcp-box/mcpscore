@@ -159,7 +159,10 @@ class MalformedRequestHandlingRule(BaseRule):
             ),
             details={
                 "spec": "https://www.jsonrpc.org/specification#response_object",
-                **probe.details,
+                "http_status": probe.details.get("http_status"),
+                "error_code": probe.details.get("error_code"),
+                "response_id_is_null": probe.details.get("response_id_is_null"),
+                "control_http_status": probe.details.get("control_http_status"),
             },
         )
 
