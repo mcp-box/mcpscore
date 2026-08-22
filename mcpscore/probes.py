@@ -965,9 +965,6 @@ def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResp
     """Judge JSON-RPC's normative malformed-JSON response, status-agnostically."""
     details = _base_details(response)
     details["control_http_status"] = control.status_code
-    if control.status_code in AUTH_GATED_STATUSES:
-        details["reason"] = "control request is access-controlled; payload validation not observable"
-        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
 
     # The control proves that this endpoint parses valid JSON-RPC rather than
     # returning one canned parse-error response for every POST. Modern servers
@@ -983,16 +980,24 @@ def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResp
         and control.error_code != -32700
     )
     if not control_is_correlated:
-        details["reason"] = "control did not return a correlated JSON-RPC response; payload parsing not observable"
+        details["reason"] = (
+            "control request is access-controlled; payload parsing not observable"
+            if control.status_code in AUTH_GATED_STATUSES
+            else "control did not return a correlated JSON-RPC response; payload parsing not observable"
+        )
         return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
 
     payload = response.payload
+    error = response.error
     correct = (
         isinstance(payload, dict)
         and payload.get("jsonrpc") == "2.0"
         and "id" in payload
         and payload["id"] is None
         and response.error_code == -32700
+        and error is not None
+        and isinstance(error.get("message"), str)
+        and "result" not in payload
     )
     details["response_id_is_null"] = isinstance(payload, dict) and "id" in payload and payload["id"] is None
     outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED

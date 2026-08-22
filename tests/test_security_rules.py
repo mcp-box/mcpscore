@@ -148,7 +148,7 @@ class TestMalformedRequestHandlingRule:
         """Test that stdio transport is not tested."""
         audit_data = AuditData(probes=None, transport_type=MCPTransportType.STDIO)
 
-        assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
+        assert rule.skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
 
     def test_no_probe_captured(self, rule):
         audit_data = AuditData(probes=None, transport_type=MCPTransportType.STREAMABLE_HTTP)

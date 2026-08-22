@@ -128,7 +128,10 @@ class MalformedRequestHandlingRule(BaseRule):
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip when the raw malformed-request response is unobservable."""
         if audit_data.transport_type == MCPTransportType.STDIO:
-            return SKIP_REASON_NOT_APPLICABLE
+            # The JSON-RPC requirement applies, but the SDK-backed stdio probe
+            # cannot safely inject a truncated wire message. That is missing
+            # evidence, not an inapplicable requirement.
+            return SKIP_REASON_INSUFFICIENT_DATA
         probe = (audit_data.probes or {}).get(PROBE_MALFORMED_JSON)
         if probe is not None and probe.outcome is ProbeOutcome.NOT_APPLICABLE:
             return SKIP_REASON_NOT_APPLICABLE

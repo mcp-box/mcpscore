@@ -282,6 +282,50 @@ async def test_malformed_json_probe_rejects_canned_parse_error_control():
     assert "correlated JSON-RPC response" in result.details["reason"]
 
 
+async def test_malformed_json_probe_accepts_correlated_auth_status_control():
+    """A correlated 401 proves parsing even though authorization was denied."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            body = json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            return _rpc_error(None, -32700, "Parse error")
+        return _rpc_error(body.get("id"), -32600, "Authorization required", http_status=401)
+
+    results = await _run(handler)
+
+    result = results[PROBE_MALFORMED_JSON]
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["control_http_status"] == 401
+
+
+async def test_malformed_json_probe_requires_complete_error_object():
+    responses = (
+        {"jsonrpc": "2.0", "id": None, "error": {"code": -32700}},
+        {
+            "jsonrpc": "2.0",
+            "id": None,
+            "result": {},
+            "error": {"code": -32700, "message": "Parse error"},
+        },
+    )
+
+    for malformed_response in responses:
+
+        def handler(
+            request: httpx2.Request,
+            response_body: dict = malformed_response,
+        ) -> httpx2.Response:
+            try:
+                json.loads(request.content) if request.method == "POST" else {}
+            except json.JSONDecodeError:
+                return httpx2.Response(400, json=response_body)
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+        assert results[PROBE_MALFORMED_JSON].outcome is ProbeOutcome.UNSUPPORTED
+
+
 async def test_malformed_json_auth_status_is_judged_when_control_succeeds():
     """An invalid-only 401/403 is not evidence that the endpoint is auth-gated."""
 
