@@ -343,6 +343,29 @@ async def test_pagination_cache_scope_probe_compares_all_pages(second_scope, exp
     assert result.details["inconsistent_surfaces"] == ([] if expected is ProbeOutcome.SUPPORTED else ["tools"])
 
 
+async def test_pagination_cache_scope_probe_does_not_invent_scope_for_omitted_fields():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {"tools": {}}
+            return httpx2.Response(response.status_code, json=payload)
+        if body.get("method") == "tools/list":
+            cursor = body.get("params", {}).get("cursor")
+            result = {"resultType": "complete", "tools": [], "ttlMs": 0}
+            if cursor is None:
+                result["nextCursor"] = "page-2"
+            return _rpc_result(body.get("id"), result)
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is ProbeOutcome.UNSUPPORTED
+    assert result.details["surfaces"]["tools"]["cache_scopes"] == [None, None]
+    assert result.details["inconsistent_surfaces"] == ["tools"]
+
+
 async def test_pagination_cache_scope_probe_skips_single_page_catalogs():
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content) if request.method == "POST" else {}
@@ -362,6 +385,22 @@ async def test_pagination_cache_scope_probe_skips_single_page_catalogs():
 
     assert result.outcome is ProbeOutcome.NOT_APPLICABLE
     assert result.details["reason"] == "no declared list surface returned multiple pages"
+
+
+async def test_pagination_cache_scope_probe_skips_when_no_list_capability_is_declared():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {}
+            return httpx2.Response(response.status_code, json=payload)
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert result.details["reason"] == "server declares no paginated list capabilities"
 
 
 async def test_pagination_cache_scope_probe_handles_optional_templates_and_other_surfaces():
@@ -419,6 +458,64 @@ async def test_pagination_cache_scope_probe_degrades_on_incomplete_traversal():
     assert result.outcome is ProbeOutcome.ERROR
     assert result.details["surfaces"]["tools"]["complete"] is False
     assert result.details["reason"] == "at least one declared list traversal did not complete"
+
+
+async def test_pagination_cache_scope_probe_rejects_non_string_next_cursor():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {"tools": {}}
+            return httpx2.Response(response.status_code, json=payload)
+        if body.get("method") == "tools/list":
+            return _rpc_result(
+                body.get("id"),
+                {
+                    "resultType": "complete",
+                    "tools": [],
+                    "nextCursor": 7,
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                },
+            )
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["surfaces"]["tools"]["complete"] is False
+
+
+async def test_pagination_cache_scope_probe_enforces_page_bound(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    monkeypatch.setattr(probes_module, "PAGINATION_PROBE_MAX_PAGES", 1)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {"tools": {}}
+            return httpx2.Response(response.status_code, json=payload)
+        if body.get("method") == "tools/list":
+            return _rpc_result(
+                body.get("id"),
+                {
+                    "resultType": "complete",
+                    "tools": [],
+                    "nextCursor": "more",
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                },
+            )
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["surfaces"]["tools"]["pages"] == 1
 
 
 async def test_pagination_cache_scope_probe_degrades_on_later_page_error():

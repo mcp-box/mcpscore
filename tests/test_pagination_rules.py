@@ -143,6 +143,13 @@ def test_cache_scope_consistency_rule_passes_consistent_pages():
     assert result.details["spec"] == CACHING_PAGINATION_SPEC
 
 
+def test_cache_scope_consistency_rule_applies_only_to_caching_spec_revision():
+    rule = PaginationCacheScopeConsistentRule()
+
+    assert not rule.applies_to("2025-11-25")
+    assert rule.applies_to("2026-07-28")
+
+
 def test_cache_scope_consistency_rule_fails_and_names_surfaces():
     result = PaginationCacheScopeConsistentRule().check(_cache_scope_data(ProbeOutcome.UNSUPPORTED))
 

@@ -154,6 +154,7 @@ class PaginationCacheScopeConsistentRule(BaseRule):
 
     rule_id = "pagination_cache_scope_consistent"
     basis = "MCP 2026-07-28 Caching §Interaction with Pagination (same cacheScope on all pages; MUST)"
+    min_spec_version = "2026-07-28"
     group_name = "pagination"
     group_order = 9
     rule_order = 5
