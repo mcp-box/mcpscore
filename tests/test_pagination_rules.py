@@ -44,7 +44,7 @@ def test_invalid_cursor_rule_passes_with_invalid_params(capabilities_full, rule_
     result = rule.check(data)
 
     assert result.passed
-    assert result.severity is RuleSeverity.MEDIUM
+    assert result.severity is RuleSeverity.LOW
     assert surface in result.message
     assert result.details == {
         "spec": PAGINATION_SPEC,

@@ -45,7 +45,7 @@ class InvalidCursorRule(BaseRule):
 
     @property
     def severity(self) -> RuleSeverity:
-        return RuleSeverity.MEDIUM
+        return RuleSeverity.LOW
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip absent capabilities and unavailable probe evidence."""
