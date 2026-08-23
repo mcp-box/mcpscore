@@ -225,19 +225,86 @@ class ErrorDataLeakRule(BaseRule):
         body = payload.get("error_body") if isinstance(payload, dict) else None
         return body if isinstance(body, str) else None
 
-    # Patterns that indicate sensitive data leakage
-    SENSITIVE_PATTERNS: ClassVar[list[tuple[str, str]]] = [
+    # Structural leaks — the pattern's presence IS the leak (a path or a stack
+    # trace in an error body is a defect regardless of any value).
+    STRUCTURAL_PATTERNS: ClassVar[list[tuple[str, str]]] = [
         (r"/home/\w+", "file path"),
         (r"/usr/\w+", "file path"),
         (r"C:\\Users\\", "file path"),
         (r"Traceback \(most recent call last\)", "stack trace"),
         (r"at \w+\.\w+ \([^)]+:\d+:\d+\)", "stack trace"),  # JavaScript stack trace
-        (r'password["\']?\s*[:=]\s*["\']?[\w!@#$%^&*]+', "password"),
-        (r'secret["\']?\s*[:=]\s*["\']?[\w!@#$%^&*]+', "secret"),
-        (r'api[_-]?key["\']?\s*[:=]\s*["\']?[\w-]+', "API key"),
-        (r'token["\']?\s*[:=]\s*["\']?[\w-]+', "token"),
-        (r"Bearer\s+[\w-]+", "auth token"),
     ]
+
+    # Credential leaks — a match is a leak only if the *captured value* (group
+    # 1) looks like a real secret. This rule now scans live auth-gated error
+    # bodies, which routinely say "Bearer token required" or
+    # "password=redacted"; matching the keyword alone would fail well-behaved
+    # servers that leak nothing. See _is_probable_secret.
+    CREDENTIAL_PATTERNS: ClassVar[list[tuple[str, str]]] = [
+        (r'password["\']?\s*[:=]\s*["\']?([\w!@#$%^&*.\-]+)', "password"),
+        (r'secret["\']?\s*[:=]\s*["\']?([\w!@#$%^&*.\-]+)', "secret"),
+        (r'api[_-]?key["\']?\s*[:=]\s*["\']?([\w.\-]+)', "API key"),
+        (r'token["\']?\s*[:=]\s*["\']?([\w.\-]+)', "token"),
+        (r"Bearer\s+([\w.\-]+)", "auth token"),
+    ]
+
+    # Values that are descriptions of a secret, not a secret. A credential
+    # match whose value contains one of these (or is too short / too
+    # low-entropy) is a placeholder, not a leak.
+    _PLACEHOLDER_WORDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "required",
+            "redacted",
+            "missing",
+            "none",
+            "null",
+            "empty",
+            "example",
+            "placeholder",
+            "changeme",
+            "here",
+            "your",
+            "token",
+            "key",
+            "secret",
+            "value",
+            "string",
+            "password",
+            "hidden",
+            "provided",
+            "expected",
+            "invalid",
+            "unauthorized",
+            "masked",
+            "omitted",
+            "removed",
+            "xxx",
+        }
+    )
+
+    @classmethod
+    def _is_probable_secret(cls, value: str) -> bool:
+        """Whether a captured credential value looks like a real leaked secret.
+
+        Rejects placeholders ("required", "redacted", ...), short values, and
+        low-entropy words — the shapes a well-behaved auth-gated body produces.
+        A real key/token is long and mixes character classes.
+        """
+        stripped = value.strip().strip("'\"`<>*[]{}()")
+        if len(stripped) < 8:
+            return False
+        low = stripped.lower()
+        if any(word in low for word in cls._PLACEHOLDER_WORDS):
+            return False
+        classes = sum(
+            (
+                any(c.islower() for c in stripped),
+                any(c.isupper() for c in stripped),
+                any(c.isdigit() for c in stripped),
+                any(not c.isalnum() for c in stripped),
+            )
+        )
+        return classes >= 2 or len(stripped) >= 20
 
     @property
     def rule_name(self) -> str:
@@ -258,10 +325,16 @@ class ErrorDataLeakRule(BaseRule):
         # echoing the server's leaked secret back into our own output would
         # re-leak it. The count lets the server owner gauge severity.
         leaks_found = []
-        for pattern, leak_type in self.SENSITIVE_PATTERNS:
+        for pattern, leak_type in self.STRUCTURAL_PATTERNS:
             matches = re.findall(pattern, error_response, re.IGNORECASE)
             if matches:
                 leaks_found.append({"type": leak_type, "count": len(matches)})
+        for pattern, leak_type in self.CREDENTIAL_PATTERNS:
+            # A credential keyword is a leak only if its value is a real secret,
+            # not a placeholder ("Bearer token required", "password=redacted").
+            real = [m for m in re.findall(pattern, error_response, re.IGNORECASE) if self._is_probable_secret(m)]
+            if real:
+                leaks_found.append({"type": leak_type, "count": len(real)})
 
         if leaks_found:
             leak_types = ", ".join(dict.fromkeys(leak["type"] for leak in leaks_found))

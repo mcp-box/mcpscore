@@ -395,7 +395,7 @@ class _HttpTarget:
             payload=_parse_payload(response),
         )
 
-    async def post_raw(self, content: bytes, headers: dict[str, str]) -> tuple[_HttpProbeResponse, str]:
+    async def post_raw(self, content: bytes, headers: dict[str, str]) -> tuple[_HttpProbeResponse, str, bool]:
         """POST an intentionally invalid raw body without following redirects.
 
         Only HTTP-specific negative probes use this path. Redirects stay off so
@@ -404,12 +404,17 @@ class _HttpTarget:
 
         The response is **streamed and bounded** to ``_RAW_BODY_SCAN_LIMIT``:
         this probe deliberately provokes error handlers, exactly where a
-        hostile or broken server is most likely to return an unbounded body,
-        so reading is stopped at the cap rather than buffering the whole thing.
-        Returns the parsed response and its bounded raw body text — the raw
-        text is the leak surface for ``security_error_data_leak`` (a mishandled
-        parse error dumps a stack trace or file path into a non-JSON body the
-        parsed payload cannot carry).
+        hostile or broken server is most likely to return an unbounded body.
+        Each chunk is appended only up to the remaining capacity — a single
+        large (or decompressed) chunk cannot overshoot the cap — and reading
+        stops there.
+
+        Returns ``(response, bounded_text, truncated)``. The bounded text is
+        the leak surface for ``security_error_data_leak`` (a mishandled parse
+        error dumps a stack trace or file path into a non-JSON body). The
+        ``truncated`` flag tells the caller the parsed payload came from a
+        prefix, so an unparsable prefix must not be read as a protocol
+        verdict — the full body might have been valid JSON we cut.
         """
         async with self.client.stream(
             "POST",
@@ -420,13 +425,17 @@ class _HttpTarget:
             follow_redirects=False,
         ) as response:
             body = bytearray()
+            truncated = False
             async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) >= _RAW_BODY_SCAN_LIMIT:
+                space = _RAW_BODY_SCAN_LIMIT - len(body)
+                if len(chunk) > space:
+                    body.extend(chunk[:space])
+                    truncated = True
                     break
+                body.extend(chunk)
             status_code = response.status_code
             response_headers = dict(response.headers)
-        text = bytes(body[:_RAW_BODY_SCAN_LIMIT]).decode("utf-8", errors="replace")
+        text = bytes(body).decode("utf-8", errors="replace")
         return (
             _HttpProbeResponse(
                 status_code=status_code,
@@ -434,6 +443,7 @@ class _HttpTarget:
                 payload=_parse_payload_text(text, response_headers.get("content-type", "")),
             ),
             text,
+            truncated,
         )
 
 
@@ -990,13 +1000,21 @@ async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
 
 
-def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResponse, raw_body: str) -> ProbeResult:
+def _malformed_json_result(
+    response: _HttpProbeResponse, control: _HttpProbeResponse, raw_body: str, truncated: bool
+) -> ProbeResult:
     """Judge JSON-RPC's normative malformed-JSON response, status-agnostically.
 
     The raw response body is carried on the ProbeResult ``payload`` (excluded
     from ``to_dict``, so it never reaches a report) for
     ``security_error_data_leak`` to scan — the malformed request is the probe
     most likely to make a server dump a stack trace or a file path.
+
+    ``truncated`` means the body exceeded the scan cap, so the parsed payload
+    came from a prefix. An unparsable *prefix* is not a protocol verdict — a
+    valid but oversized ``-32700`` response would parse to ``None`` only
+    because it was cut — so a truncated-and-unparsable response is
+    unobservable, not UNSUPPORTED.
     """
     details = _base_details(response)
     details["control_http_status"] = control.status_code
@@ -1044,6 +1062,14 @@ def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResp
         and "result" not in payload
     )
     details["response_id_absent_or_null"] = id_absent_or_null
+    if not correct and truncated and not isinstance(payload, dict):
+        # The prefix did not parse and the body was cut at the cap — the
+        # untruncated response might have been a valid -32700. Cannot fail the
+        # server for a verdict we could not observe. (Any real -32700 envelope
+        # parses well within the cap, so this only fires on pathological
+        # bodies; the leak scan still sees the bounded prefix.)
+        details["reason"] = "response body exceeded scan cap; parse verdict not observable"
+        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details, payload=leak_payload)
     outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_MALFORMED_JSON, outcome, details, payload=leak_payload)
 
@@ -1057,11 +1083,11 @@ async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
         headers,
         follow_redirects=False,
     )
-    response, raw_body = await target.post_raw(
+    response, raw_body, truncated = await target.post_raw(
         b'{"jsonrpc":"2.0","id":13,"method":"server/discover",',
         headers,
     )
-    return _malformed_json_result(response, control, raw_body)
+    return _malformed_json_result(response, control, raw_body, truncated)
 
 
 _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {

@@ -426,13 +426,37 @@ async def test_malformed_json_probe_bounds_an_oversized_body():
         return _modern_server_handler(request)
 
     async with _client(handler) as client:
-        response, text = await _HttpTarget(client, URL).post_raw(
+        response, text, truncated = await _HttpTarget(client, URL).post_raw(
             b'{"jsonrpc":"2.0","id":13,', {"Content-Type": "application/json"}
         )
 
     assert len(text) <= 16_384  # bounded, not the 5 MB the server sent
     assert "/home/user/secret.py" in text  # leak near the start survives the cap
     assert response.status_code == 400
+    assert truncated is True
+
+
+async def test_malformed_json_probe_does_not_fail_a_truncated_valid_response():
+    """A valid -32700 padded beyond the 16 KB cap must not be scored UNSUPPORTED.
+
+    The prefix is unparsable (JSON cut mid-object), but the untruncated body
+    was valid — so the verdict is unobservable, not a protocol failure.
+    """
+    # A real -32700 envelope with a huge message, so the prefix is cut mid-string.
+    padded = '{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"' + ("x" * 5_000_000) + '"}}'
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            return httpx2.Response(400, content=padded, headers={"content-type": "application/json"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    result = results[PROBE_MALFORMED_JSON]
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert "scan cap" in result.details["reason"]
 
 
 async def test_origin_probe_cannot_judge_an_access_controlled_server():

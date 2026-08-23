@@ -224,20 +224,45 @@ class TestErrorDataLeakRule:
         assert "stack trace" in result.message.lower()
 
     def test_password_leak_fails(self, rule):
-        """A password in the error body fails — and is NOT echoed into our report."""
-        result = rule.check(_leak_audit('Connection failed: password="secret123"'))
+        """A real password value in the error body fails — and is NOT echoed into our report."""
+        result = rule.check(_leak_audit('Connection failed: password="hunter2Xy9"'))
 
         assert result.passed is False
         assert "password" in result.message.lower()
         # The leaked value must never appear in our own (shareable) report.
-        assert "secret123" not in str(result.details)
+        assert "hunter2Xy9" not in str(result.details)
         assert result.message == "❌ Error messages leak sensitive data: password"
 
     def test_bearer_token_leak_fails(self, rule):
-        """A Bearer token in the error body fails."""
+        """A real Bearer token value in the error body fails."""
         result = rule.check(_leak_audit("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"))
 
         assert result.passed is False
+
+    def test_api_key_leak_fails(self, rule):
+        """A real API key value fails."""
+        result = rule.check(_leak_audit("upstream error: api_key=sk-live-1a2B3c4D5e6F7g8H"))
+
+        assert result.passed is False
+        assert "api key" in result.message.lower()
+
+    def test_auth_placeholder_phrases_do_not_leak(self, rule):
+        """Live auth-gated bodies routinely name credentials without leaking one.
+
+        This is the whole reason the rule validates the captured value: matching
+        the keyword alone would fail well-behaved servers.
+        """
+        for safe in (
+            "Bearer token required",
+            "Unauthorized: missing api_key",
+            'password="redacted"',
+            "secret: <your-secret-here>",
+            "token=required",
+            "Provide a valid Bearer token to continue",
+            '{"error":"invalid_token","error_description":"The access token is invalid"}',
+        ):
+            result = rule.check(_leak_audit(safe))
+            assert result.passed is True, f"false positive on: {safe!r}"
 
     def test_non_json_html_body_is_scanned(self, rule):
         """A non-JSON HTML error page (payload could not parse it) is still scanned."""
