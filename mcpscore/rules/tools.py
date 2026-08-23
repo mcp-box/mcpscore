@@ -390,6 +390,52 @@ _HTTP_FIELD_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 # primitives, so clients reading it literally will reject annotated union
 # types too — flagging them matches the strictest conforming client.
 _MCP_HEADER_PRIMITIVE_TYPES = {"integer", "string", "boolean"}
+_SENSITIVE_HEADER_TERMS: dict[str, str] = {
+    "api_key": "API key",
+    "access_token": "access token",
+    "auth_token": "authentication token",
+    "authentication_token": "authentication token",
+    "authorization": "authorization credential",
+    "bearer_token": "bearer token",
+    "client_secret": "client secret",
+    "credential": "credential",
+    "credentials": "credential",
+    "password": "password",
+    "passwd": "password",
+    "passphrase": "passphrase",
+    "private_key": "private key",
+    "refresh_token": "refresh token",
+    "secret": "secret",
+    "token": "token",
+    # High-confidence personal and financial identifiers. Generic identifiers,
+    # names, tenant IDs, and account IDs are deliberately excluded: treating
+    # every identifier as PII would make this heuristic unusably noisy.
+    "card_number": "payment card number",
+    "credit_card": "payment card number",
+    "cvc": "card verification code",
+    "cvv": "card verification code",
+    "date_of_birth": "date of birth",
+    "dob": "date of birth",
+    "driver_license": "driver license number",
+    "email": "email address",
+    "email_address": "email address",
+    "national_id": "national identifier",
+    "passport_number": "passport number",
+    "phone": "phone number",
+    "phone_number": "phone number",
+    "social_security_number": "social security number",
+    "ssn": "social security number",
+}
+_NON_SECRET_TOKEN_TERMS = {
+    "continuation_token",
+    "cursor_token",
+    "max_token",
+    "max_tokens",
+    "page_token",
+    "pagination_token",
+    "token_count",
+    "token_limit",
+}
 
 
 def _mcp_header_annotations(schema: dict[str, Any]) -> list[dict[str, Any]]:
@@ -433,6 +479,67 @@ def _tool_mcp_header_annotations(tools: list[Tool]) -> list[dict[str, Any]]:
     return [
         {"tool": tool.name, **annotation} for tool in tools for annotation in _mcp_header_annotations(tool.input_schema)
     ]
+
+
+def _normalized_sensitive_terms(value: str) -> set[str]:
+    """Return normalized words and phrases used by the sensitive-name matcher."""
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    words = re.findall(r"[A-Za-z0-9]+", snake.casefold())
+    terms = set(words)
+    terms.update(
+        "_".join(words[start:end])
+        for start in range(len(words))
+        for end in range(start + 2, min(start + 3, len(words)) + 1)
+    )
+    if terms & _NON_SECRET_TOKEN_TERMS:
+        terms.discard("token")
+        terms.discard("tokens")
+    return terms - _NON_SECRET_TOKEN_TERMS
+
+
+def _sensitive_mcp_header_parameters(tool: Tool) -> list[dict[str, str]]:
+    """Find annotated parameters whose declared metadata strongly implies sensitive data."""
+    failures: list[dict[str, str]] = []
+
+    def walk(schema: dict[str, Any], path: str) -> None:
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return
+        for parameter_name, property_schema in properties.items():
+            property_path = f"{path}.properties.{parameter_name}"
+            if not isinstance(property_schema, dict):
+                continue
+            if "x-mcp-header" in property_schema:
+                candidates = {
+                    "parameter": parameter_name,
+                    "header": property_schema.get("x-mcp-header"),
+                    "title": property_schema.get("title"),
+                    "description": property_schema.get("description"),
+                }
+                matched: tuple[str, str] | None = None
+                for source, candidate in candidates.items():
+                    if not isinstance(candidate, str):
+                        continue
+                    terms = _normalized_sensitive_terms(candidate)
+                    sensitive = next((term for term in _SENSITIVE_HEADER_TERMS if term in terms), None)
+                    if sensitive is not None:
+                        matched = (source, _SENSITIVE_HEADER_TERMS[sensitive])
+                        break
+                if matched is not None:
+                    source, category = matched
+                    failures.append(
+                        {
+                            "tool": tool.name,
+                            "path": property_path,
+                            "header": str(property_schema.get("x-mcp-header")),
+                            "matched_on": source,
+                            "sensitive_category": category,
+                        }
+                    )
+            walk(property_schema, property_path)
+
+    walk(tool.input_schema, "$")
+    return failures
 
 
 def is_valid_schema(schema: dict[str, Any] | None) -> bool:
@@ -817,6 +924,34 @@ class ToolsMcpHeadersStaticallyReachableRule(ToolsMcpHeadersBaseRule):
         )
 
 
+@register_rule
+class ToolsMcpHeadersNotSensitiveRule(ToolsMcpHeadersBaseRule):
+    """High check: Reject x-mcp-header annotations on visibly sensitive inputs."""
+
+    rule_id = "tools_mcp_headers_not_sensitive"
+    basis = "MCP 2026-07-28 Tools §x-mcp-header (sensitive parameters SHOULD NOT be mirrored into headers)"
+    rule_order = 15
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - MCP headers should not expose sensitive parameters"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find high-confidence credential and PII terms on annotated inputs."""
+        sensitive_headers = [failure for tool in tools for failure in _sensitive_mcp_header_parameters(tool)]
+        return _mcp_header_result(
+            self,
+            sensitive_headers,
+            "sensitive_headers",
+            "MCP headers avoid visibly sensitive parameters",
+            "MCP headers exposing visibly sensitive parameters",
+        )
+
+
 def _undocumented_input_properties(tool: Tool) -> list[dict[str, str]]:
     """Find undocumented properties reachable through direct properties chains."""
     failures: list[dict[str, str]] = []
@@ -849,7 +984,7 @@ class ToolsInputPropertiesDocumentedRule(ToolsBaseRule):
     # document every property, but no normative text requires it. Undocumented
     # parameters directly degrade LLM tool selection and argument filling.
     basis = "MCP 2026-07-28 Tools §Tool (inputSchema; property descriptions per the spec's examples)"
-    rule_order = 15
+    rule_order = 16
 
     @property
     def rule_name(self) -> str:

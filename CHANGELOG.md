@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sensitive MCP header detection.** The new HIGH
+  `tools_mcp_headers_not_sensitive` rule checks the MCP 2026-07-28 guidance
+  that passwords, API keys, tokens, and personally identifiable information
+  should not be marked with `x-mcp-header`, because network intermediaries can
+  observe the resulting values. Its deterministic matcher is deliberately
+  conservative: it reports strong credential phrases and high-confidence
+  personal or financial identifiers, while excluding ambiguous identifiers
+  and common non-secret pagination/token-count fields. Reports identify the
+  tool, schema path, header, matched metadata field, and sensitive category;
+  they never contain a credential value.
 - **Cross-page cache-scope consistency.** The new HIGH
   `pagination_cache_scope_consistent` rule traverses every paginated list
   surface declared by a modern server and enforces the MCP 2026-07-28 MUST
