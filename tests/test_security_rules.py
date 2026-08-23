@@ -246,6 +246,18 @@ class TestErrorDataLeakRule:
         assert result.passed is False
         assert "api key" in result.message.lower()
 
+    def test_opaque_base64_bearer_token_is_captured_whole(self, rule):
+        """A bearer value with base64 chars (+ / =) must not be truncated and missed.
+
+        RFC 6750 b64tokens use the full base64 alphabet; a narrower class would
+        capture only the prefix before `+`, drop it as too short, and miss the
+        leak.
+        """
+        result = rule.check(_leak_audit("leaked upstream: Bearer Ab1+/cDefGhIjKl=="))
+
+        assert result.passed is False
+        assert "auth token" in result.message.lower()
+
     def test_auth_placeholder_phrases_do_not_leak(self, rule):
         """Live auth-gated bodies routinely name credentials without leaking one.
 

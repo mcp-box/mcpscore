@@ -235,17 +235,25 @@ class ErrorDataLeakRule(BaseRule):
         (r"at \w+\.\w+ \([^)]+:\d+:\d+\)", "stack trace"),  # JavaScript stack trace
     ]
 
+    # The realistic alphabet of a leaked credential value. Covers RFC 6750
+    # b64token (base64 / base64url with optional `=` padding — `A-Za-z0-9`
+    # `-._~+/`) so an opaque bearer like `Ab1+/cDefGh==` is captured whole and
+    # not truncated to `Ab1` and dropped as "too short". `\w` supplies the
+    # alphanumerics and `_`.
+    _CRED_VALUE_RE: ClassVar[str] = r"[\w.~+/-]+=*"
+    _WIDE_CRED_VALUE_RE: ClassVar[str] = r"[\w!@#$%^&*.~+/-]+=*"  # passwords add shell/symbol chars
+
     # Credential leaks — a match is a leak only if the *captured value* (group
     # 1) looks like a real secret. This rule now scans live auth-gated error
     # bodies, which routinely say "Bearer token required" or
     # "password=redacted"; matching the keyword alone would fail well-behaved
     # servers that leak nothing. See _is_probable_secret.
     CREDENTIAL_PATTERNS: ClassVar[list[tuple[str, str]]] = [
-        (r'password["\']?\s*[:=]\s*["\']?([\w!@#$%^&*.\-]+)', "password"),
-        (r'secret["\']?\s*[:=]\s*["\']?([\w!@#$%^&*.\-]+)', "secret"),
-        (r'api[_-]?key["\']?\s*[:=]\s*["\']?([\w.\-]+)', "API key"),
-        (r'token["\']?\s*[:=]\s*["\']?([\w.\-]+)', "token"),
-        (r"Bearer\s+([\w.\-]+)", "auth token"),
+        (rf'password["\']?\s*[:=]\s*["\']?({_WIDE_CRED_VALUE_RE})', "password"),
+        (rf'secret["\']?\s*[:=]\s*["\']?({_WIDE_CRED_VALUE_RE})', "secret"),
+        (rf'api[_-]?key["\']?\s*[:=]\s*["\']?({_CRED_VALUE_RE})', "API key"),
+        (rf'token["\']?\s*[:=]\s*["\']?({_CRED_VALUE_RE})', "token"),
+        (rf"Bearer\s+({_CRED_VALUE_RE})", "auth token"),
     ]
 
     # Values that are descriptions of a secret, not a secret. A credential
