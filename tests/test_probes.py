@@ -426,14 +426,58 @@ async def test_malformed_json_probe_bounds_an_oversized_body():
         return _modern_server_handler(request)
 
     async with _client(handler) as client:
-        response, text, truncated = await _HttpTarget(client, URL).post_raw(
+        response, text, reason = await _HttpTarget(client, URL).post_raw(
             b'{"jsonrpc":"2.0","id":13,', {"Content-Type": "application/json"}
         )
 
+    assert text is not None
     assert len(text) <= 16_384  # bounded, not the 5 MB the server sent
     assert "/home/user/secret.py" in text  # leak near the start survives the cap
     assert response.status_code == 400
-    assert truncated is True
+    assert reason == "truncated"
+
+
+async def test_malformed_json_probe_requests_identity_encoding():
+    """The probe asks the server not to compress, so aiter_raw is plaintext."""
+    seen = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            seen["accept_encoding"] = request.headers.get("accept-encoding")
+            return httpx2.Response(400, json={"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "x"}})
+        return _modern_server_handler(request)
+
+    await _run(handler)
+    assert seen["accept_encoding"] == "identity"
+
+
+async def test_malformed_json_probe_does_not_decode_a_content_encoded_body():
+    """A server that compresses despite the identity request is not decoded.
+
+    aiter_bytes would inflate a gzip/brotli bomb before any cap; we read raw
+    bytes and, on a Content-Encoding we did not ask for, report the body
+    unobservable rather than decompress it.
+    """
+    import gzip
+
+    bomb = gzip.compress(b'{"jsonrpc":"2.0","id":null,"error":{"code":-32700}}' + b"A" * 1000)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        try:
+            json.loads(request.content) if request.method == "POST" else {}
+        except json.JSONDecodeError:
+            return httpx2.Response(400, content=bomb, headers={"content-encoding": "gzip"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    result = results[PROBE_MALFORMED_JSON]
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert "content-encoded" in result.details["reason"]
+    # No decoded body is offered to the leak scanner.
+    assert result.payload == {"error_body": None}
 
 
 async def test_malformed_json_probe_does_not_fail_a_truncated_valid_response():
