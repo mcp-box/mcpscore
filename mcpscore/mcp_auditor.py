@@ -480,7 +480,12 @@ class MCPAuditor:
                 )
 
             skip_reason: str | None = None
-            if not rule.applies_to(self.audit_data.protocol_version):
+            applicability_version = (
+                LATEST.version
+                if rule.uses_modern_probe_evidence and self.era in (Era.MODERN, Era.DUAL)
+                else self.audit_data.protocol_version
+            )
+            if not rule.applies_to(applicability_version):
                 skip_reason = SKIP_REASON_NOT_APPLICABLE
             elif self._skipped_for_partial(rule):
                 skip_reason = SKIP_REASON_INSUFFICIENT_DATA

@@ -2,6 +2,7 @@
 
 import pytest
 
+from mcpscore.mcp_auditor import MCPAuditor
 from mcpscore.probes import (
     ERROR_INVALID_PARAMS,
     PROBE_DISCOVER,
@@ -25,6 +26,7 @@ from mcpscore.rules.pagination import (
     ToolsInvalidCursorRule,
     pagination_spec,
 )
+from mcpscore.spec import Era
 
 RULES = (
     (ToolsInvalidCursorRule, PROBE_TOOLS_INVALID_CURSOR, "tools/list"),
@@ -148,6 +150,19 @@ def test_cache_scope_consistency_rule_applies_only_to_caching_spec_revision():
 
     assert not rule.applies_to("2025-11-25")
     assert rule.applies_to("2026-07-28")
+
+
+def test_cache_scope_consistency_rule_runs_for_dual_era_server():
+    auditor = MCPAuditor()
+    auditor.rules = [PaginationCacheScopeConsistentRule()]
+    auditor.audit_data = _cache_scope_data(ProbeOutcome.SUPPORTED)
+    auditor.audit_data.protocol_version = "2025-11-25"
+    auditor.era = Era.DUAL
+
+    auditor._run_all_rules()
+
+    assert [result.rule_id for result in auditor.results] == ["pagination_cache_scope_consistent"]
+    assert auditor.skipped_rules == []
 
 
 def test_cache_scope_consistency_rule_fails_and_names_surfaces():
