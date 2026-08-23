@@ -3,6 +3,7 @@
 from typing import ClassVar
 
 from mcpscore.probes import (
+    PROBE_PAGINATION_CACHE_SCOPE,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
     PROBE_RESOURCES_INVALID_CURSOR,
@@ -22,6 +23,10 @@ from .registry import register_rule
 
 PAGINATION_SPEC = "https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/pagination#error-handling"
 """Latest dated pagination error-handling section, used when no version was observed."""
+
+CACHING_PAGINATION_SPEC = (
+    "https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching#interaction-with-pagination"
+)
 
 
 def pagination_spec(protocol_version: str | None) -> str:
@@ -141,3 +146,52 @@ class PromptsInvalidCursorRule(InvalidCursorRule):
     @property
     def rule_name(self) -> str:
         return "Prompts Invalid Pagination Cursor"
+
+
+@register_rule
+class PaginationCacheScopeConsistentRule(BaseRule):
+    """Require one cache scope across every observed page of each modern list."""
+
+    rule_id = "pagination_cache_scope_consistent"
+    basis = "MCP 2026-07-28 Caching §Interaction with Pagination (same cacheScope on all pages; MUST)"
+    group_name = "pagination"
+    group_order = 9
+    rule_order = 5
+
+    @property
+    def rule_name(self) -> str:
+        return "Pagination Cache Scope Consistent"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip legacy servers, single-page catalogs, and unavailable traversals."""
+        probe = (audit_data.probes or {}).get(PROBE_PAGINATION_CACHE_SCOPE)
+        if probe is None or probe.outcome is ProbeOutcome.ERROR:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if probe.outcome is ProbeOutcome.NOT_APPLICABLE:
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Report whether all observed pages retained their first-page scope."""
+        probe = (audit_data.probes or {})[PROBE_PAGINATION_CACHE_SCOPE]
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        inconsistent = probe.details.get("inconsistent_surfaces", [])
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ Every paginated list keeps one cacheScope across all pages"
+                if passed
+                else "❌ Paginated lists change or omit cacheScope across pages: " + ", ".join(inconsistent)
+            ),
+            details={
+                "spec": CACHING_PAGINATION_SPEC,
+                "inconsistent_surfaces": inconsistent,
+                "surfaces": probe.details.get("surfaces", {}),
+            },
+        )

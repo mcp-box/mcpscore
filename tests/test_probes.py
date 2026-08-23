@@ -22,6 +22,7 @@ from mcpscore.probes import (
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
     PROBE_ORIGIN_VALIDATION,
+    PROBE_PAGINATION_CACHE_SCOPE,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
@@ -37,6 +38,7 @@ from mcpscore.probes import (
     ProbeResult,
     _fetch_auth_server_metadata,
     _HttpTarget,
+    _traverse_cache_scope_surface,
     _well_known_urls,
     not_applicable_results,
     run_all_probes,
@@ -108,7 +110,7 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
             {
                 "resultType": "complete",
                 "supportedVersions": ["2025-11-25", "2026-07-28"],
-                "capabilities": {},
+                "capabilities": {"tools": {}},
                 # 2026-07-28 carries serverInfo in the result's `_meta`;
                 # DiscoverResult has no top-level field. Keep fixtures
                 # spec-accurate — a legacy-shaped one hid a real extraction
@@ -119,9 +121,21 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
             },
         )
     if method == "tools/list":
+        cursor = body.get("params", {}).get("cursor")
+        if cursor == "modern-page-2":
+            return _rpc_result(
+                request_id,
+                {"resultType": "complete", "tools": [], "ttlMs": 60000, "cacheScope": "public"},
+            )
         return _rpc_result(
             request_id,
-            {"resultType": "complete", "tools": [], "ttlMs": 60000, "cacheScope": "public"},
+            {
+                "resultType": "complete",
+                "tools": [],
+                "nextCursor": "modern-page-2",
+                "ttlMs": 60000,
+                "cacheScope": "public",
+            },
         )
     if method == "resources/read":
         return _rpc_error(request_id, ERROR_INVALID_PARAMS, "Unknown resource", http_status=400)
@@ -284,6 +298,168 @@ async def test_resource_template_cursor_probe_skips_an_unimplemented_optional_su
     assert result.outcome is ProbeOutcome.NOT_APPLICABLE
     assert result.details["error_code"] == ERROR_METHOD_NOT_FOUND
     assert result.details["reason"] == "optional resource-template listing is not implemented"
+
+
+@pytest.mark.parametrize(
+    ("second_scope", "expected"),
+    [
+        ("public", ProbeOutcome.SUPPORTED),
+        ("private", ProbeOutcome.UNSUPPORTED),
+        (None, ProbeOutcome.UNSUPPORTED),
+    ],
+)
+async def test_pagination_cache_scope_probe_compares_all_pages(second_scope, expected):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {"tools": {}}
+            return httpx2.Response(response.status_code, json=payload)
+        if body.get("method") == "tools/list":
+            cursor = body.get("params", {}).get("cursor")
+            if cursor == "page-2":
+                return _rpc_result(
+                    body.get("id"),
+                    {"resultType": "complete", "tools": [], "ttlMs": 0, "cacheScope": second_scope},
+                )
+            if cursor is None:
+                return _rpc_result(
+                    body.get("id"),
+                    {
+                        "resultType": "complete",
+                        "tools": [],
+                        "nextCursor": "page-2",
+                        "ttlMs": 0,
+                        "cacheScope": "public",
+                    },
+                )
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is expected
+    assert result.details["surfaces"]["tools"]["cache_scopes"] == ["public", second_scope]
+    assert result.details["inconsistent_surfaces"] == ([] if expected is ProbeOutcome.SUPPORTED else ["tools"])
+
+
+async def test_pagination_cache_scope_probe_skips_single_page_catalogs():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {"tools": {}}
+            return httpx2.Response(response.status_code, json=payload)
+        if body.get("method") == "tools/list" and body.get("params", {}).get("cursor") is None:
+            return _rpc_result(
+                body.get("id"),
+                {"resultType": "complete", "tools": [], "ttlMs": 0, "cacheScope": "public"},
+            )
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert result.details["reason"] == "no declared list surface returned multiple pages"
+
+
+async def test_pagination_cache_scope_probe_handles_optional_templates_and_other_surfaces():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        method = body.get("method")
+        if method == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {"resources": {}, "prompts": {}}
+            return httpx2.Response(response.status_code, json=payload)
+        if method == "resources/templates/list":
+            return _rpc_error(body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=404)
+        if method == "resources/list":
+            return _rpc_result(
+                body.get("id"),
+                {"resultType": "complete", "resources": [], "ttlMs": 0, "cacheScope": "private"},
+            )
+        if method == "prompts/list":
+            return _rpc_result(
+                body.get("id"),
+                {"resultType": "complete", "prompts": [], "ttlMs": 0, "cacheScope": "private"},
+            )
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert result.details["surfaces"]["resource_templates"] == {"implemented": False}
+
+
+async def test_pagination_cache_scope_probe_degrades_on_incomplete_traversal():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {"tools": {}}
+            return httpx2.Response(response.status_code, json=payload)
+        if body.get("method") == "tools/list":
+            return _rpc_result(
+                body.get("id"),
+                {
+                    "resultType": "complete",
+                    "tools": [],
+                    "nextCursor": "same",
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                },
+            )
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["surfaces"]["tools"]["complete"] is False
+    assert result.details["reason"] == "at least one declared list traversal did not complete"
+
+
+async def test_pagination_cache_scope_probe_degrades_on_later_page_error():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            response = _modern_server_handler(request)
+            payload = response.json()
+            payload["result"]["capabilities"] = {"tools": {}}
+            return httpx2.Response(response.status_code, json=payload)
+        if body.get("method") == "tools/list":
+            if body.get("params", {}).get("cursor") == "later":
+                return _rpc_error(body.get("id"), -32603, "Internal error", http_status=500)
+            return _rpc_result(
+                body.get("id"),
+                {
+                    "resultType": "complete",
+                    "tools": [],
+                    "nextCursor": "later",
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                },
+            )
+        return _modern_server_handler(request)
+
+    result = (await _run(handler))[PROBE_PAGINATION_CACHE_SCOPE]
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["surfaces"]["tools"]["error_code"] == -32603
+
+
+async def test_cache_scope_surface_respects_expired_total_deadline():
+    with pytest.raises(TimeoutError):
+        await _traverse_cache_scope_surface(
+            object(),  # type: ignore[arg-type] — deadline expires before target use
+            target_version="2026-07-28",
+            method="tools/list",
+            item_key="tools",
+            deadline=0,
+            request_id_base=1,
+        )
 
 
 async def test_malformed_json_probe_rejects_non_json_rpc_server_error():

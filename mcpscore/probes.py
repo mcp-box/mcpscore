@@ -37,6 +37,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
 from subprocess import DEVNULL
+import time
 from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
@@ -71,6 +72,12 @@ __all__ = [
 
 PROBE_TIMEOUT_S = 10.0
 """Per-request timeout for a single probe."""
+
+PAGINATION_PROBE_TIMEOUT_S = 30.0
+"""Total budget for the cache-scope traversal across all declared surfaces."""
+
+PAGINATION_PROBE_MAX_PAGES = 100
+"""Safety bound for one surface in the cache-scope traversal."""
 
 _RAW_BODY_SCAN_LIMIT = 16_384
 """Cap on the malformed-request response body scanned for data leaks. A server
@@ -141,6 +148,7 @@ PROBE_TOOLS_INVALID_CURSOR = "probe_tools_invalid_cursor"
 PROBE_RESOURCES_INVALID_CURSOR = "probe_resources_invalid_cursor"
 PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR = "probe_resource_templates_invalid_cursor"
 PROBE_PROMPTS_INVALID_CURSOR = "probe_prompts_invalid_cursor"
+PROBE_PAGINATION_CACHE_SCOPE = "probe_pagination_cache_scope"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -160,6 +168,7 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_RESOURCES_INVALID_CURSOR,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
     PROBE_PROMPTS_INVALID_CURSOR,
+    PROBE_PAGINATION_CACHE_SCOPE,
 )
 """Stable identifiers of all probes."""
 
@@ -758,6 +767,147 @@ async def _probe_prompts_invalid_cursor(target: _ProbeTarget) -> ProbeResult:
     )
 
 
+async def _traverse_cache_scope_surface(
+    target: _ProbeTarget,
+    *,
+    target_version: str,
+    method: str,
+    item_key: str,
+    deadline: float,
+    request_id_base: int,
+) -> tuple[dict[str, Any], bool]:
+    """Collect bounded wire-level cache scopes for one modern list surface."""
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    cache_scopes: list[Any] = []
+    complete = False
+    for page_number in range(PAGINATION_PROBE_MAX_PAGES):
+        remaining = max(deadline - time.monotonic(), 0)
+        if remaining == 0:
+            raise TimeoutError
+        params = {"cursor": cursor} if cursor is not None else None
+        response = await asyncio.wait_for(
+            target.post(
+                _request_body(
+                    method,
+                    request_id_base + page_number,
+                    _modern_meta(target_version),
+                    params=params,
+                ),
+                _request_headers(target_version, method),
+            ),
+            timeout=remaining,
+        )
+        result = response.result
+        if result is None or not isinstance(result.get(item_key), list):
+            if method == "resources/templates/list" and response.error_code == ERROR_METHOD_NOT_FOUND:
+                return {"implemented": False}, False
+            return {
+                "implemented": True,
+                "complete": False,
+                "pages": len(cache_scopes),
+                "error_code": response.error_code,
+            }, True
+
+        cache_scopes.append(result.get("cacheScope"))
+        next_cursor = result.get("nextCursor")
+        if next_cursor is None:
+            complete = True
+            break
+        if not isinstance(next_cursor, str) or next_cursor in seen_cursors:
+            break
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    observation = {
+        "implemented": True,
+        "complete": complete,
+        "pages": len(cache_scopes),
+        "cache_scopes": cache_scopes,
+    }
+    return observation, not complete
+
+
+async def _probe_pagination_cache_scope(target: _ProbeTarget) -> ProbeResult:
+    """Traverse declared modern list surfaces and compare real wire cache scopes.
+
+    The SDK model defaults an absent ``cacheScope`` to ``private``, so this
+    requirement must be observed below the SDK layer. A fresh discover request
+    identifies declared surfaces; each traversal is read-only and shares one
+    total deadline and the normal per-request timeout.
+    """
+    target_version = _target_version()
+    discover = await target.post(
+        _request_body("server/discover", 18, _modern_meta(target_version)),
+        _request_headers(target_version, "server/discover"),
+    )
+    capabilities = discover.result.get("capabilities") if discover.result is not None else None
+    if not isinstance(capabilities, dict):
+        return ProbeResult(
+            PROBE_PAGINATION_CACHE_SCOPE,
+            ProbeOutcome.NOT_APPLICABLE,
+            {"reason": "modern declared list capabilities were not observable"},
+        )
+
+    surfaces: list[tuple[str, str, str]] = []
+    if capabilities.get("tools") is not None:
+        surfaces.append(("tools", "tools/list", "tools"))
+    if capabilities.get("resources") is not None:
+        surfaces.extend(
+            (
+                ("resources", "resources/list", "resources"),
+                ("resource_templates", "resources/templates/list", "resourceTemplates"),
+            )
+        )
+    if capabilities.get("prompts") is not None:
+        surfaces.append(("prompts", "prompts/list", "prompts"))
+    if not surfaces:
+        return ProbeResult(
+            PROBE_PAGINATION_CACHE_SCOPE,
+            ProbeOutcome.NOT_APPLICABLE,
+            {"reason": "server declares no paginated list capabilities"},
+        )
+
+    deadline = time.monotonic() + PAGINATION_PROBE_TIMEOUT_S
+    observations: dict[str, dict[str, Any]] = {}
+    incomplete = False
+    for surface_index, (surface, method, item_key) in enumerate(surfaces):
+        observation, surface_incomplete = await _traverse_cache_scope_surface(
+            target,
+            target_version=target_version,
+            method=method,
+            item_key=item_key,
+            deadline=deadline,
+            request_id_base=1900 + surface_index * PAGINATION_PROBE_MAX_PAGES,
+        )
+        observations[surface] = observation
+        incomplete = incomplete or surface_incomplete
+
+    paginated = {
+        surface: observation
+        for surface, observation in observations.items()
+        if observation.get("complete") is True and observation.get("pages", 0) >= 2
+    }
+    details: dict[str, Any] = {"surfaces": observations}
+    inconsistent = [
+        surface
+        for surface, observation in paginated.items()
+        if not observation["cache_scopes"]
+        or observation["cache_scopes"][0] not in ("public", "private")
+        or any(scope != observation["cache_scopes"][0] for scope in observation["cache_scopes"][1:])
+    ]
+    details["inconsistent_surfaces"] = inconsistent
+    if inconsistent:
+        return ProbeResult(PROBE_PAGINATION_CACHE_SCOPE, ProbeOutcome.UNSUPPORTED, details)
+    if incomplete:
+        details["reason"] = "at least one declared list traversal did not complete"
+        return ProbeResult(PROBE_PAGINATION_CACHE_SCOPE, ProbeOutcome.ERROR, details)
+    if not paginated:
+        details["reason"] = "no declared list surface returned multiple pages"
+        return ProbeResult(PROBE_PAGINATION_CACHE_SCOPE, ProbeOutcome.NOT_APPLICABLE, details)
+    return ProbeResult(PROBE_PAGINATION_CACHE_SCOPE, ProbeOutcome.SUPPORTED, details)
+
+
 async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
     """One unauthenticated request, recording status and ``WWW-Authenticate``.
 
@@ -1203,6 +1353,7 @@ _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeRe
     PROBE_RESOURCES_INVALID_CURSOR: _probe_resources_invalid_cursor,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR: _probe_resource_templates_invalid_cursor,
     PROBE_PROMPTS_INVALID_CURSOR: _probe_prompts_invalid_cursor,
+    PROBE_PAGINATION_CACHE_SCOPE: _probe_pagination_cache_scope,
 }
 """Probes that judge JSON-RPC behavior, and so run over any transport."""
 
