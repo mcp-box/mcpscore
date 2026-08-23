@@ -75,9 +75,20 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
         return _error(request_id, -32602, "Invalid cursor")
 
     if method == "server/discover":
-        return _result(request_id, {"supportedVersions": [PROTOCOL_VERSION], **CACHE_HINTS})
+        return _result(
+            request_id,
+            {
+                "supportedVersions": [PROTOCOL_VERSION],
+                "capabilities": {"tools": {}},
+                **CACHE_HINTS,
+            },
+        )
     if method == "tools/list":
-        return _result(request_id, {"tools": TOOLS, **CACHE_HINTS})
+        # Two consistent pages so the cache-scope traversal can exercise stdio
+        # cursor follow-ups, not only the first-page tools/list used by other probes.
+        if params.get("cursor") == "page-2":
+            return _result(request_id, {"tools": TOOLS, **CACHE_HINTS})
+        return _result(request_id, {"tools": TOOLS, "nextCursor": "page-2", **CACHE_HINTS})
     if method == "resources/read":
         return _error(request_id, -32602, "Resource not found")
     # Everything else — including `ping`, removed in 2026-07-28 — is unknown.

@@ -91,6 +91,10 @@ unobserved. A dedicated presence rule can still judge whether a complete catalog
    available. This matters for legacy and dual-era servers, where a sessionless
    request may be rejected before its cursor can be judged. Modern-only servers,
    which have no legacy SDK session, are assessed through the stateless probe path.
+   For modern servers, mcpscore also follows declared paginated list surfaces to
+   compare the actual wire-level `cacheScope` across pages. This traversal is
+   read-only, bounded to 100 pages per surface and 30 seconds in total, and skips
+   when no list returns multiple complete pages.
 4. **Evaluate** — every registered rule runs against the collected data and probe
    observations. See the [Rules Reference](/rules) for the full list.
 

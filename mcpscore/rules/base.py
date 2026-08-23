@@ -300,6 +300,15 @@ class BaseRule(ABC):
     version before the behavior it checks was removed. None = still applies
     to the current spec."""
 
+    uses_modern_probe_evidence: bool = False
+    """Whether applicability follows an observed modern probe surface.
+
+    Dual-era audits retain the legacy session's negotiated version in
+    ``AuditData``. Rules that judge an independently probed modern surface set
+    this flag so their static version range is evaluated against the modern
+    revision instead.
+    """
+
     def __init__(self, **kwargs: Any) -> None:
         super().__init__()
         # kwargs maybe used by subclasses to store additional data

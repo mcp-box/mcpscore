@@ -2,8 +2,11 @@
 
 import pytest
 
+from mcpscore.mcp_auditor import MCPAuditor
 from mcpscore.probes import (
     ERROR_INVALID_PARAMS,
+    PROBE_DISCOVER,
+    PROBE_PAGINATION_CACHE_SCOPE,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
     PROBE_RESOURCES_INVALID_CURSOR,
@@ -14,13 +17,16 @@ from mcpscore.probes import (
 from mcpscore.rules import AuditData, RuleSeverity
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from mcpscore.rules.pagination import (
+    CACHING_PAGINATION_SPEC,
     PAGINATION_SPEC,
+    PaginationCacheScopeConsistentRule,
     PromptsInvalidCursorRule,
     ResourcesInvalidCursorRule,
     ResourceTemplatesInvalidCursorRule,
     ToolsInvalidCursorRule,
     pagination_spec,
 )
+from mcpscore.spec import Era
 
 RULES = (
     (ToolsInvalidCursorRule, PROBE_TOOLS_INVALID_CURSOR, "tools/list"),
@@ -101,3 +107,79 @@ def test_pagination_spec_uses_negotiated_version():
         "https://modelcontextprotocol.io/specification/2025-11-25/server/utilities/pagination#error-handling"
     )
     assert pagination_spec(None) == PAGINATION_SPEC
+
+
+def _cache_scope_data(outcome: ProbeOutcome) -> AuditData:
+    observations = {
+        "tools": {
+            "implemented": True,
+            "complete": True,
+            "pages": 2,
+            "cache_scopes": ["public", "private"] if outcome is ProbeOutcome.UNSUPPORTED else ["public", "public"],
+        }
+    }
+    return AuditData(
+        probes={
+            PROBE_DISCOVER: ProbeResult(PROBE_DISCOVER, ProbeOutcome.SUPPORTED),
+            PROBE_PAGINATION_CACHE_SCOPE: ProbeResult(
+                PROBE_PAGINATION_CACHE_SCOPE,
+                outcome,
+                {
+                    "surfaces": observations,
+                    "inconsistent_surfaces": ["tools"] if outcome is ProbeOutcome.UNSUPPORTED else [],
+                },
+            ),
+        }
+    )
+
+
+def test_cache_scope_consistency_rule_passes_consistent_pages():
+    rule = PaginationCacheScopeConsistentRule()
+    data = _cache_scope_data(ProbeOutcome.SUPPORTED)
+
+    assert rule.skip_reason(data) is None
+    result = rule.check(data)
+
+    assert result.passed
+    assert result.severity is RuleSeverity.HIGH
+    assert result.details["spec"] == CACHING_PAGINATION_SPEC
+
+
+def test_cache_scope_consistency_rule_applies_only_to_caching_spec_revision():
+    rule = PaginationCacheScopeConsistentRule()
+
+    assert not rule.applies_to("2025-11-25")
+    assert rule.applies_to("2026-07-28")
+
+
+def test_cache_scope_consistency_rule_runs_for_dual_era_server():
+    auditor = MCPAuditor()
+    auditor.rules = [PaginationCacheScopeConsistentRule()]
+    auditor.audit_data = _cache_scope_data(ProbeOutcome.SUPPORTED)
+    auditor.audit_data.protocol_version = "2025-11-25"
+    auditor.era = Era.DUAL
+
+    auditor._run_all_rules()
+
+    assert [result.rule_id for result in auditor.results] == ["pagination_cache_scope_consistent"]
+    assert auditor.skipped_rules == []
+
+
+def test_cache_scope_consistency_rule_fails_and_names_surfaces():
+    result = PaginationCacheScopeConsistentRule().check(_cache_scope_data(ProbeOutcome.UNSUPPORTED))
+
+    assert not result.passed
+    assert result.details["inconsistent_surfaces"] == ["tools"]
+    assert "tools" in result.message
+
+
+def test_cache_scope_consistency_rule_skips_unobservable_cases():
+    rule = PaginationCacheScopeConsistentRule()
+    assert rule.skip_reason(AuditData()) == SKIP_REASON_INSUFFICIENT_DATA
+
+    for outcome, reason in (
+        (ProbeOutcome.ERROR, SKIP_REASON_INSUFFICIENT_DATA),
+        (ProbeOutcome.NOT_APPLICABLE, SKIP_REASON_NOT_APPLICABLE),
+    ):
+        data = _cache_scope_data(outcome)
+        assert rule.skip_reason(data) == reason

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cross-page cache-scope consistency.** The new HIGH
+  `pagination_cache_scope_consistent` rule traverses every paginated list
+  surface declared by a modern server and enforces the MCP 2026-07-28 MUST
+  that all pages of one list request use the same `cacheScope`. It observes
+  raw wire fields rather than the SDK model, whose default of `private` would
+  otherwise hide an omitted field. Single-page catalogs, legacy-only servers,
+  unimplemented optional resource-template listings, and traversals without
+  enough complete evidence skip rather than fail. The read-only traversal has
+  a 30-second total deadline and a 100-page-per-surface safety bound.
 - **Four capability-aware pagination rules.** For `tools/list`,
   `resources/list`, `resources/templates/list`, and `prompts/list`, mcpscore
   now sends a fabricated opaque cursor and checks the MCP pagination

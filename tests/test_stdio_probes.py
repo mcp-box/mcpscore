@@ -35,6 +35,7 @@ from mcpscore.probes import (
     PROBE_IDS,
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
+    PROBE_PAGINATION_CACHE_SCOPE,
     PROBE_REMOVED_METHOD,
     PROBE_STATELESS_LIST,
     PROBE_UNKNOWN_METHOD,
@@ -90,11 +91,18 @@ class TestModernStdioServer:
             PROBE_MISSING_RESOURCE,
             PROBE_REMOVED_METHOD,
             PROBE_UNKNOWN_METHOD,
+            PROBE_PAGINATION_CACHE_SCOPE,
         ],
     )
     def test_transport_agnostic_probes_are_judged(self, modern_probes, probe_id):
         """Every non-HTTP probe reaches a verdict — not NOT_APPLICABLE, not ERROR."""
         assert modern_probes[probe_id].outcome is ProbeOutcome.SUPPORTED
+
+    def test_pagination_cache_scope_traverses_stdio_cursors(self, modern_probes):
+        """Cursor follow-ups for cacheScope must work on the stdio probe path too."""
+        result = modern_probes[PROBE_PAGINATION_CACHE_SCOPE]
+        assert result.details["surfaces"]["tools"]["cache_scopes"] == ["private", "private"]
+        assert result.details["inconsistent_surfaces"] == []
 
     def test_discover_payload_is_captured(self, modern_probes):
         """The DiscoverResult itself is available to the rules, not just an outcome."""

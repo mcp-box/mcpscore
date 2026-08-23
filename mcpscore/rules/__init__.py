@@ -48,6 +48,7 @@ from .packaging import (
     PackageVersionResolvesRule,
 )
 from .pagination import (
+    PaginationCacheScopeConsistentRule,
     PromptsInvalidCursorRule,
     ResourcesInvalidCursorRule,
     ResourceTemplatesInvalidCursorRule,
@@ -178,6 +179,7 @@ __all__ = (
     "PackageRepositoryDeclaredRule",
     "PackageResolvesRule",
     "PackageVersionResolvesRule",
+    "PaginationCacheScopeConsistentRule",
     "PromptsArgumentNamesPresentRule",
     "PromptsArgumentNamesUniqueRule",
     "PromptsArgumentsDocumentedRule",
