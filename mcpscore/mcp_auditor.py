@@ -16,7 +16,11 @@ from .mcp_client import MCPClient
 from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
 from .probes import (
     PROBE_DISCOVER,
+    PROBE_PROMPTS_INVALID_CURSOR,
+    PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    PROBE_RESOURCES_INVALID_CURSOR,
     PROBE_STATELESS_LIST,
+    PROBE_TOOLS_INVALID_CURSOR,
     ProbeOutcome,
     detect_era,
     has_modern_support,
@@ -163,6 +167,7 @@ class MCPAuditor:
             if self.audit_data.capabilities.prompts is not None:
                 await self._collect_prompts()
         await self._collect_probes()
+        await self._collect_session_cursor_probes()
         self.era = detect_era(self.audit_data.protocol_version, self.audit_data.probes)
         self._run_all_rules()
 
@@ -608,6 +613,31 @@ class MCPAuditor:
             return
 
         self.audit_data.probes = not_applicable_results(reason="no probeable transport was established")
+
+    async def _collect_session_cursor_probes(self) -> None:
+        """Replace stateless cursor probes with observations from the live session.
+
+        Stateful legacy servers cannot validate a cursor before initialization,
+        while modern-only servers have no SDK session. The sessionless probe
+        runner covers the latter; this phase makes the same evidence fair for
+        legacy and dual-era audits by using their established session.
+        """
+        capabilities = self.audit_data.capabilities
+        probes = self.audit_data.probes
+        probe_runner = getattr(self.mcp_client, "probe_invalid_cursors", None)
+        if capabilities is None or probes is None or probe_runner is None:
+            return
+
+        requested: dict[str, str] = {}
+        if capabilities.tools is not None:
+            requested["tools"] = PROBE_TOOLS_INVALID_CURSOR
+        if capabilities.resources is not None:
+            requested["resources"] = PROBE_RESOURCES_INVALID_CURSOR
+            requested["resource_templates"] = PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR
+        if capabilities.prompts is not None:
+            requested["prompts"] = PROBE_PROMPTS_INVALID_CURSOR
+        if requested:
+            probes.update(await probe_runner(requested))
 
     async def _collect_init_result(self) -> None:
         """Collect initialization data from the MCP server.

@@ -47,6 +47,12 @@ from .packaging import (
     PackageResolvesRule,
     PackageVersionResolvesRule,
 )
+from .pagination import (
+    PromptsInvalidCursorRule,
+    ResourcesInvalidCursorRule,
+    ResourceTemplatesInvalidCursorRule,
+    ToolsInvalidCursorRule,
+)
 from .prompts import (
     PromptsArgumentNamesPresentRule,
     PromptsArgumentNamesUniqueRule,
@@ -177,12 +183,14 @@ __all__ = (
     "PromptsArgumentsDocumentedRule",
     "PromptsDescriptionPresentRule",
     "PromptsIconsValidRule",
+    "PromptsInvalidCursorRule",
     "PromptsNamesUniqueRule",
     "PromptsTitlesPresentRule",
     "RemovedMethodsReadinessRule",
     "ResourceTemplatesAnnotationsValidRule",
     "ResourceTemplatesDescriptionPresentRule",
     "ResourceTemplatesIconsValidRule",
+    "ResourceTemplatesInvalidCursorRule",
     "ResourceTemplatesMimeTypesValidRule",
     "ResourceTemplatesNamesPresentRule",
     "ResourceTemplatesTitlesPresentRule",
@@ -191,6 +199,7 @@ __all__ = (
     "ResourcesAnnotationsValidRule",
     "ResourcesDescriptionPresentRule",
     "ResourcesIconsValidRule",
+    "ResourcesInvalidCursorRule",
     "ResourcesMimeTypesValidRule",
     "ResourcesNamesPresentRule",
     "ResourcesSizesValidRule",
@@ -221,6 +230,7 @@ __all__ = (
     "ToolsIconsValidRule",
     "ToolsInputPropertiesDocumentedRule",
     "ToolsInputSchemaValidRule",
+    "ToolsInvalidCursorRule",
     "ToolsMcpHeadersPrimitiveTypesRule",
     "ToolsMcpHeadersStaticallyReachableRule",
     "ToolsMcpHeadersUniqueRule",

@@ -11,6 +11,7 @@ from mcpscore.probes import (
     ERROR_LEGACY_RESOURCE_NOT_FOUND,
     ERROR_METHOD_NOT_FOUND,
     ERROR_UNSUPPORTED_PROTOCOL_VERSION,
+    INVALID_CURSOR_PREFIX,
     META_PREFIX,
     ORIGIN_PROBE_VALUE,
     PROBE_AUTH_METADATA,
@@ -21,9 +22,13 @@ from mcpscore.probes import (
     PROBE_MALFORMED_META,
     PROBE_MISSING_RESOURCE,
     PROBE_ORIGIN_VALIDATION,
+    PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_REMOVED_METHOD,
+    PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    PROBE_RESOURCES_INVALID_CURSOR,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
+    PROBE_TOOLS_INVALID_CURSOR,
     PROBE_UNAUTHENTICATED,
     PROBE_UNKNOWN_METHOD,
     PROBE_UNKNOWN_VERSION,
@@ -93,6 +98,9 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
     required = (f"{META_PREFIX}protocolVersion", f"{META_PREFIX}clientInfo", f"{META_PREFIX}clientCapabilities")
     if any(key not in meta for key in required):
         return _rpc_error(request_id, ERROR_INVALID_PARAMS, "Invalid params")
+
+    if str(body.get("params", {}).get("cursor", "")).startswith(INVALID_CURSOR_PREFIX):
+        return _rpc_error(request_id, ERROR_INVALID_PARAMS, "Invalid cursor")
 
     if method == "server/discover":
         return _rpc_result(
@@ -186,6 +194,10 @@ async def test_legacy_server_is_unsupported_but_observed():
         PROBE_SESSION_ID_ECHO,
         PROBE_REMOVED_METHOD,
         PROBE_UNKNOWN_METHOD,
+        PROBE_TOOLS_INVALID_CURSOR,
+        PROBE_RESOURCES_INVALID_CURSOR,
+        PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+        PROBE_PROMPTS_INVALID_CURSOR,
     ):
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
 
@@ -236,6 +248,26 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
     assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 307
     assert results[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.UNSUPPORTED
     assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
+
+
+async def test_invalid_cursor_probes_reject_servers_that_accept_fabricated_cursors():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        cursor = body.get("params", {}).get("cursor")
+        if isinstance(cursor, str) and cursor.startswith(INVALID_CURSOR_PREFIX):
+            return _rpc_result(body.get("id"), {"resultType": "complete"})
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    for probe_id in (
+        PROBE_TOOLS_INVALID_CURSOR,
+        PROBE_RESOURCES_INVALID_CURSOR,
+        PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+        PROBE_PROMPTS_INVALID_CURSOR,
+    ):
+        assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED
+        assert "error_code" not in results[probe_id].details
 
 
 async def test_malformed_json_probe_rejects_non_json_rpc_server_error():

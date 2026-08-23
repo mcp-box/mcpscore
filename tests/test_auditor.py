@@ -4,6 +4,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from mcpscore import MCPAuditor, MCPClient
 from mcpscore.mcp_auditor import has_authorization_credential
+from mcpscore.probes import (
+    PROBE_PROMPTS_INVALID_CURSOR,
+    PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    PROBE_RESOURCES_INVALID_CURSOR,
+    PROBE_TOOLS_INVALID_CURSOR,
+    ProbeOutcome,
+    ProbeResult,
+)
 from mcpscore.rules import AuditData, BaseRule, RuleResult, RuleSeverity
 
 
@@ -797,6 +805,61 @@ async def test_stale_client_markers_do_not_leak_into_unattempted_listings():
     await auditor._collect_tools()
 
     assert "resources" not in auditor.audit_data.incomplete_listings
+
+
+async def test_session_cursor_probes_replace_stateless_evidence_for_declared_capabilities():
+    """The initialized session is authoritative for stateful pagination checks."""
+    auditor = MCPAuditor()
+    auditor.audit_data.capabilities = type(
+        "Caps",
+        (),
+        {"tools": {}, "resources": {}, "prompts": None},
+    )()
+    auditor.audit_data.probes = {
+        PROBE_TOOLS_INVALID_CURSOR: ProbeResult(
+            PROBE_TOOLS_INVALID_CURSOR,
+            ProbeOutcome.UNSUPPORTED,
+        ),
+    }
+    client = MagicMock()
+    client.probe_invalid_cursors = AsyncMock(
+        return_value={
+            PROBE_TOOLS_INVALID_CURSOR: ProbeResult(
+                PROBE_TOOLS_INVALID_CURSOR,
+                ProbeOutcome.SUPPORTED,
+                {"error_code": -32602},
+            )
+        }
+    )
+    auditor.mcp_client = client
+
+    await auditor._collect_session_cursor_probes()
+
+    client.probe_invalid_cursors.assert_awaited_once_with(
+        {
+            "tools": PROBE_TOOLS_INVALID_CURSOR,
+            "resources": PROBE_RESOURCES_INVALID_CURSOR,
+            "resource_templates": PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+        }
+    )
+    assert auditor.audit_data.probes[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.SUPPORTED
+
+
+async def test_session_cursor_probes_need_capabilities_evidence_and_runner():
+    """Missing audit evidence or an older injected client leaves raw probes untouched."""
+    auditor = MCPAuditor()
+    original = {
+        PROBE_PROMPTS_INVALID_CURSOR: ProbeResult(
+            PROBE_PROMPTS_INVALID_CURSOR,
+            ProbeOutcome.UNSUPPORTED,
+        )
+    }
+    auditor.audit_data.probes = original
+    auditor.mcp_client = object()  # type: ignore[assignment]
+
+    await auditor._collect_session_cursor_probes()
+
+    assert auditor.audit_data.probes == original
 
 
 async def test_report_surfaces_incomplete_listings():

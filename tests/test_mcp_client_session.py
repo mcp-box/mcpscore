@@ -17,6 +17,22 @@ from mcp_types import (
 import pytest
 
 from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
+from mcpscore.probes import (
+    ERROR_INVALID_PARAMS,
+    INVALID_CURSOR_PREFIX,
+    PROBE_PROMPTS_INVALID_CURSOR,
+    PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    PROBE_RESOURCES_INVALID_CURSOR,
+    PROBE_TOOLS_INVALID_CURSOR,
+    ProbeOutcome,
+)
+
+INVALID_CURSOR_PROBES = {
+    "tools": PROBE_TOOLS_INVALID_CURSOR,
+    "resources": PROBE_RESOURCES_INVALID_CURSOR,
+    "resource_templates": PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    "prompts": PROBE_PROMPTS_INVALID_CURSOR,
+}
 
 
 class TestMCPClientSessionOperations:
@@ -39,6 +55,55 @@ class TestMCPClientSessionOperations:
 
         assert result is None
         assert ERROR_NO_ACTIVE_SESSION in caplog.text
+
+    async def test_invalid_cursor_probes_pass_on_invalid_params(self, mock_connected_client):
+        for method_name in (
+            "list_tools",
+            "list_resources",
+            "list_resource_templates",
+            "list_prompts",
+        ):
+            getattr(mock_connected_client.session, method_name).side_effect = MCPError(
+                code=ERROR_INVALID_PARAMS,
+                message="Invalid cursor",
+            )
+
+        results = await mock_connected_client.probe_invalid_cursors(INVALID_CURSOR_PROBES)
+
+        assert set(results) == set(INVALID_CURSOR_PROBES.values())
+        assert all(result.outcome is ProbeOutcome.SUPPORTED for result in results.values())
+        for method_name in (
+            "list_tools",
+            "list_resources",
+            "list_resource_templates",
+            "list_prompts",
+        ):
+            params = getattr(mock_connected_client.session, method_name).call_args.kwargs["params"]
+            assert params.cursor.startswith(INVALID_CURSOR_PREFIX)
+
+    async def test_invalid_cursor_probes_distinguish_acceptance_and_errors(self, mock_connected_client):
+        mock_connected_client.session.list_tools.return_value = ListToolsResult(tools=[])
+        mock_connected_client.session.list_resources.side_effect = MCPError(code=INTERNAL_ERROR, message="boom")
+        mock_connected_client.session.list_resource_templates.side_effect = RuntimeError("closed")
+
+        results = await mock_connected_client.probe_invalid_cursors(
+            {
+                "tools": PROBE_TOOLS_INVALID_CURSOR,
+                "resources": PROBE_RESOURCES_INVALID_CURSOR,
+                "resource_templates": PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+            }
+        )
+
+        assert results[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.UNSUPPORTED
+        assert results[PROBE_RESOURCES_INVALID_CURSOR].outcome is ProbeOutcome.UNSUPPORTED
+        assert results[PROBE_RESOURCES_INVALID_CURSOR].details["error_code"] == INTERNAL_ERROR
+        assert results[PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR].outcome is ProbeOutcome.ERROR
+        assert results[PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR].details["exception"] == "RuntimeError"
+
+    async def test_invalid_cursor_probes_without_session_are_not_applicable(self, mcp_client):
+        results = await mcp_client.probe_invalid_cursors({"tools": PROBE_TOOLS_INVALID_CURSOR})
+
+        assert results[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.NOT_APPLICABLE
 
     async def test_initialize_exception(self, mock_connected_client, caplog):
         """Test initialize handles exceptions properly."""
