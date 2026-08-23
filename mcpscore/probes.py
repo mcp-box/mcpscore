@@ -72,6 +72,11 @@ __all__ = [
 PROBE_TIMEOUT_S = 10.0
 """Per-request timeout for a single probe."""
 
+_RAW_BODY_SCAN_LIMIT = 16_384
+"""Cap on the malformed-request response body scanned for data leaks. A server
+dumping a stack trace can return an unbounded body; 16 KB is far more than any
+real leak-bearing error page needs while bounding memory and scan time."""
+
 META_PREFIX = "io.modelcontextprotocol/"
 """Prefix of the reserved ``_meta`` keys carrying per-request context (2026-07-28)."""
 
@@ -163,8 +168,8 @@ Not "probes that happen to use HTTP" — every probe does that over an HTTP
 target. These ask questions that only exist in HTTP: the ``Mcp-Method`` header
 contradicting the body (SEP-2243), the unauthenticated status and
 ``WWW-Authenticate`` challenge, the removed ``Mcp-Session-Id`` header, the
-RFC 9728/8414 well-known documents, and ``Origin`` validation against DNS
-rebinding, plus raw malformed HTTP request bodies. Over stdio they record
+RFC 9728/8414 well-known documents, ``Origin`` validation against DNS
+rebinding, and raw malformed HTTP request bodies. Over stdio they record
 ``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
 malformed wire input through the SDK transport.
 """
@@ -318,20 +323,24 @@ def _request_headers(protocol_version: str, method: str, name: str | None = None
     return headers
 
 
-def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
-    """Extract the JSON-RPC message from a JSON or SSE response body."""
-    content_type = response.headers.get("content-type", "")
+def _parse_payload_text(text: str, content_type: str) -> dict[str, Any] | None:
+    """Extract the JSON-RPC message from a JSON or SSE response body text."""
     try:
         if "text/event-stream" in content_type:
-            for line in response.text.splitlines():
+            for line in text.splitlines():
                 if line.startswith("data:"):
                     parsed = json.loads(line[len("data:") :].strip())
                     return parsed if isinstance(parsed, dict) else None
             return None
-        parsed = response.json()
+        parsed = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
+    """Extract the JSON-RPC message from a JSON or SSE response body."""
+    return _parse_payload_text(response.text, response.headers.get("content-type", ""))
 
 
 class _ProbeTarget(Protocol):
@@ -386,25 +395,75 @@ class _HttpTarget:
             payload=_parse_payload(response),
         )
 
-    async def post_raw(self, content: bytes, headers: dict[str, str]) -> _HttpProbeResponse:
+    async def post_raw(
+        self, content: bytes, headers: dict[str, str]
+    ) -> tuple[_HttpProbeResponse, str | None, str | None]:
         """POST an intentionally invalid raw body without following redirects.
 
         Only HTTP-specific negative probes use this path. Redirects stay off so
         caller-supplied credentials cannot leave the audited endpoint while
         mcpscore is sending malformed input.
+
+        Memory is bounded against a hostile server, including a compression
+        bomb. The request asks for ``Accept-Encoding: identity`` and the body
+        is read **only when the response carries no content-encoding** — so
+        ``aiter_bytes`` has nothing to decode and cannot inflate a chunk. Each
+        chunk is appended only up to the remaining ``_RAW_BODY_SCAN_LIMIT``
+        capacity, so a single large chunk cannot overshoot the cap. If the
+        server compresses anyway (ignoring the identity request), the body is
+        never fed to the decoder — that is where the bomb would inflate — and
+        is reported unobservable.
+
+        Returns ``(response, body_text, unobservable_reason)``. ``body_text``
+        is the bounded leak surface for ``security_error_data_leak`` (a
+        mishandled parse dumps a stack trace or path into a non-JSON body);
+        it is ``None`` when the reason is ``"encoded"``. ``unobservable_reason``
+        is ``None`` (fully read), ``"truncated"`` (body exceeded the cap — an
+        unparsable prefix is not a protocol verdict), or ``"encoded"`` (server
+        content-encoded despite the identity request; not decoded).
         """
-        request = self.client.build_request(
+        probe_headers = {**headers, "Accept-Encoding": "identity"}
+        async with self.client.stream(
             "POST",
             self.url,
             content=content,
-            headers=headers,
+            headers=probe_headers,
             timeout=PROBE_TIMEOUT_S,
-        )
-        response = await self.client.send(request, follow_redirects=False)
-        return _HttpProbeResponse(
-            status_code=response.status_code,
-            headers=dict(response.headers),
-            payload=_parse_payload(response),
+            follow_redirects=False,
+        ) as response:
+            status_code = response.status_code
+            response_headers = dict(response.headers)
+            encoding = response.headers.get("content-encoding", "").strip().lower()
+            encoded = encoding not in ("", "identity")
+            body = bytearray()
+            truncated = False
+            if not encoded:
+                # No content-encoding, so aiter_bytes yields identity bytes and
+                # performs no decompression — bounding the chunks bounds peak
+                # memory. An encoded body is deliberately never iterated (the
+                # `async with` closes it without decoding).
+                async for chunk in response.aiter_bytes():
+                    space = _RAW_BODY_SCAN_LIMIT - len(body)
+                    if len(chunk) > space:
+                        body.extend(chunk[:space])
+                        truncated = True
+                        break
+                    body.extend(chunk)
+        if encoded:
+            return (
+                _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),
+                None,
+                "encoded",
+            )
+        text = bytes(body).decode("utf-8", errors="replace")
+        return (
+            _HttpProbeResponse(
+                status_code=status_code,
+                headers=response_headers,
+                payload=_parse_payload_text(text, response_headers.get("content-type", "")),
+            ),
+            text,
+            "truncated" if truncated else None,
         )
 
 
@@ -961,10 +1020,29 @@ async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_UNKNOWN_METHOD, outcome, details)
 
 
-def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResponse) -> ProbeResult:
-    """Judge JSON-RPC's normative malformed-JSON response, status-agnostically."""
+def _malformed_json_result(
+    response: _HttpProbeResponse,
+    control: _HttpProbeResponse,
+    raw_body: str | None,
+    unobservable_reason: str | None,
+) -> ProbeResult:
+    """Judge JSON-RPC's normative malformed-JSON response, status-agnostically.
+
+    The raw response body is carried on the ProbeResult ``payload`` (excluded
+    from ``to_dict``, so it never reaches a report) for
+    ``security_error_data_leak`` to scan — the malformed request is the probe
+    most likely to make a server dump a stack trace or a file path.
+
+    ``unobservable_reason`` (from ``post_raw``) means the parse verdict cannot
+    be trusted: ``"truncated"`` (payload came from a bounded prefix — a valid
+    oversized ``-32700`` would parse to ``None`` only because it was cut) or
+    ``"encoded"`` (the body was content-encoded and not decoded, to bound
+    memory against a compression bomb). Either way an unparsable/absent
+    payload is unobservable, not UNSUPPORTED.
+    """
     details = _base_details(response)
     details["control_http_status"] = control.status_code
+    leak_payload = {"error_body": raw_body}
 
     # The control proves that this endpoint parses valid JSON-RPC rather than
     # returning one canned parse-error response for every POST. Modern servers
@@ -985,27 +1063,48 @@ def _malformed_json_result(response: _HttpProbeResponse, control: _HttpProbeResp
             if control.status_code in AUTH_GATED_STATUSES
             else "control did not return a correlated JSON-RPC response; payload parsing not observable"
         )
-        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details)
+        # Still carry the body: a server can leak data in an error response
+        # whether or not its parse-error verdict is judgeable.
+        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details, payload=leak_payload)
 
     payload = response.payload
     error = response.error
+    # A missing `id` counts the same as an explicit `null`: on a parse error
+    # the id is genuinely unknowable (the request never parsed), and no client
+    # correlates a parse error by id anyway, so `null` vs absent carries no
+    # observable difference. `payload.get("id")` is None for both, and a real
+    # value (e.g. 0) is excluded. Calibrated against the registry 2026-08-22:
+    # 7/250 healthy servers returned a correct -32700 with the id omitted.
+    id_absent_or_null = isinstance(payload, dict) and payload.get("id") is None
     correct = (
         isinstance(payload, dict)
         and payload.get("jsonrpc") == "2.0"
-        and "id" in payload
-        and payload["id"] is None
+        and id_absent_or_null
         and response.error_code == -32700
         and error is not None
         and isinstance(error.get("message"), str)
         and "result" not in payload
     )
-    details["response_id_is_null"] = isinstance(payload, dict) and "id" in payload and payload["id"] is None
+    details["response_id_absent_or_null"] = id_absent_or_null
+    if not correct and unobservable_reason is not None and not isinstance(payload, dict):
+        # The payload is absent/unparsable and the read was bounded — a
+        # truncated prefix (the untruncated body might have been a valid
+        # -32700) or an undecoded content-encoded body. Cannot fail the server
+        # for a verdict we could not observe. (A real -32700 envelope parses
+        # well within the cap, so this only fires on pathological bodies; for
+        # a truncated body the leak scan still sees the bounded prefix.)
+        details["reason"] = (
+            "response was content-encoded; not decoded to bound memory, parse verdict not observable"
+            if unobservable_reason == "encoded"
+            else "response body exceeded scan cap; parse verdict not observable"
+        )
+        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details, payload=leak_payload)
     outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
-    return ProbeResult(PROBE_MALFORMED_JSON, outcome, details)
+    return ProbeResult(PROBE_MALFORMED_JSON, outcome, details, payload=leak_payload)
 
 
 async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
-    """Send truncated JSON and require JSON-RPC Parse error with a null ID."""
+    """Send truncated JSON and require JSON-RPC Parse error with a null or absent ID."""
     target_version = _target_version()
     headers = _request_headers(target_version, "server/discover")
     control = await target.post(
@@ -1013,11 +1112,11 @@ async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
         headers,
         follow_redirects=False,
     )
-    response = await target.post_raw(
+    response, raw_body, unobservable_reason = await target.post_raw(
         b'{"jsonrpc":"2.0","id":13,"method":"server/discover",',
         headers,
     )
-    return _malformed_json_result(response, control)
+    return _malformed_json_result(response, control, raw_body, unobservable_reason)
 
 
 _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {
