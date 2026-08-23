@@ -436,6 +436,10 @@ _NON_SECRET_TOKEN_TERMS = {
     "token_count",
     "token_limit",
 }
+_AMBIGUOUS_SENSITIVE_TERMS = {"email", "phone", "token"}
+_FREE_TEXT_SENSITIVE_TERMS = {
+    term: category for term, category in _SENSITIVE_HEADER_TERMS.items() if term not in _AMBIGUOUS_SENSITIVE_TERMS
+}
 
 
 def _mcp_header_annotations(schema: dict[str, Any]) -> list[dict[str, Any]]:
@@ -483,7 +487,8 @@ def _tool_mcp_header_annotations(tools: list[Tool]) -> list[dict[str, Any]]:
 
 def _normalized_sensitive_terms(value: str) -> set[str]:
     """Return normalized words and phrases used by the sensitive-name matcher."""
-    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    snake = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", value)
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", snake)
     words = re.findall(r"[A-Za-z0-9]+", snake.casefold())
     terms = set(words)
     terms.update(
@@ -495,6 +500,20 @@ def _normalized_sensitive_terms(value: str) -> set[str]:
         terms.discard("token")
         terms.discard("tokens")
     return terms - _NON_SECRET_TOKEN_TERMS
+
+
+def _sensitive_category(value: str, source: str) -> str | None:
+    """Classify strong sensitive-data evidence, accounting for metadata shape."""
+    terms = _normalized_sensitive_terms(value)
+    vocabulary = _FREE_TEXT_SENSITIVE_TERMS if source in {"title", "description"} else _SENSITIVE_HEADER_TERMS
+    normalized_identifier = "_".join(re.findall(r"[A-Za-z0-9]+", value.casefold()))
+    for sensitive, category in vocabulary.items():
+        if sensitive not in terms:
+            continue
+        if sensitive in _AMBIGUOUS_SENSITIVE_TERMS and normalized_identifier != sensitive:
+            continue
+        return category
+    return None
 
 
 def _sensitive_mcp_header_parameters(tool: Tool) -> list[dict[str, str]]:
@@ -520,10 +539,9 @@ def _sensitive_mcp_header_parameters(tool: Tool) -> list[dict[str, str]]:
                 for source, candidate in candidates.items():
                     if not isinstance(candidate, str):
                         continue
-                    terms = _normalized_sensitive_terms(candidate)
-                    sensitive = next((term for term in _SENSITIVE_HEADER_TERMS if term in terms), None)
-                    if sensitive is not None:
-                        matched = (source, _SENSITIVE_HEADER_TERMS[sensitive])
+                    category = _sensitive_category(candidate, source)
+                    if category is not None:
+                        matched = (source, category)
                         break
                 if matched is not None:
                     source, category = matched
