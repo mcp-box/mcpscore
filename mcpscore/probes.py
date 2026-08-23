@@ -486,8 +486,8 @@ class _StdioTarget:
     the audit's SDK session, which has already sent ``initialize`` and pinned
     that connection to the legacy lifecycle, but modern requests do not require
     a fresh process apiece. Reusing one no-handshake connection avoids starting
-    the audited command seven times — important for servers with expensive or
-    externally visible startup behavior — while every request still carries
+    the audited command once per probe — important for servers with expensive
+    or externally visible startup behavior — while every request still carries
     its own complete modern envelope.
     """
 
@@ -714,6 +714,9 @@ async def _probe_invalid_cursor(
     details = _base_details(response)
     if response.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "request is access-controlled; cursor validation not observable"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    if method == "resources/templates/list" and response.error_code == ERROR_METHOD_NOT_FOUND:
+        details["reason"] = "optional resource-template listing is not implemented"
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
     outcome = ProbeOutcome.SUPPORTED if response.error_code == ERROR_INVALID_PARAMS else ProbeOutcome.UNSUPPORTED
     return ProbeResult(probe_id, outcome, details)

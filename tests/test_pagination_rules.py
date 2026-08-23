@@ -86,6 +86,16 @@ def test_resources_capability_gates_both_resource_surfaces(capabilities_full):
         assert rule_cls().skip_reason(AuditData(capabilities=capabilities_full)) == SKIP_REASON_INSUFFICIENT_DATA
 
 
+def test_unimplemented_optional_resource_template_surface_is_not_applicable(capabilities_full):
+    probe = ProbeResult(PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR, ProbeOutcome.NOT_APPLICABLE)
+    data = AuditData(
+        capabilities=capabilities_full,
+        probes={PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR: probe},
+    )
+
+    assert ResourceTemplatesInvalidCursorRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+
 def test_pagination_spec_uses_negotiated_version():
     assert pagination_spec("2025-11-25") == (
         "https://modelcontextprotocol.io/specification/2025-11-25/server/utilities/pagination#error-handling"

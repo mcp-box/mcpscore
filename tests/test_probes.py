@@ -270,6 +270,22 @@ async def test_invalid_cursor_probes_reject_servers_that_accept_fabricated_curso
         assert "error_code" not in results[probe_id].details
 
 
+async def test_resource_template_cursor_probe_skips_an_unimplemented_optional_surface():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        cursor = body.get("params", {}).get("cursor")
+        if body.get("method") == "resources/templates/list" and isinstance(cursor, str):
+            return _rpc_error(body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=404)
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    result = results[PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR]
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert result.details["error_code"] == ERROR_METHOD_NOT_FOUND
+    assert result.details["reason"] == "optional resource-template listing is not implemented"
+
+
 async def test_malformed_json_probe_rejects_non_json_rpc_server_error():
     def handler(request: httpx2.Request) -> httpx2.Response:
         try:

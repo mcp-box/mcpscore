@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session for legacy and dual-era servers, avoiding false failures from
   stateful servers that require initialization; modern-only servers use the
   stateless probe path. Undeclared capabilities and unavailable observations
-  skip rather than fail.
+  skip rather than fail. Because the resources capability does not separately
+  advertise the optional resource-template listing, a `-32601` response from
+  `resources/templates/list` also skips only that rule.
 
 ### Fixed
 

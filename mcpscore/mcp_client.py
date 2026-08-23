@@ -33,7 +33,7 @@ from mcp_types import (
 )
 
 from .enums import ConnectionErrorReason, MCPTransportType
-from .probes import ERROR_INVALID_PARAMS, INVALID_CURSOR_PREFIX, ProbeOutcome, ProbeResult
+from .probes import ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, INVALID_CURSOR_PREFIX, ProbeOutcome, ProbeResult
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -871,6 +871,15 @@ class MCPClient:
                     timeout=INVALID_CURSOR_PROBE_TIMEOUT_S,
                 )
             except MCPError as exc:
+                if listing_name == "resource_templates" and exc.code == ERROR_METHOD_NOT_FOUND:
+                    return ProbeResult(
+                        probe_id,
+                        ProbeOutcome.NOT_APPLICABLE,
+                        {
+                            "error_code": exc.code,
+                            "reason": "optional resource-template listing is not implemented",
+                        },
+                    )
                 outcome = ProbeOutcome.SUPPORTED if exc.code == ERROR_INVALID_PARAMS else ProbeOutcome.UNSUPPORTED
                 return ProbeResult(probe_id, outcome, {"error_code": exc.code})
             except Exception as exc:  # noqa: BLE001 — probes never abort an audit

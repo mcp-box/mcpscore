@@ -19,6 +19,7 @@ import pytest
 from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient
 from mcpscore.probes import (
     ERROR_INVALID_PARAMS,
+    ERROR_METHOD_NOT_FOUND,
     INVALID_CURSOR_PREFIX,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
@@ -104,6 +105,23 @@ class TestMCPClientSessionOperations:
         results = await mcp_client.probe_invalid_cursors({"tools": PROBE_TOOLS_INVALID_CURSOR})
 
         assert results[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.NOT_APPLICABLE
+
+    async def test_unimplemented_resource_template_probe_is_not_applicable(self, mock_connected_client):
+        mock_connected_client.session.list_resource_templates.side_effect = MCPError(
+            code=ERROR_METHOD_NOT_FOUND,
+            message="Method not found",
+        )
+
+        results = await mock_connected_client.probe_invalid_cursors(
+            {"resource_templates": PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR}
+        )
+
+        result = results[PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR]
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details == {
+            "error_code": ERROR_METHOD_NOT_FOUND,
+            "reason": "optional resource-template listing is not implemented",
+        }
 
     async def test_initialize_exception(self, mock_connected_client, caplog):
         """Test initialize handles exceptions properly."""
