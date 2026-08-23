@@ -1,0 +1,69 @@
+name: Propose a best practice or rule
+description: Tell us what you think makes a good MCP server — the input we most want
+labels: [rule-proposal]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thanks for helping shape the rules. This is the input we value most —
+        you do **not** need to write code, cite a spec, or know how the engine
+        works. A clear description of the practice is enough; we do the
+        research and implementation. (If you'd rather implement it yourself,
+        [CONTRIBUTING.md](https://github.com/mcp-box/mcpscore/blob/main/CONTRIBUTING.md)
+        walks through adding a rule.)
+  - type: textarea
+    id: practice
+    attributes:
+      label: The practice
+      description: >-
+        What should a good MCP server do (or avoid)? State it as the thing an
+        audit could check — e.g. "every tool should declare an output schema"
+        or "error responses must not include a stack trace".
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: >-
+        Who does it hurt when a server gets this wrong — an agent, a user, an
+        operator? A concrete failure you've seen is worth more than a rule of
+        thumb.
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Spec / RFC reference (optional)
+      description: >-
+        A link to the MCP spec section, an RFC, or a SEP if you know one. Leave
+        it blank if you don't — an unsourced hunch is welcome and we'll do the
+        citation work.
+      placeholder: https://modelcontextprotocol.io/specification/...
+    validations:
+      required: false
+  - type: input
+    id: example
+    attributes:
+      label: Example server (optional)
+      description: >-
+        A public MCP server that gets this right or wrong. Helps us calibrate
+        the rule against reality before shipping it.
+    validations:
+      required: false
+  - type: dropdown
+    id: severity
+    attributes:
+      label: How strongly should this count? (optional)
+      description: >-
+        Only if you have a view — we calibrate final weights against the
+        registry. Roughly: spec violations are CRITICAL/HIGH, recommendations
+        are MEDIUM/LOW.
+      options:
+        - "No opinion"
+        - "Critical — breaks interoperability or security"
+        - "High — a clear defect"
+        - "Medium — a recommendation worth following"
+        - "Low — a nice-to-have"
+    validations:
+      required: false
