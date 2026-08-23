@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Four capability-aware pagination rules.** For `tools/list`,
+  `resources/list`, `resources/templates/list`, and `prompts/list`, mcpscore
+  now sends a fabricated opaque cursor and checks the MCP pagination
+  recommendation—present in every dated revision—that invalid cursors return
+  JSON-RPC `-32602` (Invalid params). The probes are read-only and run against the established SDK
+  session for legacy and dual-era servers, avoiding false failures from
+  stateful servers that require initialization; modern-only servers use the
+  stateless probe path. Undeclared capabilities and unavailable observations
+  skip rather than fail. Because the resources capability does not separately
+  advertise the optional resource-template listing, a `-32601` response from
+  `resources/templates/list` also skips only that rule.
+
 ### Fixed
 
 - **`security_error_data_leak` now runs.** It read a field (`error_response`)

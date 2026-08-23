@@ -71,6 +71,9 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
             {"supported": [PROTOCOL_VERSION], "requested": requested},
         )
 
+    if str(params.get("cursor", "")).startswith("mcpscore-invalid-cursor-"):
+        return _error(request_id, -32602, "Invalid cursor")
+
     if method == "server/discover":
         return _result(request_id, {"supportedVersions": [PROTOCOL_VERSION], **CACHE_HINTS})
     if method == "tools/list":

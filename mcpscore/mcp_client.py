@@ -7,6 +7,7 @@ import shlex
 import sys
 import time
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import httpx2
 from mcp import (
@@ -32,6 +33,7 @@ from mcp_types import (
 )
 
 from .enums import ConnectionErrorReason, MCPTransportType
+from .probes import ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, INVALID_CURSOR_PREFIX, ProbeOutcome, ProbeResult
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -96,6 +98,9 @@ fails."""
 
 MAX_LISTING_PAGES = 100
 """Safety bound for a single paginated MCP listing."""
+
+INVALID_CURSOR_PROBE_TIMEOUT_S = 10.0
+"""Deadline for one in-session invalid-cursor observation."""
 
 
 _REASON_MESSAGES: dict[ConnectionErrorReason, str] = {
@@ -832,6 +837,57 @@ class MCPClient:
             return None
 
         return await self._list_all_pages(self.session.list_prompts, "prompts", "prompts")
+
+    async def probe_invalid_cursors(self, probe_ids: Mapping[str, str]) -> dict[str, ProbeResult]:
+        """Observe invalid-cursor handling on the established session.
+
+        ``probe_ids`` maps listing names to stable probe IDs. Only listings
+        whose capabilities were declared are supplied by the auditor. Each
+        request is read-only, bounded, and carries a cursor that this session
+        could not have received from the server.
+        """
+        if not self.session:
+            return {
+                probe_id: ProbeResult(
+                    probe_id,
+                    ProbeOutcome.NOT_APPLICABLE,
+                    {"reason": "no active session; cursor validation not observable"},
+                )
+                for probe_id in probe_ids.values()
+            }
+
+        fetch_pages: dict[str, Callable[..., Awaitable[Any]]] = {
+            "tools": self.session.list_tools,
+            "resources": self.session.list_resources,
+            "resource_templates": self.session.list_resource_templates,
+            "prompts": self.session.list_prompts,
+        }
+
+        async def observe(listing_name: str, probe_id: str) -> ProbeResult:
+            cursor = f"{INVALID_CURSOR_PREFIX}{uuid4().hex}"
+            try:
+                await asyncio.wait_for(
+                    fetch_pages[listing_name](params=PaginatedRequestParams(cursor=cursor)),
+                    timeout=INVALID_CURSOR_PROBE_TIMEOUT_S,
+                )
+            except MCPError as exc:
+                if listing_name == "resource_templates" and exc.code == ERROR_METHOD_NOT_FOUND:
+                    return ProbeResult(
+                        probe_id,
+                        ProbeOutcome.NOT_APPLICABLE,
+                        {
+                            "error_code": exc.code,
+                            "reason": "optional resource-template listing is not implemented",
+                        },
+                    )
+                outcome = ProbeOutcome.SUPPORTED if exc.code == ERROR_INVALID_PARAMS else ProbeOutcome.UNSUPPORTED
+                return ProbeResult(probe_id, outcome, {"error_code": exc.code})
+            except Exception as exc:  # noqa: BLE001 — probes never abort an audit
+                return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(exc).__name__})
+            return ProbeResult(probe_id, ProbeOutcome.UNSUPPORTED, {"error_code": None})
+
+        results = await asyncio.gather(*(observe(name, probe_id) for name, probe_id in probe_ids.items()))
+        return {result.probe_id: result for result in results}
 
     async def _list_all_pages(
         self,

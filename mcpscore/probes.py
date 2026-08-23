@@ -121,6 +121,9 @@ UNKNOWN_VERSION = "2099-01-01"
 MISSING_RESOURCE_URI = "resource://mcpscore/does-not-exist"
 """Deliberately nonexistent resource URI used by the missing-resource probe."""
 
+INVALID_CURSOR_PREFIX = "mcpscore-invalid-cursor-"
+"""Prefix for fabricated opaque cursors that cannot plausibly have been issued."""
+
 PROBE_DISCOVER = "probe_discover"
 PROBE_STATELESS_LIST = "probe_stateless_list"
 PROBE_MALFORMED_META = "probe_malformed_meta"
@@ -134,6 +137,10 @@ PROBE_AUTH_METADATA = "probe_auth_metadata"
 PROBE_ORIGIN_VALIDATION = "probe_origin_validation"
 PROBE_UNKNOWN_METHOD = "probe_unknown_method"
 PROBE_MALFORMED_JSON = "probe_malformed_json"
+PROBE_TOOLS_INVALID_CURSOR = "probe_tools_invalid_cursor"
+PROBE_RESOURCES_INVALID_CURSOR = "probe_resources_invalid_cursor"
+PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR = "probe_resource_templates_invalid_cursor"
+PROBE_PROMPTS_INVALID_CURSOR = "probe_prompts_invalid_cursor"
 
 PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -149,6 +156,10 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_ORIGIN_VALIDATION,
     PROBE_UNKNOWN_METHOD,
     PROBE_MALFORMED_JSON,
+    PROBE_TOOLS_INVALID_CURSOR,
+    PROBE_RESOURCES_INVALID_CURSOR,
+    PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    PROBE_PROMPTS_INVALID_CURSOR,
 )
 """Stable identifiers of all probes."""
 
@@ -475,8 +486,8 @@ class _StdioTarget:
     the audit's SDK session, which has already sent ``initialize`` and pinned
     that connection to the legacy lifecycle, but modern requests do not require
     a fresh process apiece. Reusing one no-handshake connection avoids starting
-    the audited command seven times — important for servers with expensive or
-    externally visible startup behavior — while every request still carries
+    the audited command once per probe — important for servers with expensive
+    or externally visible startup behavior — while every request still carries
     its own complete modern envelope.
     """
 
@@ -684,6 +695,67 @@ async def _probe_missing_resource(target: _ProbeTarget) -> ProbeResult:
     details["legacy_code_emitted"] = response.error_code == ERROR_LEGACY_RESOURCE_NOT_FOUND
     outcome = ProbeOutcome.SUPPORTED if response.error_code == ERROR_INVALID_PARAMS else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_MISSING_RESOURCE, outcome, details)
+
+
+async def _probe_invalid_cursor(
+    target: _ProbeTarget,
+    *,
+    method: str,
+    request_id: int,
+    probe_id: str,
+) -> ProbeResult:
+    """Send a fabricated opaque cursor and require Invalid params (-32602)."""
+    target_version = _target_version()
+    cursor = f"{INVALID_CURSOR_PREFIX}{uuid4().hex}"
+    response = await target.post(
+        _request_body(method, request_id, _modern_meta(target_version), params={"cursor": cursor}),
+        _request_headers(target_version, method),
+    )
+    details = _base_details(response)
+    if response.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "request is access-controlled; cursor validation not observable"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    if method == "resources/templates/list" and response.error_code == ERROR_METHOD_NOT_FOUND:
+        details["reason"] = "optional resource-template listing is not implemented"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    outcome = ProbeOutcome.SUPPORTED if response.error_code == ERROR_INVALID_PARAMS else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(probe_id, outcome, details)
+
+
+async def _probe_tools_invalid_cursor(target: _ProbeTarget) -> ProbeResult:
+    return await _probe_invalid_cursor(
+        target,
+        method="tools/list",
+        request_id=14,
+        probe_id=PROBE_TOOLS_INVALID_CURSOR,
+    )
+
+
+async def _probe_resources_invalid_cursor(target: _ProbeTarget) -> ProbeResult:
+    return await _probe_invalid_cursor(
+        target,
+        method="resources/list",
+        request_id=15,
+        probe_id=PROBE_RESOURCES_INVALID_CURSOR,
+    )
+
+
+async def _probe_resource_templates_invalid_cursor(target: _ProbeTarget) -> ProbeResult:
+    return await _probe_invalid_cursor(
+        target,
+        method="resources/templates/list",
+        request_id=16,
+        probe_id=PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    )
+
+
+async def _probe_prompts_invalid_cursor(target: _ProbeTarget) -> ProbeResult:
+    return await _probe_invalid_cursor(
+        target,
+        method="prompts/list",
+        request_id=17,
+        probe_id=PROBE_PROMPTS_INVALID_CURSOR,
+    )
 
 
 async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
@@ -1127,6 +1199,10 @@ _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeRe
     PROBE_MISSING_RESOURCE: _probe_missing_resource,
     PROBE_REMOVED_METHOD: _probe_removed_method,
     PROBE_UNKNOWN_METHOD: _probe_unknown_method,
+    PROBE_TOOLS_INVALID_CURSOR: _probe_tools_invalid_cursor,
+    PROBE_RESOURCES_INVALID_CURSOR: _probe_resources_invalid_cursor,
+    PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR: _probe_resource_templates_invalid_cursor,
+    PROBE_PROMPTS_INVALID_CURSOR: _probe_prompts_invalid_cursor,
 }
 """Probes that judge JSON-RPC behavior, and so run over any transport."""
 

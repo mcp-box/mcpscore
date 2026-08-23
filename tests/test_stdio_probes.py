@@ -145,9 +145,9 @@ class TestModernStdioServer:
     async def test_probe_suite_launches_one_sibling_process(self, monkeypatch):
         """Modern requests are stateless, but do not require one process each.
 
-        Starting the audited command seven times can repeat expensive or
+        Starting the audited command once per probe can repeat expensive or
         externally visible startup behavior. The suite needs one connection
-        without a legacy handshake, not seven independent processes.
+        without a legacy handshake, not independent processes per probe.
         """
         from mcpscore import probes as probes_module
 
