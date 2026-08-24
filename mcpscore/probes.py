@@ -407,8 +407,9 @@ class _HttpTarget:
         *,
         anonymous: bool = False,
         follow_redirects: bool = True,
+        omit_headers: tuple[str, ...] = (),
     ) -> _HttpProbeResponse:
-        """POST a probe request, optionally stripping the caller's Authorization.
+        """POST a probe request, optionally stripping headers from the final request.
 
         When ``anonymous``, remove any caller-supplied ``Authorization`` header
         so the probe observes the server's unauthenticated behavior even when a
@@ -418,11 +419,16 @@ class _HttpTarget:
         here also covers caller-injected clients whose defaults it cannot
         control. ``follow_redirects`` may be disabled for security checks that
         must judge the target endpoint itself without forwarding caller context
-        elsewhere.
+        elsewhere. ``omit_headers`` is applied after ``build_request`` merges
+        client defaults, so a caller-supplied default cannot accidentally
+        restore a header that a negative probe intends to omit. The shared
+        client's defaults are never mutated because probes run concurrently.
         """
         request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
         if anonymous:
             request.headers.pop("Authorization", None)
+        for header in omit_headers:
+            request.headers.pop(header, None)
         response = await self.client.send(request, follow_redirects=follow_redirects)
         return _HttpProbeResponse(
             status_code=response.status_code,
@@ -702,6 +708,7 @@ async def _probe_missing_protocol_version(target: _HttpTarget) -> ProbeResult:
         _request_body("server/discover", 19, _modern_meta(target_version)),
         headers,
         follow_redirects=False,
+        omit_headers=("MCP-Protocol-Version",),
     )
     return _header_validation_result(PROBE_MISSING_PROTOCOL_VERSION, response)
 
@@ -715,6 +722,7 @@ async def _probe_missing_method_header(target: _HttpTarget) -> ProbeResult:
         _request_body("server/discover", 20, _modern_meta(target_version)),
         headers,
         follow_redirects=False,
+        omit_headers=("Mcp-Method",),
     )
     return _header_validation_result(PROBE_MISSING_METHOD_HEADER, response)
 

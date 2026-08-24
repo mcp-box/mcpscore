@@ -306,6 +306,31 @@ async def test_new_http_validation_probes_reject_noncompliant_behavior():
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
 
 
+async def test_missing_header_probes_remove_caller_default_headers_from_final_request():
+    seen: dict[int, tuple[str | None, str | None]] = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        request_id = body.get("id")
+        if request_id in {19, 20}:
+            seen[request_id] = (
+                request.headers.get("MCP-Protocol-Version"),
+                request.headers.get("Mcp-Method"),
+            )
+        return _modern_server_handler(request)
+
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        headers={"MCP-Protocol-Version": "caller-default", "Mcp-Method": "caller-default"},
+    ) as client:
+        results = await run_all_probes(URL, client=client)
+
+    assert seen[19] == (None, "server/discover")
+    assert seen[20] == ("2026-07-28", None)
+    assert results[PROBE_MISSING_PROTOCOL_VERSION].outcome is ProbeOutcome.SUPPORTED
+    assert results[PROBE_MISSING_METHOD_HEADER].outcome is ProbeOutcome.SUPPORTED
+
+
 async def test_named_header_probes_skip_unimplemented_optional_methods():
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content) if request.method == "POST" else {}
