@@ -1190,6 +1190,7 @@ class TestToolsMcpHeadersNotSensitiveRule:
             ("password", "password"),
             ("apiKey", "API key"),
             ("APIKey", "API key"),
+            ("api_token", "API token"),
             ("refresh-token", "refresh token"),
             ("client_secret", "client secret"),
             ("social_security_number", "social security number"),
@@ -1294,6 +1295,9 @@ class TestToolsMcpHeadersNotSensitiveRule:
             "Maximum number of tokens to generate",
             "Send email notifications when the job completes",
             "Enable phone support for this account",
+            "The secret of good UX is clarity",
+            "HTTP authorization is handled by the gateway",
+            "Store routing credentials separately from this header",
         ],
     )
     def test_ambiguous_words_in_free_text_do_not_fail(self, description: str) -> None:
@@ -1316,8 +1320,20 @@ class TestToolsMcpHeadersNotSensitiveRule:
         assert result.passed is True
         assert result.details == {"sensitive_headers": []}
 
-    @pytest.mark.parametrize("description", ["User email address", "Customer phone number", "API access token"])
-    def test_sensitive_context_in_free_text_still_fails(self, description: str) -> None:
+    @pytest.mark.parametrize(
+        ("field", "value", "category"),
+        [
+            ("description", "User email address", "email address"),
+            ("description", "Customer phone number", "phone number"),
+            ("description", "API access token", "access token"),
+            ("description", "API token for the upstream service", "API token"),
+            ("description", "OAuth client secret", "client secret"),
+            ("title", "Email", "email address"),
+            ("title", "Token", "token"),
+            ("title", "Secret", "secret"),
+        ],
+    )
+    def test_sensitive_context_in_free_text_still_fails(self, field: str, value: str, category: str) -> None:
         tool = _header_tool(
             "unsafe",
             {
@@ -1325,7 +1341,7 @@ class TestToolsMcpHeadersNotSensitiveRule:
                 "properties": {
                     "value": {
                         "type": "string",
-                        "description": description,
+                        field: value,
                         "x-mcp-header": "Routing-Value",
                     },
                 },
@@ -1336,7 +1352,8 @@ class TestToolsMcpHeadersNotSensitiveRule:
 
         assert result.passed is False
         assert result.details is not None
-        assert result.details["sensitive_headers"][0]["matched_on"] == "description"
+        assert result.details["sensitive_headers"][0]["matched_on"] == field
+        assert result.details["sensitive_headers"][0]["sensitive_category"] == category
 
     def test_sensitive_unannotated_parameter_passes(self) -> None:
         tool = _header_tool(

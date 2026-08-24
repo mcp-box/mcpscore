@@ -392,6 +392,7 @@ _HTTP_FIELD_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _MCP_HEADER_PRIMITIVE_TYPES = {"integer", "string", "boolean"}
 _SENSITIVE_HEADER_TERMS: dict[str, str] = {
     "api_key": "API key",
+    "api_token": "API token",
     "access_token": "access token",
     "auth_token": "authentication token",
     "authentication_token": "authentication token",
@@ -438,11 +439,17 @@ _NON_SECRET_TOKEN_TERMS = {
     "token_limit",
 }
 _STRUCTURED_EXACT_SENSITIVE_TERMS = {"email", "phone"}
-_FREE_TEXT_AMBIGUOUS_SENSITIVE_TERMS = {*_STRUCTURED_EXACT_SENSITIVE_TERMS, "token"}
-_FREE_TEXT_SENSITIVE_TERMS = {
-    term: category
-    for term, category in _SENSITIVE_HEADER_TERMS.items()
-    if term not in _FREE_TEXT_AMBIGUOUS_SENSITIVE_TERMS
+_FREE_TEXT_EXACT_SENSITIVE_TERMS = {
+    "authorization",
+    "credential",
+    "credentials",
+    "email",
+    "phone",
+    "secret",
+    "token",
+}
+_FREE_TEXT_CONTEXT_SENSITIVE_TERMS = {
+    term: category for term, category in _SENSITIVE_HEADER_TERMS.items() if term not in _FREE_TEXT_EXACT_SENSITIVE_TERMS
 }
 
 
@@ -509,9 +516,17 @@ def _normalized_sensitive_terms(value: str) -> set[str]:
 def _sensitive_category(value: str, source: str) -> str | None:
     """Classify strong sensitive-data evidence, accounting for metadata shape."""
     terms = _normalized_sensitive_terms(value)
-    vocabulary = _FREE_TEXT_SENSITIVE_TERMS if source in {"title", "description"} else _SENSITIVE_HEADER_TERMS
     normalized_identifier = "_".join(re.findall(r"[A-Za-z0-9]+", value.casefold()))
-    for sensitive, category in vocabulary.items():
+
+    if source in {"title", "description"}:
+        contextual = next((term for term in _FREE_TEXT_CONTEXT_SENSITIVE_TERMS if term in terms), None)
+        if contextual is not None:
+            return _FREE_TEXT_CONTEXT_SENSITIVE_TERMS[contextual]
+        if normalized_identifier in _FREE_TEXT_EXACT_SENSITIVE_TERMS:
+            return _SENSITIVE_HEADER_TERMS[normalized_identifier]
+        return None
+
+    for sensitive, category in _SENSITIVE_HEADER_TERMS.items():
         if sensitive not in terms:
             continue
         if sensitive in _STRUCTURED_EXACT_SENSITIVE_TERMS and normalized_identifier != sensitive:
