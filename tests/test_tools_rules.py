@@ -1194,6 +1194,9 @@ class TestToolsMcpHeadersNotSensitiveRule:
             ("client_secret", "client secret"),
             ("social_security_number", "social security number"),
             ("email_address", "email address"),
+            ("pii", "personally identifiable information"),
+            ("session_token", "token"),
+            ("securityToken", "token"),
         ],
     )
     def test_sensitive_parameter_names_fail(self, parameter_name: str, category: str) -> None:

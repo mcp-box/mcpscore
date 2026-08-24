@@ -421,6 +421,7 @@ _SENSITIVE_HEADER_TERMS: dict[str, str] = {
     "email_address": "email address",
     "national_id": "national identifier",
     "passport_number": "passport number",
+    "pii": "personally identifiable information",
     "phone": "phone number",
     "phone_number": "phone number",
     "social_security_number": "social security number",
@@ -436,9 +437,12 @@ _NON_SECRET_TOKEN_TERMS = {
     "token_count",
     "token_limit",
 }
-_AMBIGUOUS_SENSITIVE_TERMS = {"email", "phone", "token"}
+_STRUCTURED_EXACT_SENSITIVE_TERMS = {"email", "phone"}
+_FREE_TEXT_AMBIGUOUS_SENSITIVE_TERMS = {*_STRUCTURED_EXACT_SENSITIVE_TERMS, "token"}
 _FREE_TEXT_SENSITIVE_TERMS = {
-    term: category for term, category in _SENSITIVE_HEADER_TERMS.items() if term not in _AMBIGUOUS_SENSITIVE_TERMS
+    term: category
+    for term, category in _SENSITIVE_HEADER_TERMS.items()
+    if term not in _FREE_TEXT_AMBIGUOUS_SENSITIVE_TERMS
 }
 
 
@@ -510,7 +514,7 @@ def _sensitive_category(value: str, source: str) -> str | None:
     for sensitive, category in vocabulary.items():
         if sensitive not in terms:
             continue
-        if sensitive in _AMBIGUOUS_SENSITIVE_TERMS and normalized_identifier != sensitive:
+        if sensitive in _STRUCTURED_EXACT_SENSITIVE_TERMS and normalized_identifier != sensitive:
             continue
         return category
     return None
