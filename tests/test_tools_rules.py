@@ -30,6 +30,7 @@ from mcpscore.rules.tools import (
     ToolsExecutionConsistentRule,
     ToolsInputPropertiesDocumentedRule,
     ToolsInputSchemaValidRule,
+    ToolsMcpHeadersNotSensitiveRule,
     ToolsMcpHeadersPrimitiveTypesRule,
     ToolsMcpHeadersStaticallyReachableRule,
     ToolsMcpHeadersUniqueRule,
@@ -1180,6 +1181,215 @@ class TestToolsMcpHeadersStaticallyReachableRule:
         assert result.passed is False
         assert result.details is not None
         assert result.details["unreachable_headers"][0]["path"] == expected_path
+
+
+class TestToolsMcpHeadersNotSensitiveRule:
+    @pytest.mark.parametrize(
+        ("parameter_name", "category"),
+        [
+            ("password", "password"),
+            ("apiKey", "API key"),
+            ("APIKey", "API key"),
+            ("api_token", "API token"),
+            ("refresh-token", "refresh token"),
+            ("client_secret", "client secret"),
+            ("social_security_number", "social security number"),
+            ("email_address", "email address"),
+            ("pii", "personally identifiable information"),
+            ("session_token", "token"),
+            ("securityToken", "token"),
+            ("user_email", "email address"),
+            ("contact_email", "email address"),
+            ("customer_phone", "phone number"),
+            ("apiKeys", "API key"),
+            ("apiTokens", "API token"),
+            ("passwords", "password"),
+            ("clientSecrets", "client secret"),
+        ],
+    )
+    def test_sensitive_parameter_names_fail(self, parameter_name: str, category: str) -> None:
+        tool = _header_tool(
+            "unsafe",
+            {
+                "type": "object",
+                "properties": {
+                    parameter_name: {"type": "string", "x-mcp-header": "Routing-Value"},
+                },
+            },
+        )
+
+        result = ToolsMcpHeadersNotSensitiveRule().check(AuditData(tools=[tool]))
+
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["sensitive_headers"] == [
+            {
+                "tool": "unsafe",
+                "path": f"$.properties.{parameter_name}",
+                "header": "Routing-Value",
+                "matched_on": "parameter",
+                "sensitive_category": category,
+            }
+        ]
+
+    def test_description_or_header_can_supply_sensitive_evidence(self) -> None:
+        tools = [
+            _header_tool(
+                "description",
+                {
+                    "type": "object",
+                    "properties": {
+                        "value": {
+                            "type": "string",
+                            "description": "Bearer token used to access the upstream API",
+                            "x-mcp-header": "Upstream-Value",
+                        }
+                    },
+                },
+            ),
+            _header_tool(
+                "header",
+                {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string", "x-mcp-header": "Client-Secret"},
+                    },
+                },
+            ),
+        ]
+
+        result = ToolsMcpHeadersNotSensitiveRule().check(AuditData(tools=tools))
+
+        assert result.passed is False
+        assert result.details is not None
+        assert [failure["matched_on"] for failure in result.details["sensitive_headers"]] == [
+            "description",
+            "header",
+        ]
+
+    @pytest.mark.parametrize(
+        "parameter_name",
+        [
+            "region",
+            "tenant_id",
+            "page_token",
+            "continuationToken",
+            "token_count",
+            "max_tokens",
+            "email_notifications",
+            "phone_support_enabled",
+        ],
+    )
+    def test_common_non_sensitive_routing_parameters_pass(self, parameter_name: str) -> None:
+        tool = _header_tool(
+            "safe",
+            {
+                "type": "object",
+                "properties": {
+                    parameter_name: {"type": "string", "x-mcp-header": "Routing-Value"},
+                },
+            },
+        )
+
+        result = ToolsMcpHeadersNotSensitiveRule().check(AuditData(tools=[tool]))
+
+        assert result.passed is True
+        assert result.details == {"sensitive_headers": []}
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            "Maximum number of tokens to generate",
+            "Send email notifications when the job completes",
+            "Enable phone support for this account",
+            "The secret of good UX is clarity",
+            "HTTP authorization is handled by the gateway",
+            "Store routing credentials separately from this header",
+        ],
+    )
+    def test_ambiguous_words_in_free_text_do_not_fail(self, description: str) -> None:
+        tool = _header_tool(
+            "safe",
+            {
+                "type": "object",
+                "properties": {
+                    "setting": {
+                        "type": "string",
+                        "description": description,
+                        "x-mcp-header": "Routing-Setting",
+                    },
+                },
+            },
+        )
+
+        result = ToolsMcpHeadersNotSensitiveRule().check(AuditData(tools=[tool]))
+
+        assert result.passed is True
+        assert result.details == {"sensitive_headers": []}
+
+    @pytest.mark.parametrize(
+        ("field", "value", "category"),
+        [
+            ("description", "User email address", "email address"),
+            ("description", "Customer phone number", "phone number"),
+            ("description", "API access token", "access token"),
+            ("description", "API token for the upstream service", "API token"),
+            ("description", "OAuth client secret", "client secret"),
+            ("title", "Email", "email address"),
+            ("title", "Token", "token"),
+            ("title", "Secret", "secret"),
+        ],
+    )
+    def test_sensitive_context_in_free_text_still_fails(self, field: str, value: str, category: str) -> None:
+        tool = _header_tool(
+            "unsafe",
+            {
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "type": "string",
+                        field: value,
+                        "x-mcp-header": "Routing-Value",
+                    },
+                },
+            },
+        )
+
+        result = ToolsMcpHeadersNotSensitiveRule().check(AuditData(tools=[tool]))
+
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["sensitive_headers"][0]["matched_on"] == field
+        assert result.details["sensitive_headers"][0]["sensitive_category"] == category
+
+    def test_sensitive_unannotated_parameter_passes(self) -> None:
+        tool = _header_tool(
+            "safe",
+            {
+                "type": "object",
+                "properties": {"password": {"type": "string"}},
+            },
+        )
+
+        assert ToolsMcpHeadersNotSensitiveRule().check(AuditData(tools=[tool])).passed
+
+    def test_malformed_sibling_schema_does_not_hide_sensitive_parameter(self) -> None:
+        tool = _header_tool(
+            "mixed",
+            {
+                "type": "object",
+                "properties": {
+                    "malformed": "not-a-schema",
+                    "password": {"type": "string", "x-mcp-header": "Password"},
+                },
+            },
+        )
+
+        result = ToolsMcpHeadersNotSensitiveRule().check(AuditData(tools=[tool]))
+
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["sensitive_headers"][0]["path"] == "$.properties.password"
 
 
 class TestToolsExecutionConsistentRule:
