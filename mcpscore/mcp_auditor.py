@@ -661,7 +661,9 @@ class MCPAuditor:
             logger.error("No Init Result to audit")
             return
         else:
-            self.audit_data.protocol_version = str(init_result.protocol_version)
+            protocol_version = str(init_result.protocol_version)
+            self.audit_data.protocol_version = protocol_version
+            self.audit_data.session_protocol_version = protocol_version
             self.audit_data.server_info = init_result.server_info
             self.audit_data.capabilities = init_result.capabilities
             self.audit_data.instructions = init_result.instructions

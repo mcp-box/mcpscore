@@ -292,12 +292,29 @@ class TestModernHttpValidationRules:
         assert "405" in result.message
 
     def test_dual_era_exception_applies_only_to_missing_version_and_get(self):
-        data = AuditData(protocol_version="2025-11-25", probes=modern_probes())
+        data = AuditData(
+            protocol_version="2025-11-25",
+            session_protocol_version="2025-11-25",
+            probes=modern_probes(),
+        )
         assert MissingProtocolVersionHeaderReadinessRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
         assert GetStreamRemovedReadinessRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
         assert MissingMethodHeaderReadinessRule().skip_reason(data) is None
         assert ResourceNameHeaderMismatchReadinessRule().skip_reason(data) is None
         assert PromptNameHeaderMismatchReadinessRule().skip_reason(data) is None
+
+    def test_modern_only_discover_version_does_not_look_like_dual_era(self):
+        # audit_modern_only populates protocol_version from server/discover
+        # before rules run; that must not trip the dual-era skip.
+        data = AuditData(protocol_version="2026-07-28", probes=modern_probes())
+        assert MissingProtocolVersionHeaderReadinessRule().skip_reason(data) is None
+        assert GetStreamRemovedReadinessRule().skip_reason(data) is None
+        assert MissingMethodHeaderReadinessRule().skip_reason(data) is None
+
+    def test_discover_advertising_only_a_stateful_version_is_not_handshake_evidence(self):
+        data = AuditData(protocol_version="2025-11-25", probes=modern_probes())
+        assert MissingProtocolVersionHeaderReadinessRule().skip_reason(data) is None
+        assert GetStreamRemovedReadinessRule().skip_reason(data) is None
 
 
 class TestSupportedVersionsRule:

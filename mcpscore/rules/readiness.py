@@ -128,11 +128,18 @@ class ModernOnlyHttpProbeBackedReadinessRule(ProbeBackedReadinessRule):
     """Probe-backed rule whose requirement excludes dual-era compatibility behavior."""
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when a completed legacy handshake proves that the endpoint is dual-era."""
+        """Skip when a completed legacy handshake proves that the endpoint is dual-era.
+
+        ``protocol_version`` is intentionally not sufficient evidence: modern-
+        only audits populate it from ``server/discover`` too. The separate
+        ``session_protocol_version`` field is set only after a successful
+        ``initialize`` handshake and therefore records the provenance this
+        applicability decision needs.
+        """
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
-        if audit_data.protocol_version is not None:
+        if audit_data.session_protocol_version is not None:
             return SKIP_REASON_NOT_APPLICABLE
         return None
 
