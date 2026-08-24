@@ -31,11 +31,16 @@ from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
     GATEWAY_PROBE_IDS,
     PROBE_DISCOVER,
+    PROBE_GET_STREAM_REMOVED,
     PROBE_HEADER_MISMATCH,
     PROBE_MALFORMED_META,
+    PROBE_MISSING_METHOD_HEADER,
+    PROBE_MISSING_PROTOCOL_VERSION,
     PROBE_MISSING_RESOURCE,
     PROBE_ORIGIN_VALIDATION,
+    PROBE_PROMPT_NAME_HEADER_MISMATCH,
     PROBE_REMOVED_METHOD,
+    PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
     PROBE_UNKNOWN_METHOD,
@@ -117,6 +122,19 @@ class ProbeBackedReadinessRule(ReadinessBaseRule):
         """Return this rule's probe result (skip_reason guarantees presence)."""
         assert audit_data.probes is not None  # noqa: S101 — guaranteed by skip_reason
         return audit_data.probes[self.probe_id]
+
+
+class ModernOnlyHttpProbeBackedReadinessRule(ProbeBackedReadinessRule):
+    """Probe-backed rule whose requirement excludes dual-era compatibility behavior."""
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when a completed legacy handshake proves that the endpoint is dual-era."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        if audit_data.protocol_version is not None:
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
 
 
 @register_rule
@@ -913,4 +931,137 @@ class RemovedMethodsReadinessRule(ProbeBackedReadinessRule):
             passed=passed,
             message=message,
             details={"sep": "SEP-2575", "target_version": READINESS_TARGET, **probe.details},
+        )
+
+
+_STREAMABLE_HTTP_SPEC = "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http"
+
+
+class HeaderRequirementReadinessRule(ProbeBackedReadinessRule):
+    """Base for HTTP request-header rules requiring HeaderMismatch plus HTTP 400."""
+
+    header_description: ClassVar[str]
+
+    @property
+    def severity(self) -> RuleSeverity:
+        # Four correlated header-validation rules fail 83-97% of judgeable
+        # modern-only servers in the 2026-08-24 registry calibration. Keep the
+        # normative findings visible without subtracting 12 points from nearly
+        # the entire early-adoption population.
+        return RuleSeverity.LOW
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        probe = self._probe(audit_data)
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        message = (
+            f"✅ Server rejects {self.header_description} with -32020 and HTTP 400"
+            if passed
+            else f"❌ Server does not reject {self.header_description} with -32020 (HeaderMismatch) and HTTP 400"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "spec": f"{_STREAMABLE_HTTP_SPEC}#server-validation",
+                "target_version": READINESS_TARGET,
+                **probe.details,
+            },
+        )
+
+
+@register_rule
+class MissingProtocolVersionHeaderReadinessRule(
+    ModernOnlyHttpProbeBackedReadinessRule,
+    HeaderRequirementReadinessRule,
+):
+    """Modern-only endpoints reject a missing MCP-Protocol-Version header."""
+
+    rule_id = "readiness_2026_missing_protocol_version_rejected"
+    rule_order = 17
+    probe_id = PROBE_MISSING_PROTOCOL_VERSION
+    header_description = "a request missing MCP-Protocol-Version"
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - missing protocol-version header rejected"
+
+
+@register_rule
+class MissingMethodHeaderReadinessRule(HeaderRequirementReadinessRule):
+    """HTTP endpoints reject a request missing the required Mcp-Method header."""
+
+    rule_id = "readiness_2026_missing_method_header_rejected"
+    rule_order = 18
+    probe_id = PROBE_MISSING_METHOD_HEADER
+    header_description = "a request missing Mcp-Method"
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - missing method header rejected"
+
+
+@register_rule
+class ResourceNameHeaderMismatchReadinessRule(HeaderRequirementReadinessRule):
+    """HTTP endpoints reject a resources/read request whose Mcp-Name contradicts its URI."""
+
+    rule_id = "readiness_2026_resource_name_header_mismatch_rejected"
+    rule_order = 19
+    probe_id = PROBE_RESOURCE_NAME_HEADER_MISMATCH
+    header_description = "a resources/read request whose Mcp-Name contradicts params.uri"
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - resource name-header mismatch rejected"
+
+
+@register_rule
+class PromptNameHeaderMismatchReadinessRule(HeaderRequirementReadinessRule):
+    """HTTP endpoints reject a prompts/get request whose Mcp-Name contradicts its name."""
+
+    rule_id = "readiness_2026_prompt_name_header_mismatch_rejected"
+    rule_order = 20
+    probe_id = PROBE_PROMPT_NAME_HEADER_MISMATCH
+    header_description = "a prompts/get request whose Mcp-Name contradicts params.name"
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - prompt name-header mismatch rejected"
+
+
+@register_rule
+class GetStreamRemovedReadinessRule(ModernOnlyHttpProbeBackedReadinessRule):
+    """Modern-only endpoints reject the removed standalone GET stream with HTTP 405."""
+
+    rule_id = "readiness_2026_no_get_stream"
+    rule_order = 21
+    probe_id = PROBE_GET_STREAM_REMOVED
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - no standalone GET stream"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        probe = self._probe(audit_data)
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        message = (
+            "✅ Streamable HTTP rejects the removed standalone GET stream with HTTP 405"
+            if passed
+            else "❌ Streamable HTTP does not reject the removed standalone GET stream with HTTP 405"
+        )
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "spec": f"{_STREAMABLE_HTTP_SPEC}#earlier-streamable-http-revisions",
+                "target_version": READINESS_TARGET,
+                **probe.details,
+            },
         )

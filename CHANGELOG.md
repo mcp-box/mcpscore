@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Five modern Streamable HTTP readiness checks.** Four LOW rules require
+  missing or contradictory standard request headers to receive HTTP 400 with
+  JSON-RPC `-32020` (`HeaderMismatch`): a missing
+  `MCP-Protocol-Version`, a missing `Mcp-Method`, and mismatched `Mcp-Name`
+  values on `resources/read` and `prompts/get`. The MEDIUM
+  `readiness_2026_no_get_stream` rule checks that a modern-only endpoint
+  rejects the removed standalone GET stream with HTTP 405. All probes are
+  side-effect-free, HTTP-only, and skip when auth or an unimplemented optional
+  resource/prompt surface makes the behavior unobservable. The missing-version
+  and GET checks also skip dual-era endpoints, whose older-transport
+  compatibility is explicitly allowed by the specification.
+  A registry calibration found that 83–97% of judgeable modern-only servers
+  fail each header check, so LOW avoids multiplying four correlated early-
+  adoption findings into a 12-point HIGH penalty.
 - **Sensitive MCP header detection.** The new HIGH
   `tools_mcp_headers_not_sensitive` rule checks the MCP 2026-07-28 guidance
   that passwords, API keys, tokens, and personally identifiable information
