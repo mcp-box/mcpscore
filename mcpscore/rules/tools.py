@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from collections import Counter
 import re
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from mcp_types import Tool
 
@@ -438,7 +438,15 @@ _NON_SECRET_TOKEN_TERMS = {
     "token_count",
     "token_limit",
 }
-_STRUCTURED_EXACT_SENSITIVE_TERMS = {"email", "phone"}
+_STRUCTURED_SUFFIX_SENSITIVE_TERMS = {"email", "phone"}
+_SENSITIVE_PLURAL_WORDS: dict[str, str] = {
+    "credentials": "credential",
+    "keys": "key",
+    "passphrases": "passphrase",
+    "passwords": "password",
+    "secrets": "secret",
+    "tokens": "token",
+}
 _FREE_TEXT_EXACT_SENSITIVE_TERMS = {
     "authorization",
     "credential",
@@ -496,11 +504,18 @@ def _tool_mcp_header_annotations(tools: list[Tool]) -> list[dict[str, Any]]:
     ]
 
 
-def _normalized_sensitive_terms(value: str) -> set[str]:
-    """Return normalized words and phrases used by the sensitive-name matcher."""
+def _normalized_sensitive_words(value: str) -> list[str]:
+    """Split an identifier and canonicalize only known sensitive plurals."""
     snake = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", value)
     snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", snake)
-    words = re.findall(r"[A-Za-z0-9]+", snake.casefold())
+    return [
+        cast("str", _SENSITIVE_PLURAL_WORDS.get(word, word)) for word in re.findall(r"[A-Za-z0-9]+", snake.casefold())
+    ]
+
+
+def _normalized_sensitive_terms(value: str) -> set[str]:
+    """Return normalized words and phrases used by the sensitive-name matcher."""
+    words = _normalized_sensitive_words(value)
     terms = set(words)
     terms.update(
         "_".join(words[start:end])
@@ -509,14 +524,13 @@ def _normalized_sensitive_terms(value: str) -> set[str]:
     )
     if terms & _NON_SECRET_TOKEN_TERMS:
         terms.discard("token")
-        terms.discard("tokens")
     return terms - _NON_SECRET_TOKEN_TERMS
 
 
 def _sensitive_category(value: str, source: str) -> str | None:
     """Classify strong sensitive-data evidence, accounting for metadata shape."""
     terms = _normalized_sensitive_terms(value)
-    normalized_identifier = "_".join(re.findall(r"[A-Za-z0-9]+", value.casefold()))
+    normalized_identifier = "_".join(_normalized_sensitive_words(value))
 
     if source in {"title", "description"}:
         contextual = next((term for term in _FREE_TEXT_CONTEXT_SENSITIVE_TERMS if term in terms), None)
@@ -529,7 +543,9 @@ def _sensitive_category(value: str, source: str) -> str | None:
     for sensitive, category in _SENSITIVE_HEADER_TERMS.items():
         if sensitive not in terms:
             continue
-        if sensitive in _STRUCTURED_EXACT_SENSITIVE_TERMS and normalized_identifier != sensitive:
+        if sensitive in _STRUCTURED_SUFFIX_SENSITIVE_TERMS and not (
+            normalized_identifier == sensitive or normalized_identifier.endswith(f"_{sensitive}")
+        ):
             continue
         return category
     return None

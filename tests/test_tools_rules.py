@@ -1198,6 +1198,13 @@ class TestToolsMcpHeadersNotSensitiveRule:
             ("pii", "personally identifiable information"),
             ("session_token", "token"),
             ("securityToken", "token"),
+            ("user_email", "email address"),
+            ("contact_email", "email address"),
+            ("customer_phone", "phone number"),
+            ("apiKeys", "API key"),
+            ("apiTokens", "API token"),
+            ("passwords", "password"),
+            ("clientSecrets", "client secret"),
         ],
     )
     def test_sensitive_parameter_names_fail(self, parameter_name: str, category: str) -> None:
