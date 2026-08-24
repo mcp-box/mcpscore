@@ -16,15 +16,20 @@ from mcpscore.probes import (
     ORIGIN_PROBE_VALUE,
     PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
+    PROBE_GET_STREAM_REMOVED,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
     PROBE_MALFORMED_JSON,
     PROBE_MALFORMED_META,
+    PROBE_MISSING_METHOD_HEADER,
+    PROBE_MISSING_PROTOCOL_VERSION,
     PROBE_MISSING_RESOURCE,
     PROBE_ORIGIN_VALIDATION,
     PROBE_PAGINATION_CACHE_SCOPE,
+    PROBE_PROMPT_NAME_HEADER_MISMATCH,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_REMOVED_METHOD,
+    PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
     PROBE_RESOURCES_INVALID_CURSOR,
     PROBE_SESSION_ID_ECHO,
@@ -70,7 +75,7 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
         # RFC 9728 path-aware well-known location for URL's /mcp path.
         if request.url.path == "/.well-known/oauth-protected-resource/mcp":
             return httpx2.Response(200, json={"resource": URL, "authorization_servers": AUTH_SERVERS})
-        return httpx2.Response(404)
+        return httpx2.Response(405)
     if request.headers.get("Origin") == "https://mcpscore.invalid":
         return httpx2.Response(403)
     try:
@@ -83,8 +88,14 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
     method = body["method"]
     meta = body.get("params", {}).get("_meta", {})
 
-    # SEP-2243: header/body mismatch → 400 + HeaderMismatch
-    if request.headers.get("Mcp-Method") != method:
+    # SEP-2243: missing or mismatched request metadata → HeaderMismatch.
+    params = body.get("params", {})
+    expected_name = params.get("uri") if method == "resources/read" else params.get("name")
+    if (
+        request.headers.get("MCP-Protocol-Version") is None
+        or request.headers.get("Mcp-Method") != method
+        or (method in {"resources/read", "prompts/get"} and request.headers.get("Mcp-Name") != expected_name)
+    ):
         return _rpc_error(request_id, ERROR_HEADER_MISMATCH, "HeaderMismatch")
 
     # Unknown protocol version → 400 + UnsupportedProtocolVersion
@@ -139,6 +150,8 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
         )
     if method == "resources/read":
         return _rpc_error(request_id, ERROR_INVALID_PARAMS, "Unknown resource", http_status=400)
+    if method == "prompts/get":
+        return _rpc_error(request_id, ERROR_INVALID_PARAMS, "Unknown prompt", http_status=400)
     return _rpc_error(request_id, -32601, "Method not found", http_status=404)
 
 
@@ -203,6 +216,11 @@ async def test_legacy_server_is_unsupported_but_observed():
         PROBE_STATELESS_LIST,
         PROBE_MALFORMED_META,
         PROBE_HEADER_MISMATCH,
+        PROBE_MISSING_PROTOCOL_VERSION,
+        PROBE_MISSING_METHOD_HEADER,
+        PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+        PROBE_PROMPT_NAME_HEADER_MISMATCH,
+        PROBE_GET_STREAM_REMOVED,
         PROBE_UNKNOWN_VERSION,
         PROBE_MISSING_RESOURCE,
         PROBE_SESSION_ID_ECHO,
@@ -262,6 +280,108 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
     assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 307
     assert results[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.UNSUPPORTED
     assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
+
+
+async def test_new_http_validation_probes_reject_noncompliant_behavior():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "GET" and request.url.path == "/mcp":
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"})
+        body = json.loads(request.content) if request.method == "POST" else {}
+        request_id = body.get("id")
+        if request_id in {19, 20}:
+            return _rpc_result(request_id, {"resultType": "complete", "supportedVersions": ["2026-07-28"]})
+        if request_id in {21, 22} and request.headers.get("Mcp-Name", "").endswith("-mismatch"):
+            return _rpc_error(request_id, ERROR_INVALID_PARAMS, "Unknown item")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    for probe_id in (
+        PROBE_MISSING_PROTOCOL_VERSION,
+        PROBE_MISSING_METHOD_HEADER,
+        PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+        PROBE_PROMPT_NAME_HEADER_MISMATCH,
+        PROBE_GET_STREAM_REMOVED,
+    ):
+        assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
+
+
+async def test_missing_header_probes_remove_caller_default_headers_from_final_request():
+    seen: dict[int, tuple[str | None, str | None]] = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        request_id = body.get("id")
+        if request_id in {19, 20}:
+            seen[request_id] = (
+                request.headers.get("MCP-Protocol-Version"),
+                request.headers.get("Mcp-Method"),
+            )
+        return _modern_server_handler(request)
+
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        headers={"MCP-Protocol-Version": "caller-default", "Mcp-Method": "caller-default"},
+    ) as client:
+        results = await run_all_probes(URL, client=client)
+
+    assert seen[19] == (None, "server/discover")
+    assert seen[20] == ("2026-07-28", None)
+    assert results[PROBE_MISSING_PROTOCOL_VERSION].outcome is ProbeOutcome.SUPPORTED
+    assert results[PROBE_MISSING_METHOD_HEADER].outcome is ProbeOutcome.SUPPORTED
+
+
+async def test_named_header_probes_skip_unimplemented_optional_methods():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") in {"resources/read", "prompts/get"}:
+            return _rpc_error(body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=404)
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    for probe_id in (PROBE_RESOURCE_NAME_HEADER_MISMATCH, PROBE_PROMPT_NAME_HEADER_MISMATCH):
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert results[probe_id].details["reason"] == "optional request method is not implemented"
+
+
+async def test_new_http_validation_probes_skip_auth_gated_requests():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if request.method == "GET" and request.url.path == "/mcp":
+            return httpx2.Response(401)
+        if body.get("id") in {19, 20, 21, 22}:
+            return httpx2.Response(401)
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    for probe_id in (
+        PROBE_MISSING_PROTOCOL_VERSION,
+        PROBE_MISSING_METHOD_HEADER,
+        PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+        PROBE_PROMPT_NAME_HEADER_MISMATCH,
+        PROBE_GET_STREAM_REMOVED,
+    ):
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE, probe_id
+        assert "access-controlled" in results[probe_id].details["reason"]
+
+
+async def test_new_http_validation_probes_do_not_follow_redirects():
+    redirected_hosts: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "redirect.example":
+            redirected_hosts.append(request.url.host)
+            return httpx2.Response(200)
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if (request.method == "GET" and request.url.path == "/mcp") or body.get("id") in {19, 20, 21, 22}:
+            return httpx2.Response(307, headers={"location": "https://redirect.example/mcp"})
+        return _modern_server_handler(request)
+
+    await _run(handler)
+
+    assert redirected_hosts == []
 
 
 async def test_invalid_cursor_probes_reject_servers_that_accept_fabricated_cursors():

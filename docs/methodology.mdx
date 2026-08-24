@@ -138,6 +138,10 @@ language (MUST/MUST NOT unless noted):
 | `readiness_2026_response_content_type` | HIGH | Successful responses MUST be `application/json` or `text/event-stream` ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#sending-messages)) |
 | `readiness_2026_meta_validation` | HIGH | Requests missing required `_meta` fields MUST be rejected with `-32602` + HTTP 400 |
 | `readiness_2026_header_validation` | HIGH | Header/body mismatches MUST be rejected with `-32020` (HeaderMismatch) + HTTP 400 ([SEP-2243](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)) |
+| `readiness_2026_missing_protocol_version_rejected` | LOW | Modern-only endpoints MUST reject a missing `MCP-Protocol-Version` with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
+| `readiness_2026_missing_method_header_rejected` | LOW | A missing `Mcp-Method` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
+| `readiness_2026_resource_name_header_mismatch_rejected` | LOW | A `resources/read` `Mcp-Name` that contradicts `params.uri` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
+| `readiness_2026_prompt_name_header_mismatch_rejected` | LOW | A `prompts/get` `Mcp-Name` that contradicts `params.name` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
 | `readiness_2026_cache_metadata` | HIGH | List/discover results MUST carry `ttlMs >= 0` and `cacheScope` ([SEP-2549](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching)) |
 | `readiness_2026_unsupported_version_error` | MEDIUM | Unknown protocol versions MUST be rejected with `-32022` naming the supported versions |
 | `readiness_2026_error_code_migration` | MEDIUM | Missing resources yield `-32602`; the legacy `-32002` MUST NOT be emitted ([SEP-2164](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
@@ -146,13 +150,14 @@ language (MUST/MUST NOT unless noted):
 | `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([SEP-2106](https://modelcontextprotocol.io/specification/2026-07-28/basic/index)) |
 | `readiness_2026_no_session_id` | HIGH | No `Mcp-Session-Id` minted or echoed on modern requests — leaked legacy session bookkeeping ([SEP-2567](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
 | `readiness_2026_removed_methods` | MEDIUM | Removed methods (e.g. `ping`) rejected with 404 + `-32601`, not served — leaked legacy surface ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
+| `readiness_2026_no_get_stream` | MEDIUM | Modern-only endpoints SHOULD reject the removed standalone GET stream with HTTP 405 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#earlier-streamable-http-revisions)) |
 
 Two things worth knowing about how these run:
 
-- The last two are **legacy-leakage checks**: they only run when your server *shows*
-  modern support, because a legacy-only server keeping sessions is correct behavior,
-  not leakage. A dual-era server (serving both lifecycles) is spec-legal and scores
-  normally — what's flagged is legacy artifacts inside *modern* interactions.
+- The session-ID and removed-method rules are **legacy-leakage checks**: they only
+  run when your server *shows* modern support. Missing protocol-version rejection
+  and GET-stream removal are narrower still: they skip dual-era endpoints, because
+  the spec explicitly permits compatibility with older Streamable HTTP revisions.
 - **Promotion (since 1.1.0):** a server that negotiates the modern lifecycle
   (era `modern` or `dual-era`) has its readiness points **counted in the main
   score** — the report's `readiness.counted_in_main` flag says which mode a

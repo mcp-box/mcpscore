@@ -7,6 +7,11 @@ from mcpscore.enums import MCPTransportType
 from mcpscore.mcp_auditor import MCPAuditor
 from mcpscore.probes import (
     PROBE_DISCOVER,
+    PROBE_GET_STREAM_REMOVED,
+    PROBE_MISSING_METHOD_HEADER,
+    PROBE_MISSING_PROTOCOL_VERSION,
+    PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_STATELESS_LIST,
     ProbeOutcome,
     ProbeResult,
@@ -51,6 +56,22 @@ def _modern_probe_results(discover_payload: dict | None = DISCOVER_PAYLOAD) -> d
         ProbeOutcome.SUPPORTED,
         {"result_type": "complete", "ttl_ms": 60000, "cache_scope": "public"},
         payload=TOOLS_PAYLOAD,
+    )
+    header_ok = {"http_status": 400, "error_code": -32020}
+    results[PROBE_MISSING_PROTOCOL_VERSION] = ProbeResult(
+        PROBE_MISSING_PROTOCOL_VERSION, ProbeOutcome.SUPPORTED, dict(header_ok)
+    )
+    results[PROBE_MISSING_METHOD_HEADER] = ProbeResult(
+        PROBE_MISSING_METHOD_HEADER, ProbeOutcome.SUPPORTED, dict(header_ok)
+    )
+    results[PROBE_RESOURCE_NAME_HEADER_MISMATCH] = ProbeResult(
+        PROBE_RESOURCE_NAME_HEADER_MISMATCH, ProbeOutcome.SUPPORTED, dict(header_ok)
+    )
+    results[PROBE_PROMPT_NAME_HEADER_MISMATCH] = ProbeResult(
+        PROBE_PROMPT_NAME_HEADER_MISMATCH, ProbeOutcome.SUPPORTED, dict(header_ok)
+    )
+    results[PROBE_GET_STREAM_REMOVED] = ProbeResult(
+        PROBE_GET_STREAM_REMOVED, ProbeOutcome.SUPPORTED, {"http_status": 405}
     )
     return results
 
@@ -100,6 +121,10 @@ async def test_modern_only_audit_extracts_data_and_scores(stub_probes, monkeypat
     assert auditor.era is Era.MODERN
     assert auditor.max_score > 0  # main rules ran on the extracted data
     assert auditor.readiness_max > 0
+    # Discover-populated protocol_version must not look like a dual-era skip.
+    skipped_ids = {s.rule_id for s in auditor.skipped_rules}
+    assert "readiness_2026_missing_protocol_version_rejected" not in skipped_ids
+    assert "readiness_2026_no_get_stream" not in skipped_ids
 
     report = auditor.get_audit_report()
     assert report["spec"]["era"] == "modern"

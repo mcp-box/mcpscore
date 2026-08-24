@@ -113,6 +113,13 @@ class AuditData:
 
     # Protocol and server information
     protocol_version: str | None = None
+    session_protocol_version: str | None = None
+    """Version negotiated by a successful ``initialize`` handshake.
+
+    Unlike ``protocol_version``, this is never populated from modern
+    ``server/discover`` evidence. Its presence therefore proves that the audit
+    established the stateful side of a dual-era endpoint.
+    """
     server_info: Implementation | None = None
     capabilities: ServerCapabilities | None = None
     instructions: str | None = None

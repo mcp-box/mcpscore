@@ -135,6 +135,11 @@ PROBE_DISCOVER = "probe_discover"
 PROBE_STATELESS_LIST = "probe_stateless_list"
 PROBE_MALFORMED_META = "probe_malformed_meta"
 PROBE_HEADER_MISMATCH = "probe_header_mismatch"
+PROBE_MISSING_PROTOCOL_VERSION = "probe_missing_protocol_version"
+PROBE_MISSING_METHOD_HEADER = "probe_missing_method_header"
+PROBE_RESOURCE_NAME_HEADER_MISMATCH = "probe_resource_name_header_mismatch"
+PROBE_PROMPT_NAME_HEADER_MISMATCH = "probe_prompt_name_header_mismatch"
+PROBE_GET_STREAM_REMOVED = "probe_get_stream_removed"
 PROBE_UNKNOWN_VERSION = "probe_unknown_version"
 PROBE_MISSING_RESOURCE = "probe_missing_resource"
 PROBE_UNAUTHENTICATED = "probe_unauthenticated"
@@ -155,6 +160,11 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_STATELESS_LIST,
     PROBE_MALFORMED_META,
     PROBE_HEADER_MISMATCH,
+    PROBE_MISSING_PROTOCOL_VERSION,
+    PROBE_MISSING_METHOD_HEADER,
+    PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+    PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    PROBE_GET_STREAM_REMOVED,
     PROBE_UNKNOWN_VERSION,
     PROBE_MISSING_RESOURCE,
     PROBE_UNAUTHENTICATED,
@@ -175,6 +185,11 @@ PROBE_IDS: tuple[str, ...] = (
 HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
     {
         PROBE_HEADER_MISMATCH,
+        PROBE_MISSING_PROTOCOL_VERSION,
+        PROBE_MISSING_METHOD_HEADER,
+        PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+        PROBE_PROMPT_NAME_HEADER_MISMATCH,
+        PROBE_GET_STREAM_REMOVED,
         PROBE_UNAUTHENTICATED,
         PROBE_SESSION_ID_ECHO,
         PROBE_AUTH_METADATA,
@@ -185,11 +200,11 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
 """Probes whose *subject* is an HTTP construct, so they cannot run over stdio.
 
 Not "probes that happen to use HTTP" — every probe does that over an HTTP
-target. These ask questions that only exist in HTTP: the ``Mcp-Method`` header
-contradicting the body (SEP-2243), the unauthenticated status and
-``WWW-Authenticate`` challenge, the removed ``Mcp-Session-Id`` header, the
-RFC 9728/8414 well-known documents, ``Origin`` validation against DNS
-rebinding, and raw malformed HTTP request bodies. Over stdio they record
+target. These ask questions that only exist in HTTP: required/mirrored request
+headers, the removed GET stream and ``Mcp-Session-Id``, the unauthenticated
+status and ``WWW-Authenticate`` challenge, RFC 9728/8414 well-known documents,
+``Origin`` validation against DNS rebinding, and raw malformed HTTP request
+bodies. Over stdio they record
 ``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
 malformed wire input through the SDK transport.
 """
@@ -392,8 +407,9 @@ class _HttpTarget:
         *,
         anonymous: bool = False,
         follow_redirects: bool = True,
+        omit_headers: tuple[str, ...] = (),
     ) -> _HttpProbeResponse:
-        """POST a probe request, optionally stripping the caller's Authorization.
+        """POST a probe request, optionally stripping headers from the final request.
 
         When ``anonymous``, remove any caller-supplied ``Authorization`` header
         so the probe observes the server's unauthenticated behavior even when a
@@ -403,11 +419,16 @@ class _HttpTarget:
         here also covers caller-injected clients whose defaults it cannot
         control. ``follow_redirects`` may be disabled for security checks that
         must judge the target endpoint itself without forwarding caller context
-        elsewhere.
+        elsewhere. ``omit_headers`` is applied after ``build_request`` merges
+        client defaults, so a caller-supplied default cannot accidentally
+        restore a header that a negative probe intends to omit. The shared
+        client's defaults are never mutated because probes run concurrently.
         """
         request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
         if anonymous:
             request.headers.pop("Authorization", None)
+        for header in omit_headers:
+            request.headers.pop(header, None)
         response = await self.client.send(request, follow_redirects=follow_redirects)
         return _HttpProbeResponse(
             status_code=response.status_code,
@@ -485,6 +506,21 @@ class _HttpTarget:
             text,
             "truncated" if truncated else None,
         )
+
+    async def get_status(self, headers: dict[str, str]) -> _HttpProbeResponse:
+        """GET the endpoint and close without consuming a possible legacy SSE stream."""
+        async with self.client.stream(
+            "GET",
+            self.url,
+            headers=headers,
+            timeout=PROBE_TIMEOUT_S,
+            follow_redirects=False,
+        ) as response:
+            return _HttpProbeResponse(
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                payload=None,
+            )
 
 
 @dataclass(frozen=True)
@@ -651,6 +687,119 @@ async def _probe_header_mismatch(target: _HttpTarget) -> ProbeResult:
     correct = response.status_code == 400 and response.error_code == ERROR_HEADER_MISMATCH
     outcome = ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_HEADER_MISMATCH, outcome, details)
+
+
+def _header_validation_result(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
+    """Classify one required-header failure without misreporting an unobservable request."""
+    details = _base_details(response)
+    if response.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "request is access-controlled; header validation not observable"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    correct = response.status_code == 400 and response.error_code == ERROR_HEADER_MISMATCH
+    return ProbeResult(probe_id, ProbeOutcome.SUPPORTED if correct else ProbeOutcome.UNSUPPORTED, details)
+
+
+async def _probe_missing_protocol_version(target: _HttpTarget) -> ProbeResult:
+    """Omit the required ``MCP-Protocol-Version`` header from a harmless list request."""
+    target_version = _target_version()
+    headers = _request_headers(target_version, "server/discover")
+    del headers["MCP-Protocol-Version"]
+    response = await target.post(
+        _request_body("server/discover", 19, _modern_meta(target_version)),
+        headers,
+        follow_redirects=False,
+        omit_headers=("MCP-Protocol-Version",),
+    )
+    return _header_validation_result(PROBE_MISSING_PROTOCOL_VERSION, response)
+
+
+async def _probe_missing_method_header(target: _HttpTarget) -> ProbeResult:
+    """Omit the required ``Mcp-Method`` header from a harmless list request."""
+    target_version = _target_version()
+    headers = _request_headers(target_version, "server/discover")
+    del headers["Mcp-Method"]
+    response = await target.post(
+        _request_body("server/discover", 20, _modern_meta(target_version)),
+        headers,
+        follow_redirects=False,
+        omit_headers=("Mcp-Method",),
+    )
+    return _header_validation_result(PROBE_MISSING_METHOD_HEADER, response)
+
+
+async def _probe_name_header_mismatch(
+    target: _HttpTarget,
+    *,
+    method: str,
+    request_id: int,
+    params: dict[str, Any],
+    name: str,
+    probe_id: str,
+) -> ProbeResult:
+    """Prove an optional named method exists, then contradict its Mcp-Name header."""
+    target_version = _target_version()
+    body = _request_body(method, request_id, _modern_meta(target_version), params=params)
+    control = await target.post(
+        body,
+        _request_headers(target_version, method, name=name),
+        follow_redirects=False,
+    )
+    if control.status_code in AUTH_GATED_STATUSES:
+        details = _base_details(control)
+        details["reason"] = "control request is access-controlled; header validation not observable"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    if control.error_code == ERROR_METHOD_NOT_FOUND:
+        details = _base_details(control)
+        details["reason"] = "optional request method is not implemented"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+
+    response = await target.post(
+        body,
+        _request_headers(target_version, method, name=f"{name}-mismatch"),
+        follow_redirects=False,
+    )
+    result = _header_validation_result(probe_id, response)
+    return ProbeResult(
+        result.probe_id,
+        result.outcome,
+        {"control_http_status": control.status_code, "control_error_code": control.error_code, **result.details},
+    )
+
+
+async def _probe_resource_name_header_mismatch(target: _HttpTarget) -> ProbeResult:
+    """Contradict ``resources/read``'s body URI in ``Mcp-Name`` without reading a real resource."""
+    return await _probe_name_header_mismatch(
+        target,
+        method="resources/read",
+        request_id=21,
+        params={"uri": MISSING_RESOURCE_URI},
+        name=MISSING_RESOURCE_URI,
+        probe_id=PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+    )
+
+
+async def _probe_prompt_name_header_mismatch(target: _HttpTarget) -> ProbeResult:
+    """Contradict a fabricated ``prompts/get`` name in ``Mcp-Name`` without resolving a real prompt."""
+    prompt_name = "mcpscore-does-not-exist"
+    return await _probe_name_header_mismatch(
+        target,
+        method="prompts/get",
+        request_id=22,
+        params={"name": prompt_name},
+        name=prompt_name,
+        probe_id=PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    )
+
+
+async def _probe_get_stream_removed(target: _HttpTarget) -> ProbeResult:
+    """Verify that the removed standalone GET stream receives HTTP 405."""
+    response = await target.get_status({"Accept": "text/event-stream"})
+    details = _base_details(response)
+    if response.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "request is access-controlled; GET handling not observable"
+        return ProbeResult(PROBE_GET_STREAM_REMOVED, ProbeOutcome.NOT_APPLICABLE, details)
+    outcome = ProbeOutcome.SUPPORTED if response.status_code == 405 else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_GET_STREAM_REMOVED, outcome, details)
 
 
 async def _probe_unknown_version(target: _ProbeTarget) -> ProbeResult:
@@ -1359,6 +1508,11 @@ _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeRe
 
 _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = {
     PROBE_HEADER_MISMATCH: _probe_header_mismatch,
+    PROBE_MISSING_PROTOCOL_VERSION: _probe_missing_protocol_version,
+    PROBE_MISSING_METHOD_HEADER: _probe_missing_method_header,
+    PROBE_RESOURCE_NAME_HEADER_MISMATCH: _probe_resource_name_header_mismatch,
+    PROBE_PROMPT_NAME_HEADER_MISMATCH: _probe_prompt_name_header_mismatch,
+    PROBE_GET_STREAM_REMOVED: _probe_get_stream_removed,
     PROBE_UNAUTHENTICATED: _probe_unauthenticated,
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
