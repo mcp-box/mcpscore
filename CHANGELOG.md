@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Package Audits guide** (`docs/package-audits.mdx`) — the `--package`
+  feature finally has a docs page: what the six packaging rules check, why
+  the package is never downloaded or executed, and why package scores share
+  no denominator with server scores.
+- **"Why did my score change?" section** in the scoring methodology —
+  version-to-version ruleset growth, partial vs full audits, readiness
+  promotion, and server-side variance (rolling deploys, rate-limited
+  probes) as the causes of score movement.
+- **Docs publish from release tags.** A new `publish-docs.yml` workflow
+  fast-forwards a `docs-live` branch to each stable release tag, so
+  docs.mcpscore.dev describes the released engine instead of main (the
+  Mintlify app deploys from `docs-live`).
+
+### Fixed
+
+- Docs freshness pass: example CLI outputs regenerated from real 1.9.0 runs
+  (the index example claimed 2025-11-25 was the latest spec revision; the
+  authenticated-servers partial example carried a 1.2.0-era check count),
+  the methodology page no longer calls 2026-07-28 a release candidate in one
+  place and final in another, the GitHub Action page's `version` examples no
+  longer suggest 0.8.0, a stale readiness anchor is fixed, the index no
+  longer repeats its own subtitle as its first sentence, and the rules
+  reference intro no longer repeats its frontmatter description.
+
 - **`supportedVersions` covers the negotiated legacy version.** The new LOW
   `protocol_version_supported_versions_include_negotiated` rule judges
   dual-era servers whose `server/discover` response omits the protocol

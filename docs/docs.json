@@ -21,6 +21,7 @@
         "group": "Guides",
         "pages": [
           "authenticated-servers",
+          "package-audits",
           "badge"
         ]
       },

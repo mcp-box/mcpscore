@@ -1,0 +1,41 @@
+name: Publish docs
+
+# docs.mcpscore.dev must describe the RELEASED engine, not main: main's docs
+# can document rules no released version emits (they merge ahead of the
+# release train). This workflow keeps a `docs-live` branch fast-forwarded to
+# the docs of the latest release tag; the Mintlify GitHub App is configured
+# (in the Mintlify dashboard) to deploy from `docs-live` instead of main.
+#
+# Runs on every published release (the same trigger as the PyPI/npm publish
+# workflows) and on demand. Pre-releases are skipped: their docs go live with
+# the stable release that follows.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  publish:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # persist-credentials stays on deliberately: this job's entire purpose
+      # is the authenticated push below, and nothing after checkout uploads
+      # artifacts that could leak the persisted token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1  # zizmor: ignore[artipacked]
+        with:
+          # The release tag (or, on manual dispatch, the ref the run was
+          # started from — dispatch from the tag to republish it).
+          ref: ${{ github.event.release.tag_name || github.ref }}
+          fetch-depth: 0
+      - name: Point docs-live at this release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Force: docs-live is a deploy pointer owned by this workflow, never
+          # a place where commits originate — rewriting it is the contract.
+          git push origin "HEAD:refs/heads/docs-live" --force
