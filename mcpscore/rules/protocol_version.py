@@ -259,6 +259,8 @@ class SupportedVersionsIncludeNegotiatedRule(BaseRule):
     group_name = "protocol_version"
     group_order = 1
     rule_id = "protocol_version_supported_versions_include_negotiated"
+    min_spec_version = "2026-07-28"
+    uses_modern_probe_evidence = True
     basis = (
         "MCP 2026-07-28 Server §Discovery (DiscoverResult.supportedVersions: protocol versions the "
         "server supports) and Basic §Versioning (the UnsupportedProtocolVersionError example lists "

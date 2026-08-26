@@ -251,3 +251,17 @@ class TestSupportedVersionsIncludeNegotiatedRule:
             SupportedVersionsIncludeNegotiatedRule().skip_reason(self._data(discover=errored))
             == SKIP_REASON_INSUFFICIENT_DATA
         )
+
+    def test_applicability_follows_the_modern_probe_surface(self):
+        """Pin the static applicability metadata to the discover era.
+
+        server/discover exists only from 2026-07-28, and the modern-evidence
+        flag keeps dual-era audits (legacy negotiated session) inside the
+        range.
+        """
+        rule = SupportedVersionsIncludeNegotiatedRule()
+
+        assert rule.min_spec_version == "2026-07-28"
+        assert rule.uses_modern_probe_evidence is True
+        assert not rule.applies_to("2025-11-25")
+        assert rule.applies_to("2026-07-28")
