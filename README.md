@@ -53,8 +53,8 @@ the JSON output, and [mcpscore.dev](https://mcpscore.dev) show, plus six separat
 packaging rules. Every rule cites the spec section or RFC it enforces; the full list is
 in the [rules reference](https://docs.mcpscore.dev/rules/).
 
-**Protocol** (17 rules) — protocol version (allowed, latest, not deprecated, exhaustive
-`supportedVersions` on dual-era servers), server
+**Protocol** (17 rules) — protocol version (allowed, latest, not deprecated,
+`supportedVersions` covering the negotiated legacy version on dual-era servers), server
 name, title and version, advertised capabilities, and transport. Streamable HTTP is the
 current standard, so SSE-only servers get migration advice.
 

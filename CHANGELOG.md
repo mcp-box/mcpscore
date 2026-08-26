@@ -9,22 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Exhaustive `supportedVersions` cross-check.** The new LOW
-  `protocol_version_supported_versions_exhaustive` rule judges dual-era
-  servers whose `server/discover` response omits a protocol version they
-  still serve through the legacy `initialize` handshake (observed in the
-  wild on huggingface.co/mcp, which declares only 2026-07-28 while
+- **`supportedVersions` covers the negotiated legacy version.** The new LOW
+  `protocol_version_supported_versions_include_negotiated` rule judges
+  dual-era servers whose `server/discover` response omits the protocol
+  version their legacy `initialize` handshake actually negotiated (observed
+  in the wild on huggingface.co/mcp, which declares only 2026-07-28 while
   negotiating 2025-11-25). The finding's advice: add the version to
   `supportedVersions`, or disable the legacy lifecycle if it was meant to
-  be retired. LOW because the specification defines `supportedVersions`
-  descriptively ("protocol versions the server supports") without an
-  explicit completeness MUST — though its own
-  `UnsupportedProtocolVersionError` example mixes eras in `supported` — so
-  the omission is treated as a consistency finding, not a violation.
-  Modern-only and legacy-only servers skip as not-applicable; the check
-  uses the legacy session's own negotiated version
-  (`session_protocol_version`), so modern evidence can never manufacture
-  the finding.
+  be retired. Deliberately scoped to the one legacy version the audit
+  observed — a session negotiates a single version, so the rule proves
+  "the negotiated version is listed", never full exhaustiveness. LOW
+  because the specification defines `supportedVersions` descriptively
+  ("protocol versions the server supports") without an explicit
+  completeness MUST — though its own `UnsupportedProtocolVersionError`
+  example mixes eras in `supported` — so the omission is treated as a
+  consistency finding, not a violation. Modern-only and legacy-only
+  servers skip as not-applicable; the check uses the legacy session's own
+  negotiated version (`session_protocol_version`), so modern evidence can
+  never manufacture the finding.
 
 ## [1.9.0] - 2026-08-24
 

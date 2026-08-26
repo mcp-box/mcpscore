@@ -13,7 +13,7 @@ from mcpscore.rules import (
     AuditData,
     DeprecatedVersionRule,
     LatestVersionRule,
-    SupportedVersionsExhaustiveRule,
+    SupportedVersionsIncludeNegotiatedRule,
 )
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 
@@ -176,7 +176,7 @@ class TestLatestVersionRuleJudgesEvidence:
         assert rule.check(data).passed
 
 
-class TestSupportedVersionsExhaustiveRule:
+class TestSupportedVersionsIncludeNegotiatedRule:
     """Dual-era cross-check: discover's supportedVersions vs the legacy handshake."""
 
     @staticmethod
@@ -194,13 +194,13 @@ class TestSupportedVersionsExhaustiveRule:
         )
 
     def test_passes_when_the_legacy_version_is_listed(self):
-        """A discover list containing the handshake's version is exhaustive."""
+        """A discover list containing the handshake's negotiated version passes."""
         discover = ProbeResult(
             PROBE_DISCOVER,
             ProbeOutcome.SUPPORTED,
             {"supported_versions": ["2026-07-28", "2025-11-25"]},
         )
-        rule = SupportedVersionsExhaustiveRule()
+        rule = SupportedVersionsIncludeNegotiatedRule()
         data = self._data(discover=discover)
 
         assert rule.skip_reason(data) is None
@@ -215,7 +215,7 @@ class TestSupportedVersionsExhaustiveRule:
             ProbeOutcome.SUPPORTED,
             {"supported_versions": ["2026-07-28"]},
         )
-        rule = SupportedVersionsExhaustiveRule()
+        rule = SupportedVersionsIncludeNegotiatedRule()
         data = self._data(discover=discover)
 
         assert rule.skip_reason(data) is None
@@ -233,11 +233,11 @@ class TestSupportedVersionsExhaustiveRule:
         )
         data = self._data(session_version=None, discover=discover)
 
-        assert SupportedVersionsExhaustiveRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+        assert SupportedVersionsIncludeNegotiatedRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
 
     def test_skips_legacy_only_servers(self):
         """Discover UNSUPPORTED (or absent) means no modern surface to be inconsistent with."""
-        rule = SupportedVersionsExhaustiveRule()
+        rule = SupportedVersionsIncludeNegotiatedRule()
 
         assert rule.skip_reason(self._data(discover=None)) == SKIP_REASON_NOT_APPLICABLE
         unsupported = ProbeResult(PROBE_DISCOVER, ProbeOutcome.UNSUPPORTED, {"http_status": 404})
@@ -248,5 +248,6 @@ class TestSupportedVersionsExhaustiveRule:
         errored = ProbeResult(PROBE_DISCOVER, ProbeOutcome.ERROR, {"exception": "TimeoutError"})
 
         assert (
-            SupportedVersionsExhaustiveRule().skip_reason(self._data(discover=errored)) == SKIP_REASON_INSUFFICIENT_DATA
+            SupportedVersionsIncludeNegotiatedRule().skip_reason(self._data(discover=errored))
+            == SKIP_REASON_INSUFFICIENT_DATA
         )

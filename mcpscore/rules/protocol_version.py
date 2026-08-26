@@ -228,8 +228,8 @@ class LatestVersionRule(BaseRule):
 
 
 @register_rule
-class SupportedVersionsExhaustiveRule(BaseRule):
-    """Low check: ``server/discover`` names every protocol version the server actually serves.
+class SupportedVersionsIncludeNegotiatedRule(BaseRule):
+    """Low check: ``server/discover`` lists the version the legacy handshake negotiated.
 
     Judged only on dual-era endpoints, where the audit holds both pieces of
     evidence: a version negotiated by a real legacy ``initialize`` handshake
@@ -239,6 +239,12 @@ class SupportedVersionsExhaustiveRule(BaseRule):
     at a version its discovery response omits is telling modern clients less
     than the truth: either the list forgot the legacy revision, or the legacy
     lifecycle was meant to be retired and is still enabled by mistake.
+
+    Deliberately scoped to the one legacy version the audit observed: a
+    session negotiates a single version, so the rule can prove "the
+    negotiated version is listed", never "every served version is listed" —
+    a server also serving an older revision the audit did not negotiate is
+    beyond its evidence, which is why the id says include, not exhaustive.
 
     LOW, not higher: the specification defines ``supportedVersions`` as
     "Protocol versions the server supports" without an explicit completeness
@@ -252,7 +258,7 @@ class SupportedVersionsExhaustiveRule(BaseRule):
 
     group_name = "protocol_version"
     group_order = 1
-    rule_id = "protocol_version_supported_versions_exhaustive"
+    rule_id = "protocol_version_supported_versions_include_negotiated"
     basis = (
         "MCP 2026-07-28 Server §Discovery (DiscoverResult.supportedVersions: protocol versions the "
         "server supports) and Basic §Versioning (the UnsupportedProtocolVersionError example lists "
@@ -262,7 +268,7 @@ class SupportedVersionsExhaustiveRule(BaseRule):
 
     @property
     def rule_name(self) -> str:
-        return "MCP Protocol Version - Supported Versions Exhaustive"
+        return "MCP Protocol Version - Supported Versions Include Negotiated"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -298,8 +304,8 @@ class SupportedVersionsExhaustiveRule(BaseRule):
 
         if passed:
             message = (
-                f"✅ server/discover lists every served version: the legacy handshake's "
-                f"'{negotiated}' appears in supportedVersions {supported}"
+                f"✅ server/discover's supportedVersions {supported} includes the legacy "
+                f"handshake's negotiated version '{negotiated}'"
             )
         else:
             message = (
