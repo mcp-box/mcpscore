@@ -1,11 +1,12 @@
 from abc import abstractmethod
 from typing import ClassVar
 
-from mcpscore.probes import GATEWAY_PROBE_IDS, ProbeOutcome, ProbeResult, has_modern_support
+from mcpscore.probes import GATEWAY_PROBE_IDS, PROBE_DISCOVER, ProbeOutcome, ProbeResult, has_modern_support
 from mcpscore.spec import LATEST, allowed_versions, compare, deprecated_versions
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
     AuditData,
     BaseRule,
     RuleResult,
@@ -222,6 +223,107 @@ class LatestVersionRule(BaseRule):
                 "version": protocol_version,
                 "latest_version": LATEST.version,
                 "modern_lifecycle_support": modern,
+            },
+        )
+
+
+@register_rule
+class SupportedVersionsIncludeNegotiatedRule(BaseRule):
+    """Low check: ``server/discover`` lists the version the legacy handshake negotiated.
+
+    Judged only on dual-era endpoints, where the audit holds both pieces of
+    evidence: a version negotiated by a real legacy ``initialize`` handshake
+    (``AuditData.session_protocol_version`` — never populated from modern
+    evidence) and the ``supportedVersions`` list a successful
+    ``server/discover`` returned. A server that still answers ``initialize``
+    at a version its discovery response omits is telling modern clients less
+    than the truth: either the list forgot the legacy revision, or the legacy
+    lifecycle was meant to be retired and is still enabled by mistake.
+
+    Deliberately scoped to the one legacy version the audit observed: a
+    session negotiates a single version, so the rule can prove "the
+    negotiated version is listed", never "every served version is listed" —
+    a server also serving an older revision the audit did not negotiate is
+    beyond its evidence, which is why the id says include, not exhaustive.
+
+    LOW, not higher: the specification defines ``supportedVersions`` as
+    "Protocol versions the server supports" without an explicit completeness
+    MUST, and a server could read it as describing only the modern
+    per-request surface (legacy revisions cannot be selected through
+    per-request ``_meta`` at all). The spec's own
+    ``UnsupportedProtocolVersionError`` example, however, mixes eras in its
+    ``supported`` list — so the omission is judged as a consistency finding
+    with advice, not a violation.
+    """
+
+    group_name = "protocol_version"
+    group_order = 1
+    rule_id = "protocol_version_supported_versions_include_negotiated"
+    min_spec_version = "2026-07-28"
+    uses_modern_probe_evidence = True
+    basis = (
+        "MCP 2026-07-28 Server §Discovery (DiscoverResult.supportedVersions: protocol versions the "
+        "server supports) and Basic §Versioning (the UnsupportedProtocolVersionError example lists "
+        "legacy revisions in `supported`)"
+    )
+    rule_order = 4
+
+    @property
+    def rule_name(self) -> str:
+        return "MCP Protocol Version - Supported Versions Include Negotiated"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless both a legacy handshake and a discover list were observed.
+
+        No ``session_protocol_version`` means no legacy lifecycle was
+        established (modern-only or legacy-only audits have nothing to
+        cross-check). A missing or unsupported discover probe means the server
+        has no modern discovery surface to be inconsistent with; a discover
+        ERROR means the question could not be asked.
+        """
+        if audit_data.session_protocol_version is None:
+            return SKIP_REASON_NOT_APPLICABLE
+        probe = (audit_data.probes or {}).get(PROBE_DISCOVER)
+        if probe is None or probe.outcome is ProbeOutcome.NOT_APPLICABLE:
+            return SKIP_REASON_NOT_APPLICABLE
+        if probe.outcome is ProbeOutcome.ERROR:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if probe.outcome is not ProbeOutcome.SUPPORTED:
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Cross-check the legacy-negotiated version against the discover list."""
+        negotiated = audit_data.session_protocol_version
+        assert negotiated is not None  # noqa: S101 — guaranteed by skip_reason
+        assert audit_data.probes is not None  # noqa: S101 — guaranteed by skip_reason
+        supported = audit_data.probes[PROBE_DISCOVER].details.get("supported_versions", [])
+        passed = negotiated in supported
+
+        if passed:
+            message = (
+                f"✅ server/discover's supportedVersions {supported} includes the legacy "
+                f"handshake's negotiated version '{negotiated}'"
+            )
+        else:
+            message = (
+                f"❌ server/discover omits '{negotiated}', which the server still serves via the "
+                f"legacy initialize handshake — add it to supportedVersions {supported}, or disable "
+                f"the legacy lifecycle if it was meant to be retired"
+            )
+
+        return RuleResult(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "session_protocol_version": negotiated,
+                "supported_versions": supported,
             },
         )
 

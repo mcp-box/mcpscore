@@ -48,12 +48,13 @@ The final score is reported as `earned/maximum` — higher means a better-qualit
 
 ## What it scores
 
-101 active rules in total: 95 server rules across the same four categories the report,
+102 active rules in total: 96 server rules across the same four categories the report,
 the JSON output, and [mcpscore.dev](https://mcpscore.dev) show, plus six separate
 packaging rules. Every rule cites the spec section or RFC it enforces; the full list is
 in the [rules reference](https://docs.mcpscore.dev/rules/).
 
-**Protocol** (16 rules) — protocol version (allowed, latest, not deprecated), server
+**Protocol** (17 rules) — protocol version (allowed, latest, not deprecated,
+`supportedVersions` covering the negotiated legacy version on dual-era servers), server
 name, title and version, advertised capabilities, and transport. Streamable HTTP is the
 current standard, so SSE-only servers get migration advice.
 

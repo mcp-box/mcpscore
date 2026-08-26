@@ -1,6 +1,7 @@
 from mcpscore.enums import MCPProtocolVersion
 from mcpscore.probes import (
     GATEWAY_PROBE_IDS,
+    PROBE_DISCOVER,
     PROBE_IDS,
     PROBE_UNAUTHENTICATED,
     ProbeOutcome,
@@ -12,8 +13,9 @@ from mcpscore.rules import (
     AuditData,
     DeprecatedVersionRule,
     LatestVersionRule,
+    SupportedVersionsIncludeNegotiatedRule,
 )
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 
 
 def test_allowed_version_rule_passes_for_known_versions():
@@ -172,3 +174,94 @@ class TestLatestVersionRuleJudgesEvidence:
 
         assert rule.skip_reason(data) is None
         assert rule.check(data).passed
+
+
+class TestSupportedVersionsIncludeNegotiatedRule:
+    """Dual-era cross-check: discover's supportedVersions vs the legacy handshake."""
+
+    @staticmethod
+    def _data(
+        session_version: str | None = "2025-11-25",
+        discover: ProbeResult | None = None,
+    ) -> AuditData:
+        probes: dict[str, ProbeResult] | None = None
+        if discover is not None:
+            probes = {PROBE_DISCOVER: discover}
+        return AuditData(
+            protocol_version=session_version,
+            session_protocol_version=session_version,
+            probes=probes,
+        )
+
+    def test_passes_when_the_legacy_version_is_listed(self):
+        """A discover list containing the handshake's negotiated version passes."""
+        discover = ProbeResult(
+            PROBE_DISCOVER,
+            ProbeOutcome.SUPPORTED,
+            {"supported_versions": ["2026-07-28", "2025-11-25"]},
+        )
+        rule = SupportedVersionsIncludeNegotiatedRule()
+        data = self._data(discover=discover)
+
+        assert rule.skip_reason(data) is None
+        result = rule.check(data)
+        assert result.passed
+        assert result.details["supported_versions"] == ["2026-07-28", "2025-11-25"]
+
+    def test_fails_when_a_served_legacy_version_is_omitted(self):
+        """Serving initialize at a version discover omits is the finding (huggingface.co/mcp posture)."""
+        discover = ProbeResult(
+            PROBE_DISCOVER,
+            ProbeOutcome.SUPPORTED,
+            {"supported_versions": ["2026-07-28"]},
+        )
+        rule = SupportedVersionsIncludeNegotiatedRule()
+        data = self._data(discover=discover)
+
+        assert rule.skip_reason(data) is None
+        result = rule.check(data)
+        assert not result.passed
+        assert "2025-11-25" in result.message
+        assert result.details["session_protocol_version"] == "2025-11-25"
+
+    def test_skips_modern_only_servers(self):
+        """No legacy handshake -> nothing to cross-check (session provenance is the gate)."""
+        discover = ProbeResult(
+            PROBE_DISCOVER,
+            ProbeOutcome.SUPPORTED,
+            {"supported_versions": ["2026-07-28"]},
+        )
+        data = self._data(session_version=None, discover=discover)
+
+        assert SupportedVersionsIncludeNegotiatedRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_skips_legacy_only_servers(self):
+        """Discover UNSUPPORTED (or absent) means no modern surface to be inconsistent with."""
+        rule = SupportedVersionsIncludeNegotiatedRule()
+
+        assert rule.skip_reason(self._data(discover=None)) == SKIP_REASON_NOT_APPLICABLE
+        unsupported = ProbeResult(PROBE_DISCOVER, ProbeOutcome.UNSUPPORTED, {"http_status": 404})
+        assert rule.skip_reason(self._data(discover=unsupported)) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_discover_error_is_insufficient_data(self):
+        """A network-failed discover cannot judge the list either way."""
+        errored = ProbeResult(PROBE_DISCOVER, ProbeOutcome.ERROR, {"exception": "TimeoutError"})
+
+        assert (
+            SupportedVersionsIncludeNegotiatedRule().skip_reason(self._data(discover=errored))
+            == SKIP_REASON_INSUFFICIENT_DATA
+        )
+
+    def test_applicability_follows_the_modern_probe_surface(self):
+        """Pin the static applicability metadata to the discover era.
+
+        server/discover exists only from 2026-07-28, and the modern-evidence
+        flag keeps dual-era audits (legacy negotiated session) inside the
+        range.
+        """
+        rule = SupportedVersionsIncludeNegotiatedRule()
+
+        assert rule.min_spec_version == "2026-07-28"
+        assert rule.uses_modern_probe_evidence is True
+        assert not rule.applies_to("2025-11-25")
+        assert rule.applies_to("2026-07-28")

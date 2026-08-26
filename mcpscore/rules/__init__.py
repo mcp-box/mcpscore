@@ -67,6 +67,7 @@ from .protocol_version import (
     AllowedVersionRule,
     DeprecatedVersionRule,
     LatestVersionRule,
+    SupportedVersionsIncludeNegotiatedRule,
 )
 from .readiness import (
     CacheMetadataReadinessRule,
@@ -234,6 +235,7 @@ __all__ = (
     "SkippedRule",
     "StatelessRequestReadinessRule",
     "StreamableHTTPTransportRule",
+    "SupportedVersionsIncludeNegotiatedRule",
     "TLSEnabledRule",
     "ToolSchemaDialectReadinessRule",
     "ToolsAnnotationsPresentRule",
