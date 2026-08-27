@@ -33,6 +33,12 @@
   format). Docstrings: imperative first line, ≤120-char lines.
 - Do not commit to `main`; work on a branch. Do not add strategy or planning documents
   to this repository — it is public.
+- **`docs-live` is a deploy pointer, never a working branch — and never delete it**
+  (nor `main`; both are deletion-protected by repository rulesets since 2026-08-27).
+  Mintlify serves docs.mcpscore.dev from `docs-live`; `publish-docs.yml`
+  force-pushes it to each stable release tag. Deleting it takes the docs site
+  down; committing to it gets overwritten at the next release. Docs changes go
+  through `main` like everything else and reach the site at the next release.
 
 ## Gotchas (learned the hard way)
 
