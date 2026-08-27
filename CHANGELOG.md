@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **mcpscore identifies itself in every handshake.** The legacy `initialize`
+  handshake now sends `clientInfo: {"name": "mcpscore", "version": <installed
+  version>}` instead of the MCP SDK's anonymous default (`mcp/0.1.0`); the
+  modern probes and the status-recovery path already did, and all three now
+  share one constant so they cannot drift apart. Etiquette for server
+  operators and gateways that segment traffic by client identity: audit
+  traffic is now recognizable — and greppable — as mcpscore in server logs.
+  Scores are unaffected.
+
 - **`--fail-under` and `--fail-under-readiness`: the CI gate, in the CLI.**
   `mcpscore <target> --fail-under 80` exits with the new code **3** when the
   main score percentage (rounded, matching the GitHub Action's arithmetic)

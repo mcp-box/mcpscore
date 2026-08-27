@@ -313,7 +313,19 @@ class _HttpProbeResponse(_ProbeResponse):
     status_code: int
 
 
-def _client_version() -> str:
+CLIENT_NAME = "mcpscore"
+"""How mcpscore identifies itself to servers, in every lifecycle.
+
+The single source for the legacy handshake's ``clientInfo``, the modern
+probes' ``_meta`` clientInfo, and the status-recovery handshake — three
+consumers, one constant, so they cannot drift apart. Etiquette: server
+operators and gateways segment traffic by client identity, and an auditor
+should be as recognizable as a well-behaved User-Agent.
+"""
+
+
+def client_version() -> str:
+    """Installed mcpscore version, for clientInfo in every handshake."""
     try:
         return package_version("mcpscore")
     except PackageNotFoundError:  # pragma: no cover - installed in all real environments
@@ -334,7 +346,7 @@ def _modern_meta(protocol_version: str) -> dict[str, Any]:
     """
     return {
         f"{META_PREFIX}protocolVersion": protocol_version,
-        f"{META_PREFIX}clientInfo": {"name": "mcpscore", "version": _client_version()},
+        f"{META_PREFIX}clientInfo": {"name": CLIENT_NAME, "version": client_version()},
         f"{META_PREFIX}clientCapabilities": {},
     }
 
