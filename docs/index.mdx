@@ -71,6 +71,9 @@ mcpscore https://example.com/mcp
 # Machine-readable report for CI
 mcpscore https://example.com/mcp --json > report.json
 
+# Gate any CI on a threshold: exit code 3 when the score percentage is below it
+mcpscore https://example.com/mcp --fail-under 80
+
 # Auth-gated servers: pass a token to audit behind the gate
 mcpscore https://example.com/mcp --token "$MY_TOKEN"
 mcpscore https://example.com/mcp --header "Authorization: Bearer $MY_TOKEN"

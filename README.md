@@ -126,6 +126,9 @@ mcpscore https://example.com/mcp
 
 # Machine-readable report for CI pipelines and tooling
 mcpscore path/to/your/server.py --json > report.json
+
+# Gate any CI on a score threshold: exit code 3 when the percentage is below it
+mcpscore https://example.com/mcp --fail-under 80
 ```
 
 ### Example output

@@ -72,8 +72,10 @@ def mock_auditor() -> MagicMock:
     auditor.get_audit_report = MagicMock(return_value=_report_payload())
     # Instance attributes are not on the spec, so they must be set explicitly or
     # every access raises AttributeError. `last_probes` mirrors a fresh auditor:
-    # no probe observations, i.e. no evidence of an auth gate.
+    # no probe observations, i.e. no evidence of an auth gate. `audit_data` is
+    # read by finish_server_audit on the partial and modern-only paths.
     auditor.last_probes = None
+    auditor.audit_data = MagicMock(transport_type=None)
     return auditor
 
 
@@ -1797,3 +1799,191 @@ class TestStdioCommandCliFlow:
         assert "Error connecting to the MCP server: ./no-such-server" in caplog.text
         mock_auditor.audit_modern_only.assert_not_called()
         mock_client.cleanup.assert_called_once()
+
+
+class TestFailUnder:
+    """`--fail-under` / `--fail-under-readiness`: the CI gate (exit code 3)."""
+
+    @staticmethod
+    def _args(**overrides):
+        from mcpscore.cli import build_parser
+
+        argv = overrides.pop("argv", [])
+        return build_parser().parse_args([*argv, "https://example.com/mcp"])
+
+    def test_no_flags_never_gates(self) -> None:
+        """Without the flags the helper is inert — exit contract unchanged."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = self._args()
+        assert fail_under_exit_code(args, _report_payload(score=0, max_score=100)) == 0
+
+    def test_below_threshold_returns_3(self, caplog: LogCaptureFixture) -> None:
+        """A score percentage below the threshold gates with exit code 3."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = self._args(argv=["--fail-under", "80"])
+        with caplog.at_level(logging.ERROR):
+            code = fail_under_exit_code(args, _report_payload(score=79, max_score=100))
+
+        assert code == 3
+        assert "below the required 80%" in caplog.text
+
+    def test_at_threshold_passes(self) -> None:
+        """Equal-to-threshold passes: the gate is strictly 'below'."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = self._args(argv=["--fail-under", "80"])
+        assert fail_under_exit_code(args, _report_payload(score=80, max_score=100)) == 0
+
+    def test_rounding_matches_the_action(self) -> None:
+        """78/91 rounds to 86 — the Action's round(), not floor()."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = self._args(argv=["--fail-under", "86"])
+        assert fail_under_exit_code(args, _report_payload(score=78, max_score=91)) == 0
+
+    def test_partial_audit_always_fails_the_gate(self, caplog: LogCaptureFixture) -> None:
+        """A partial audit cannot demonstrate a threshold — 100% on 9 checks must not pass."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = self._args(argv=["--fail-under", "50"])
+        report = _report_payload(score=25, max_score=25, partial=True)
+        with caplog.at_level(logging.ERROR):
+            code = fail_under_exit_code(args, report)
+
+        assert code == 3
+        assert "partial audit" in caplog.text
+
+    def test_readiness_gate(self, caplog: LogCaptureFixture) -> None:
+        """Readiness gates on its own axis; 3/13 = 23% fails a 50% bar."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = self._args(argv=["--fail-under-readiness", "50"])
+        with caplog.at_level(logging.ERROR):
+            assert fail_under_exit_code(args, _report_payload()) == 3
+        assert "readiness" in caplog.text
+
+    def test_readiness_gate_skipped_when_not_assessed(self) -> None:
+        """max_score 0 means readiness was not observed — nothing to gate on."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = self._args(argv=["--fail-under-readiness", "50"])
+        report = _report_payload(readiness={"score": 0, "max_score": 0, "results": []})
+        assert fail_under_exit_code(args, report) == 0
+
+    async def test_full_audit_below_threshold_exits_3_end_to_end(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """The gate is wired into the normal audit path and cleanup still runs."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp", "--fail-under", "90"])
+        mock_auditor.get_audit_report = MagicMock(return_value=_report_payload(score=85, max_score=100))
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 3
+        assert "below the required 90%" in caplog.text
+        mock_client.cleanup.assert_awaited_once()
+
+    async def test_full_audit_passing_threshold_returns_normally(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A passing gate exits like an ungated run: normal return, no SystemExit."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp", "--fail-under", "80"])
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()
+
+        mock_client.cleanup.assert_awaited_once()
+
+
+class TestFailUnderValidationAndPackages:
+    """Range validation of the threshold flags, and the package-audit gate."""
+
+    @pytest.mark.parametrize("flag", ["--fail-under", "--fail-under-readiness"])
+    @pytest.mark.parametrize("value", ["-1", "101", "abc"])
+    def test_out_of_range_thresholds_are_usage_errors(self, flag: str, value: str) -> None:
+        """-1 would silently disable the gate; 101 would fail every audit — both exit 1."""
+        with pytest.raises(SystemExit) as exc_info:
+            build_parser().parse_args([flag, value, "https://example.com/mcp"])
+
+        assert exc_info.value.code == 1
+
+    @pytest.mark.parametrize("value", ["0", "100"])
+    def test_boundary_thresholds_are_accepted(self, value: str) -> None:
+        """0 and 100 are valid percentages, not off-by-one rejections."""
+        args = build_parser().parse_args(["--fail-under", value, "https://example.com/mcp"])
+
+        assert args.fail_under == int(value)
+
+    def test_nothing_to_score_gates_at_zero_percent(self, caplog: LogCaptureFixture) -> None:
+        """A 0/0 report is 0%, which fails any positive threshold rather than passing."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = build_parser().parse_args(["--fail-under", "1", "https://example.com/mcp"])
+        report = _report_payload(score=0, max_score=0)
+        with caplog.at_level(logging.ERROR):
+            assert fail_under_exit_code(args, report) == 3
+
+    async def test_package_audit_below_threshold_exits_3(
+        self, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture
+    ) -> None:
+        """The gate is wired into the package path: a sparse listing fails a high bar."""
+
+        async def fake_fetch(coordinate, client=None):
+            # Resolves, but no description/license/repository: 8/16 = 50%.
+            return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.OK, resolved_version="1.0.0")
+
+        monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+        args = build_parser().parse_args(["--fail-under", "90", "--package", "npm:server"])
+
+        with caplog.at_level(logging.ERROR):
+            code = await run_package_audit(args, PackageCoordinate.parse("npm:server"))
+
+        assert code == 3
+        assert "below the required 90%" in caplog.text
+
+    async def test_package_audit_meeting_threshold_exits_0(self, monkeypatch: MonkeyPatch) -> None:
+        """A fully published package passes its gate."""
+
+        async def fake_fetch(coordinate, client=None):
+            return PackageMetadata(
+                coordinate=coordinate,
+                outcome=PackageOutcome.OK,
+                resolved_version="1.0.0",
+                description="d",
+                license="MIT",
+                repository_url="https://github.com/example/server",
+            )
+
+        monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+        args = build_parser().parse_args(["--fail-under", "90", "--package", "npm:server"])
+
+        assert await run_package_audit(args, PackageCoordinate.parse("npm:server")) == 0
+
+    def test_readiness_meeting_threshold_passes(self) -> None:
+        """A readiness percentage at or above the bar does not gate."""
+        from mcpscore.cli import fail_under_exit_code
+
+        args = build_parser().parse_args(["--fail-under-readiness", "20", "https://example.com/mcp"])
+
+        # 3/13 = 23% >= 20%.
+        assert fail_under_exit_code(args, _report_payload()) == 0

@@ -61,10 +61,14 @@ For a package audit `transport` is `null` and `spec.negotiated_version` is
   New flags may be added; existing flags keep their meaning.
 - `mcpscore --version` prints `mcpscore <version>` on stdout and exits 0,
   with no other output and without needing a target. Scripts may parse it.
-- Exit codes are a contract: **0** audit completed (regardless of score);
-  **1** the audit was never attempted — a usage error or a failed `--oauth`
-  flow (timeout, refusal, registration or token-exchange failure);
-  **2** connection failure to the target server with no fallback available.
+- Exit codes are a contract: **0** audit completed (regardless of score,
+  unless a `--fail-under` gate is set); **1** the audit was never attempted —
+  a usage error or a failed `--oauth` flow (timeout, refusal, registration or
+  token-exchange failure); **2** connection failure to the target server with
+  no fallback available; **3** the audit completed but a `--fail-under` /
+  `--fail-under-readiness` threshold was not met (a partial audit always
+  fails a `--fail-under` gate — its score cannot demonstrate the threshold).
+  Without those flags, 0 keeps its meaning exactly.
 - `--json` writes exactly one JSON document to stdout; all logs go to
   stderr. Pipelines may rely on stdout being clean JSON.
 
