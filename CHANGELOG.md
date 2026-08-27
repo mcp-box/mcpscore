@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--fail-under` and `--fail-under-readiness`: the CI gate, in the CLI.**
+  `mcpscore <target> --fail-under 80` exits with the new code **3** when the
+  main score percentage (rounded, matching the GitHub Action's arithmetic)
+  is below the threshold; `--fail-under-readiness` gates the readiness axis
+  the same way and is skipped when readiness was not assessed. Exit codes
+  0/1/2 keep their documented meanings exactly; without the flags nothing
+  changes. **A partial audit always fails a `--fail-under` gate**: its
+  percentage covers only the observable surface (an auth-gated server with
+  a clean auth posture normalizes to 100% on a handful of checks), so it
+  cannot demonstrate the threshold — pass a credential to audit behind the
+  gate. Package audits gate on their packaging percentage. Previously this
+  capability existed only inside `mcpscore-action`; it now belongs to the
+  CLI, so GitLab CI, Jenkins, Makefiles, and pre-commit hooks get the same
+  gate, and the Action can delegate instead of reimplementing it.
+
 - **Package Audits guide** (`docs/package-audits.mdx`) — the `--package`
   feature finally has a docs page: what the six packaging rules check, why
   the package is never downloaded or executed, and why package scores share

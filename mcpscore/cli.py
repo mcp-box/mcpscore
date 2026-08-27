@@ -115,6 +115,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit a machine-readable JSON report to stdout (logs go to stderr)",
     )
     parser.add_argument(
+        "--fail-under",
+        metavar="PCT",
+        type=int,
+        help=(
+            "Exit with code 3 when the main score percentage (0-100, rounded) is below PCT — "
+            "a CI gate: 'your server scored badly' (3) stays distinct from 'the audit never "
+            "ran' (1) or 'could not connect' (2). A partial audit always fails this gate: its "
+            "percentage covers only the observable surface and cannot demonstrate the "
+            "threshold — pass a credential to audit behind the gate."
+        ),
+    )
+    parser.add_argument(
+        "--fail-under-readiness",
+        metavar="PCT",
+        type=int,
+        help=(
+            "Exit with code 3 when the readiness percentage for the latest spec revision is "
+            "below PCT. Skipped when readiness was not assessed at all (nothing to gate on), "
+            "matching the GitHub Action's min-readiness input."
+        ),
+    )
+    parser.add_argument(
         "--header",
         action="append",
         metavar="'Name: Value'",
@@ -335,7 +357,88 @@ async def run_package_audit(args: argparse.Namespace, coordinate: PackageCoordin
     if args.json:
         full = build_report(coordinate.display, None, auditor)
         sys.stdout.write(json.dumps(full, indent=2, default=str) + "\n")
-    return 0
+    # A package audit has no readiness axis (max 0), so only --fail-under can gate it —
+    # against the packaging percentage, the only score this audit has.
+    return fail_under_exit_code(args, report)
+
+
+def score_percentage(score: float, max_score: float) -> int:
+    """Score as an integer percentage; 0 when there is nothing to score.
+
+    The same arithmetic the GitHub Action's gate has always used, so a
+    threshold means the same thing in both places.
+    """
+    if max_score <= 0:
+        return 0
+    return round(score / max_score * 100)
+
+
+def fail_under_exit_code(args: argparse.Namespace, report: dict) -> int:
+    """Return 3 when the report fails a --fail-under gate, else 0.
+
+    Gate semantics (each breach is logged before returning):
+
+    - ``--fail-under`` compares the main score percentage. A **partial audit
+      always fails it**: its percentage covers only the observable surface
+      (an auth-gated server with a clean auth posture normalizes to 100% on
+      a handful of checks), so it cannot demonstrate the threshold — passing
+      silently would wave through a server that was barely inspected.
+    - ``--fail-under-readiness`` compares the readiness percentage, and is
+      skipped when readiness was not assessed at all (``max_score == 0``) —
+      the GitHub Action's ``min-readiness`` semantics.
+    """
+    failures: list[str] = []
+
+    if args.fail_under is not None:
+        if report["partial"]:
+            failures.append(
+                f"--fail-under {args.fail_under}: this was a partial audit — its score covers only the "
+                "observable surface and cannot demonstrate the threshold; pass a credential to audit "
+                "behind the gate (or drop --fail-under for partial audits)"
+            )
+        else:
+            pct = score_percentage(report["score"], report["max_score"])
+            if pct < args.fail_under:
+                failures.append(
+                    f"--fail-under {args.fail_under}: score {report['score']}/{report['max_score']} "
+                    f"({pct}%) is below the required {args.fail_under}%"
+                )
+
+    if args.fail_under_readiness is not None:
+        readiness = report.get("readiness") or {}
+        readiness_max = readiness.get("max_score", 0)
+        if readiness_max > 0:
+            pct = score_percentage(readiness.get("score", 0), readiness_max)
+            if pct < args.fail_under_readiness:
+                failures.append(
+                    f"--fail-under-readiness {args.fail_under_readiness}: readiness "
+                    f"{readiness.get('score', 0)}/{readiness_max} ({pct}%) is below the required "
+                    f"{args.fail_under_readiness}%"
+                )
+
+    for failure in failures:
+        logger.error("Gate failed — %s", failure)
+    return 3 if failures else 0
+
+
+def finish_server_audit(
+    args: argparse.Namespace,
+    auditor: MCPAuditor,
+    target_display: str,
+    transport: MCPTransportType | None,
+) -> None:
+    """Finish a server audit: log the outcome, emit --json, apply the gate.
+
+    The shared tail of every completed server audit (full, partial, and
+    modern-only). Exits with code 3 when a --fail-under gate fails;
+    returns normally otherwise so ungated behavior is unchanged.
+    """
+    log_audit_outcome(auditor)
+    if args.json:
+        report = build_report(target_display, transport, auditor)
+        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+    if code := fail_under_exit_code(args, auditor.get_audit_report()):
+        sys.exit(code)
 
 
 def log_audit_outcome(auditor: MCPAuditor) -> None:
@@ -538,10 +641,7 @@ async def async_main() -> None:
                     logger.info(
                         "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
                     )
-                    log_audit_outcome(auditor)
-                    if args.json:
-                        report = build_report(target_display, auditor.audit_data.transport_type, auditor)
-                        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                    finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type)
                     return
 
                 failure = client.last_connection_error
@@ -620,10 +720,7 @@ async def async_main() -> None:
                             "only — pass a token to audit behind the gate."
                         )
                     await auditor.audit_partial(target, reason=partial_reason)
-                    log_audit_outcome(auditor)
-                    if args.json:
-                        report = build_report(target_display, auditor.audit_data.transport_type, auditor)
-                        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+                    finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type)
                     return
             logger.error("Error connecting to the MCP server: %s", target_display)
             sys.exit(2)
@@ -633,11 +730,9 @@ async def async_main() -> None:
 
         logger.info("Starting the audit...")
         await auditor.audit(client)
-        log_audit_outcome(auditor)
-
-        if args.json:
-            report = build_report(target_display, transport, auditor)
-            sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+        # A gate failure exits inside the try and still reaches cleanup() via
+        # finally; the happy path returns normally (no SystemExit(0)).
+        finish_server_audit(args, auditor, target_display, transport)
     finally:
         await client.cleanup()
 
