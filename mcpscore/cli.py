@@ -44,6 +44,21 @@ class _CLIArgumentParser(argparse.ArgumentParser):
         sys.exit(1)
 
 
+def _percentage_argument(raw: str) -> int:
+    """Argparse type for a --fail-under threshold: an integer in 0-100.
+
+    Out-of-range values are usage errors, not silent behavior: -1 would
+    disable the gate while looking enabled, and 101 would fail every audit.
+    """
+    try:
+        value = int(raw)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"invalid integer percentage: {raw!r}") from e
+    if not 0 <= value <= 100:
+        raise argparse.ArgumentTypeError(f"{value} is not a percentage (expected 0-100)")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the mcpscore CLI.
 
@@ -117,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fail-under",
         metavar="PCT",
-        type=int,
+        type=_percentage_argument,
         help=(
             "Exit with code 3 when the main score percentage (0-100, rounded) is below PCT — "
             "a CI gate: 'your server scored badly' (3) stays distinct from 'the audit never "
@@ -129,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fail-under-readiness",
         metavar="PCT",
-        type=int,
+        type=_percentage_argument,
         help=(
             "Exit with code 3 when the readiness percentage for the latest spec revision is "
             "below PCT. Skipped when readiness was not assessed at all (nothing to gate on), "
@@ -335,7 +350,8 @@ async def run_package_audit(args: argparse.Namespace, coordinate: PackageCoordin
     whole run is one HTTPS GET against a package registry.
 
     Exit codes match the server flow's meaning: 0 audited, 2 could not look the
-    package up (the analogue of "could not connect").
+    package up (the analogue of "could not connect"), 3 audited but a
+    --fail-under threshold was not met.
     """
     auditor = MCPAuditor()
     await auditor.audit_package(coordinate)
@@ -587,8 +603,9 @@ async def async_main() -> None:
     against an HTTP(S) target, the server is checked for modern-only
     (2026-07-28 stateless lifecycle) support and audited via probes if so.
 
-    Exits with code 1 on usage errors, or code 2 if connection fails and the
-    server shows no modern-lifecycle support either.
+    Exits with code 1 on usage errors, code 2 if connection fails and the
+    server shows no modern-lifecycle support either, or code 3 when the audit
+    completed but a --fail-under / --fail-under-readiness gate failed.
     """
     # Parse before greeting: --version and --help exit during parsing, and
     # neither should be preceded by a banner.
