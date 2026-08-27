@@ -219,3 +219,42 @@ class TestMCPClientHTTP:
 
             # Verify exit stack was closed
             assert mcp_client.session is not None  # Session object still exists
+
+
+class TestClientIdentity:
+    """The legacy handshake identifies as mcpscore, not the SDK default.
+
+    Server operators and gateways segment traffic by ``clientInfo``; before
+    this pin the main handshake sent the SDK's default (``mcp/0.1.0``) while
+    the modern probes already identified correctly — three sites now share
+    one constant.
+    """
+
+    @pytest.fixture
+    def mcp_client(self):
+        """Create a fresh MCPClient instance for each test."""
+        return MCPClient()
+
+    async def test_client_session_carries_mcpscore_client_info(self, mcp_client):
+        """ClientSession is constructed with clientInfo naming mcpscore and the real version."""
+        from mcpscore.probes import CLIENT_NAME, client_version
+
+        mock_session = AsyncMock()
+        with (
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_transport,
+            patch("mcpscore.mcp_client.ClientSession", return_value=mock_session) as mock_session_cls,
+        ):
+            mock_transport.return_value.__aenter__.return_value = (
+                AsyncMock(),
+                AsyncMock(),
+                MagicMock(return_value=None),
+            )
+            mock_session.__aenter__.return_value = mock_session
+
+            assert await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, "https://example.com/mcp")
+
+        client_info = mock_session_cls.call_args.kwargs["client_info"]
+        assert client_info.name == CLIENT_NAME == "mcpscore"
+        assert client_info.version == client_version()
+        # The version is the installed package version, never the SDK default.
+        assert client_info.version not in ("", "0.1.0")

@@ -22,6 +22,7 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
+from mcp.types import Implementation
 from mcp_types import (
     REQUEST_TIMEOUT,
     ListResourceTemplatesResult,
@@ -33,7 +34,15 @@ from mcp_types import (
 )
 
 from .enums import ConnectionErrorReason, MCPTransportType
-from .probes import ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, INVALID_CURSOR_PREFIX, ProbeOutcome, ProbeResult
+from .probes import (
+    CLIENT_NAME,
+    ERROR_INVALID_PARAMS,
+    ERROR_METHOD_NOT_FOUND,
+    INVALID_CURSOR_PREFIX,
+    ProbeOutcome,
+    ProbeResult,
+    client_version,
+)
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -367,7 +376,15 @@ class MCPClient:
             streams = await stack.enter_async_context(transport_cm)
             read_stream, write_stream = streams[0], streams[1]
             session: ClientSession = await stack.enter_async_context(
-                ClientSession(read_stream, write_stream, read_timeout_seconds=REQUEST_TIMEOUT_S)
+                # client_info: identify as mcpscore, not the SDK default
+                # ("mcp/0.1.0") — operators segment traffic by clientInfo, and
+                # audit traffic should be recognizable (and greppable) as ours.
+                ClientSession(
+                    read_stream,
+                    write_stream,
+                    read_timeout_seconds=REQUEST_TIMEOUT_S,
+                    client_info=Implementation(name=CLIENT_NAME, version=client_version()),
+                )
             )
             init_result: InitializeResult = await asyncio.wait_for(
                 session.initialize(),
@@ -655,7 +672,7 @@ class MCPClient:
             "params": {
                 "protocolVersion": "2025-11-25",
                 "capabilities": {},
-                "clientInfo": {"name": "mcpscore", "version": "status-recovery"},
+                "clientInfo": {"name": CLIENT_NAME, "version": "status-recovery"},
             },
         }
         try:
