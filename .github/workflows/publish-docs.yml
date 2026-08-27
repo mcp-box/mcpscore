@@ -21,6 +21,14 @@ on:
 
 permissions: {}
 
+# One publisher at a time: without this, two releases in quick succession can
+# race and the older run's force-push can finish last, moving docs-live
+# backward. cancel-in-progress stays false — a running publish finishes, the
+# queued one then re-checks what "latest" is.
+concurrency:
+  group: docs-live-publish
+  cancel-in-progress: false
+
 jobs:
   publish:
     if: ${{ !github.event.release.prerelease }}
@@ -32,11 +40,24 @@ jobs:
       # github.ref is deliberately NOT a fallback, because a dispatch from a
       # branch would otherwise publish unreleased content to docs-live.
       DOCS_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
       - name: Refuse anything but a stable release tag
         run: |
           [[ "$DOCS_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::'$DOCS_TAG' is not a stable release tag (vX.Y.Z) — refusing to publish docs from it"
+            exit 1
+          }
+      - name: Refuse anything but the latest stable release
+        # docs-live promises "the docs of the latest stable release" — a
+        # dispatch of an older (but valid) tag, or a stale queued release run,
+        # must not move it backward. releases/latest excludes pre-releases and
+        # drafts, so equality with it is exactly that promise.
+        run: |
+          LATEST="$(gh api "repos/$REPO/releases/latest" --jq .tag_name)"
+          [[ "$DOCS_TAG" == "$LATEST" ]] || {
+            echo "::error::'$DOCS_TAG' is not the latest stable release ('$LATEST') — refusing to move docs-live backward"
             exit 1
           }
       # persist-credentials stays on deliberately: this job's entire purpose

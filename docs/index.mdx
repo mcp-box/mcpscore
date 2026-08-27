@@ -39,8 +39,10 @@ mcpscore https://your-server.example/mcp
   [mcpscore.dev](https://mcpscore.dev) show — Protocol, Tools Quality (tools,
   prompts, resources, resource templates, pagination), and Security & Auth —
   deterministic, no API keys, CI-ready.
-- **A readiness score for the latest spec revision** (2026-07-28, stateless lifecycle) —
-  separate from your main score, so it informs without punishing.
+- **A readiness score for the latest spec revision** (2026-07-28, stateless
+  lifecycle) — reported on its own axis. For legacy servers it informs without
+  punishing; servers already on the modern lifecycle have these points counted
+  in the main score (see [promotion](/methodology#the-readiness-score-separate-axis)).
 - **Actionable messages** — every failed check says what to fix, and every rule is
   anchored to the spec (see the [methodology](/methodology)).
 
