@@ -26,9 +26,10 @@ regress past**:
   inside someone else's agent.
 - **A visible quality bar.** The score and its trend live on the PR, so reviewers
   and contributors see the impact of a change without running anything.
-- **Readiness tracking for the next spec.** The action reports the separate
+- **Readiness tracking for the latest spec.** The action reports the separate
   [readiness score](/methodology#the-readiness-score-separate-axis) for the
-  2026-07-28 MCP revision, so you know where you stand as clients adopt it.
+  current 2026-07-28 MCP revision, so you know where you stand as clients
+  adopt it.
 - **Deterministic and fast.** No API keys, no LLM calls — the same server state
   always produces the same result, in seconds.
 
@@ -167,7 +168,7 @@ summary.
 | Output | Description |
 |---|---|
 | `score` / `max-score` / `percentage` | Main score |
-| `readiness-score` / `readiness-max` / `readiness-percentage` | Next-spec readiness score |
+| `readiness-score` / `readiness-max` / `readiness-percentage` | Readiness score for the latest spec revision |
 | `era` | `legacy`, `modern`, or `dual-era` |
 | `negotiated-version` | Spec version the server negotiated |
 

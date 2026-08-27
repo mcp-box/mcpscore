@@ -7,12 +7,17 @@ name: Publish docs
 # (in the Mintlify dashboard) to deploy from `docs-live` instead of main.
 #
 # Runs on every published release (the same trigger as the PyPI/npm publish
-# workflows) and on demand. Pre-releases are skipped: their docs go live with
-# the stable release that follows.
+# workflows) and on demand with an explicit tag. Pre-releases are skipped:
+# their docs go live with the stable release that follows.
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to publish docs from (e.g. v1.9.0)"
+        required: true
+        type: string
 
 permissions: {}
 
@@ -22,15 +27,26 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # A release run carries its tag; a manual run must name one explicitly —
+      # github.ref is deliberately NOT a fallback, because a dispatch from a
+      # branch would otherwise publish unreleased content to docs-live.
+      DOCS_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
+      - name: Refuse anything but a stable release tag
+        run: |
+          [[ "$DOCS_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::'$DOCS_TAG' is not a stable release tag (vX.Y.Z) — refusing to publish docs from it"
+            exit 1
+          }
       # persist-credentials stays on deliberately: this job's entire purpose
       # is the authenticated push below, and nothing after checkout uploads
       # artifacts that could leak the persisted token.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1  # zizmor: ignore[artipacked]
         with:
-          # The release tag (or, on manual dispatch, the ref the run was
-          # started from — dispatch from the tag to republish it).
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          # refs/tags/ pins the checkout to the tag namespace: a branch that
+          # happens to share the name cannot be substituted.
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
           fetch-depth: 0
       - name: Point docs-live at this release
         run: |
