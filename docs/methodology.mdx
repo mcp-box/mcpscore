@@ -62,7 +62,7 @@ unobserved. A dedicated presence rule can still judge whether a complete catalog
    prompts, TLS details.
 3. **Probe** — a set of sessionless requests observing
    behavior outside the negotiated session, e.g. whether the server also speaks the
-   next spec revision's stateless lifecycle. Probes are read-only by design:
+   latest spec revision's stateless lifecycle. Probes are read-only by design:
    **mcpscore never invokes `tools/call` against your server**, so an audit can never
    trigger tool side effects.
 
@@ -100,9 +100,9 @@ unobserved. A dedicated presence rule can still judge whether a complete catalog
 
 ## Multi-spec-version scoring
 
-MCP publishes dated spec revisions (`2024-11-05` … `2025-11-25`, with `2026-07-28`
-in release-candidate stage), and the 2026 revision replaces the stateful `initialize`
-lifecycle with a stateless one. The spec itself describes servers as **Legacy**
+MCP publishes dated spec revisions (`2024-11-05` … `2026-07-28`, the current
+revision, published final on 2026-07-28), and the 2026 revision replaces the
+stateful `initialize` lifecycle with a stateless one. The spec itself describes servers as **Legacy**
 (stateful), **Modern** (stateless), or **Dual-era** (both). mcpscore treats the spec
 version as a *property of your server that it detects*, not a mode of the tool:
 
@@ -210,6 +210,29 @@ safely from the outside is not yet possible:
   backwards-incompatible changes. New fields are added additively.
 - Rule additions and severity changes are documented in the
   [changelog](https://github.com/mcp-box/mcpscore/blob/main/CHANGELOG.md).
+
+## Why did my score change?
+
+The score is deterministic **for the same server state and the same mcpscore
+version** — when it moves, one of these is what moved:
+
+1. **A different mcpscore version ran.** The ruleset grows in most releases,
+   which changes both `score` and `max_score` — scores are only comparable
+   within one version (see the [stability contract](/stability#the-score)).
+   The report's `mcpscore_version` field says which version scored it.
+2. **The audit type differs.** A partial audit (auth-gated server, no
+   credential) covers far fewer checks than a full one, and a
+   modern-lifecycle server's main score includes its readiness points
+   (`readiness.counted_in_main`) while a legacy server's does not.
+3. **The server itself answered differently.** Real fleets do this more
+   often than you'd expect: a rolling deploy or mixed replica versions
+   behind a load balancer can make byte-identical probes get different
+   answers across runs, and a server that rate-limits the audit's probes
+   turns some rules into `insufficient-data` skips — which changes the
+   maximum, not just the earned points. If repeated audits of one URL
+   disagree, diff the two JSON reports rule by rule: the flipping `rule_id`
+   is the finding, and it usually points at the server's consistency, not
+   the auditor's.
 
 ## Disagree with a rule?
 

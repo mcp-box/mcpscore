@@ -4,8 +4,12 @@ description: "Lighthouse for MCP — audit any MCP server and get a scored, acti
 icon: "gauge-high"
 ---
 
-**Lighthouse for MCP** — audit any [Model Context Protocol](https://modelcontextprotocol.io)
-server and get a scored, actionable report in seconds.
+MCP servers that violate the spec fail silently in the worst place: inside someone
+else's AI agent. A missing tool description, an outdated protocol version, or an
+unencrypted endpoint won't crash your server — it will just make agents pick the wrong
+tool, drop your server from their registry, or leak traffic. mcpscore catches these
+issues before your users do — point it at any
+[Model Context Protocol](https://modelcontextprotocol.io) server:
 
 <CodeGroup>
 
@@ -29,18 +33,16 @@ mcpscore https://your-server.example/mcp
 
 </CodeGroup>
 
-MCP servers that violate the spec fail silently in the worst place: inside someone
-else's AI agent. A missing tool description, an outdated protocol version, or an
-unencrypted endpoint won't crash your server — it will just make agents pick the wrong
-tool, drop your server from their registry, or leak traffic. mcpscore catches these
-issues before your users do.
-
 ## What you get
 
-- **A severity-weighted score** across protocol compliance, server metadata,
-  capabilities, tools, security, and transport — deterministic, no API keys, CI-ready.
-- **A readiness score for the next spec revision** (2026-07-28, stateless lifecycle) —
-  separate from your main score, so it informs without punishing.
+- **A severity-weighted score** across the same categories the report and
+  [mcpscore.dev](https://mcpscore.dev) show — Protocol, Tools Quality (tools,
+  prompts, resources, resource templates, pagination), and Security & Auth —
+  deterministic, no API keys, CI-ready.
+- **A readiness score for the latest spec revision** (2026-07-28, stateless
+  lifecycle) — reported on its own axis. For legacy servers it informs without
+  punishing; servers already on the modern lifecycle have these points counted
+  in the main score (see [promotion](/methodology#the-readiness-score-separate-axis)).
 - **Actionable messages** — every failed check says what to fix, and every rule is
   anchored to the spec (see the [methodology](/methodology)).
 
@@ -72,36 +74,29 @@ mcpscore https://example.com/mcp --json > report.json
 # Auth-gated servers: pass a token to audit behind the gate
 mcpscore https://example.com/mcp --token "$MY_TOKEN"
 mcpscore https://example.com/mcp --header "Authorization: Bearer $MY_TOKEN"
+
+# Published packages: score the npm/PyPI listing without running it
+mcpscore --package npm:@your-scope/your-server
+mcpscore --package pypi:your-server
 ```
 
 ## Auditing auth-gated servers
 
-Many production MCP servers require OAuth 2.x. mcpscore handles them two ways:
-
-- **Without a token**, an auth-gated server still gets a **partial audit** — the
-  authorization posture (`WWW-Authenticate` on 401, RFC 9728 protected-resource
-  metadata, HTTPS authorization servers), TLS, and transport are scored. The
-  report is marked `partial` and its score is not comparable to a full audit's.
-- **With a token**, mcpscore audits behind the gate like any client. Pass
-  `--token <TOKEN>` (sent as `Authorization: Bearer …`) or an arbitrary
-  `--header 'Name: Value'` (repeatable, for API-key or custom-auth servers),
-  or `--oauth` to let mcpscore run the browser OAuth flow itself
-  (authorization code + PKCE; add `--client-id` for authorization servers
-  without dynamic client registration).
-  For CI, set `MCPSCORE_TOKEN` in the environment to keep tokens out of shell
-  history. Token and header values are never logged or written to the report —
-  only an `authenticated` flag is recorded (set when an Authorization
-  credential was sent; other custom headers do not set it).
-
-The [Authenticated Servers guide](/authenticated-servers) walks through every
+Many production MCP servers require OAuth 2.x. With a credential
+(`--token`, `--header`, or the browser `--oauth` flow), mcpscore audits behind
+the gate like any client; without one, the server still gets a **partial
+audit** of its observable surface — auth posture, TLS, and transport — marked
+`partial` and not comparable to a full audit. Credential values are never
+logged or written to the report. The
+[Authenticated Servers guide](/authenticated-servers) walks through every
 flavor, including a worked example against GitHub's Copilot MCP server.
 
-Example output tail:
+Example output tail (a full audit):
 
 ```
-Audit finished. Final score: 88/97
-Spec: 2025-11-25 negotiated (latest: 2025-11-25) · era: legacy
-Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score)
+Audit finished. Final score: 78/91
+Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
+Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 21 checks assessed)
 ```
 
 ## Learn more
@@ -121,6 +116,9 @@ Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score)
   </Card>
   <Card title="Score Badge" icon="shield-check" href="/badge">
     A live badge for your README that tracks your latest score
+  </Card>
+  <Card title="Package Audits" icon="box" href="/package-audits">
+    Score a published npm or PyPI package without running it
   </Card>
   <Card title="Source" icon="code" href="https://github.com/mcp-box/mcpscore">
     mcp-box/mcpscore — issues and contributing

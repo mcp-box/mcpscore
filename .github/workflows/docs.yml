@@ -1,8 +1,11 @@
 name: Docs
 
-# Deployment is handled by the Mintlify GitHub App (serves the docs/ directory
-# on pushes to main). This workflow only validates: the generated rules
-# reference must match the rule registry, and the site must have no broken links.
+# Deployment is handled by the Mintlify GitHub App, which serves the docs/
+# directory from the `docs-live` branch — a deploy pointer that
+# publish-docs.yml fast-forwards to each stable release tag, so the published
+# docs describe the released engine rather than main. This workflow only
+# validates: the generated rules reference must match the rule registry, and
+# the site must have no broken links.
 on:
   pull_request:
     paths:

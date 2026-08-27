@@ -26,9 +26,10 @@ regress past**:
   inside someone else's agent.
 - **A visible quality bar.** The score and its trend live on the PR, so reviewers
   and contributors see the impact of a change without running anything.
-- **Readiness tracking for the next spec.** The action reports the separate
-  [readiness score](/methodology#the-readiness-score-separate-informative) for the
-  2026-07-28 MCP revision, so you know where you stand as clients adopt it.
+- **Readiness tracking for the latest spec.** The action reports the separate
+  [readiness score](/methodology#the-readiness-score-separate-axis) for the
+  current 2026-07-28 MCP revision, so you know where you stand as clients
+  adopt it.
 - **Deterministic and fast.** No API keys, no LLM calls — the same server state
   always produces the same result, in seconds.
 
@@ -154,7 +155,7 @@ summary.
 | Input | Default | Description |
 |---|---|---|
 | `target` | — (required) | MCP server URL, or a local `.py` / `.js` path |
-| `version` | latest | mcpscore version to run (e.g. `0.8.0`) |
+| `version` | latest | mcpscore version to run (e.g. `1.9.0`) |
 | `min-score` | none | Fail if the main score percentage (0–100) is below this |
 | `min-readiness` | none | Fail if the readiness percentage (0–100) is below this |
 | `comment` | `true` | Post / update the report comment on the pull request |
@@ -167,7 +168,7 @@ summary.
 | Output | Description |
 |---|---|
 | `score` / `max-score` / `percentage` | Main score |
-| `readiness-score` / `readiness-max` / `readiness-percentage` | Next-spec readiness score |
+| `readiness-score` / `readiness-max` / `readiness-percentage` | Readiness score for the latest spec revision |
 | `era` | `legacy`, `modern`, or `dual-era` |
 | `negotiated-version` | Spec version the server negotiated |
 
@@ -181,7 +182,7 @@ mcpscore release:
 - uses: mcp-box/mcpscore-action@<commit-sha>  # v1.x.y
   with:
     target: https://your-server.example/mcp
-    version: "0.8.0"
+    version: "1.9.0"
     min-score: 80
 ```
 
