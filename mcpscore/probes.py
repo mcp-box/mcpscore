@@ -1152,10 +1152,29 @@ async def _probe_catalog_connection_independence(
 ) -> dict[str, ProbeResult]:
     """Compare complete modern catalogs over two independent connections."""
     target_version = _target_version()
+
+    async def gather_pair(first_awaitable: Any, second_awaitable: Any) -> tuple[Any, Any]:
+        """Run work on independent targets, always draining a failed sibling."""
+        first_task = asyncio.create_task(first_awaitable)
+        second_task = asyncio.create_task(second_awaitable)
+        try:
+            return await asyncio.gather(first_task, second_task)
+        except BaseException:
+            first_task.cancel()
+            second_task.cancel()
+            await asyncio.gather(first_task, second_task, return_exceptions=True)
+            raise
+
     try:
-        discover = await first.post(
-            _request_body("server/discover", 2100, _modern_meta(target_version)),
-            _request_headers(target_version, "server/discover"),
+        first_discover, second_discover = await gather_pair(
+            first.post(
+                _request_body("server/discover", 2100, _modern_meta(target_version)),
+                _request_headers(target_version, "server/discover"),
+            ),
+            second.post(
+                _request_body("server/discover", 2101, _modern_meta(target_version)),
+                _request_headers(target_version, "server/discover"),
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — probe transport failures are data
         return {
@@ -1166,10 +1185,11 @@ async def _probe_catalog_connection_independence(
             )
             for probe_id in CATALOG_CONNECTION_PROBE_IDS
         }
-    capabilities = discover.result.get("capabilities") if discover.result is not None else None
-    if not isinstance(capabilities, dict):
+    first_capabilities = first_discover.result.get("capabilities") if first_discover.result is not None else None
+    second_capabilities = second_discover.result.get("capabilities") if second_discover.result is not None else None
+    if not isinstance(first_capabilities, dict) or not isinstance(second_capabilities, dict):
         return not_applicable_results(
-            "modern declared catalog capabilities were not observable",
+            "modern declared catalog capabilities were not observable on both connections",
             CATALOG_CONNECTION_PROBE_IDS,
         )
 
@@ -1180,14 +1200,26 @@ async def _probe_catalog_connection_independence(
         item_key: str,
         probe_id: str,
     ) -> ProbeResult:
-        if capabilities.get(capability) is None:
+        first_declares = first_capabilities.get(capability) is not None
+        second_declares = second_capabilities.get(capability) is not None
+        if not first_declares and not second_declares:
             return ProbeResult(
                 probe_id,
                 ProbeOutcome.NOT_APPLICABLE,
                 {"reason": f"server does not declare the {capability} capability"},
             )
+        if first_declares != second_declares:
+            return ProbeResult(
+                probe_id,
+                ProbeOutcome.UNSUPPORTED,
+                {
+                    "first_declares_capability": first_declares,
+                    "second_declares_capability": second_declares,
+                    "reason": f"{capability} capability varies across client connections",
+                },
+            )
         try:
-            first_ids, second_ids = await asyncio.gather(
+            first_ids, second_ids = await gather_pair(
                 _collect_catalog_identities(
                     first,
                     target_version=target_version,
@@ -1225,9 +1257,9 @@ async def _probe_catalog_connection_independence(
             },
         )
 
-    results = await asyncio.gather(
-        *(compare(index, *surface) for index, surface in enumerate(_CATALOG_CONNECTION_SURFACES))
-    )
+    # A stdio target has one response stream. Keep surfaces sequential so two
+    # readers never race to consume a response intended for the other request.
+    results = [await compare(index, *surface) for index, surface in enumerate(_CATALOG_CONNECTION_SURFACES)]
     return {result.probe_id: result for result in results}
 
 

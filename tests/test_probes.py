@@ -1,5 +1,6 @@
 """Tests for the sessionless probe layer."""
 
+import asyncio
 import json
 
 import httpx2
@@ -44,6 +45,7 @@ from mcpscore.probes import (
     UNKNOWN_METHOD_PREFIX,
     ProbeOutcome,
     ProbeResult,
+    _collect_catalog_identities,
     _fetch_auth_server_metadata,
     _HttpTarget,
     _probe_catalog_connection_independence,
@@ -1763,7 +1765,12 @@ class TestAnonymousProbes:
         assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.SUPPORTED
 
 
-def _catalog_handler(catalogs: dict[str, list[dict]], *, malformed: str | None = None):
+def _catalog_handler(
+    catalogs: dict[str, list[dict]],
+    *,
+    malformed: str | None = None,
+    capabilities: dict | None = None,
+):
     """Build a modern catalog handler for one independent client."""
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1773,7 +1780,11 @@ def _catalog_handler(catalogs: dict[str, list[dict]], *, malformed: str | None =
         if method == "server/discover":
             return _rpc_result(
                 request_id,
-                {"capabilities": {"tools": {}, "resources": {}, "prompts": {}}},
+                {
+                    "capabilities": capabilities
+                    if capabilities is not None
+                    else {"tools": {}, "resources": {}, "prompts": {}}
+                },
             )
         result_keys = {
             "tools/list": "tools",
@@ -1840,6 +1851,95 @@ async def test_catalog_connection_probe_reports_surface_specific_differences():
 
 
 @pytest.mark.asyncio
+async def test_catalog_connection_probe_detects_capability_difference():
+    catalogs = {
+        "tools": [{"name": "search"}],
+        "resources": [{"uri": "file:///a"}],
+        "prompts": [{"name": "review"}],
+    }
+
+    async with (
+        _client(_catalog_handler(catalogs)) as first,
+        _client(_catalog_handler(catalogs, capabilities={"resources": {}, "prompts": {}})) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    tools = results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT]
+    assert tools.outcome is ProbeOutcome.UNSUPPORTED
+    assert tools.details["first_declares_capability"] is True
+    assert tools.details["second_declares_capability"] is False
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_runs_surfaces_sequentially(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    catalogs = {"tools": [], "resources": [], "prompts": []}
+    active_methods: list[str] = []
+
+    async def collect(target, *, method, **kwargs):
+        del target, kwargs
+        assert not active_methods or set(active_methods) == {method}
+        active_methods.append(method)
+        await asyncio.sleep(0)
+        active_methods.remove(method)
+        return frozenset()
+
+    monkeypatch.setattr(probes_module, "_collect_catalog_identities", collect)
+    async with (
+        _client(_catalog_handler(catalogs)) as first,
+        _client(_catalog_handler(catalogs)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    assert all(result.outcome is ProbeOutcome.SUPPORTED for result in results.values())
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_cancels_failed_collection_sibling(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    catalogs = {"tools": [], "resources": [], "prompts": []}
+    sibling_started = asyncio.Event()
+    sibling_cancelled = asyncio.Event()
+
+    async with (
+        _client(_catalog_handler(catalogs)) as first_client,
+        _client(_catalog_handler(catalogs)) as second_client,
+    ):
+        first = _HttpTarget(first_client, URL)
+        second = _HttpTarget(second_client, URL)
+
+        async def collect(target, *, method, **kwargs):
+            del kwargs
+            if method != "tools/list":
+                return frozenset()
+            if target is first:
+                await sibling_started.wait()
+                raise RuntimeError("first collection failed")
+            try:
+                sibling_started.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+
+        monkeypatch.setattr(probes_module, "_collect_catalog_identities", collect)
+        results = await _probe_catalog_connection_independence(first, second)
+
+    assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.ERROR
+    assert sibling_cancelled.is_set()
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
 async def test_catalog_connection_probe_errors_only_unobservable_surface():
     catalogs = {
         "tools": [{"name": "search"}],
@@ -1859,3 +1959,44 @@ async def test_catalog_connection_probe_errors_only_unobservable_surface():
     assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.ERROR
     assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
     assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_collection_stops_when_total_deadline_is_exhausted(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    # A pre-exhausted total budget must stop before touching the target.
+    monkeypatch.setattr(probes_module, "PAGINATION_PROBE_TIMEOUT_S", -1.0)
+
+    async with _client(lambda request: pytest.fail(f"unexpected request: {request}")) as client:
+        with pytest.raises(TimeoutError):
+            await _collect_catalog_identities(
+                _HttpTarget(client, URL),
+                target_version="2026-07-28",
+                method="tools/list",
+                item_key="tools",
+                request_id_base=1,
+            )
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_rejects_items_without_identity():
+    catalogs = {
+        "tools": [{}],
+        "resources": [{"uri": "file:///a"}],
+        "prompts": [{"name": "review"}],
+    }
+
+    async with (
+        _client(_catalog_handler(catalogs)) as first,
+        _client(_catalog_handler(catalogs)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    tools = results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT]
+    assert tools.outcome is ProbeOutcome.ERROR
+    assert tools.details["exception"] == "ValueError"
+    assert tools.details["reason"] == "tools/list returned an item without a valid name"
