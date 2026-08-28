@@ -27,13 +27,16 @@ from mcpscore.probes import (
     PROBE_ORIGIN_VALIDATION,
     PROBE_PAGINATION_CACHE_SCOPE,
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_RESOURCES_INVALID_CURSOR,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
+    PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_TOOLS_INVALID_CURSOR,
     PROBE_UNAUTHENTICATED,
     PROBE_UNKNOWN_METHOD,
@@ -43,6 +46,7 @@ from mcpscore.probes import (
     ProbeResult,
     _fetch_auth_server_metadata,
     _HttpTarget,
+    _probe_catalog_connection_independence,
     _traverse_cache_scope_surface,
     _well_known_urls,
     not_applicable_results,
@@ -178,16 +182,21 @@ def _client(handler) -> httpx2.AsyncClient:
 
 
 async def _run(handler) -> dict[str, ProbeResult]:
-    async with _client(handler) as client:
-        return await run_all_probes(URL, client=client)
+    async with _client(handler) as client, _client(handler) as fresh_client:
+        return await run_all_probes(URL, client=client, fresh_client=fresh_client)
 
 
 async def test_modern_server_supports_all_probed_behaviors():
     results = await _run(_modern_server_handler)
 
     assert set(results) == set(PROBE_IDS)
+    absent_catalogs = {
+        PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    }
     for probe_id in PROBE_IDS:
-        assert results[probe_id].outcome is ProbeOutcome.SUPPORTED, probe_id
+        expected = ProbeOutcome.NOT_APPLICABLE if probe_id in absent_catalogs else ProbeOutcome.SUPPORTED
+        assert results[probe_id].outcome is expected, probe_id
 
     discover = results[PROBE_DISCOVER].details
     assert discover["supported_versions"] == ["2025-11-25", "2026-07-28"]
@@ -1619,9 +1628,35 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
 
     monkeypatch.setattr(probes_module, "_HTTP_PROBES", {pid: make_stub(pid) for pid in PROBE_IDS})
 
+    async def stub_connection_probes(first: object, second: object) -> dict[str, ProbeResult]:
+        del first, second
+        return {
+            probe_id: ProbeResult(probe_id, ProbeOutcome.SUPPORTED, {"stubbed": True})
+            for probe_id in (
+                PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+                PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+                PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+            )
+        }
+
+    monkeypatch.setattr(probes_module, "_probe_catalog_connection_independence", stub_connection_probes)
+
     results = await run_all_probes(URL)  # no client injected -> own-client branch
 
     assert set(results) == set(PROBE_IDS)
+
+
+async def test_one_injected_client_cannot_manufacture_connection_independence():
+    async with _client(_modern_server_handler) as client:
+        results = await run_all_probes(URL, client=client)
+
+    for probe_id in (
+        PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    ):
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert results[probe_id].details["reason"] == "a second independent probe client was not supplied"
 
 
 class TestAnonymousProbes:
@@ -1726,3 +1761,101 @@ class TestAnonymousProbes:
 
         assert seen_auth["get"] is None
         assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.SUPPORTED
+
+
+def _catalog_handler(catalogs: dict[str, list[dict]], *, malformed: str | None = None):
+    """Build a modern catalog handler for one independent client."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        request_id = body["id"]
+        method = body["method"]
+        if method == "server/discover":
+            return _rpc_result(
+                request_id,
+                {"capabilities": {"tools": {}, "resources": {}, "prompts": {}}},
+            )
+        result_keys = {
+            "tools/list": "tools",
+            "resources/list": "resources",
+            "prompts/list": "prompts",
+        }
+        item_key = result_keys[method]
+        if malformed == item_key:
+            return _rpc_result(request_id, {})
+        return _rpc_result(request_id, {item_key: catalogs[item_key]})
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_compares_identity_sets_without_order():
+    first_catalogs = {
+        "tools": [{"name": "search"}, {"name": "read"}],
+        "resources": [{"uri": "file:///a"}, {"uri": "file:///b"}],
+        "prompts": [{"name": "review"}, {"name": "summarize"}],
+    }
+    second_catalogs = {key: list(reversed(items)) for key, items in first_catalogs.items()}
+
+    async with (
+        _client(_catalog_handler(first_catalogs)) as first,
+        _client(_catalog_handler(second_catalogs)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    assert all(result.outcome is ProbeOutcome.SUPPORTED for result in results.values())
+    assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].details["first_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_reports_surface_specific_differences():
+    first_catalogs = {
+        "tools": [{"name": "search"}],
+        "resources": [{"uri": "file:///a"}],
+        "prompts": [{"name": "review"}],
+    }
+    second_catalogs = {
+        **first_catalogs,
+        "tools": [{"name": "replace"}],
+    }
+
+    async with (
+        _client(_catalog_handler(first_catalogs)) as first,
+        _client(_catalog_handler(second_catalogs)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    tools = results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT]
+    assert tools.outcome is ProbeOutcome.UNSUPPORTED
+    assert tools.details["only_first"] == ["search"]
+    assert tools.details["only_second"] == ["replace"]
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+    assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_errors_only_unobservable_surface():
+    catalogs = {
+        "tools": [{"name": "search"}],
+        "resources": [{"uri": "file:///a"}],
+        "prompts": [{"name": "review"}],
+    }
+
+    async with (
+        _client(_catalog_handler(catalogs)) as first,
+        _client(_catalog_handler(catalogs, malformed="resources")) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.ERROR
+    assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+    assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED

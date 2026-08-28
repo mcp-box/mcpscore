@@ -150,12 +150,13 @@ class TestModernStdioServer:
         assert auditor.audit_data.probes[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
         assert auditor.era is Era.DUAL
 
-    async def test_probe_suite_launches_one_sibling_process(self, monkeypatch):
-        """Modern requests are stateless, but do not require one process each.
+    async def test_probe_suite_launches_two_sibling_processes(self, monkeypatch):
+        """Modern requests share one process except the fresh-connection comparison.
 
         Starting the audited command once per probe can repeat expensive or
-        externally visible startup behavior. The suite needs one connection
-        without a legacy handshake, not independent processes per probe.
+        externally visible startup behavior. The suite needs one primary
+        no-handshake connection plus one independent comparison connection,
+        not an independent process for every probe.
         """
         from mcpscore import probes as probes_module
 
@@ -176,7 +177,7 @@ class TestModernStdioServer:
 
         results = await run_stdio_probes(_params())
 
-        assert launches == 1
+        assert launches == 2
         assert results[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
 
 

@@ -154,8 +154,11 @@ PROBE_RESOURCES_INVALID_CURSOR = "probe_resources_invalid_cursor"
 PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR = "probe_resource_templates_invalid_cursor"
 PROBE_PROMPTS_INVALID_CURSOR = "probe_prompts_invalid_cursor"
 PROBE_PAGINATION_CACHE_SCOPE = "probe_pagination_cache_scope"
+PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT = "probe_tools_catalog_connection_independent"
+PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT = "probe_resources_catalog_connection_independent"
+PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT = "probe_prompts_catalog_connection_independent"
 
-PROBE_IDS: tuple[str, ...] = (
+_SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
     PROBE_STATELESS_LIST,
     PROBE_MALFORMED_META,
@@ -180,6 +183,12 @@ PROBE_IDS: tuple[str, ...] = (
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_PAGINATION_CACHE_SCOPE,
 )
+CATALOG_CONNECTION_PROBE_IDS: tuple[str, ...] = (
+    PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+)
+PROBE_IDS: tuple[str, ...] = (*_SINGLE_TARGET_PROBE_IDS, *CATALOG_CONNECTION_PROBE_IDS)
 """Stable identifiers of all probes."""
 
 HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
@@ -209,7 +218,7 @@ bodies. Over stdio they record
 malformed wire input through the SDK transport.
 """
 
-STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
+STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in _SINGLE_TARGET_PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
 """Probes that run over stdio — the ones judging JSON-RPC, not HTTP."""
 
 _ANONYMOUS_PROBE_IDS = frozenset({PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA})
@@ -1069,6 +1078,159 @@ async def _probe_pagination_cache_scope(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_PAGINATION_CACHE_SCOPE, ProbeOutcome.SUPPORTED, details)
 
 
+_CATALOG_CONNECTION_SURFACES: tuple[tuple[str, str, str, str], ...] = (
+    ("tools", "tools/list", "tools", PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT),
+    ("resources", "resources/list", "resources", PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT),
+    ("prompts", "prompts/list", "prompts", PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT),
+)
+"""Capability, method, result key, and probe ID for connection-stable catalogs."""
+
+
+async def _collect_catalog_identities(
+    target: _ProbeTarget,
+    *,
+    target_version: str,
+    method: str,
+    item_key: str,
+    request_id_base: int,
+) -> frozenset[str]:
+    """Collect one complete catalog as an order-independent identity set."""
+    identities: set[str] = set()
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    deadline = time.monotonic() + PAGINATION_PROBE_TIMEOUT_S
+    identity_key = "uri" if item_key == "resources" else "name"
+
+    for page_number in range(PAGINATION_PROBE_MAX_PAGES):
+        remaining = max(deadline - time.monotonic(), 0)
+        if remaining == 0:
+            raise TimeoutError
+        params = {"cursor": cursor} if cursor is not None else None
+        response = await asyncio.wait_for(
+            target.post(
+                _request_body(
+                    method,
+                    request_id_base + page_number,
+                    _modern_meta(target_version),
+                    params=params,
+                ),
+                _request_headers(target_version, method),
+            ),
+            timeout=remaining,
+        )
+        result = response.result
+        if result is None:
+            msg = f"{method} did not return a result object"
+            raise TypeError(msg)
+        items = result.get(item_key)
+        if not isinstance(items, list):
+            msg = f"{method} did not return a {item_key} list"
+            raise TypeError(msg)
+        for item in items:
+            identity = item.get(identity_key) if isinstance(item, dict) else None
+            if not isinstance(identity, str) or not identity:
+                msg = f"{method} returned an item without a valid {identity_key}"
+                raise ValueError(msg)
+            identities.add(identity)
+
+        next_cursor = result.get("nextCursor")
+        if next_cursor is None:
+            return frozenset(identities)
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            msg = f"{method} returned an invalid or repeated cursor"
+            raise ValueError(msg)
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    msg = f"{method} exceeded the {PAGINATION_PROBE_MAX_PAGES}-page safety bound"
+    raise ValueError(msg)
+
+
+async def _probe_catalog_connection_independence(
+    first: _ProbeTarget,
+    second: _ProbeTarget,
+) -> dict[str, ProbeResult]:
+    """Compare complete modern catalogs over two independent connections."""
+    target_version = _target_version()
+    try:
+        discover = await first.post(
+            _request_body("server/discover", 2100, _modern_meta(target_version)),
+            _request_headers(target_version, "server/discover"),
+        )
+    except Exception as exc:  # noqa: BLE001 — probe transport failures are data
+        return {
+            probe_id: ProbeResult(
+                probe_id,
+                ProbeOutcome.ERROR,
+                {"exception": type(exc).__name__, "reason": str(exc)},
+            )
+            for probe_id in CATALOG_CONNECTION_PROBE_IDS
+        }
+    capabilities = discover.result.get("capabilities") if discover.result is not None else None
+    if not isinstance(capabilities, dict):
+        return not_applicable_results(
+            "modern declared catalog capabilities were not observable",
+            CATALOG_CONNECTION_PROBE_IDS,
+        )
+
+    async def compare(
+        surface_index: int,
+        capability: str,
+        method: str,
+        item_key: str,
+        probe_id: str,
+    ) -> ProbeResult:
+        if capabilities.get(capability) is None:
+            return ProbeResult(
+                probe_id,
+                ProbeOutcome.NOT_APPLICABLE,
+                {"reason": f"server does not declare the {capability} capability"},
+            )
+        try:
+            first_ids, second_ids = await asyncio.gather(
+                _collect_catalog_identities(
+                    first,
+                    target_version=target_version,
+                    method=method,
+                    item_key=item_key,
+                    request_id_base=2200 + surface_index * 300,
+                ),
+                _collect_catalog_identities(
+                    second,
+                    target_version=target_version,
+                    method=method,
+                    item_key=item_key,
+                    request_id_base=2300 + surface_index * 300,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — incomplete evidence must skip, never fail
+            return ProbeResult(
+                probe_id,
+                ProbeOutcome.ERROR,
+                {"exception": type(exc).__name__, "reason": str(exc)},
+            )
+
+        only_first = sorted(first_ids - second_ids)
+        only_second = sorted(second_ids - first_ids)
+        outcome = ProbeOutcome.SUPPORTED if not only_first and not only_second else ProbeOutcome.UNSUPPORTED
+        return ProbeResult(
+            probe_id,
+            outcome,
+            {
+                "first_count": len(first_ids),
+                "second_count": len(second_ids),
+                "only_first": only_first[:10],
+                "only_second": only_second[:10],
+                "differences_truncated": len(only_first) > 10 or len(only_second) > 10,
+            },
+        )
+
+    results = await asyncio.gather(
+        *(compare(index, *surface) for index, surface in enumerate(_CATALOG_CONNECTION_SURFACES))
+    )
+    return {result.probe_id: result for result in results}
+
+
 async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
     """One unauthenticated request, recording status and ``WWW-Authenticate``.
 
@@ -1607,6 +1769,7 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
 async def run_all_probes(
     url: str,
     client: httpx2.AsyncClient | None = None,
+    fresh_client: httpx2.AsyncClient | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict[str, ProbeResult]:
     """Run every probe against an HTTP(S) MCP endpoint.
@@ -1619,8 +1782,13 @@ async def run_all_probes(
         url: The MCP endpoint URL (http:// or https://)
         client: Optional preconfigured httpx client (tests inject a
             MockTransport-backed one); short-lived clients are created
-            otherwise. An injected client is used for every probe, including
-            the anonymous ones — the caller configures its headers.
+            otherwise. An injected client is used for every single-target
+            probe, including the anonymous ones — the caller configures its
+            headers.
+        fresh_client: A second independently configured client used only for
+            catalog connection-independence comparisons when ``client`` is
+            injected. Without it those comparisons are not observable and
+            skip; one client must never manufacture two-connection evidence.
         headers: Extra HTTP headers (e.g. an ``Authorization`` bearer) merged
             into the short-lived authenticated client's defaults; probes in
             ``_ANONYMOUS_PROBE_IDS`` run on a separate client that carries
@@ -1639,17 +1807,38 @@ async def run_all_probes(
             logger.info("Probe %s failed against %s: %s", probe_id, url, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
 
-    async def run_with(select: Callable[[str], httpx2.AsyncClient]) -> dict[str, ProbeResult]:
-        results = await asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in PROBE_IDS))
-        return {result.probe_id: result for result in results}
+    async def run_with(
+        select: Callable[[str], httpx2.AsyncClient],
+        comparison_client: httpx2.AsyncClient | None,
+    ) -> dict[str, ProbeResult]:
+        results = await asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in _SINGLE_TARGET_PROBE_IDS))
+        connection_results = (
+            await _probe_catalog_connection_independence(
+                _HttpTarget(select(PROBE_DISCOVER), url),
+                _HttpTarget(comparison_client, url),
+            )
+            if comparison_client is not None
+            else not_applicable_results(
+                "a second independent probe client was not supplied",
+                CATALOG_CONNECTION_PROBE_IDS,
+            )
+        )
+        return {
+            **{result.probe_id: result for result in results},
+            **connection_results,
+        }
 
     if client is not None:
-        return await run_with(lambda _probe_id: client)
+        return await run_with(lambda _probe_id: client, fresh_client)
     async with (
         httpx2.AsyncClient(follow_redirects=True, headers=headers) as own_client,
+        httpx2.AsyncClient(follow_redirects=True, headers=headers) as fresh_client,
         httpx2.AsyncClient(follow_redirects=True) as anon_client,
     ):
-        return await run_with(lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client)
+        return await run_with(
+            lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client,
+            fresh_client,
+        )
 
 
 async def run_stdio_probes(params: StdioServerParameters) -> dict[str, ProbeResult]:
@@ -1694,12 +1883,18 @@ async def run_stdio_probes(params: StdioServerParameters) -> dict[str, ProbeResu
         async with stdio_client(params, errlog=errlog) as (read_stream, write_stream):
             target = _StdioTarget(read_stream, write_stream)
             results.extend([await run_one(probe_id, target) for probe_id in STDIO_PROBE_IDS])
+            async with stdio_client(params, errlog=errlog) as (fresh_read_stream, fresh_write_stream):
+                connection_results = await _probe_catalog_connection_independence(
+                    target,
+                    _StdioTarget(fresh_read_stream, fresh_write_stream),
+                )
+                results.extend(connection_results.values())
     except Exception as e:  # noqa: BLE001 — process startup/teardown failures are probe data
         logger.info("Stdio probe transport failed against %s: %s", params.command, e)
         completed = {result.probe_id for result in results}
         results.extend(
             ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
-            for probe_id in STDIO_PROBE_IDS
+            for probe_id in (*STDIO_PROBE_IDS, *CATALOG_CONNECTION_PROBE_IDS)
             if probe_id not in completed
         )
 
