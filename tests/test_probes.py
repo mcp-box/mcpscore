@@ -1661,6 +1661,13 @@ async def test_one_injected_client_cannot_manufacture_connection_independence():
         assert results[probe_id].details["reason"] == "a second independent probe client was not supplied"
 
 
+async def test_run_all_probes_preserves_positional_headers_parameter():
+    async with _client(_modern_server_handler) as client:
+        results = await run_all_probes(URL, client, {"X-Api-Key": "ignored-for-injected-client"})
+
+    assert set(results) == set(PROBE_IDS)
+
+
 class TestAnonymousProbes:
     """The unauthenticated and metadata probes must not send a caller's bearer."""
 
@@ -1851,6 +1858,44 @@ async def test_catalog_connection_probe_reports_surface_specific_differences():
 
 
 @pytest.mark.asyncio
+async def test_catalog_connection_probe_compares_complete_paginated_catalogs():
+    requested_cursors: list[str | None] = []
+
+    def paginated_handler(last_tool: str):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            body = json.loads(request.content)
+            request_id = body["id"]
+            if body["method"] == "server/discover":
+                return _rpc_result(request_id, {"capabilities": {"tools": {}}})
+            cursor = body.get("params", {}).get("cursor")
+            requested_cursors.append(cursor)
+            if cursor is None:
+                return _rpc_result(
+                    request_id,
+                    {"tools": [{"name": "shared"}], "nextCursor": "page-2"},
+                )
+            assert cursor == "page-2"
+            return _rpc_result(request_id, {"tools": [{"name": last_tool}]})
+
+        return handler
+
+    async with (
+        _client(paginated_handler("first-only")) as first,
+        _client(paginated_handler("second-only")) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    tools = results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT]
+    assert tools.outcome is ProbeOutcome.UNSUPPORTED
+    assert tools.details["only_first"] == ["first-only"]
+    assert tools.details["only_second"] == ["second-only"]
+    assert requested_cursors.count("page-2") == 2
+
+
+@pytest.mark.asyncio
 async def test_catalog_connection_probe_detects_capability_difference():
     catalogs = {
         "tools": [{"name": "search"}],
@@ -1930,6 +1975,7 @@ async def test_catalog_connection_probe_cancels_failed_collection_sibling(monkey
             except asyncio.CancelledError:
                 sibling_cancelled.set()
                 raise
+            return frozenset()
 
         monkeypatch.setattr(probes_module, "_collect_catalog_identities", collect)
         results = await _probe_catalog_connection_independence(first, second)

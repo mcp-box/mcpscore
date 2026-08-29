@@ -548,13 +548,12 @@ class _HttpTarget:
 class _StdioTarget:
     """A probe target reached through the SDK's cross-platform stdio transport.
 
-    One sibling process is used for the whole probe suite. It is separate from
-    the audit's SDK session, which has already sent ``initialize`` and pinned
-    that connection to the legacy lifecycle, but modern requests do not require
-    a fresh process apiece. Reusing one no-handshake connection avoids starting
-    the audited command once per probe — important for servers with expensive
-    or externally visible startup behavior — while every request still carries
-    its own complete modern envelope.
+    Each target owns one sibling process, separate from the audit's SDK session
+    that has already sent ``initialize`` and pinned its connection to the legacy
+    lifecycle. The probe suite reuses its primary target for all single-target
+    probes and starts one additional target for the connection-independence
+    comparisons. This avoids starting the audited command once per probe while
+    still providing two genuinely independent connections.
     """
 
     read_stream: Any
@@ -1801,8 +1800,9 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
 async def run_all_probes(
     url: str,
     client: httpx2.AsyncClient | None = None,
-    fresh_client: httpx2.AsyncClient | None = None,
     headers: dict[str, str] | None = None,
+    *,
+    fresh_client: httpx2.AsyncClient | None = None,
 ) -> dict[str, ProbeResult]:
     """Run every probe against an HTTP(S) MCP endpoint.
 
@@ -1817,15 +1817,15 @@ async def run_all_probes(
             otherwise. An injected client is used for every single-target
             probe, including the anonymous ones — the caller configures its
             headers.
-        fresh_client: A second independently configured client used only for
-            catalog connection-independence comparisons when ``client`` is
-            injected. Without it those comparisons are not observable and
-            skip; one client must never manufacture two-connection evidence.
         headers: Extra HTTP headers (e.g. an ``Authorization`` bearer) merged
             into the short-lived authenticated client's defaults; probes in
             ``_ANONYMOUS_PROBE_IDS`` run on a separate client that carries
             none of them. Ignored when ``client`` is supplied. Sensitive —
             never logged.
+        fresh_client: A second independently configured client used only for
+            catalog connection-independence comparisons when ``client`` is
+            injected. Without it those comparisons are not observable and
+            skip; one client must never manufacture two-connection evidence.
 
     Returns:
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
@@ -1878,10 +1878,11 @@ async def run_stdio_probes(params: StdioServerParameters) -> dict[str, ProbeResu
 
     The modern lifecycle is stateless, so "does this server speak 2026-07-28?"
     is answerable over stdio exactly as over HTTP: send the request, read the
-    reply. The suite launches one short-lived sibling process and deliberately
-    stays below the SDK session layer, so no ``initialize`` handshake pins that
-    connection to the legacy lifecycle. Probes run sequentially on it because
-    a stdio stream has one reader; each request remains self-contained.
+    reply. The suite launches two short-lived sibling processes and deliberately
+    stays below the SDK session layer, so no ``initialize`` handshake pins those
+    connections to the legacy lifecycle. Single-target probes run sequentially
+    on the first process because a stdio stream has one reader; the second exists
+    only to compare catalogs across independent connections.
 
     Probes in :data:`HTTP_ONLY_PROBE_IDS` are recorded ``NOT_APPLICABLE``:
     their subject does not exist on this transport.
