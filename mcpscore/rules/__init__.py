@@ -38,6 +38,11 @@ from .capabilities import (
     CapabilityToolsListChangedRule,
     CapabilityToolsPresentRule,
 )
+from .catalog_stability import (
+    PromptsCatalogConnectionIndependentRule,
+    ResourcesCatalogConnectionIndependentRule,
+    ToolsCatalogConnectionIndependentRule,
+)
 from .packaging import (
     PACKAGING_GROUP,
     PackageDescriptionPresentRule,
@@ -194,6 +199,7 @@ __all__ = (
     "PromptsArgumentNamesPresentRule",
     "PromptsArgumentNamesUniqueRule",
     "PromptsArgumentsDocumentedRule",
+    "PromptsCatalogConnectionIndependentRule",
     "PromptsDescriptionPresentRule",
     "PromptsIconsValidRule",
     "PromptsInvalidCursorRule",
@@ -211,6 +217,7 @@ __all__ = (
     "ResourceTemplatesUniqueRule",
     "ResourceTemplatesUriTemplatesValidRule",
     "ResourcesAnnotationsValidRule",
+    "ResourcesCatalogConnectionIndependentRule",
     "ResourcesDescriptionPresentRule",
     "ResourcesIconsValidRule",
     "ResourcesInvalidCursorRule",
@@ -240,6 +247,7 @@ __all__ = (
     "ToolSchemaDialectReadinessRule",
     "ToolsAnnotationsPresentRule",
     "ToolsAtLeastOneRule",
+    "ToolsCatalogConnectionIndependentRule",
     "ToolsDescriptionPresentRule",
     "ToolsExecutionConsistentRule",
     "ToolsIconsValidRule",

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Three catalog connection-independence rules.** Modern servers are checked
+  that the complete tools, resources, and prompts identity sets do not vary
+  across two independent connections carrying the same authorization context.
+  Comparisons ignore ordering, traverse pagination completely, bound reported
+  differences, and skip rather than fail when either observation is incomplete.
+  Each requirement is HIGH and scoped to MCP 2026-07-28, where catalog sets
+  MUST NOT vary per connection.
+
 ## [1.10.0] - 2026-08-28
 
 ### Added

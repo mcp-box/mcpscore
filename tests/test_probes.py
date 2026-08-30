@@ -1,5 +1,6 @@
 """Tests for the sessionless probe layer."""
 
+import asyncio
 import json
 
 import httpx2
@@ -27,13 +28,16 @@ from mcpscore.probes import (
     PROBE_ORIGIN_VALIDATION,
     PROBE_PAGINATION_CACHE_SCOPE,
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+    PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_RESOURCES_INVALID_CURSOR,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
+    PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_TOOLS_INVALID_CURSOR,
     PROBE_UNAUTHENTICATED,
     PROBE_UNKNOWN_METHOD,
@@ -41,8 +45,10 @@ from mcpscore.probes import (
     UNKNOWN_METHOD_PREFIX,
     ProbeOutcome,
     ProbeResult,
+    _collect_catalog_identities,
     _fetch_auth_server_metadata,
     _HttpTarget,
+    _probe_catalog_connection_independence,
     _traverse_cache_scope_surface,
     _well_known_urls,
     not_applicable_results,
@@ -178,16 +184,21 @@ def _client(handler) -> httpx2.AsyncClient:
 
 
 async def _run(handler) -> dict[str, ProbeResult]:
-    async with _client(handler) as client:
-        return await run_all_probes(URL, client=client)
+    async with _client(handler) as client, _client(handler) as fresh_client:
+        return await run_all_probes(URL, client=client, fresh_client=fresh_client)
 
 
 async def test_modern_server_supports_all_probed_behaviors():
     results = await _run(_modern_server_handler)
 
     assert set(results) == set(PROBE_IDS)
+    absent_catalogs = {
+        PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    }
     for probe_id in PROBE_IDS:
-        assert results[probe_id].outcome is ProbeOutcome.SUPPORTED, probe_id
+        expected = ProbeOutcome.NOT_APPLICABLE if probe_id in absent_catalogs else ProbeOutcome.SUPPORTED
+        assert results[probe_id].outcome is expected, probe_id
 
     discover = results[PROBE_DISCOVER].details
     assert discover["supported_versions"] == ["2025-11-25", "2026-07-28"]
@@ -1619,7 +1630,90 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
 
     monkeypatch.setattr(probes_module, "_HTTP_PROBES", {pid: make_stub(pid) for pid in PROBE_IDS})
 
+    async def stub_connection_probes(first: object, second: object) -> dict[str, ProbeResult]:
+        del first, second
+        return {
+            probe_id: ProbeResult(probe_id, ProbeOutcome.SUPPORTED, {"stubbed": True})
+            for probe_id in (
+                PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+                PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+                PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+            )
+        }
+
+    monkeypatch.setattr(probes_module, "_probe_catalog_connection_independence", stub_connection_probes)
+
     results = await run_all_probes(URL)  # no client injected -> own-client branch
+
+    assert set(results) == set(PROBE_IDS)
+
+
+async def test_one_injected_client_cannot_manufacture_connection_independence():
+    async with _client(_modern_server_handler) as client:
+        results = await run_all_probes(URL, client=client)
+
+    for probe_id in (
+        PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    ):
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert results[probe_id].details["reason"] == "a second independent probe client was not supplied"
+
+
+async def test_same_injected_client_cannot_manufacture_connection_independence():
+    async with _client(_modern_server_handler) as client:
+        results = await run_all_probes(URL, client=client, fresh_client=client)
+
+    for probe_id in (
+        PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    ):
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert results[probe_id].details["reason"] == "a second independent probe client was not supplied"
+
+
+async def test_catalog_comparison_runs_before_single_probes_can_mutate_client_cookies(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    def make_single_probe(probe_id: str):
+        async def single_probe(target: _HttpTarget) -> ProbeResult:
+            target.client.cookies.set("probe-state", "mutated")
+            return ProbeResult(probe_id, ProbeOutcome.SUPPORTED)
+
+        return single_probe
+
+    monkeypatch.setattr(
+        probes_module,
+        "_HTTP_PROBES",
+        {probe_id: make_single_probe(probe_id) for probe_id in probes_module._SINGLE_TARGET_PROBE_IDS},
+    )
+
+    async def compare(first: _HttpTarget, second: _HttpTarget) -> dict[str, ProbeResult]:
+        assert not first.client.cookies
+        assert not second.client.cookies
+        return {
+            probe_id: ProbeResult(probe_id, ProbeOutcome.SUPPORTED)
+            for probe_id in (
+                PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+                PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+                PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+            )
+        }
+
+    monkeypatch.setattr(probes_module, "_probe_catalog_connection_independence", compare)
+    async with _client(_modern_server_handler) as client, _client(_modern_server_handler) as fresh_client:
+        results = await run_all_probes(URL, client=client, fresh_client=fresh_client)
+
+    assert set(results) == set(PROBE_IDS)
+    assert client.cookies.get("probe-state") == "mutated"
+    assert not fresh_client.cookies
+
+
+async def test_run_all_probes_preserves_positional_headers_parameter():
+    async with _client(_modern_server_handler) as client:
+        results = await run_all_probes(URL, client, {"X-Api-Key": "ignored-for-injected-client"})
 
     assert set(results) == set(PROBE_IDS)
 
@@ -1726,3 +1820,279 @@ class TestAnonymousProbes:
 
         assert seen_auth["get"] is None
         assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.SUPPORTED
+
+
+def _catalog_handler(
+    catalogs: dict[str, list[dict]],
+    *,
+    malformed: str | None = None,
+    capabilities: dict | None = None,
+):
+    """Build a modern catalog handler for one independent client."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        request_id = body["id"]
+        method = body["method"]
+        if method == "server/discover":
+            return _rpc_result(
+                request_id,
+                {
+                    "capabilities": capabilities
+                    if capabilities is not None
+                    else {"tools": {}, "resources": {}, "prompts": {}}
+                },
+            )
+        result_keys = {
+            "tools/list": "tools",
+            "resources/list": "resources",
+            "prompts/list": "prompts",
+        }
+        item_key = result_keys[method]
+        if malformed == item_key:
+            return _rpc_result(request_id, {})
+        return _rpc_result(request_id, {item_key: catalogs[item_key]})
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_compares_identity_sets_without_order():
+    first_catalogs = {
+        "tools": [{"name": "search"}, {"name": "read"}],
+        "resources": [{"uri": "file:///a"}, {"uri": "file:///b"}],
+        "prompts": [{"name": "review"}, {"name": "summarize"}],
+    }
+    second_catalogs = {key: list(reversed(items)) for key, items in first_catalogs.items()}
+
+    async with (
+        _client(_catalog_handler(first_catalogs)) as first,
+        _client(_catalog_handler(second_catalogs)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    assert all(result.outcome is ProbeOutcome.SUPPORTED for result in results.values())
+    assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].details["first_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_reports_surface_specific_differences():
+    first_catalogs = {
+        "tools": [{"name": "search"}],
+        "resources": [{"uri": "file:///a"}],
+        "prompts": [{"name": "review"}],
+    }
+    second_catalogs = {
+        **first_catalogs,
+        "tools": [{"name": "replace"}],
+    }
+
+    async with (
+        _client(_catalog_handler(first_catalogs)) as first,
+        _client(_catalog_handler(second_catalogs)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    tools = results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT]
+    assert tools.outcome is ProbeOutcome.UNSUPPORTED
+    assert tools.details["only_first"] == ["search"]
+    assert tools.details["only_second"] == ["replace"]
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+    assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_compares_complete_paginated_catalogs():
+    requested_cursors: list[str | None] = []
+
+    def paginated_handler(last_tool: str):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            body = json.loads(request.content)
+            request_id = body["id"]
+            if body["method"] == "server/discover":
+                return _rpc_result(request_id, {"capabilities": {"tools": {}}})
+            cursor = body.get("params", {}).get("cursor")
+            requested_cursors.append(cursor)
+            if cursor is None:
+                return _rpc_result(
+                    request_id,
+                    {"tools": [{"name": "shared"}], "nextCursor": "page-2"},
+                )
+            assert cursor == "page-2"
+            return _rpc_result(request_id, {"tools": [{"name": last_tool}]})
+
+        return handler
+
+    async with (
+        _client(paginated_handler("first-only")) as first,
+        _client(paginated_handler("second-only")) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    tools = results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT]
+    assert tools.outcome is ProbeOutcome.UNSUPPORTED
+    assert tools.details["only_first"] == ["first-only"]
+    assert tools.details["only_second"] == ["second-only"]
+    assert requested_cursors.count("page-2") == 2
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_detects_capability_difference():
+    catalogs = {
+        "tools": [{"name": "search"}],
+        "resources": [{"uri": "file:///a"}],
+        "prompts": [{"name": "review"}],
+    }
+
+    async with (
+        _client(_catalog_handler(catalogs)) as first,
+        _client(_catalog_handler(catalogs, capabilities={"resources": {}, "prompts": {}})) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    tools = results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT]
+    assert tools.outcome is ProbeOutcome.UNSUPPORTED
+    assert tools.details["first_declares_capability"] is True
+    assert tools.details["second_declares_capability"] is False
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_runs_surfaces_sequentially(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    catalogs = {"tools": [], "resources": [], "prompts": []}
+    active_methods: list[str] = []
+
+    async def collect(target, *, method, **kwargs):
+        del target, kwargs
+        assert not active_methods or set(active_methods) == {method}
+        active_methods.append(method)
+        await asyncio.sleep(0)
+        active_methods.remove(method)
+        return frozenset()
+
+    monkeypatch.setattr(probes_module, "_collect_catalog_identities", collect)
+    async with (
+        _client(_catalog_handler(catalogs)) as first,
+        _client(_catalog_handler(catalogs)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    assert all(result.outcome is ProbeOutcome.SUPPORTED for result in results.values())
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_cancels_failed_collection_sibling(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    catalogs = {"tools": [], "resources": [], "prompts": []}
+    sibling_started = asyncio.Event()
+    sibling_cancelled = asyncio.Event()
+
+    async with (
+        _client(_catalog_handler(catalogs)) as first_client,
+        _client(_catalog_handler(catalogs)) as second_client,
+    ):
+        first = _HttpTarget(first_client, URL)
+        second = _HttpTarget(second_client, URL)
+
+        async def collect(target, *, method, **kwargs):
+            del kwargs
+            if method != "tools/list":
+                return frozenset()
+            if target is first:
+                await sibling_started.wait()
+                raise RuntimeError("first collection failed")
+            try:
+                sibling_started.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+            return frozenset()
+
+        monkeypatch.setattr(probes_module, "_collect_catalog_identities", collect)
+        results = await _probe_catalog_connection_independence(first, second)
+
+    assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.ERROR
+    assert sibling_cancelled.is_set()
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_errors_only_unobservable_surface():
+    catalogs = {
+        "tools": [{"name": "search"}],
+        "resources": [{"uri": "file:///a"}],
+        "prompts": [{"name": "review"}],
+    }
+
+    async with (
+        _client(_catalog_handler(catalogs)) as first,
+        _client(_catalog_handler(catalogs, malformed="resources")) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.ERROR
+    assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+    assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_collection_stops_when_total_deadline_is_exhausted(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    # A pre-exhausted total budget must stop before touching the target.
+    monkeypatch.setattr(probes_module, "PAGINATION_PROBE_TIMEOUT_S", -1.0)
+
+    async with _client(lambda request: pytest.fail(f"unexpected request: {request}")) as client:
+        with pytest.raises(TimeoutError):
+            await _collect_catalog_identities(
+                _HttpTarget(client, URL),
+                target_version="2026-07-28",
+                method="tools/list",
+                item_key="tools",
+                request_id_base=1,
+            )
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_rejects_items_without_identity():
+    catalogs = {
+        "tools": [{}],
+        "resources": [{"uri": "file:///a"}],
+        "prompts": [{"name": "review"}],
+    }
+
+    async with (
+        _client(_catalog_handler(catalogs)) as first,
+        _client(_catalog_handler(catalogs)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL),
+            _HttpTarget(second, URL),
+        )
+
+    tools = results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT]
+    assert tools.outcome is ProbeOutcome.ERROR
+    assert tools.details["exception"] == "ValueError"
+    assert tools.details["reason"] == "tools/list returned an item without a valid name"
