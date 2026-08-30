@@ -1674,6 +1674,43 @@ async def test_same_injected_client_cannot_manufacture_connection_independence()
         assert results[probe_id].details["reason"] == "a second independent probe client was not supplied"
 
 
+async def test_catalog_comparison_runs_before_single_probes_can_mutate_client_cookies(monkeypatch):
+    from mcpscore import probes as probes_module
+
+    def make_single_probe(probe_id: str):
+        async def single_probe(target: _HttpTarget) -> ProbeResult:
+            target.client.cookies.set("probe-state", "mutated")
+            return ProbeResult(probe_id, ProbeOutcome.SUPPORTED)
+
+        return single_probe
+
+    monkeypatch.setattr(
+        probes_module,
+        "_HTTP_PROBES",
+        {probe_id: make_single_probe(probe_id) for probe_id in probes_module._SINGLE_TARGET_PROBE_IDS},
+    )
+
+    async def compare(first: _HttpTarget, second: _HttpTarget) -> dict[str, ProbeResult]:
+        assert not first.client.cookies
+        assert not second.client.cookies
+        return {
+            probe_id: ProbeResult(probe_id, ProbeOutcome.SUPPORTED)
+            for probe_id in (
+                PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+                PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+                PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+            )
+        }
+
+    monkeypatch.setattr(probes_module, "_probe_catalog_connection_independence", compare)
+    async with _client(_modern_server_handler) as client, _client(_modern_server_handler) as fresh_client:
+        results = await run_all_probes(URL, client=client, fresh_client=fresh_client)
+
+    assert set(results) == set(PROBE_IDS)
+    assert client.cookies.get("probe-state") == "mutated"
+    assert not fresh_client.cookies
+
+
 async def test_run_all_probes_preserves_positional_headers_parameter():
     async with _client(_modern_server_handler) as client:
         results = await run_all_probes(URL, client, {"X-Api-Key": "ignored-for-injected-client"})

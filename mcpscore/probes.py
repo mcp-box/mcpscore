@@ -1843,8 +1843,9 @@ async def run_all_probes(
         select: Callable[[str], httpx2.AsyncClient],
         comparison_client: httpx2.AsyncClient | None,
     ) -> dict[str, ProbeResult]:
-        results = await asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in _SINGLE_TARGET_PROBE_IDS))
         primary_client = select(PROBE_DISCOVER)
+        # Compare pristine clients before any single-target response can mutate
+        # the primary client's cookie jar and create a different auth context.
         connection_results = (
             await _probe_catalog_connection_independence(
                 _HttpTarget(primary_client, url),
@@ -1856,6 +1857,7 @@ async def run_all_probes(
                 CATALOG_CONNECTION_PROBE_IDS,
             )
         )
+        results = await asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in _SINGLE_TARGET_PROBE_IDS))
         return {
             **{result.probe_id: result for result in results},
             **connection_results,
