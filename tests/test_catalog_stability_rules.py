@@ -75,6 +75,28 @@ def test_connection_independence_rule_fails_and_reports_bounded_differences(rule
     assert result.details["only_second"] == ["after"]
 
 
+def test_connection_independence_rule_preserves_capability_mismatch_evidence():
+    probe = ProbeResult(
+        PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+        ProbeOutcome.UNSUPPORTED,
+        {
+            "first_declares_capability": True,
+            "second_declares_capability": False,
+            "reason": "tools capability varies across client connections",
+        },
+    )
+
+    result = ToolsCatalogConnectionIndependentRule().check(
+        AuditData(probes={PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT: probe})
+    )
+
+    assert not result.passed
+    assert result.details is not None
+    assert result.details["first_declares_capability"] is True
+    assert result.details["second_declares_capability"] is False
+    assert result.details["reason"] == "tools capability varies across client connections"
+
+
 @pytest.mark.parametrize(("rule_cls", "probe_id", "surface"), RULES)
 def test_connection_independence_rule_skips_unobservable_comparisons(rule_cls, probe_id, surface):
     del surface

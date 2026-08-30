@@ -1661,6 +1661,19 @@ async def test_one_injected_client_cannot_manufacture_connection_independence():
         assert results[probe_id].details["reason"] == "a second independent probe client was not supplied"
 
 
+async def test_same_injected_client_cannot_manufacture_connection_independence():
+    async with _client(_modern_server_handler) as client:
+        results = await run_all_probes(URL, client=client, fresh_client=client)
+
+    for probe_id in (
+        PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+        PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    ):
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert results[probe_id].details["reason"] == "a second independent probe client was not supplied"
+
+
 async def test_run_all_probes_preserves_positional_headers_parameter():
     async with _client(_modern_server_handler) as client:
         results = await run_all_probes(URL, client, {"X-Api-Key": "ignored-for-injected-client"})

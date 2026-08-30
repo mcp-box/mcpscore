@@ -56,12 +56,8 @@ class CatalogConnectionIndependentRule(BaseRule):
                 else f"❌ {self.surface_label} varies across client connections"
             ),
             details={
+                **probe.details,
                 "spec": self.spec_url,
-                "first_count": probe.details.get("first_count"),
-                "second_count": probe.details.get("second_count"),
-                "only_first": probe.details.get("only_first", []),
-                "only_second": probe.details.get("only_second", []),
-                "differences_truncated": probe.details.get("differences_truncated", False),
             },
         )
 

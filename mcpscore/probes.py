@@ -1844,12 +1844,13 @@ async def run_all_probes(
         comparison_client: httpx2.AsyncClient | None,
     ) -> dict[str, ProbeResult]:
         results = await asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in _SINGLE_TARGET_PROBE_IDS))
+        primary_client = select(PROBE_DISCOVER)
         connection_results = (
             await _probe_catalog_connection_independence(
-                _HttpTarget(select(PROBE_DISCOVER), url),
+                _HttpTarget(primary_client, url),
                 _HttpTarget(comparison_client, url),
             )
-            if comparison_client is not None
+            if comparison_client is not None and comparison_client is not primary_client
             else not_applicable_results(
                 "a second independent probe client was not supplied",
                 CATALOG_CONNECTION_PROBE_IDS,
