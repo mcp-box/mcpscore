@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 from mcp import StdioServerParameters
 import pytest
 
+from mcpscore import StdioCommand
 from mcpscore.cli import async_main
 from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
@@ -204,7 +205,7 @@ class TestModernStdioServer:
         await async_main()
 
         report = json.loads(capsys.readouterr().out)
-        assert report["target"] == f"{sys.executable} {SERVER}"
+        assert report["target"] == StdioCommand(command=sys.executable, args=(SERVER,)).display
         assert report["transport"] == str(MCPTransportType.STDIO)
         assert report["spec"]["era"] == "modern"
 
