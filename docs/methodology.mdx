@@ -56,8 +56,9 @@ unobserved. A dedicated presence rule can still judge whether a complete catalog
 ## How an audit runs
 
 1. **Connect** — stdio (local servers in any language: `.py`/`.js` files directly, or an arbitrary command via `--stdio`), Streamable HTTP, or SSE, with
-   automatic transport detection. A connection only counts once the server completes a
-   real MCP handshake.
+   automatic transport detection. mcpscore first attempts the legacy MCP
+   handshake; if that lifecycle is absent, stateless probes can establish that
+   the target is a modern-only server instead of treating it as unreachable.
 2. **Collect** — protocol version, server info, capabilities, tools, resources,
    prompts, TLS details.
 3. **Probe** — a set of sessionless requests observing
@@ -79,13 +80,17 @@ unobserved. A dedicated presence rule can still judge whether a complete catalog
    a null ID.
 
    The modern lifecycle is stateless, so JSON-RPC behaviors that can be expressed
-   through the SDK are probed over stdio too. The suite launches one short-lived
-   sibling process through the MCP SDK's stdio transport and sends no `initialize`
-   handshake. The truncated-JSON probe currently runs only over HTTP because the
-   SDK path cannot inject malformed wire input safely; stdio therefore reports
-   insufficient evidence for that rule. Questions that only exist in HTTP—such
-   as `Origin`, headers, status codes, sessions, and auth metadata—are recorded as
-   not applicable for stdio rather than failed.
+   through the SDK are probed over stdio too. A successful suite launches two
+   short-lived sibling processes through the MCP SDK's stdio transport and sends
+   no `initialize` handshake: one runs the probe suite, while the other provides
+   an independent connection for catalog-stability comparisons. If the gateway
+   probes establish no modern support, the suite stops after the first process.
+   The truncated-JSON
+   probe currently runs only over HTTP because the SDK path cannot inject malformed
+   wire input safely; stdio therefore reports insufficient evidence for that rule.
+   Questions that only exist in HTTP—such as `Origin`, headers, status codes,
+   sessions, and auth metadata—are recorded as not applicable for stdio rather
+   than failed.
 
    Invalid-cursor probes use the established initialized SDK session when one is
    available. This matters for legacy and dual-era servers, where a sessionless
@@ -111,9 +116,9 @@ version as a *property of your server that it detects*, not a mode of the tool:
   across servers on different revisions.
 - The report states the **era** your server was observed to support (`legacy`,
   `modern`, or `dual-era`), following the spec's own detection guidance.
-- **Modern-only servers are fully supported**: if the legacy handshake fails but the
-  server answers stateless requests, mcpscore audits it through its probe layer
-  instead of reporting a connection failure.
+- **Modern-only HTTP and stdio servers are fully supported**: if the legacy
+  handshake fails but the server answers stateless requests, mcpscore audits it
+  through its probe layer instead of reporting a connection failure.
 
 ## The readiness score (separate axis)
 

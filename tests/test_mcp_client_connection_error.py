@@ -17,6 +17,7 @@ from mcpscore.mcp_client import (
     ConnectionFailure,
     MCPClient,
     _preferred_failure,
+    _safe_failure_detail,
     extract_http_status,
     reason_for_status,
 )
@@ -76,6 +77,21 @@ class TestConnectionFailureMessage:
     def test_not_mcp_message(self):
         msg = ConnectionFailure(ConnectionErrorReason.NOT_MCP).message
         assert "MCP" in msg
+
+    def test_generic_detail_is_included_in_public_message(self):
+        msg = ConnectionFailure(ConnectionErrorReason.UNKNOWN, detail="ImportError: missing dependency").message
+        assert msg == "Could not connect to the MCP server. Details: ImportError: missing dependency"
+
+
+class TestSafeFailureDetail:
+    def test_escapes_terminal_controls_without_destroying_unicode(self):
+        detail = _safe_failure_detail(RuntimeError("\x1b[31m故障\x1b[0m\u202e\U000e0001"))
+
+        assert detail == r"\x1b[31m故障\x1b[0m\u202e\U000e0001"
+        assert "\x1b" not in detail
+
+    def test_empty_exception_uses_type_name(self):
+        assert _safe_failure_detail(RuntimeError()) == "RuntimeError"
 
 
 class TestPreferredFailure:

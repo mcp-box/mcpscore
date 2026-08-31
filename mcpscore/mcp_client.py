@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import anyio
 import httpx2
 from mcp import (
     ClientSession,
@@ -151,6 +152,8 @@ class ConnectionFailure:
 
     reason: ConnectionErrorReason
     status_code: int | None = None
+    detail: str | None = None
+    """Sanitized underlying exception text, when a generic failure supplied it."""
 
     @property
     def message(self) -> str:
@@ -158,6 +161,8 @@ class ConnectionFailure:
         # For an unclassified HTTP error, surface the actual status code.
         if self.reason is ConnectionErrorReason.HTTP_ERROR and self.status_code is not None:
             return f"The server returned HTTP {self.status_code} during the MCP handshake."
+        if self.detail is not None:
+            return f"{base} Details: {self.detail}"
         return base
 
 
@@ -191,6 +196,23 @@ def extract_http_status(exc: BaseException) -> int | None:
         stack.append(current.__cause__)
         stack.append(current.__context__)
     return None
+
+
+def _safe_failure_detail(exc: BaseException) -> str:
+    """Return compact exception text that cannot emit terminal controls."""
+    normalized = " ".join(str(exc).split()) or type(exc).__name__
+
+    def printable(char: str) -> str:
+        if char.isprintable():
+            return char
+        codepoint = ord(char)
+        if codepoint <= 0xFF:
+            return f"\\x{codepoint:02x}"
+        if codepoint <= 0xFFFF:
+            return f"\\u{codepoint:04x}"
+        return f"\\U{codepoint:08x}"
+
+    return "".join(printable(char) for char in normalized)[:500]
 
 
 def _preferred_failure(
@@ -280,6 +302,10 @@ class MCPClient:
 
         # Check if it's a local file path
         if server_path_or_url.endswith((".py", ".js")):
+            if not await anyio.Path(server_path_or_url).is_file():
+                logger.error("Server script not found: %s", server_path_or_url)
+                self._record_failure(ConnectionErrorReason.UNREACHABLE)
+                return (False, None)
             success = await self.connect_to_server(MCPTransportType.STDIO, server_path_or_url)
             return (success, MCPTransportType.STDIO if success else None)
 
@@ -421,9 +447,14 @@ class MCPClient:
                 self._pending_http_status = status
             logger.info("Connection attempt failed: %s", e)
 
-    def _record_failure(self, reason: ConnectionErrorReason, status_code: int | None = None) -> None:
+    def _record_failure(
+        self,
+        reason: ConnectionErrorReason,
+        status_code: int | None = None,
+        detail: str | None = None,
+    ) -> None:
         """Record why the current connect attempt failed."""
-        self.last_connection_error = ConnectionFailure(reason=reason, status_code=status_code)
+        self.last_connection_error = ConnectionFailure(reason=reason, status_code=status_code, detail=detail)
 
     def _record_unclassified_failure(self, exc: BaseException) -> None:
         """Classify a catch-all failure, recovering an HTTP status if one is buried in it.
@@ -436,7 +467,10 @@ class MCPClient:
         if status is not None:
             self._record_failure(reason_for_status(status), status)
         else:
-            self._record_failure(ConnectionErrorReason.UNKNOWN)
+            # Keep a compact, single-line explanation so a caller can defer
+            # showing it until modern-only probing has ruled out an expected
+            # rejection of the legacy handshake.
+            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_safe_failure_detail(exc))
 
     def _record_handshake_failure(self, server_url: str) -> None:
         """Classify a handshake failure, using any HTTP status seen in teardown.
@@ -524,9 +558,12 @@ class MCPClient:
             True if a connection was successful, False otherwise
 
         """
+        # Retain the resolved command before the legacy handshake. A
+        # modern-only server rejects that handshake by design, and the CLI
+        # needs these same parameters to retry with stateless probes.
+        self.stdio_params = server_params
         try:
             await self._establish_session(stdio_client(server_params), MCPTransportType.STDIO, url=None)
-            self.stdio_params = server_params
             return True
         except FileNotFoundError as e:
             logger.exception(missing_hint)
@@ -548,7 +585,12 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.NOT_MCP)
             return False
         except Exception as e:
-            logger.exception("Failed to connect to MCP server")
+            # A modern-only server is expected to reject the legacy
+            # initialize request. Keep the exception at debug level until the
+            # caller has had a chance to distinguish that from a broken
+            # process with stateless probes.
+            logger.info("Legacy MCP initialize handshake failed for server: %s", display)
+            logger.debug("Handshake error details", exc_info=True)
             self._record_unclassified_failure(e)
             return False
 

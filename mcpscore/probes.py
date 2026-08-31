@@ -1876,7 +1876,11 @@ async def run_all_probes(
         )
 
 
-async def run_stdio_probes(params: StdioServerParameters) -> dict[str, ProbeResult]:
+async def run_stdio_probes(
+    params: StdioServerParameters,
+    *,
+    require_modern_support: bool = False,
+) -> dict[str, ProbeResult]:
     """Run the transport-agnostic probes against a local stdio MCP server.
 
     The modern lifecycle is stateless, so "does this server speak 2026-07-28?"
@@ -1893,6 +1897,10 @@ async def run_stdio_probes(params: StdioServerParameters) -> dict[str, ProbeResu
     Args:
         params: Fully-resolved command, arguments and environment of the
             server, as used for the audit's own stdio connection.
+        require_modern_support: Run the two gateway probes first and stop when
+            neither establishes modern-lifecycle support. This bounds the
+            fallback cost after a failed legacy initialize; regular audits
+            still run the complete suite for legacy and dual-era servers.
 
     Returns:
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
@@ -1918,7 +1926,17 @@ async def run_stdio_probes(params: StdioServerParameters) -> dict[str, ProbeResu
         errlog: TextIO = cast("Any", DEVNULL)
         async with stdio_client(params, errlog=errlog) as (read_stream, write_stream):
             target = _StdioTarget(read_stream, write_stream)
-            results.extend([await run_one(probe_id, target) for probe_id in STDIO_PROBE_IDS])
+            results.extend([await run_one(probe_id, target) for probe_id in GATEWAY_PROBE_IDS])
+            completed = {result.probe_id: result for result in results}
+            if require_modern_support and not has_modern_support(completed):
+                return {
+                    **not_applicable_results("modern support was not established by gateway probes"),
+                    **not_applicable_results("probe subject is HTTP-specific", HTTP_ONLY_PROBE_IDS),
+                    **completed,
+                }
+            results.extend(
+                [await run_one(probe_id, target) for probe_id in STDIO_PROBE_IDS if probe_id not in GATEWAY_PROBE_IDS]
+            )
             async with stdio_client(params, errlog=errlog) as (fresh_read_stream, fresh_write_stream):
                 connection_results = await _probe_catalog_connection_independence(
                     target,

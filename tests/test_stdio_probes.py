@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -27,6 +29,8 @@ if TYPE_CHECKING:
 from mcp import StdioServerParameters
 import pytest
 
+from mcpscore import StdioCommand
+from mcpscore.cli import async_main
 from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
     GATEWAY_PROBE_IDS,
@@ -140,15 +144,70 @@ class TestModernStdioServer:
 
         client = MCPClient()
         client.stdio_params = _params()
+        client.transport_type = MCPTransportType.STDIO
         auditor = MCPAuditor()
         auditor.mcp_client = client
+        auditor.audit_data.transport_type = MCPTransportType.STDIO
         auditor.audit_data.protocol_version = "2025-11-25"
 
         await auditor._collect_probes()
         auditor.era = detect_era(auditor.audit_data.protocol_version, auditor.audit_data.probes)
 
+        assert auditor.audit_data.probes is not None
         assert auditor.audit_data.probes[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
         assert auditor.era is Era.DUAL
+
+    async def test_auditor_does_not_probe_retained_params_after_failed_connection(self, monkeypatch):
+        """Retained fallback parameters alone do not establish stdio transport."""
+        from mcpscore import mcp_auditor as mcp_auditor_module
+        from mcpscore.mcp_auditor import MCPAuditor
+        from mcpscore.mcp_client import MCPClient
+
+        probe = AsyncMock()
+        monkeypatch.setattr(mcp_auditor_module, "run_stdio_probes", probe)
+        client = MCPClient()
+        client.stdio_params = _params()
+        auditor = MCPAuditor()
+        auditor.mcp_client = client
+
+        await auditor._collect_probes()
+
+        probe.assert_not_awaited()
+        assert auditor.audit_data.probes is not None
+        assert all(result.outcome is ProbeOutcome.NOT_APPLICABLE for result in auditor.audit_data.probes.values())
+
+    async def test_cli_audits_modern_only_stdio_server(self, monkeypatch, capsys):
+        """User-level regression: failed initialize falls back and emits a full report."""
+        from mcpscore import mcp_auditor as mcp_auditor_module
+
+        # The autouse fixture blocks process launches in ordinary unit tests;
+        # this test deliberately exercises the committed local subprocess.
+        monkeypatch.setattr(mcp_auditor_module, "run_stdio_probes", run_stdio_probes)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--json", SERVER])
+
+        await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == SERVER
+        assert report["transport"] == str(MCPTransportType.STDIO)
+        assert report["spec"]["era"] == "modern"
+        assert report["spec"]["negotiated_version"] == "2026-07-28"
+        assert report["partial"] is False
+        assert report["max_score"] > 0
+
+    async def test_cli_audits_modern_only_stdio_command(self, monkeypatch, capsys):
+        """The any-language --stdio argv path reaches the same modern fallback."""
+        from mcpscore import mcp_auditor as mcp_auditor_module
+
+        monkeypatch.setattr(mcp_auditor_module, "run_stdio_probes", run_stdio_probes)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--json", "--stdio", sys.executable, SERVER])
+
+        await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == StdioCommand(command=sys.executable, args=(SERVER,)).display
+        assert report["transport"] == str(MCPTransportType.STDIO)
+        assert report["spec"]["era"] == "modern"
 
     async def test_probe_suite_launches_two_sibling_processes(self, monkeypatch):
         """Modern requests share one process except the fresh-connection comparison.
@@ -198,6 +257,41 @@ class TestLegacyOnlyStdioServer:
 
 class TestProbeFailureIsData:
     """A server that cannot be launched or does not answer is not an exception."""
+
+    async def test_modern_only_gate_stops_before_remaining_probes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A failed fallback pays only for the two modern gateway requests."""
+        from mcpscore import probes as probes_module
+
+        launches = 0
+        called: list[str] = []
+
+        @asynccontextmanager
+        async def fake_stdio_client(params, errlog):
+            nonlocal launches
+            launches += 1
+            yield object(), object()
+
+        def fake_probe(probe_id: str):
+            async def run(target):
+                called.append(probe_id)
+                return probes_module.ProbeResult(probe_id, ProbeOutcome.UNSUPPORTED)
+
+            return run
+
+        monkeypatch.setattr(probes_module, "stdio_client", fake_stdio_client)
+        for probe_id in probes_module.STDIO_PROBE_IDS:
+            monkeypatch.setitem(probes_module._TRANSPORT_AGNOSTIC_PROBES, probe_id, fake_probe(probe_id))
+
+        results = await run_stdio_probes(_params(), require_modern_support=True)
+
+        assert launches == 1
+        assert called == list(GATEWAY_PROBE_IDS)
+        assert set(results) == set(PROBE_IDS)
+        for probe_id in set(probes_module.STDIO_PROBE_IDS) - set(GATEWAY_PROBE_IDS):
+            assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
 
     async def test_unlaunchable_command_yields_error_outcomes(self):
         """Probes never raise: a missing executable is ERROR, so rules skip."""

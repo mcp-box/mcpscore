@@ -1,10 +1,11 @@
 """Unit tests for MCPClient STDIO transport error paths."""
 
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mcpscore.enums import MCPTransportType
+from mcpscore.enums import ConnectionErrorReason, MCPTransportType
 from mcpscore.mcp_client import MCPClient, StdioCommand
 
 
@@ -15,6 +16,21 @@ class TestMCPClientStdioErrors:
     def mcp_client(self):
         """Create a fresh MCPClient instance for each test."""
         return MCPClient()
+
+    async def test_detect_missing_script_without_launching(self, mcp_client, tmp_path, caplog):
+        """A typo'd script path is unreachable and cannot enter modern fallback."""
+        missing = tmp_path / "missing.py"
+
+        with patch.object(mcp_client, "connect_to_server", new=AsyncMock()) as connect:
+            success, transport = await mcp_client.detect_and_connect(str(missing))
+
+        assert success is False
+        assert transport is None
+        connect.assert_not_awaited()
+        assert mcp_client.stdio_params is None
+        assert mcp_client.last_connection_error is not None
+        assert mcp_client.last_connection_error.reason is ConnectionErrorReason.UNREACHABLE
+        assert "Server script not found" in caplog.text
 
     async def test_connect_stdio_invalid_file_extension(self, mcp_client, caplog):
         """Test stdio connection with invalid file extension."""
@@ -73,14 +89,29 @@ class TestMCPClientStdioErrors:
         """Test stdio connection with generic exception."""
         server_path = "server.py"
 
-        with patch("mcpscore.mcp_client.stdio_client") as mock_client:
+        with patch("mcpscore.mcp_client.stdio_client") as mock_client, caplog.at_level(logging.INFO):
             # Simulate generic exception
             mock_client.return_value.__aenter__.side_effect = RuntimeError("Unexpected error")
 
             result = await mcp_client._connect_with_stdio(server_path)
 
             assert result is False
-            assert "Failed to connect to MCP server" in caplog.text
+            assert "Legacy MCP initialize handshake failed" in caplog.text
+            assert mcp_client.last_connection_error is not None
+            assert mcp_client.last_connection_error.detail == "Unexpected error"
+
+    async def test_failed_handshake_retains_launch_parameters_for_modern_fallback(self, mcp_client):
+        """A rejected legacy handshake must not discard the probe launch spec."""
+        with patch.object(
+            mcp_client,
+            "_establish_session",
+            new=AsyncMock(side_effect=RuntimeError("modern-only server rejected initialize")),
+        ):
+            result = await mcp_client._connect_with_stdio("server.py")
+
+        assert result is False
+        assert mcp_client.stdio_params is not None
+        assert mcp_client.stdio_params.args == ["server.py"]
 
     async def test_connect_stdio_success_python(self, mcp_client):
         """Test successful stdio connection with Python server."""

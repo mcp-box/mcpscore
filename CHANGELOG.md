@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Modern-only stdio servers are now fully auditable.** When a local server
+  rejects the legacy `initialize` handshake but answers MCP 2026-07-28
+  stateless requests, mcpscore retains its resolved launch command, probes it
+  over fresh stdio processes, reconstructs the catalog and server metadata,
+  and emits a normal full audit with `era: modern` instead of exiting 2. A
+  server that neither handshakes nor demonstrates modern support still exits
+  2, preserving the CLI contract. This works for direct `.py`/`.js` targets
+  and arbitrary-language `--stdio` commands.
+
 - **Three catalog connection-independence rules.** Modern servers are checked
   that the complete tools, resources, and prompts identity sets do not vary
   across two independent connections carrying the same authorization context.

@@ -19,6 +19,7 @@ import sys
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from mcp import StdioServerParameters
 import pytest
 
 from mcpscore import MCPAuditor, MCPClient, MCPTransportType, StdioCommand
@@ -33,6 +34,7 @@ from mcpscore.cli import (
     resolve_target,
     run_package_audit,
 )
+from mcpscore.enums import ConnectionErrorReason
 from mcpscore.packages import PackageCoordinate, PackageMetadata, PackageOutcome
 
 if TYPE_CHECKING:
@@ -55,6 +57,7 @@ def mock_client() -> MagicMock:
     # Instance attribute (set in __init__) — spec'd mocks don't expose it, so
     # assign explicitly; the partial-audit branch reads it on connect failure.
     client.last_connection_error = None
+    client.stdio_params = None
     return client
 
 
@@ -851,7 +854,7 @@ class TestModernOnlyFallback:
         assert exc_info.value.code == 2
         mock_auditor.audit_modern_only.assert_awaited_once_with("https://legacy.example/mcp")
 
-    async def test_stdio_target_never_tries_modern_fallback(
+    async def test_modern_only_stdio_server_is_audited_instead_of_exit_2(
         self,
         monkeypatch: MonkeyPatch,
         mock_client: MagicMock,
@@ -859,6 +862,29 @@ class TestModernOnlyFallback:
     ) -> None:
         monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
         mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        params = StdioServerParameters(command=sys.executable, args=["/path/to/server.py"])
+        mock_client.stdio_params = params
+        mock_auditor.audit_modern_only = AsyncMock(return_value=True)
+        mock_auditor.audit_data.transport_type = MCPTransportType.STDIO
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        mock_auditor.audit_modern_only.assert_awaited_once_with(params)
+
+    async def test_stdio_without_modern_support_still_exits_2(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        params = StdioServerParameters(command=sys.executable, args=["/path/to/server.py"])
+        mock_client.stdio_params = params
 
         with (
             patch("mcpscore.cli.MCPClient", return_value=mock_client),
@@ -868,7 +894,73 @@ class TestModernOnlyFallback:
             await async_main()
 
         assert exc_info.value.code == 2
+        mock_auditor.audit_modern_only.assert_awaited_once_with(params)
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            ConnectionErrorReason.UNREACHABLE,
+            ConnectionErrorReason.TIMEOUT,
+            ConnectionErrorReason.NOT_MCP,
+        ],
+    )
+    async def test_stdio_definitive_launch_failure_skips_modern_fallback(
+        self,
+        reason: ConnectionErrorReason,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.stdio_params = StdioServerParameters(command=sys.executable, args=["/path/to/server.py"])
+        mock_client.last_connection_error = ConnectionFailure(reason=reason)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 2
         mock_auditor.audit_modern_only.assert_not_awaited()
+        assert "checking for a modern-only" not in caplog.text
+
+    async def test_stdio_generic_failure_detail_is_restored_after_fallback_declines(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        params = StdioServerParameters(command=sys.executable, args=["/path/to/server.py"])
+        mock_client.stdio_params = params
+        mock_client.last_connection_error = ConnectionFailure(
+            reason=ConnectionErrorReason.UNKNOWN,
+            detail="ImportError: missing startup dependency",
+        )
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 2
+        mock_auditor.audit_modern_only.assert_awaited_once_with(params)
+        assert "Details: ImportError: missing startup dependency" in caplog.text
 
     async def test_modern_only_json_report_is_emitted(
         self,

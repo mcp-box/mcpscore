@@ -107,7 +107,7 @@ def _no_network_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     async def stubbed_run_all_probes(url: str, client: Any = None, headers: Any = None) -> dict:
         return not_applicable_results(reason="stubbed in unit tests")
 
-    async def stubbed_run_stdio_probes(params: Any) -> dict:
+    async def stubbed_run_stdio_probes(params: Any, **kwargs: Any) -> dict:
         return not_applicable_results(reason="stubbed in unit tests")
 
     monkeypatch.setattr(mcp_auditor, "run_all_probes", stubbed_run_all_probes)
