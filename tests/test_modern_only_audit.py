@@ -98,8 +98,13 @@ async def test_modern_only_stdio_audit_uses_stdio_probes(monkeypatch: pytest.Mon
     params = StdioServerParameters(command="python", args=["server.py"])
     observed_params: list[StdioServerParameters] = []
 
-    async def fake_run_stdio_probes(target: StdioServerParameters) -> dict[str, ProbeResult]:
+    async def fake_run_stdio_probes(
+        target: StdioServerParameters,
+        *,
+        require_modern_support: bool = False,
+    ) -> dict[str, ProbeResult]:
         observed_params.append(target)
+        assert require_modern_support is True
         return _modern_probe_results()
 
     monkeypatch.setattr(mcp_auditor, "run_stdio_probes", fake_run_stdio_probes)

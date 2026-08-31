@@ -221,6 +221,41 @@ class TestLegacyOnlyStdioServer:
 class TestProbeFailureIsData:
     """A server that cannot be launched or does not answer is not an exception."""
 
+    async def test_modern_only_gate_stops_before_remaining_probes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A failed fallback pays only for the two modern gateway requests."""
+        from mcpscore import probes as probes_module
+
+        launches = 0
+        called: list[str] = []
+
+        @asynccontextmanager
+        async def fake_stdio_client(params, errlog):
+            nonlocal launches
+            launches += 1
+            yield object(), object()
+
+        def fake_probe(probe_id: str):
+            async def run(target):
+                called.append(probe_id)
+                return probes_module.ProbeResult(probe_id, ProbeOutcome.UNSUPPORTED)
+
+            return run
+
+        monkeypatch.setattr(probes_module, "stdio_client", fake_stdio_client)
+        for probe_id in probes_module.STDIO_PROBE_IDS:
+            monkeypatch.setitem(probes_module._TRANSPORT_AGNOSTIC_PROBES, probe_id, fake_probe(probe_id))
+
+        results = await run_stdio_probes(_params(), require_modern_support=True)
+
+        assert launches == 1
+        assert called == list(GATEWAY_PROBE_IDS)
+        assert set(results) == set(PROBE_IDS)
+        for probe_id in set(probes_module.STDIO_PROBE_IDS) - set(GATEWAY_PROBE_IDS):
+            assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE
+
     async def test_unlaunchable_command_yields_error_outcomes(self):
         """Probes never raise: a missing executable is ERROR, so rules skip."""
         params = StdioServerParameters(command="mcpscore-does-not-exist", args=[])

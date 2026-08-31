@@ -264,7 +264,11 @@ class MCPAuditor:
             probes = await run_all_probes(target, headers=self.headers)
             transport = MCPTransportType.STREAMABLE_HTTP
         else:
-            probes = await run_stdio_probes(target)
+            # A failed SDK initialize may mean either a modern-only server or
+            # simply a dead/non-MCP command. Gate the sequential stdio suite
+            # on modern support so the latter does not accumulate every probe
+            # timeout before the CLI can report the original connection error.
+            probes = await run_stdio_probes(target, require_modern_support=True)
             transport = MCPTransportType.STDIO
         self.last_probes = probes
         if not has_modern_support(probes):
