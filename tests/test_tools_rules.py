@@ -782,6 +782,31 @@ class TestToolsDescriptionPresentRule:
         assert result.details is not None
         assert len(result.details["tools_with_empty_descriptions"]) == 1
 
+    def test_absent_description_fails(self) -> None:
+        """Fail: a tool with NO description at all is the rule's core case.
+
+        Regression: the old `== ""` predicate passed description=None — the
+        most common real-world defect earned the HIGH points. Proven to fail
+        against the old implementation.
+        """
+        rule = ToolsDescriptionPresentRule()
+        tool = Tool(name="no_description", input_schema={"type": "object"})
+
+        result = rule.check(AuditData(tools=[tool]))
+
+        assert result.passed is False
+        assert result.details is not None
+        assert "no_description" in result.details["tools_with_empty_descriptions"]
+
+    def test_whitespace_description_fails(self) -> None:
+        """Fail: whitespace-only is missing, same predicate as the siblings."""
+        rule = ToolsDescriptionPresentRule()
+        tool = Tool(name="blank_description", input_schema={"type": "object"}, description="   ")
+
+        result = rule.check(AuditData(tools=[tool]))
+
+        assert result.passed is False
+
 
 class TestToolsAnnotationsPresentRule:
     """Test ToolsAnnotationsPresentRule."""

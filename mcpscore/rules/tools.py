@@ -363,14 +363,19 @@ class ToolsDescriptionPresentRule(ToolsBaseRule):
             RuleResult with the check outcome
 
         """
-        tools_with_empty_descriptions: list[str] = [tool.name for tool in tools if tool.description == ""]
+        # Absent (None) and whitespace-only count as missing, same predicate
+        # as the prompt/resource siblings — the old `== ""` let a tool with
+        # NO description at all pass the rule that exists to catch it.
+        tools_with_empty_descriptions: list[str] = [
+            tool.name for tool in tools if not (tool.description and tool.description.strip())
+        ]
 
         passed = len(tools_with_empty_descriptions) == 0
 
         message = (
             "✅ All Tools have a Description property specified"
             if passed
-            else f"❌ Number of tools with empty descriptions: {len(tools_with_empty_descriptions)}"
+            else f"❌ Number of tools with missing or empty descriptions: {len(tools_with_empty_descriptions)}"
         )
 
         return RuleResult(

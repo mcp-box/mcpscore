@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tools_description_present_in_all` now catches absent descriptions.**
+  The old predicate compared against the empty string only, so a tool with
+  **no description at all** (or a whitespace-only one) passed the HIGH rule
+  that exists to catch exactly that — the most common real-world defect
+  earned the points. The rule now uses the same predicate as its
+  prompt/resource siblings (absent, empty, and whitespace all count as
+  missing). Scores move for servers whose tools omit descriptions; both
+  regression tests were proven to fail against the old implementation.
+
 ### Changed
 
 - **The "Tools Quality" category is now "Primitives"** in the README and
