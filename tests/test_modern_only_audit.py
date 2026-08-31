@@ -1,5 +1,6 @@
 """Tests for the modern-only (probe-based, sessionless) audit flow."""
 
+from mcp import StdioServerParameters
 import pytest
 
 from mcpscore import mcp_auditor
@@ -91,6 +92,27 @@ def stub_probes(monkeypatch: pytest.MonkeyPatch):
 
 async def test_returns_false_for_non_url_targets():
     assert await MCPAuditor().audit_modern_only("/path/to/server.py") is False
+
+
+async def test_modern_only_stdio_audit_uses_stdio_probes(monkeypatch: pytest.MonkeyPatch):
+    params = StdioServerParameters(command="python", args=["server.py"])
+    observed_params: list[StdioServerParameters] = []
+
+    async def fake_run_stdio_probes(target: StdioServerParameters) -> dict[str, ProbeResult]:
+        observed_params.append(target)
+        return _modern_probe_results()
+
+    monkeypatch.setattr(mcp_auditor, "run_stdio_probes", fake_run_stdio_probes)
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(params) is True
+
+    assert observed_params == [params]
+    assert auditor.audit_data.transport_type is MCPTransportType.STDIO
+    assert auditor.audit_data.url is None
+    assert auditor.audit_data.tls_verified is None
+    assert auditor.audit_data.tls_version is None
+    assert auditor.era is Era.MODERN
 
 
 async def test_returns_false_without_modern_support(stub_probes):

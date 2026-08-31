@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 from mcp import StdioServerParameters
 import pytest
 
+from mcpscore.cli import async_main
 from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
     GATEWAY_PROBE_IDS,
@@ -147,8 +149,28 @@ class TestModernStdioServer:
         await auditor._collect_probes()
         auditor.era = detect_era(auditor.audit_data.protocol_version, auditor.audit_data.probes)
 
+        assert auditor.audit_data.probes is not None
         assert auditor.audit_data.probes[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
         assert auditor.era is Era.DUAL
+
+    async def test_cli_audits_modern_only_stdio_server(self, monkeypatch, capsys):
+        """User-level regression: failed initialize falls back and emits a full report."""
+        from mcpscore import mcp_auditor as mcp_auditor_module
+
+        # The autouse fixture blocks process launches in ordinary unit tests;
+        # this test deliberately exercises the committed local subprocess.
+        monkeypatch.setattr(mcp_auditor_module, "run_stdio_probes", run_stdio_probes)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--json", SERVER])
+
+        await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == SERVER
+        assert report["transport"] == str(MCPTransportType.STDIO)
+        assert report["spec"]["era"] == "modern"
+        assert report["spec"]["negotiated_version"] == "2026-07-28"
+        assert report["partial"] is False
+        assert report["max_score"] > 0
 
     async def test_probe_suite_launches_two_sibling_processes(self, monkeypatch):
         """Modern requests share one process except the fresh-connection comparison.

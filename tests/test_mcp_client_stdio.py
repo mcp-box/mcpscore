@@ -1,5 +1,6 @@
 """Unit tests for MCPClient STDIO transport error paths."""
 
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -73,14 +74,27 @@ class TestMCPClientStdioErrors:
         """Test stdio connection with generic exception."""
         server_path = "server.py"
 
-        with patch("mcpscore.mcp_client.stdio_client") as mock_client:
+        with patch("mcpscore.mcp_client.stdio_client") as mock_client, caplog.at_level(logging.INFO):
             # Simulate generic exception
             mock_client.return_value.__aenter__.side_effect = RuntimeError("Unexpected error")
 
             result = await mcp_client._connect_with_stdio(server_path)
 
             assert result is False
-            assert "Failed to connect to MCP server" in caplog.text
+            assert "Legacy MCP initialize handshake failed" in caplog.text
+
+    async def test_failed_handshake_retains_launch_parameters_for_modern_fallback(self, mcp_client):
+        """A rejected legacy handshake must not discard the probe launch spec."""
+        with patch.object(
+            mcp_client,
+            "_establish_session",
+            new=AsyncMock(side_effect=RuntimeError("modern-only server rejected initialize")),
+        ):
+            result = await mcp_client._connect_with_stdio("server.py")
+
+        assert result is False
+        assert mcp_client.stdio_params is not None
+        assert mcp_client.stdio_params.args == ["server.py"]
 
     async def test_connect_stdio_success_python(self, mcp_client):
         """Test successful stdio connection with Python server."""

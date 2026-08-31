@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
     from .probes import ProbeResult
 
+from mcp import StdioServerParameters
 from pydantic import ValidationError
 
 from .enums import MCPTransportType
@@ -236,18 +237,20 @@ class MCPAuditor:
         self._run_all_rules()
         return self.score, self.max_score
 
-    async def audit_modern_only(self, url: str) -> bool:
-        """Audit a modern-only HTTP server via probes, without a legacy session.
+    async def audit_modern_only(self, target: str | StdioServerParameters) -> bool:
+        """Audit a modern-only HTTP or stdio server without a legacy session.
 
         A server speaking only the 2026-07-28 stateless lifecycle rejects the
         legacy initialize handshake, so the SDK session cannot connect at all.
-        This path probes the URL directly: when the server shows modern
-        support, the audit proceeds with session-equivalent data extracted
-        from probe payloads (server info and capabilities from
-        server/discover, tools from the stateless tools/list).
+        This path probes the endpoint or launches a fresh stdio process
+        directly. When the server shows modern support, the audit proceeds
+        with session-equivalent data extracted from probe payloads (server
+        info and capabilities from server/discover, tools from the stateless
+        tools/list).
 
         Args:
-            url: The MCP endpoint URL (http:// or https://)
+            target: The HTTP endpoint URL or fully resolved stdio launch
+                parameters retained from the failed handshake.
 
         Returns:
             True when modern support was observed and the audit ran; False
@@ -255,10 +258,14 @@ class MCPAuditor:
             failure as genuine)
 
         """
-        if not url.startswith(("http://", "https://")):
-            return False
-
-        probes = await run_all_probes(url, headers=self.headers)
+        if isinstance(target, str):
+            if not target.startswith(("http://", "https://")):
+                return False
+            probes = await run_all_probes(target, headers=self.headers)
+            transport = MCPTransportType.STREAMABLE_HTTP
+        else:
+            probes = await run_stdio_probes(target)
+            transport = MCPTransportType.STDIO
         self.last_probes = probes
         if not has_modern_support(probes):
             return False
@@ -266,14 +273,15 @@ class MCPAuditor:
         self._reset_run_state()
 
         self.audit_data.probes = probes
-        self.audit_data.url = url
-        self.audit_data.transport_type = MCPTransportType.STREAMABLE_HTTP
-        if url.startswith("https://"):
+        self.audit_data.transport_type = transport
+        if isinstance(target, str):
+            self.audit_data.url = target
+        if isinstance(target, str) and target.startswith("https://"):
             # The probes completed over HTTPS with certificate verification
             # (httpx default) — an invalid certificate would have failed them.
             self.audit_data.tls_verified = True
-            self.audit_data.tls_version = await self._probe_tls_version(url)
-        else:
+            self.audit_data.tls_version = await self._probe_tls_version(target)
+        elif isinstance(target, str):
             self.audit_data.tls_verified = False
             self.audit_data.tls_version = None
 

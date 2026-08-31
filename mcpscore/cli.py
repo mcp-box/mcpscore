@@ -652,15 +652,23 @@ async def async_main() -> None:
         success, transport = await client.detect_and_connect(target)
 
         if not success:
-            if isinstance(target, str) and target.startswith(("http://", "https://")):
+            is_http_target = isinstance(target, str) and target.startswith(("http://", "https://"))
+            if is_http_target:
+                assert isinstance(target, str)  # noqa: S101 — narrowed by is_http_target
+                modern_target = target
+            else:
+                modern_target = client.stdio_params
+            if modern_target is not None:
                 logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
-                if await auditor.audit_modern_only(target):
+                if await auditor.audit_modern_only(modern_target):
                     logger.info(
                         "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
                     )
                     finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type)
                     return
 
+            if is_http_target:
+                assert isinstance(target, str)  # noqa: S101 — narrowed above
                 failure = client.last_connection_error
                 session_gated = failure is not None and failure.reason in (
                     ConnectionErrorReason.UNAUTHORIZED,

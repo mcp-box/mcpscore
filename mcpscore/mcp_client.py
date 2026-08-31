@@ -524,9 +524,12 @@ class MCPClient:
             True if a connection was successful, False otherwise
 
         """
+        # Retain the resolved command before the legacy handshake. A
+        # modern-only server rejects that handshake by design, and the CLI
+        # needs these same parameters to retry with stateless probes.
+        self.stdio_params = server_params
         try:
             await self._establish_session(stdio_client(server_params), MCPTransportType.STDIO, url=None)
-            self.stdio_params = server_params
             return True
         except FileNotFoundError as e:
             logger.exception(missing_hint)
@@ -548,7 +551,12 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.NOT_MCP)
             return False
         except Exception as e:
-            logger.exception("Failed to connect to MCP server")
+            # A modern-only server is expected to reject the legacy
+            # initialize request. Keep the exception at debug level until the
+            # caller has had a chance to distinguish that from a broken
+            # process with stateless probes.
+            logger.info("Legacy MCP initialize handshake failed for server: %s", display)
+            logger.debug("Handshake error details", exc_info=True)
             self._record_unclassified_failure(e)
             return False
 
