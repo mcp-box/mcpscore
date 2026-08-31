@@ -198,6 +198,23 @@ def extract_http_status(exc: BaseException) -> int | None:
     return None
 
 
+def _safe_failure_detail(exc: BaseException) -> str:
+    """Return compact exception text that cannot emit terminal controls."""
+    normalized = " ".join(str(exc).split()) or type(exc).__name__
+
+    def printable(char: str) -> str:
+        if char.isprintable():
+            return char
+        codepoint = ord(char)
+        if codepoint <= 0xFF:
+            return f"\\x{codepoint:02x}"
+        if codepoint <= 0xFFFF:
+            return f"\\u{codepoint:04x}"
+        return f"\\U{codepoint:08x}"
+
+    return "".join(printable(char) for char in normalized)[:500]
+
+
 def _preferred_failure(
     first: ConnectionFailure | None,
     second: ConnectionFailure | None,
@@ -453,8 +470,7 @@ class MCPClient:
             # Keep a compact, single-line explanation so a caller can defer
             # showing it until modern-only probing has ruled out an expected
             # rejection of the legacy handshake.
-            detail = " ".join(str(exc).split()) or type(exc).__name__
-            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=detail[:500])
+            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_safe_failure_detail(exc))
 
     def _record_handshake_failure(self, server_url: str) -> None:
         """Classify a handshake failure, using any HTTP status seen in teardown.
