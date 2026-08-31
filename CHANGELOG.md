@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The "Tools Quality" category is now "Primitives"** in the README and
+  docs — the MCP specification's own collective noun for tools, prompts,
+  resources, and resource templates, which had outgrown the old name (tools
+  are 18 of the category's 50 rules). Engine reports are unaffected: the
+  category taxonomy lives in mcpscore.dev's report surface, and `rule_id`s,
+  `group_name`s, and scores are unchanged.
+
 ### Added
 
 - **Three catalog connection-independence rules.** Modern servers are checked
