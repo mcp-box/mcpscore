@@ -194,6 +194,20 @@ class TestModernStdioServer:
         assert report["partial"] is False
         assert report["max_score"] > 0
 
+    async def test_cli_audits_modern_only_stdio_command(self, monkeypatch, capsys):
+        """The any-language --stdio argv path reaches the same modern fallback."""
+        from mcpscore import mcp_auditor as mcp_auditor_module
+
+        monkeypatch.setattr(mcp_auditor_module, "run_stdio_probes", run_stdio_probes)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--json", "--stdio", sys.executable, SERVER])
+
+        await async_main()
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"] == f"{sys.executable} {SERVER}"
+        assert report["transport"] == str(MCPTransportType.STDIO)
+        assert report["spec"]["era"] == "modern"
+
     async def test_probe_suite_launches_two_sibling_processes(self, monkeypatch):
         """Modern requests share one process except the fresh-connection comparison.
 

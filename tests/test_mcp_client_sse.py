@@ -92,9 +92,10 @@ class TestMCPClientSSE:
 
             assert result is False
 
-    async def test_detect_and_connect_stdio_for_py_file(self, mcp_client):
+    async def test_detect_and_connect_stdio_for_py_file(self, mcp_client, tmp_path):
         """Test auto-detection uses stdio for .py files."""
-        server_path = "server.py"
+        server_path = str(tmp_path / "server.py")
+        (tmp_path / "server.py").write_text("", encoding="utf-8")
 
         with patch.object(mcp_client, "_connect_with_stdio", return_value=True) as mock_stdio:
             success, transport = await mcp_client.detect_and_connect(server_path)
@@ -103,9 +104,10 @@ class TestMCPClientSSE:
             assert transport == MCPTransportType.STDIO
             mock_stdio.assert_called_once_with(server_path)
 
-    async def test_detect_and_connect_stdio_for_js_file(self, mcp_client):
+    async def test_detect_and_connect_stdio_for_js_file(self, mcp_client, tmp_path):
         """Test auto-detection uses stdio for .js files."""
-        server_path = "server.js"
+        server_path = str(tmp_path / "server.js")
+        (tmp_path / "server.js").write_text("", encoding="utf-8")
 
         with patch.object(mcp_client, "_connect_with_stdio", return_value=True) as mock_stdio:
             success, transport = await mcp_client.detect_and_connect(server_path)

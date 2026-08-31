@@ -77,6 +77,10 @@ class TestConnectionFailureMessage:
         msg = ConnectionFailure(ConnectionErrorReason.NOT_MCP).message
         assert "MCP" in msg
 
+    def test_generic_detail_is_included_in_public_message(self):
+        msg = ConnectionFailure(ConnectionErrorReason.UNKNOWN, detail="ImportError: missing dependency").message
+        assert msg == "Could not connect to the MCP server. Details: ImportError: missing dependency"
+
 
 class TestPreferredFailure:
     def test_picks_more_informative(self):

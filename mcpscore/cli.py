@@ -656,13 +656,12 @@ async def async_main() -> None:
             failure = client.last_connection_error
             # A missing executable, denied launch, or timed-out handshake is
             # not evidence of a modern-only server. Retrying those commands is
-            # both misleading and potentially side-effectful. NOT_MCP and
-            # UNKNOWN remain eligible because a modern server is expected to
-            # reject the removed legacy initialize method.
-            stdio_fallback_allowed = failure is None or failure.reason in (
-                ConnectionErrorReason.NOT_MCP,
-                ConnectionErrorReason.UNKNOWN,
-            )
+            # both misleading and potentially side-effectful. UNKNOWN remains
+            # eligible because a modern server is expected to reject the
+            # removed legacy initialize method. NOT_MCP comes from a cancelled
+            # transport whose process did not speak MCP, so it is not useful
+            # evidence for retrying either.
+            stdio_fallback_allowed = failure is None or failure.reason is ConnectionErrorReason.UNKNOWN
             modern_target = http_url
             if modern_target is None and stdio_fallback_allowed:
                 modern_target = client.stdio_params
@@ -757,7 +756,7 @@ async def async_main() -> None:
                 # Generic handshake failures are held back while probing: a
                 # modern-only server rejecting initialize is expected. Once
                 # the fallback declines, restore the actionable root cause.
-                logger.error("Stdio connection failure: %s", failure.detail)
+                logger.error("Stdio connection failure: %s", failure.message)
             logger.error("Error connecting to the MCP server: %s", target_display)
             sys.exit(2)
 

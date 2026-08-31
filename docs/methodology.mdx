@@ -80,10 +80,12 @@ unobserved. A dedicated presence rule can still judge whether a complete catalog
    a null ID.
 
    The modern lifecycle is stateless, so JSON-RPC behaviors that can be expressed
-   through the SDK are probed over stdio too. The suite launches two short-lived
-   sibling processes through the MCP SDK's stdio transport and sends no
-   `initialize` handshake: one runs the probe suite, while the other provides an
-   independent connection for catalog-stability comparisons. The truncated-JSON
+   through the SDK are probed over stdio too. A successful suite launches two
+   short-lived sibling processes through the MCP SDK's stdio transport and sends
+   no `initialize` handshake: one runs the probe suite, while the other provides
+   an independent connection for catalog-stability comparisons. If the gateway
+   probes establish no modern support, the suite stops after the first process.
+   The truncated-JSON
    probe currently runs only over HTTP because the SDK path cannot inject malformed
    wire input safely; stdio therefore reports insufficient evidence for that rule.
    Questions that only exist in HTTP—such as `Origin`, headers, status codes,

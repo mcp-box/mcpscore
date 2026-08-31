@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mcpscore.enums import MCPTransportType
+from mcpscore.enums import ConnectionErrorReason, MCPTransportType
 from mcpscore.mcp_client import MCPClient, StdioCommand
 
 
@@ -16,6 +16,21 @@ class TestMCPClientStdioErrors:
     def mcp_client(self):
         """Create a fresh MCPClient instance for each test."""
         return MCPClient()
+
+    async def test_detect_missing_script_without_launching(self, mcp_client, tmp_path, caplog):
+        """A typo'd script path is unreachable and cannot enter modern fallback."""
+        missing = tmp_path / "missing.py"
+
+        with patch.object(mcp_client, "connect_to_server", new=AsyncMock()) as connect:
+            success, transport = await mcp_client.detect_and_connect(str(missing))
+
+        assert success is False
+        assert transport is None
+        connect.assert_not_awaited()
+        assert mcp_client.stdio_params is None
+        assert mcp_client.last_connection_error is not None
+        assert mcp_client.last_connection_error.reason is ConnectionErrorReason.UNREACHABLE
+        assert "Server script not found" in caplog.text
 
     async def test_connect_stdio_invalid_file_extension(self, mcp_client, caplog):
         """Test stdio connection with invalid file extension."""

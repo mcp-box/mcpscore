@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import anyio
 import httpx2
 from mcp import (
     ClientSession,
@@ -160,6 +161,8 @@ class ConnectionFailure:
         # For an unclassified HTTP error, surface the actual status code.
         if self.reason is ConnectionErrorReason.HTTP_ERROR and self.status_code is not None:
             return f"The server returned HTTP {self.status_code} during the MCP handshake."
+        if self.detail is not None:
+            return f"{base} Details: {self.detail}"
         return base
 
 
@@ -282,6 +285,10 @@ class MCPClient:
 
         # Check if it's a local file path
         if server_path_or_url.endswith((".py", ".js")):
+            if not await anyio.Path(server_path_or_url).is_file():
+                logger.error("Server script not found: %s", server_path_or_url)
+                self._record_failure(ConnectionErrorReason.UNREACHABLE)
+                return (False, None)
             success = await self.connect_to_server(MCPTransportType.STDIO, server_path_or_url)
             return (success, MCPTransportType.STDIO if success else None)
 

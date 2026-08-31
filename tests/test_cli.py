@@ -898,7 +898,11 @@ class TestModernOnlyFallback:
 
     @pytest.mark.parametrize(
         "reason",
-        [ConnectionErrorReason.UNREACHABLE, ConnectionErrorReason.TIMEOUT],
+        [
+            ConnectionErrorReason.UNREACHABLE,
+            ConnectionErrorReason.TIMEOUT,
+            ConnectionErrorReason.NOT_MCP,
+        ],
     )
     async def test_stdio_definitive_launch_failure_skips_modern_fallback(
         self,
@@ -956,7 +960,7 @@ class TestModernOnlyFallback:
 
         assert exc_info.value.code == 2
         mock_auditor.audit_modern_only.assert_awaited_once_with(params)
-        assert "Stdio connection failure: ImportError: missing startup dependency" in caplog.text
+        assert "Details: ImportError: missing startup dependency" in caplog.text
 
     async def test_modern_only_json_report_is_emitted(
         self,
