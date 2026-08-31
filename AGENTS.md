@@ -24,7 +24,10 @@
   for missing observations.
 - **Probes must never invoke `tools/call`** against a target server — audits must be
   free of tool side effects. Probes never raise; network failures are
-  `ProbeOutcome.ERROR` data.
+  `ProbeOutcome.ERROR` data. The ONE surface allowed to call tools is the opt-in
+  `--smoke` mode (`smoke.py`, CLI-only): its results never enter the score, it never
+  runs from probes/rules or the web service, and its safety default (readOnlyHint-only
+  unless `--call-all`) must not be weakened.
 - `docs/rules.mdx` is generated — edit `scripts/generate_rules_doc.py` and run
   `make docs-rules`, never the file itself. CI fails on drift.
 - Docs are MDX served by Mintlify from `docs/` — pages need frontmatter; validate with

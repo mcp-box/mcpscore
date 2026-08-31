@@ -17,6 +17,7 @@ from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
 from mcpscore.probes import observed_auth_status
+from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
 
 if TYPE_CHECKING:
     from mcpscore import MCPTransportType
@@ -149,6 +150,28 @@ def build_parser() -> argparse.ArgumentParser:
             "Exit with code 3 when the readiness percentage for the latest spec revision is "
             "below PCT. Skipped when readiness was not assessed at all (nothing to gate on), "
             "matching the GitHub Action's min-readiness input."
+        ),
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help=(
+            "After the audit, smoke-test the server by actually invoking its tools (tools/call): "
+            "verifies that declared output schemas are honored, that schema-invalid arguments are "
+            "rejected, and that unknown tool names are rejected. For servers YOU operate (e.g. in "
+            "CI) — by default only tools annotated readOnlyHint: true are called; see --call-all. "
+            "Smoke results never affect the score; any smoke failure exits with code 4. "
+            "Needs a live session, so it is unavailable with --package and does not run on "
+            "partial or modern-only probe audits. Put it before --stdio."
+        ),
+    )
+    parser.add_argument(
+        "--call-all",
+        action="store_true",
+        help=(
+            "With --smoke: call every tool, not only those annotated readOnlyHint: true. "
+            "This is explicit consent to trigger side effects — use it only against a server "
+            "whose tools you are willing to execute."
         ),
     )
     parser.add_argument(
@@ -308,11 +331,15 @@ def resolve_target(args: argparse.Namespace) -> str | StdioCommand | PackageCoor
         ValueError: On any invalid combination (message is user-facing).
 
     """
+    if args.call_all and not args.smoke:
+        raise ValueError("--call-all only applies together with --smoke")
     if args.package is not None:
         if args.target is not None or args.stdio is not None:
             raise ValueError("give either a target, --stdio, or --package — not more than one")
         if args.env:
             raise ValueError("--env only applies to --stdio servers; --package never runs the package")
+        if args.smoke:
+            raise ValueError("--smoke needs a running server to call tools on; --package never runs the package")
         try:
             return PackageCoordinate.parse(args.package)
         except InvalidCoordinateError as e:
@@ -442,18 +469,29 @@ def finish_server_audit(
     auditor: MCPAuditor,
     target_display: str,
     transport: MCPTransportType | None,
+    smoke: SmokeReport | None = None,
 ) -> None:
-    """Finish a server audit: log the outcome, emit --json, apply the gate.
+    """Finish a server audit: log the outcome, emit --json, apply the gates.
 
     The shared tail of every completed server audit (full, partial, and
-    modern-only). Exits with code 3 when a --fail-under gate fails;
-    returns normally otherwise so ungated behavior is unchanged.
+    modern-only). Exits with code 3 when a --fail-under gate fails, else
+    code 4 when any --smoke check failed (the score gate takes precedence —
+    it is the primary contract, and one exit carries one code); returns
+    normally otherwise so ungated behavior is unchanged.
     """
     log_audit_outcome(auditor)
+    if smoke is not None:
+        log_smoke_outcome(smoke)
     if args.json:
         report = build_report(target_display, transport, auditor)
+        if smoke is not None:
+            report["smoke"] = smoke.to_dict()
         sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
-    if code := fail_under_exit_code(args, auditor.get_audit_report()):
+    code = fail_under_exit_code(args, auditor.get_audit_report())
+    if code == 0 and smoke is not None and smoke.failed:
+        logger.error("Gate failed — --smoke: %d smoke check(s) failed", smoke.failed)
+        code = 4
+    if code:
         sys.exit(code)
 
 
@@ -521,6 +559,47 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
             "Readiness for MCP %s: not assessed (no usable probe observations)",
             spec["readiness_target"],
         )
+
+
+def log_smoke_outcome(smoke: SmokeReport) -> None:
+    """Log the human-readable smoke outcome: summary line, failures, skips.
+
+    Failures log as errors with their full message; skips log individually
+    too — the safety default skipping unannotated tools is a visible cost of
+    not annotating, and hiding it would make the coverage look better than
+    it is.
+    """
+    logger.info("")
+    if not smoke.executed:
+        logger.warning("Smoke checks did not run: %s", smoke.reason)
+        return
+    logger.info(
+        "Smoke checks (tools/call): %d passed, %d failed, %d skipped — %s. Never counted in the score.",
+        smoke.passed,
+        smoke.failed,
+        smoke.skipped,
+        "every tool called (--call-all)" if smoke.call_all else "only readOnlyHint: true tools called (see --call-all)",
+    )
+    for check in smoke.checks:
+        subject = f" [{check.tool_name}]" if check.tool_name else ""
+        if check.verdict is SmokeVerdict.FAIL:
+            logger.error("  FAIL %s%s: %s", check.check_id, subject, check.message)
+        elif check.verdict is SmokeVerdict.SKIP:
+            logger.info("  skip %s%s: %s", check.check_id, subject, check.message)
+
+
+async def run_smoke_phase(args: argparse.Namespace, client: MCPClient, auditor: MCPAuditor) -> SmokeReport:
+    """Run the --smoke checks on the audit's still-open session.
+
+    Runs after ``auditor.audit(client)`` and before cleanup — the auditor
+    never closes the session, so the smoke calls reuse the exact connection
+    the audit observed.
+    """
+    if client.session is None:  # pragma: no cover — audit() succeeded, so a session exists
+        return SmokeReport.not_executed("no active session to call tools on")
+    logger.info("")
+    logger.info("Running smoke checks — invoking tools/call, as requested with --smoke...")
+    return await run_smoke_checks(client.session, auditor.audit_data.tools, call_all=args.call_all)
 
 
 def build_report(target: str, transport: MCPTransportType | None, auditor: MCPAuditor) -> dict:
@@ -604,8 +683,9 @@ async def async_main() -> None:
     (2026-07-28 stateless lifecycle) support and audited via probes if so.
 
     Exits with code 1 on usage errors, code 2 if connection fails and the
-    server shows no modern-lifecycle support either, or code 3 when the audit
-    completed but a --fail-under / --fail-under-readiness gate failed.
+    server shows no modern-lifecycle support either, code 3 when the audit
+    completed but a --fail-under / --fail-under-readiness gate failed, or
+    code 4 when the audit completed but a --smoke check failed.
     """
     # Parse before greeting: --version and --help exit during parsing, and
     # neither should be preceded by a banner.
@@ -671,7 +751,14 @@ async def async_main() -> None:
                     logger.info(
                         "Modern-only MCP server detected: audited via stateless probes (no legacy session available)."
                     )
-                    finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type)
+                    smoke = (
+                        SmokeReport.not_executed(
+                            "smoke checks need an established session; the modern-only probe audit has none"
+                        )
+                        if args.smoke
+                        else None
+                    )
+                    finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type, smoke=smoke)
                     return
 
             if http_url is not None:
@@ -750,7 +837,14 @@ async def async_main() -> None:
                             "only — pass a token to audit behind the gate."
                         )
                     await auditor.audit_partial(http_url, reason=partial_reason)
-                    finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type)
+                    smoke = (
+                        SmokeReport.not_executed(
+                            "smoke checks need an authenticated session; the partial audit has none"
+                        )
+                        if args.smoke
+                        else None
+                    )
+                    finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type, smoke=smoke)
                     return
             elif failure is not None and failure.detail is not None:
                 # Generic handshake failures are held back while probing: a
@@ -765,9 +859,10 @@ async def async_main() -> None:
 
         logger.info("Starting the audit...")
         await auditor.audit(client)
+        smoke = await run_smoke_phase(args, client, auditor) if args.smoke else None
         # A gate failure exits inside the try and still reaches cleanup() via
         # finally; the happy path returns normally (no SystemExit(0)).
-        finish_server_audit(args, auditor, target_display, transport)
+        finish_server_audit(args, auditor, target_display, transport, smoke=smoke)
     finally:
         await client.cleanup()
 
