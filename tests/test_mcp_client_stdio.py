@@ -82,6 +82,8 @@ class TestMCPClientStdioErrors:
 
             assert result is False
             assert "Legacy MCP initialize handshake failed" in caplog.text
+            assert mcp_client.last_connection_error is not None
+            assert mcp_client.last_connection_error.detail == "Unexpected error"
 
     async def test_failed_handshake_retains_launch_parameters_for_modern_fallback(self, mcp_client):
         """A rejected legacy handshake must not discard the probe launch spec."""

@@ -652,11 +652,19 @@ async def async_main() -> None:
         success, transport = await client.detect_and_connect(target)
 
         if not success:
-            is_http_target = isinstance(target, str) and target.startswith(("http://", "https://"))
-            if is_http_target:
-                assert isinstance(target, str)  # noqa: S101 — narrowed by is_http_target
-                modern_target = target
-            else:
+            http_url = target if isinstance(target, str) and target.startswith(("http://", "https://")) else None
+            failure = client.last_connection_error
+            # A missing executable, denied launch, or timed-out handshake is
+            # not evidence of a modern-only server. Retrying those commands is
+            # both misleading and potentially side-effectful. NOT_MCP and
+            # UNKNOWN remain eligible because a modern server is expected to
+            # reject the removed legacy initialize method.
+            stdio_fallback_allowed = failure is None or failure.reason in (
+                ConnectionErrorReason.NOT_MCP,
+                ConnectionErrorReason.UNKNOWN,
+            )
+            modern_target = http_url
+            if modern_target is None and stdio_fallback_allowed:
                 modern_target = client.stdio_params
             if modern_target is not None:
                 logger.info("Legacy connection failed — checking for a modern-only (stateless lifecycle) MCP server...")
@@ -667,9 +675,7 @@ async def async_main() -> None:
                     finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type)
                     return
 
-            if is_http_target:
-                assert isinstance(target, str)  # noqa: S101 — narrowed above
-                failure = client.last_connection_error
+            if http_url is not None:
                 session_gated = failure is not None and failure.reason in (
                     ConnectionErrorReason.UNAUTHORIZED,
                     ConnectionErrorReason.FORBIDDEN,
@@ -744,9 +750,14 @@ async def async_main() -> None:
                             f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
                             "only — pass a token to audit behind the gate."
                         )
-                    await auditor.audit_partial(target, reason=partial_reason)
+                    await auditor.audit_partial(http_url, reason=partial_reason)
                     finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type)
                     return
+            elif failure is not None and failure.detail is not None:
+                # Generic handshake failures are held back while probing: a
+                # modern-only server rejecting initialize is expected. Once
+                # the fallback declines, restore the actionable root cause.
+                logger.error("Stdio connection failure: %s", failure.detail)
             logger.error("Error connecting to the MCP server: %s", target_display)
             sys.exit(2)
 

@@ -259,11 +259,13 @@ class MCPAuditor:
 
         """
         if isinstance(target, str):
-            if not target.startswith(("http://", "https://")):
+            url: str | None = target
+            if not url.startswith(("http://", "https://")):
                 return False
-            probes = await run_all_probes(target, headers=self.headers)
+            probes = await run_all_probes(url, headers=self.headers)
             transport = MCPTransportType.STREAMABLE_HTTP
         else:
+            url = None
             # A failed SDK initialize may mean either a modern-only server or
             # simply a dead/non-MCP command. Gate the sequential stdio suite
             # on modern support so the latter does not accumulate every probe
@@ -278,16 +280,16 @@ class MCPAuditor:
 
         self.audit_data.probes = probes
         self.audit_data.transport_type = transport
-        if isinstance(target, str):
-            self.audit_data.url = target
-        if isinstance(target, str) and target.startswith("https://"):
-            # The probes completed over HTTPS with certificate verification
-            # (httpx default) — an invalid certificate would have failed them.
-            self.audit_data.tls_verified = True
-            self.audit_data.tls_version = await self._probe_tls_version(target)
-        elif isinstance(target, str):
-            self.audit_data.tls_verified = False
-            self.audit_data.tls_version = None
+        if url is not None:
+            self.audit_data.url = url
+            if url.startswith("https://"):
+                # The probes completed over HTTPS with certificate verification
+                # (httpx default) — an invalid certificate would have failed them.
+                self.audit_data.tls_verified = True
+                self.audit_data.tls_version = await self._probe_tls_version(url)
+            else:
+                self.audit_data.tls_verified = False
+                self.audit_data.tls_version = None
 
         self._populate_from_probe_payloads()
         self.era = detect_era(None, probes)
@@ -614,10 +616,11 @@ class MCPAuditor:
         "does this server speak 2026-07-28?" is a JSON-RPC question, not an
         HTTP one, and a stdio server answers it perfectly well; only the
         probes whose subject is an HTTP construct stay NOT_APPLICABLE there.
-        A stdio audit that could not be probed at all (no launch parameters —
-        the connection failed, or a test injected a bare client) records
+        A stdio audit that could not be probed at all (the connection failed,
+        or a test injected a bare client without launch parameters) records
         NOT_APPLICABLE for everything, so rules can still distinguish "not
-        probed" from "not collected".
+        probed" from "not collected". Retained parameters alone do not prove
+        a connection: modern-only fallback owns failed-connect probing.
         """
         url = self.audit_data.url
         if url is not None and url.startswith(("http://", "https://")):
@@ -625,7 +628,7 @@ class MCPAuditor:
             return
 
         stdio_params = self.mcp_client.stdio_params if self.mcp_client is not None else None
-        if stdio_params is not None:
+        if self.audit_data.transport_type is MCPTransportType.STDIO and stdio_params is not None:
             self.audit_data.probes = await run_stdio_probes(stdio_params)
             return
 

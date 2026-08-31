@@ -1927,18 +1927,12 @@ async def run_stdio_probes(
         async with stdio_client(params, errlog=errlog) as (read_stream, write_stream):
             target = _StdioTarget(read_stream, write_stream)
             results.extend([await run_one(probe_id, target) for probe_id in GATEWAY_PROBE_IDS])
-            if require_modern_support and not has_modern_support({result.probe_id: result for result in results}):
+            completed = {result.probe_id: result for result in results}
+            if require_modern_support and not has_modern_support(completed):
                 return {
+                    **not_applicable_results("modern support was not established by gateway probes"),
                     **not_applicable_results("probe subject is HTTP-specific", HTTP_ONLY_PROBE_IDS),
-                    **not_applicable_results(
-                        "modern support was not established by gateway probes",
-                        set(STDIO_PROBE_IDS) - set(GATEWAY_PROBE_IDS),
-                    ),
-                    **not_applicable_results(
-                        "modern support was not established by gateway probes",
-                        CATALOG_CONNECTION_PROBE_IDS,
-                    ),
-                    **{result.probe_id: result for result in results},
+                    **completed,
                 }
             results.extend(
                 [await run_one(probe_id, target) for probe_id in STDIO_PROBE_IDS if probe_id not in GATEWAY_PROBE_IDS]

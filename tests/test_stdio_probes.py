@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -142,8 +143,10 @@ class TestModernStdioServer:
 
         client = MCPClient()
         client.stdio_params = _params()
+        client.transport_type = MCPTransportType.STDIO
         auditor = MCPAuditor()
         auditor.mcp_client = client
+        auditor.audit_data.transport_type = MCPTransportType.STDIO
         auditor.audit_data.protocol_version = "2025-11-25"
 
         await auditor._collect_probes()
@@ -152,6 +155,25 @@ class TestModernStdioServer:
         assert auditor.audit_data.probes is not None
         assert auditor.audit_data.probes[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
         assert auditor.era is Era.DUAL
+
+    async def test_auditor_does_not_probe_retained_params_after_failed_connection(self, monkeypatch):
+        """Retained fallback parameters alone do not establish stdio transport."""
+        from mcpscore import mcp_auditor as mcp_auditor_module
+        from mcpscore.mcp_auditor import MCPAuditor
+        from mcpscore.mcp_client import MCPClient
+
+        probe = AsyncMock()
+        monkeypatch.setattr(mcp_auditor_module, "run_stdio_probes", probe)
+        client = MCPClient()
+        client.stdio_params = _params()
+        auditor = MCPAuditor()
+        auditor.mcp_client = client
+
+        await auditor._collect_probes()
+
+        probe.assert_not_awaited()
+        assert auditor.audit_data.probes is not None
+        assert all(result.outcome is ProbeOutcome.NOT_APPLICABLE for result in auditor.audit_data.probes.values())
 
     async def test_cli_audits_modern_only_stdio_server(self, monkeypatch, capsys):
         """User-level regression: failed initialize falls back and emits a full report."""

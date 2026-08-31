@@ -151,6 +151,8 @@ class ConnectionFailure:
 
     reason: ConnectionErrorReason
     status_code: int | None = None
+    detail: str | None = None
+    """Sanitized underlying exception text, when a generic failure supplied it."""
 
     @property
     def message(self) -> str:
@@ -421,9 +423,14 @@ class MCPClient:
                 self._pending_http_status = status
             logger.info("Connection attempt failed: %s", e)
 
-    def _record_failure(self, reason: ConnectionErrorReason, status_code: int | None = None) -> None:
+    def _record_failure(
+        self,
+        reason: ConnectionErrorReason,
+        status_code: int | None = None,
+        detail: str | None = None,
+    ) -> None:
         """Record why the current connect attempt failed."""
-        self.last_connection_error = ConnectionFailure(reason=reason, status_code=status_code)
+        self.last_connection_error = ConnectionFailure(reason=reason, status_code=status_code, detail=detail)
 
     def _record_unclassified_failure(self, exc: BaseException) -> None:
         """Classify a catch-all failure, recovering an HTTP status if one is buried in it.
@@ -436,7 +443,11 @@ class MCPClient:
         if status is not None:
             self._record_failure(reason_for_status(status), status)
         else:
-            self._record_failure(ConnectionErrorReason.UNKNOWN)
+            # Keep a compact, single-line explanation so a caller can defer
+            # showing it until modern-only probing has ruled out an expected
+            # rejection of the legacy handshake.
+            detail = " ".join(str(exc).split()) or type(exc).__name__
+            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=detail[:500])
 
     def _record_handshake_failure(self, server_url: str) -> None:
         """Classify a handshake failure, using any HTTP status seen in teardown.
