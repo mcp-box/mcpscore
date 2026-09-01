@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **MCP Python SDK bumped to `mcp==2.1.1`** (from 2.0.0). Two client-side
-  SDK fixes ride along and can move scores on affected live servers by 
+  SDK fixes ride along and can move scores on affected live servers by
   turning listing failures into real audits: pre-2026
   sessions now *drop* later-revision cache-hint fields instead of failing
   `list_tools()`, and boolean sub-schemas in tool `properties` now parse.
