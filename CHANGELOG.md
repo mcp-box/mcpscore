@@ -47,7 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `readOnlyHint: true` are called; `--call-all` is the explicit consent for
   the rest — so unannotated tools visibly cost smoke coverage. Argument
   synthesis is deterministic (defaults / const / examples / enum-first / type
-  zero-values — never an LLM). Verdicts are pass/fail/skip, and a tool whose
+  zero-values — never an LLM) and tolerates broken schemas: malformed
+  non-string `required` entries are ignored rather than aborting the smoke
+  run. Verdicts are pass/fail/skip, and a tool whose
   upstream is down reports as *skip*: someone else's outage should not fail
   the build. Results land in a new `smoke` section of the `--json` report and
   never touch `score`/`max_score`; any smoke failure exits with the new code

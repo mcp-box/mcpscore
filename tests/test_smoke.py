@@ -164,6 +164,16 @@ class TestSynthesizeArguments:
         schema = {"type": "object", "properties": {"a": {"type": "string"}, "b": True}, "required": ["a", "b", "c"]}
         assert synthesize_arguments(schema) == {"a": ""}
 
+    def test_malformed_required_entries_are_ignored(self) -> None:
+        """Non-string required entries must not abort synthesis with TypeError.
+
+        A model-accepted schema can still carry garbage in ``required`` (e.g.
+        nested lists). Dict lookup would raise; smoke mode must keep going.
+        """
+        schema = {"type": "object", "properties": {"q": {"type": "string"}}, "required": [[], {"not": "a-name"}, "q"]}
+        assert synthesize_arguments(schema) == {"q": ""}
+        assert synthesize_arguments({"properties": {"q": {"type": "string"}}, "required": [[]]}) == {}
+
 
 class TestSynthesizeInvalidArguments:
     @pytest.mark.parametrize(
@@ -203,6 +213,11 @@ class TestSynthesizeInvalidArguments:
     )
     def test_nothing_violable_yields_none(self, schema: Any) -> None:
         assert synthesize_invalid_arguments(schema) is None
+
+    def test_malformed_required_does_not_abort_invalid_synthesis(self) -> None:
+        """Wrong-typed violation still works when required is garbage."""
+        schema = {"type": "object", "properties": {"q": {"type": "string"}}, "required": [[]]}
+        assert synthesize_invalid_arguments(schema) == {"q": 42}
 
 
 class TestStructuredContentCheck:
@@ -349,6 +364,31 @@ class TestInvalidArgumentsCheck:
         check = await single_check(session, tool, CHECK_INVALID_ARGUMENTS)
         assert check.verdict is SmokeVerdict.SKIP
         assert "nothing invalid to send" in check.message
+
+    async def test_malformed_required_does_not_abort_the_run(self) -> None:
+        """A broken required array must yield a verdict, never raise out of run_smoke_checks."""
+        tool = read_only_tool(
+            input_schema={"type": "object", "properties": {"q": {"type": "string"}}, "required": [[]]}
+        )
+        session = FakeSession({"reader": MCPError(code=ERROR_INVALID_PARAMS, message="bad args")})
+        report = await run_smoke_checks(session, [tool], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+        invalid = next(check for check in report.checks if check.check_id == CHECK_INVALID_ARGUMENTS)
+        assert invalid.verdict is SmokeVerdict.PASS
+        assert ("reader", {"q": 42}) in session.calls
+
+    async def test_synthesis_exception_skips_instead_of_aborting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Defense in depth: any unexpected synthesis raise becomes a skip verdict."""
+        from mcpscore import smoke
+
+        def boom(_schema: object) -> dict[str, Any] | None:
+            raise RuntimeError("synthetic boom")
+
+        monkeypatch.setattr(smoke, "synthesize_invalid_arguments", boom)
+        session = FakeSession()
+        check = await single_check(session, read_only_tool(), CHECK_INVALID_ARGUMENTS)
+        assert check.verdict is SmokeVerdict.SKIP
+        assert "could not derive" in check.message
+        assert all(name != "reader" or args != {"q": 42} for name, args in session.calls)
 
     async def test_wrong_typed_value_is_sent(self) -> None:
         session = FakeSession({"reader": MCPError(code=ERROR_INVALID_PARAMS, message="bad args")})

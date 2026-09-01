@@ -217,10 +217,14 @@ def _synthesize_object(schema: dict[str, Any], depth: int) -> dict[str, Any]:
     required = schema.get("required")
     if not isinstance(properties, dict) or not isinstance(required, list):
         return {}
+    # Required entries must be strings before any dict lookup: a model-accepted
+    # but malformed schema (e.g. required: [[]]) would otherwise raise TypeError
+    # and abort the whole smoke run from the invalid-arguments path, which
+    # synthesizes outside its try.
     return {
         name: synthesize_value(properties.get(name), depth)
         for name in required
-        if isinstance(properties.get(name), dict)
+        if isinstance(name, str) and isinstance(properties.get(name), dict)
     }
 
 
@@ -349,7 +353,13 @@ async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reas
 
     if skip_reason is not None:
         return result(SmokeVerdict.SKIP, skip_reason)
-    invalid_arguments = synthesize_invalid_arguments(tool.input_schema)
+    try:
+        invalid_arguments = synthesize_invalid_arguments(tool.input_schema)
+    except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
+        return result(
+            SmokeVerdict.SKIP,
+            f"could not derive schema-invalid arguments ({type(exc).__name__}) — nothing invalid to send",
+        )
     if invalid_arguments is None:
         return result(SmokeVerdict.SKIP, "inputSchema declares no typed property to violate — nothing invalid to send")
     try:
