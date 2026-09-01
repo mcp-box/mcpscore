@@ -251,21 +251,18 @@ _WRONG_TYPED_VALUES: dict[str, Any] = {
 }
 """For each single declared JSON type, a value violating it."""
 
+_ENUM_VIOLATION_CANDIDATES: tuple[Any, ...] = ("mcpscore-smoke-invalid-value", 42, False, [], {"mcpscore": "invalid"})
+"""Deterministic ladder for violating an enum/const constraint: the first
+value the constraint does not allow is used. An enum pathological enough to
+allow every candidate simply is not violated via that property."""
 
-def synthesize_invalid_arguments(input_schema: object) -> dict[str, Any] | None:
-    """Derive arguments that violate the tool's input schema, or None.
+UNEXPECTED_PROPERTY_NAME = "mcpscore_smoke_unexpected_property"
+"""Base name of the extra argument sent to violate ``additionalProperties:
+false``; deterministically suffixed if the schema really declares it."""
 
-    Valid arguments with exactly one deliberate violation: the first declared
-    property with a single, violable type gets a value of the wrong type. A
-    schema that constrains nothing (no typed properties — e.g. the bare
-    ``{"type": "object"}``) offers nothing to violate, and the check must
-    skip rather than send arguments the server is entitled to accept.
-    """
-    if not isinstance(input_schema, dict):
-        return None
-    properties = input_schema.get("properties")
-    if not isinstance(properties, dict):
-        return None
+
+def _wrong_typed_violation(input_schema: dict[str, Any], properties: dict[str, Any]) -> dict[str, Any] | None:
+    """Give the first single-typed property a value of the wrong type."""
     for name, subschema in properties.items():
         if not isinstance(subschema, dict):
             continue
@@ -274,6 +271,80 @@ def synthesize_invalid_arguments(input_schema: object) -> dict[str, Any] | None:
             arguments = synthesize_arguments(input_schema)
             arguments[name] = _WRONG_TYPED_VALUES[declared]
             return arguments
+    return None
+
+
+def _enum_violation(input_schema: dict[str, Any], properties: dict[str, Any]) -> dict[str, Any] | None:
+    """Give the first enum/const-constrained property a value outside the constraint."""
+    for name, subschema in properties.items():
+        if not isinstance(subschema, dict):
+            continue
+        enum = subschema.get("enum")
+        if isinstance(enum, list) and enum:
+            allowed = enum
+        elif "const" in subschema:
+            allowed = [subschema["const"]]
+        else:
+            continue
+        for candidate in _ENUM_VIOLATION_CANDIDATES:
+            if candidate not in allowed:
+                arguments = synthesize_arguments(input_schema)
+                arguments[name] = candidate
+                return arguments
+    return None
+
+
+def _missing_required_violation(input_schema: dict[str, Any]) -> dict[str, Any] | None:
+    """Omit the first required property from otherwise-valid arguments."""
+    required = input_schema.get("required")
+    if not isinstance(required, list):
+        return None
+    for name in required:
+        if isinstance(name, str):
+            arguments = synthesize_arguments(input_schema)
+            arguments.pop(name, None)
+            return arguments
+    return None
+
+
+def _unexpected_property_violation(input_schema: dict[str, Any], properties: dict[str, Any]) -> dict[str, Any] | None:
+    """Add an undeclared property when the schema forbids additional ones."""
+    if input_schema.get("additionalProperties") is not False:
+        return None
+    name = UNEXPECTED_PROPERTY_NAME
+    while name in properties:
+        name = f"{name}_x"
+    arguments = synthesize_arguments(input_schema)
+    arguments[name] = True
+    return arguments
+
+
+def synthesize_invalid_arguments(input_schema: object) -> dict[str, Any] | None:
+    """Derive arguments that violate the tool's input schema, or None.
+
+    Otherwise-valid arguments with exactly one deliberate violation, trying
+    constraint kinds in a fixed order: a wrong-typed value for the first
+    single-typed property; a value outside the first enum/const constraint;
+    omitting the first required property; an undeclared extra property when
+    ``additionalProperties`` is false. A schema that constrains nothing
+    (e.g. the bare ``{"type": "object"}``) offers nothing to violate, and
+    the check must skip rather than send arguments the server is entitled
+    to accept.
+    """
+    if not isinstance(input_schema, dict):
+        return None
+    raw_properties = input_schema.get("properties")
+    properties = raw_properties if isinstance(raw_properties, dict) else {}
+    # `is not None`, never truthiness: omitting the only required property
+    # legitimately yields {} — an empty dict IS the violation.
+    for violation in (
+        _wrong_typed_violation(input_schema, properties),
+        _enum_violation(input_schema, properties),
+        _missing_required_violation(input_schema),
+        _unexpected_property_violation(input_schema, properties),
+    ):
+        if violation is not None:
+            return violation
     return None
 
 
@@ -361,7 +432,7 @@ async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reas
             f"could not derive schema-invalid arguments ({type(exc).__name__}) — nothing invalid to send",
         )
     if invalid_arguments is None:
-        return result(SmokeVerdict.SKIP, "inputSchema declares no typed property to violate — nothing invalid to send")
+        return result(SmokeVerdict.SKIP, "inputSchema declares no violable constraint — nothing invalid to send")
     try:
         call_result = await session.call_tool(
             tool.name,

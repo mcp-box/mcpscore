@@ -219,6 +219,74 @@ class TestSynthesizeInvalidArguments:
         schema = {"type": "object", "properties": {"q": {"type": "string"}}, "required": [[]]}
         assert synthesize_invalid_arguments(schema) == {"q": 42}
 
+    def test_required_without_properties_omits_the_required_property(self) -> None:
+        """A schema whose only constraint is `required` is violated by {}."""
+        schema = {"type": "object", "required": ["token"]}
+        assert synthesize_invalid_arguments(schema) == {}
+
+    def test_required_untyped_property_is_omitted(self) -> None:
+        schema = {"type": "object", "properties": {"token": {}}, "required": ["token"]}
+        assert synthesize_invalid_arguments(schema) == {}
+
+    def test_enum_only_property_gets_a_value_outside_the_enum(self) -> None:
+        schema = {"type": "object", "properties": {"color": {"enum": ["red", "green"]}}}
+        assert synthesize_invalid_arguments(schema) == {"color": "mcpscore-smoke-invalid-value"}
+
+    def test_enum_containing_the_first_candidate_uses_the_next(self) -> None:
+        schema = {"type": "object", "properties": {"color": {"enum": ["mcpscore-smoke-invalid-value"]}}}
+        assert synthesize_invalid_arguments(schema) == {"color": 42}
+
+    def test_const_only_property_gets_a_different_value(self) -> None:
+        schema = {"type": "object", "properties": {"mode": {"const": "fast"}}}
+        assert synthesize_invalid_arguments(schema) == {"mode": "mcpscore-smoke-invalid-value"}
+
+    def test_enum_allowing_every_candidate_is_not_violated(self) -> None:
+        """Exhaust the candidate ladder without inventing a violation.
+
+        A pathological enum containing every ladder value cannot be violated
+        through that property; with nothing else to violate, synthesis skips.
+        """
+        every_candidate = ["mcpscore-smoke-invalid-value", 42, False, [], {"mcpscore": "invalid"}]
+        schema = {"type": "object", "properties": {"p": {"enum": every_candidate}}}
+        assert synthesize_invalid_arguments(schema) is None
+
+    def test_additional_properties_false_gets_an_unexpected_property(self) -> None:
+        schema = {"type": "object", "additionalProperties": False}
+        assert synthesize_invalid_arguments(schema) == {"mcpscore_smoke_unexpected_property": True}
+
+    def test_unexpected_property_name_dodges_a_declared_collision(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"mcpscore_smoke_unexpected_property": True},
+            "additionalProperties": False,
+        }
+        assert synthesize_invalid_arguments(schema) == {"mcpscore_smoke_unexpected_property_x": True}
+
+    def test_violation_strategies_apply_in_a_fixed_order(self) -> None:
+        """One deterministic violation per schema, in fixed strategy order.
+
+        Wrong type beats enum, enum beats missing-required, and
+        missing-required beats additionalProperties.
+        """
+        typed_and_enum = {
+            "type": "object",
+            "properties": {"color": {"enum": ["red"]}, "q": {"type": "string"}},
+            "required": ["q"],
+            "additionalProperties": False,
+        }
+        assert synthesize_invalid_arguments(typed_and_enum) == {"q": 42}
+
+        enum_and_required = {
+            "type": "object",
+            "properties": {"color": {"enum": ["red"]}},
+            "required": ["token"],
+            "additionalProperties": False,
+        }
+        assert synthesize_invalid_arguments(enum_and_required) == {"color": "mcpscore-smoke-invalid-value"}
+
+        required_and_additional = {"type": "object", "required": ["token"], "additionalProperties": False}
+        assert synthesize_invalid_arguments(required_and_additional) == {}
+
 
 class TestStructuredContentCheck:
     async def test_conforming_result_passes(self) -> None:
