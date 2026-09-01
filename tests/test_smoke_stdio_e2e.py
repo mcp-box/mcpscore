@@ -42,7 +42,7 @@ async def _run_against_fixture(*, call_all: bool, only_tools: set[str] | None = 
         if only_tools is not None:
             tools = [tool for tool in tools if tool.name in only_tools]
         assert client.session is not None
-        return await run_smoke_checks(client.session, tools, call_all=call_all)
+        return await run_smoke_checks(client.session, tools, call_all=call_all, catalog_complete=True)
     finally:
         await client.cleanup()
 

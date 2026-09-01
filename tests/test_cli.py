@@ -2235,7 +2235,9 @@ class TestSmokeCliFlow:
             await async_main()
 
         assert exc_info.value.code == 4
-        fake_run.assert_awaited_once_with(mock_client.session, mock_auditor.audit_data.tools, call_all=False)
+        fake_run.assert_awaited_once_with(
+            mock_client.session, mock_auditor.audit_data.tools, call_all=False, catalog_complete=True
+        )
         mock_client.cleanup.assert_awaited_once()
 
     async def test_call_all_is_propagated(
@@ -2255,7 +2257,9 @@ class TestSmokeCliFlow:
         ):
             await async_main()
 
-        fake_run.assert_awaited_once_with(mock_client.session, mock_auditor.audit_data.tools, call_all=True)
+        fake_run.assert_awaited_once_with(
+            mock_client.session, mock_auditor.audit_data.tools, call_all=True, catalog_complete=True
+        )
 
     async def test_without_smoke_the_phase_never_runs(
         self,

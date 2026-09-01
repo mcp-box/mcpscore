@@ -24,6 +24,7 @@ from mcpscore.smoke import (
     SmokeCheckResult,
     SmokeReport,
     SmokeVerdict,
+    derive_unknown_tool_name,
     run_smoke_checks,
     synthesize_arguments,
     synthesize_invalid_arguments,
@@ -33,6 +34,7 @@ from mcpscore.smoke import (
 ERROR_INVALID_PARAMS = -32602
 ERROR_METHOD_NOT_FOUND = -32601
 ERROR_INTERNAL = -32603
+ERROR_CONNECTION_CLOSED = -32000  # the SDK's code for a dead transport
 
 
 class FakeSession:
@@ -83,7 +85,7 @@ OUTPUT_SCHEMA = {"type": "object", "properties": {"result": {"type": "string"}},
 
 async def single_check(session: FakeSession, tool: Tool, check_id: str, *, call_all: bool = False) -> SmokeCheckResult:
     """Run the smoke suite for one tool and return its result for one check."""
-    report = await run_smoke_checks(session, [tool], call_all=call_all)  # type: ignore[arg-type]
+    report = await run_smoke_checks(session, [tool], call_all=call_all, catalog_complete=True)  # type: ignore[arg-type]
     matches = [check for check in report.checks if check.check_id == check_id]
     assert len(matches) == 1
     return matches[0]
@@ -261,6 +263,22 @@ class TestStructuredContentCheck:
         await single_check(session, tool, CHECK_STRUCTURED_CONTENT)
         assert ("reader", {"q": ""}) in session.calls
 
+    async def test_empty_output_schema_is_still_exercised(self) -> None:
+        """{} is a declared schema anything conforms to — but structuredContent must be PRESENT."""
+        tool = read_only_tool(output_schema={})
+        session = FakeSession(
+            {"reader": RuntimeError("Tool reader has an output schema but did not return structured content")}
+        )
+        check = await single_check(session, tool, CHECK_STRUCTURED_CONTENT)
+        assert check.verdict is SmokeVerdict.FAIL
+        assert "not honored" in check.message
+
+    async def test_empty_output_schema_with_structured_content_passes(self) -> None:
+        tool = read_only_tool(output_schema={})
+        session = FakeSession({"reader": CallToolResult(content=[], structured_content={"anything": True})})
+        check = await single_check(session, tool, CHECK_STRUCTURED_CONTENT)
+        assert check.verdict is SmokeVerdict.PASS
+
 
 class TestInvalidArgumentsCheck:
     async def test_jsonrpc_rejection_passes(self) -> None:
@@ -286,6 +304,12 @@ class TestInvalidArgumentsCheck:
         check = await single_check(session, read_only_tool(), CHECK_INVALID_ARGUMENTS)
         assert check.verdict is SmokeVerdict.FAIL
         assert "hang" in check.message
+
+    async def test_connection_closed_fails_as_crash_not_rejection(self) -> None:
+        session = FakeSession({"reader": MCPError(code=ERROR_CONNECTION_CLOSED, message="Connection closed")})
+        check = await single_check(session, read_only_tool(), CHECK_INVALID_ARGUMENTS)
+        assert check.verdict is SmokeVerdict.FAIL
+        assert "crash" in check.message
 
     async def test_sdk_validation_error_fails_as_acceptance(self) -> None:
         # The server produced a (schema-violating) success result for invalid
@@ -321,45 +345,99 @@ class TestInvalidArgumentsCheck:
 
 
 class TestUnknownToolCheck:
-    @pytest.mark.parametrize("code", [ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND])
-    async def test_protocol_error_passes(self, code: int) -> None:
+    # -32050 stands in for a server-defined rejection code: the spec's
+    # unknown-tool -32602 is exemplary, so any JSON-RPC error is a rejection
+    # (except the SDK-reserved timeout/connection-closed/internal codes).
+    @pytest.mark.parametrize("code", [ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, -32050])
+    async def test_any_rejection_error_passes(self, code: int) -> None:
         session = FakeSession(default=MCPError(code=code, message="Unknown tool"))
-        report = await run_smoke_checks(session, None, call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, [], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         (check,) = report.checks
         assert check.check_id == CHECK_UNKNOWN_TOOL
         assert check.verdict is SmokeVerdict.PASS
         assert check.tool_name is None
         assert session.calls == [(UNKNOWN_TOOL_NAME, {})]
 
-    async def test_other_error_code_fails(self) -> None:
+    async def test_internal_error_fails_as_server_crash(self) -> None:
         session = FakeSession(default=MCPError(code=ERROR_INTERNAL, message="oops"))
-        report = await run_smoke_checks(session, None, call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, [], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         assert report.checks[0].verdict is SmokeVerdict.FAIL
         assert str(ERROR_INTERNAL) in report.checks[0].message
+        assert "crash" in report.checks[0].message
+
+    async def test_connection_closed_fails_as_crash(self) -> None:
+        """Treat the SDK's dead-transport MCPError(-32000) as a crash.
+
+        Accepting it as a 'rejection' would let a crashed server pass.
+        """
+        session = FakeSession(default=MCPError(code=ERROR_CONNECTION_CLOSED, message="Connection closed"))
+        report = await run_smoke_checks(session, [], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+        assert report.checks[0].verdict is SmokeVerdict.FAIL
+        assert "crash" in report.checks[0].message
 
     async def test_timeout_fails_as_hang(self) -> None:
         session = FakeSession(default=MCPError(code=REQUEST_TIMEOUT, message="timed out"))
-        report = await run_smoke_checks(session, None, call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, [], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         assert report.checks[0].verdict is SmokeVerdict.FAIL
         assert "hang" in report.checks[0].message
 
     async def test_success_result_fails(self) -> None:
         session = FakeSession(default=CallToolResult(content=[]))
-        report = await run_smoke_checks(session, None, call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, [], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         assert report.checks[0].verdict is SmokeVerdict.FAIL
         assert "instead of rejecting" in report.checks[0].message
 
     async def test_is_error_result_fails(self) -> None:
         session = FakeSession(default=CallToolResult(content=[], is_error=True))
-        report = await run_smoke_checks(session, None, call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, [], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         assert report.checks[0].verdict is SmokeVerdict.FAIL
         assert "isError" in report.checks[0].message
 
     async def test_transport_crash_fails(self) -> None:
         session = FakeSession(default=ConnectionError("boom"))
-        report = await run_smoke_checks(session, None, call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, [], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         assert report.checks[0].verdict is SmokeVerdict.FAIL
         assert "crashed" in report.checks[0].message
+
+
+class TestUnknownToolNameSafety:
+    """A nonexistent name must be proven nonexistent, never assumed."""
+
+    def test_derivation_is_deterministic_and_collision_free(self) -> None:
+        assert derive_unknown_tool_name([]) == UNKNOWN_TOOL_NAME
+        colliding = [read_only_tool(UNKNOWN_TOOL_NAME), read_only_tool(f"{UNKNOWN_TOOL_NAME}_2")]
+        assert derive_unknown_tool_name(colliding) == f"{UNKNOWN_TOOL_NAME}_3"
+
+    async def test_a_real_tool_with_the_base_name_is_never_called(self) -> None:
+        """Dodge a real tool that legally uses the base name.
+
+        Calling it would invoke an unannotated tool past the safety default.
+        """
+        real_tool = Tool(name=UNKNOWN_TOOL_NAME, input_schema={"type": "object"})
+        session = FakeSession(default=MCPError(code=ERROR_INVALID_PARAMS, message="Unknown tool"))
+        report = await run_smoke_checks(session, [real_tool], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+        unknown = next(check for check in report.checks if check.check_id == CHECK_UNKNOWN_TOOL)
+        assert unknown.verdict is SmokeVerdict.PASS
+        assert unknown.details["requested_tool"] == f"{UNKNOWN_TOOL_NAME}_2"
+        assert session.calls == [(f"{UNKNOWN_TOOL_NAME}_2", {})]
+
+    async def test_missing_catalog_skips_the_check(self) -> None:
+        session = FakeSession()
+        report = await run_smoke_checks(session, None, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+        (check,) = report.checks
+        assert check.check_id == CHECK_UNKNOWN_TOOL
+        assert check.verdict is SmokeVerdict.SKIP
+        assert "safety default" in check.message
+        assert session.calls == []
+
+    async def test_incomplete_catalog_skips_the_check(self) -> None:
+        session = FakeSession({"reader": MCPError(code=ERROR_INVALID_PARAMS, message="bad")})
+        report = await run_smoke_checks(session, [read_only_tool()], call_all=False, catalog_complete=False)  # type: ignore[arg-type]
+        unknown = next(check for check in report.checks if check.check_id == CHECK_UNKNOWN_TOOL)
+        assert unknown.verdict is SmokeVerdict.SKIP
+        assert "incomplete" in unknown.message
+        # The listed tool is still exercised; only the unknown-name probe is off.
+        assert all(name == "reader" for name, _ in session.calls)
 
 
 class TestSafetyDefault:
@@ -374,7 +452,7 @@ class TestSafetyDefault:
             name="writer", input_schema={"type": "object"}, output_schema=OUTPUT_SCHEMA, annotations=annotations
         )
         session = FakeSession()
-        report = await run_smoke_checks(session, [tool], call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, [tool], call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         per_tool = [check for check in report.checks if check.tool_name == "writer"]
         assert len(per_tool) == 2
         assert all(check.verdict is SmokeVerdict.SKIP for check in per_tool)
@@ -388,7 +466,7 @@ class TestSafetyDefault:
             output_schema=OUTPUT_SCHEMA,
         )
         session = FakeSession({"writer": CallToolResult(content=[], structured_content={"result": "ok"})})
-        report = await run_smoke_checks(session, [tool], call_all=True)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, [tool], call_all=True, catalog_complete=True)  # type: ignore[arg-type]
         assert report.call_all is True
         called_tools = {name for name, _ in session.calls}
         assert "writer" in called_tools
@@ -404,7 +482,7 @@ class TestRunSmokeChecks:
             },
             default=MCPError(code=ERROR_INVALID_PARAMS, message="Unknown tool"),
         )
-        report = await run_smoke_checks(session, tools, call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         assert [(check.check_id, check.tool_name) for check in report.checks] == [
             (CHECK_STRUCTURED_CONTENT, "alpha"),
             (CHECK_STRUCTURED_CONTENT, "beta"),
@@ -421,7 +499,7 @@ class TestRunSmokeChecks:
             {"alpha": CallToolResult(content=[], structured_content={"result": "ok"})},
             default=MCPError(code=ERROR_INVALID_PARAMS, message="Unknown tool"),
         )
-        report = await run_smoke_checks(session, tools, call_all=False)  # type: ignore[arg-type]
+        report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
         # alpha: structured-content pass; invalid-arguments... alpha returns a
         # success result for the invalid call → fail. Unknown tool → pass.
         assert (report.passed, report.failed, report.skipped) == (2, 1, 0)

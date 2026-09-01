@@ -39,9 +39,9 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from mcp.shared.exceptions import MCPError
-from mcp_types import REQUEST_TIMEOUT, CallToolResult
+from mcp_types import CONNECTION_CLOSED, INTERNAL_ERROR as ERROR_INTERNAL, REQUEST_TIMEOUT, CallToolResult
 
-from .probes import ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND
+from .probes import ERROR_INVALID_PARAMS
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -56,9 +56,10 @@ SMOKE_CALL_TIMEOUT_S = 30.0
 hang (invalid-argument check) or as unexercisable (structured-content check)."""
 
 UNKNOWN_TOOL_NAME = "mcpscore_smoke_nonexistent_tool"
-"""Deliberately fixed, not random: deterministic calls are part of the smoke
-contract (same server, same calls), and no real server plausibly names a tool
-this way."""
+"""Deliberately fixed base name, not random: deterministic calls are part of
+the smoke contract (same server, same calls). It is nevertheless a *legal*
+tool name, so ``derive_unknown_tool_name`` proves absence against the
+collected catalog instead of trusting implausibility."""
 
 CHECK_STRUCTURED_CONTENT = "smoke_structured_content"
 CHECK_INVALID_ARGUMENTS = "smoke_invalid_arguments"
@@ -297,7 +298,10 @@ async def _check_structured_content(session: ClientSession, tool: Tool, skip_rea
 
     if skip_reason is not None:
         return result(SmokeVerdict.SKIP, skip_reason)
-    if not tool.output_schema:
+    # `is None`, not truthiness: an empty {} is a declared, valid schema that
+    # anything conforms to, but the spec still requires structuredContent to
+    # be PRESENT for it — the check must run.
+    if tool.output_schema is None:
         return result(SmokeVerdict.SKIP, "no outputSchema declared — nothing to verify against")
     try:
         # The SDK validates a successful result's structuredContent against
@@ -363,6 +367,14 @@ async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reas
                 f"no answer within {SMOKE_CALL_TIMEOUT_S:.0f}s of a schema-invalid call — a hang, not a rejection",
                 error_code=exc.code,
             )
+        if exc.code == CONNECTION_CLOSED:
+            # The SDK reports a dead transport as this MCPError — a crash,
+            # not the server rejecting anything.
+            return result(
+                SmokeVerdict.FAIL,
+                "connection closed on a schema-invalid call — a crash, not a rejection",
+                error_code=exc.code,
+            )
         return result(SmokeVerdict.PASS, f"rejected with JSON-RPC error {exc.code}", error_code=exc.code)
     except RuntimeError:
         # The SDK's output-schema validation fired, meaning the server
@@ -377,36 +389,66 @@ async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reas
     return result(SmokeVerdict.FAIL, "accepted schema-invalid arguments (returned a success result)")
 
 
-async def _check_unknown_tool(session: ClientSession) -> SmokeCheckResult:
+def derive_unknown_tool_name(tools: Sequence[Tool]) -> str:
+    """Derive a deterministic tool name provably absent from the catalog.
+
+    The base name is fixed for determinism, but it is a *legal* MCP tool name
+    a server could really expose — and calling a real tool here would bypass
+    the readOnlyHint safety default. Deterministic suffixes sidestep any
+    collision; the input is the server's own catalog, so the same server
+    state still yields the same call.
+    """
+    existing = {tool.name for tool in tools}
+    candidate = UNKNOWN_TOOL_NAME
+    suffix = 2
+    while candidate in existing:
+        candidate = f"{UNKNOWN_TOOL_NAME}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+async def _check_unknown_tool(session: ClientSession, unknown_name: str) -> SmokeCheckResult:
     """Verify the server rejects a nonexistent tool name with a protocol error."""
-    details = {"basis": BASIS_UNKNOWN_TOOL, "requested_tool": UNKNOWN_TOOL_NAME}
+    details = {"basis": BASIS_UNKNOWN_TOOL, "requested_tool": unknown_name}
 
     def result(verdict: SmokeVerdict, message: str, **extra: Any) -> SmokeCheckResult:
         return SmokeCheckResult(CHECK_UNKNOWN_TOOL, verdict, message, None, {**details, **extra})
 
     try:
         call_result = await session.call_tool(
-            UNKNOWN_TOOL_NAME,
+            unknown_name,
             {},
             read_timeout_seconds=SMOKE_CALL_TIMEOUT_S,
             allow_input_required=True,
             allow_claimed=True,
         )
     except MCPError as exc:
-        if exc.code in (ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND):
-            return result(SmokeVerdict.PASS, f"rejected with JSON-RPC error {exc.code}", error_code=exc.code)
+        # The spec's unknown-tool example is -32602, but the code is
+        # exemplary, not mandated — any JSON-RPC error the server sends is a
+        # rejection. The failures are the non-rejections: a hang, a dead
+        # transport (the SDK surfaces it as CONNECTION_CLOSED), and an
+        # internal error (the server tried to execute the name and broke —
+        # the "500" this check exists to catch).
         if exc.code == REQUEST_TIMEOUT:
             return result(
                 SmokeVerdict.FAIL,
                 f"no answer within {SMOKE_CALL_TIMEOUT_S:.0f}s of calling a nonexistent tool — a hang, not a rejection",
                 error_code=exc.code,
             )
-        return result(
-            SmokeVerdict.FAIL,
-            f"answered JSON-RPC error {exc.code} instead of a method/params protocol error "
-            f"({ERROR_METHOD_NOT_FOUND}/{ERROR_INVALID_PARAMS})",
-            error_code=exc.code,
-        )
+        if exc.code == CONNECTION_CLOSED:
+            return result(
+                SmokeVerdict.FAIL,
+                "connection closed on a nonexistent tool call — a crash, not a rejection",
+                error_code=exc.code,
+            )
+        if exc.code == ERROR_INTERNAL:
+            return result(
+                SmokeVerdict.FAIL,
+                f"answered JSON-RPC internal error {exc.code} — a server-side crash, not a rejection "
+                f"(the spec's unknown-tool example is {ERROR_INVALID_PARAMS})",
+                error_code=exc.code,
+            )
+        return result(SmokeVerdict.PASS, f"rejected with JSON-RPC error {exc.code}", error_code=exc.code)
     except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
         return result(SmokeVerdict.FAIL, f"tools/call on a nonexistent tool crashed: {type(exc).__name__}")
     if isinstance(call_result, CallToolResult) and call_result.is_error:
@@ -418,7 +460,13 @@ async def _check_unknown_tool(session: ClientSession) -> SmokeCheckResult:
     return result(SmokeVerdict.FAIL, "answered a nonexistent tool name with a result instead of rejecting it")
 
 
-async def run_smoke_checks(session: ClientSession, tools: Sequence[Tool] | None, *, call_all: bool) -> SmokeReport:
+async def run_smoke_checks(
+    session: ClientSession,
+    tools: Sequence[Tool] | None,
+    *,
+    call_all: bool,
+    catalog_complete: bool,
+) -> SmokeReport:
     """Run every smoke check sequentially on the audit's established session.
 
     Sequential on purpose: one in-flight ``tools/call`` at a time keeps the
@@ -428,9 +476,13 @@ async def run_smoke_checks(session: ClientSession, tools: Sequence[Tool] | None,
     Args:
         session: The live session the audit connected (never closed by the
             auditor; the CLI's cleanup closes it afterwards).
-        tools: The audit's collected tool listing (None when listing failed —
-            the server-level unknown-tool check still runs).
+        tools: The audit's collected tool listing (None when listing failed).
         call_all: Lift the readOnlyHint safety default (--call-all).
+        catalog_complete: Whether ``tools`` is the server's complete catalog.
+            The unknown-tool check calls a name chosen for being absent from
+            it; with a missing or incomplete catalog, nonexistence cannot be
+            established and the probe could invoke a real, unannotated tool —
+            so that check skips instead.
 
     """
     report = SmokeReport(executed=True, call_all=call_all)
@@ -440,5 +492,17 @@ async def run_smoke_checks(session: ClientSession, tools: Sequence[Tool] | None,
     for tool in tools or []:
         skip_reason = _tool_skip_reason(tool, call_all=call_all)
         report.checks.append(await _check_invalid_arguments(session, tool, skip_reason))
-    report.checks.append(await _check_unknown_tool(session))
+    if tools is None or not catalog_complete:
+        report.checks.append(
+            SmokeCheckResult(
+                CHECK_UNKNOWN_TOOL,
+                SmokeVerdict.SKIP,
+                "tool catalog unavailable or incomplete — a name cannot be proven nonexistent, and calling a "
+                "possibly-real tool would bypass the safety default",
+                None,
+                {"basis": BASIS_UNKNOWN_TOOL},
+            )
+        )
+    else:
+        report.checks.append(await _check_unknown_tool(session, derive_unknown_tool_name(tools)))
     return report

@@ -599,7 +599,12 @@ async def run_smoke_phase(args: argparse.Namespace, client: MCPClient, auditor: 
         return SmokeReport.not_executed("no active session to call tools on")
     logger.info("")
     logger.info("Running smoke checks — invoking tools/call, as requested with --smoke...")
-    return await run_smoke_checks(client.session, auditor.audit_data.tools, call_all=args.call_all)
+    return await run_smoke_checks(
+        client.session,
+        auditor.audit_data.tools,
+        call_all=args.call_all,
+        catalog_complete="tools" not in auditor.audit_data.incomplete_listings,
+    )
 
 
 def build_report(target: str, transport: MCPTransportType | None, auditor: MCPAuditor) -> dict:

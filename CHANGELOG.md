@@ -34,9 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opt-in surface for developers testing a server they operate (typically in
   CI). It verifies what listing alone cannot: that a declared `outputSchema`
   is honored by real `structuredContent` (per MCP 2025-11-25 Tools §Output
-  Schema, a MUST), that schema-invalid arguments are rejected with an
-  `isError` result or a protocol error, and that unknown tool names get a
-  protocol error rather than a result. By default only tools annotated
+  Schema, a MUST — an explicit empty `{}` schema still requires the field to
+  be present), that schema-invalid arguments are rejected with an `isError`
+  result or a protocol error, and that unknown tool names get a JSON-RPC
+  error rather than a result (any error code counts as a rejection except a
+  hang, a closed connection, or `-32603` internal error — those are crashes,
+  not rejections). The probed unknown name is derived deterministically to be
+  provably absent from the server's own catalog; when the tool listing is
+  missing or incomplete, that check skips rather than risk invoking a real
+  tool. By default only tools annotated
   `readOnlyHint: true` are called; `--call-all` is the explicit consent for
   the rest — so unannotated tools visibly cost smoke coverage. Argument
   synthesis is deterministic (defaults / const / examples / enum-first / type
