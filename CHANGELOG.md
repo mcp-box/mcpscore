@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-09-01
+
 ### Fixed
 
 - **`tools_description_present_in_all` now catches absent descriptions.**
@@ -19,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regression tests were proven to fail against the old implementation.
 
 ### Changed
+
+- **MCP Python SDK bumped to `mcp==2.1.1`** (from 2.0.0). Two client-side
+  SDK fixes ride along and can move scores on affected live servers by
+  turning listing failures into real audits: pre-2026
+  sessions now *drop* later-revision cache-hint fields instead of failing
+  `list_tools()`, and boolean sub-schemas in tool `properties` now parse.
+  Servers whose listings previously died inside the SDK go from
+  insufficient-data skips to actually being judged.
 
 - **The "Tools Quality" category is now "Primitives"** in the README and
   docs — the MCP specification's own collective noun for tools, prompts,
@@ -1282,7 +1292,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/mcp-box/mcpscore/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/mcp-box/mcpscore/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/mcp-box/mcpscore/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/mcp-box/mcpscore/compare/v1.7.0...v1.8.0
