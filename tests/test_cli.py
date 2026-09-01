@@ -36,6 +36,7 @@ from mcpscore.cli import (
 )
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.packages import PackageCoordinate, PackageMetadata, PackageOutcome
+from mcpscore.smoke import CHECK_UNKNOWN_TOOL, SmokeCheckResult, SmokeReport, SmokeVerdict
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture
@@ -2079,3 +2080,226 @@ class TestFailUnderValidationAndPackages:
 
         # 3/13 = 23% >= 20%.
         assert fail_under_exit_code(args, _report_payload()) == 0
+
+
+def _smoke_check(verdict: SmokeVerdict, tool_name: str | None = "reader") -> SmokeCheckResult:
+    return SmokeCheckResult("smoke_structured_content", verdict, f"scripted {verdict.value}", tool_name)
+
+
+def _smoke_report(*verdicts: SmokeVerdict, call_all: bool = False) -> SmokeReport:
+    return SmokeReport(executed=True, call_all=call_all, checks=[_smoke_check(verdict) for verdict in verdicts])
+
+
+class TestSmokeCliFlow:
+    """--smoke: flag validation, the exit-4 gate, reporting, and the no-session paths."""
+
+    def test_call_all_without_smoke_is_a_usage_error(self) -> None:
+        args = build_parser().parse_args(["https://example.com/mcp", "--call-all"])
+        with pytest.raises(ValueError, match="only applies together with --smoke"):
+            resolve_target(args)
+
+    def test_smoke_with_package_is_a_usage_error(self) -> None:
+        args = build_parser().parse_args(["--package", "npm:server", "--smoke"])
+        with pytest.raises(ValueError, match="never runs the package"):
+            resolve_target(args)
+
+    def test_smoke_flags_parse_alongside_a_target(self) -> None:
+        args = build_parser().parse_args(["https://example.com/mcp", "--smoke", "--call-all"])
+        assert args.smoke is True
+        assert args.call_all is True
+        assert resolve_target(args) == "https://example.com/mcp"
+
+    def test_smoke_failure_exits_4(self, mock_auditor: MagicMock, caplog: LogCaptureFixture) -> None:
+        from mcpscore.cli import finish_server_audit
+
+        args = build_parser().parse_args(["https://example.com/mcp", "--smoke"])
+        smoke = _smoke_report(SmokeVerdict.PASS, SmokeVerdict.FAIL)
+
+        with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc_info:
+            finish_server_audit(args, mock_auditor, "https://example.com/mcp", None, smoke=smoke)
+
+        assert exc_info.value.code == 4
+        assert "--smoke: 1 smoke check(s) failed" in caplog.text
+
+    def test_fail_under_takes_precedence_over_smoke(self, mock_auditor: MagicMock) -> None:
+        """When both gates fail, the score gate's 3 wins — one exit carries one code."""
+        from mcpscore.cli import finish_server_audit
+
+        args = build_parser().parse_args(["https://example.com/mcp", "--smoke", "--fail-under", "90"])
+        smoke = _smoke_report(SmokeVerdict.FAIL)
+
+        with pytest.raises(SystemExit) as exc_info:
+            finish_server_audit(args, mock_auditor, "https://example.com/mcp", None, smoke=smoke)
+
+        assert exc_info.value.code == 3
+
+    def test_all_passing_smoke_returns_normally(self, mock_auditor: MagicMock) -> None:
+        from mcpscore.cli import finish_server_audit
+
+        args = build_parser().parse_args(["https://example.com/mcp", "--smoke"])
+        smoke = _smoke_report(SmokeVerdict.PASS, SmokeVerdict.SKIP)
+
+        finish_server_audit(args, mock_auditor, "https://example.com/mcp", None, smoke=smoke)  # no SystemExit
+
+    def test_skips_never_gate(self, mock_auditor: MagicMock) -> None:
+        """All-skip smoke (e.g. nothing annotated readOnlyHint) exits 0, not 4."""
+        from mcpscore.cli import finish_server_audit
+
+        args = build_parser().parse_args(["https://example.com/mcp", "--smoke"])
+        smoke = _smoke_report(SmokeVerdict.SKIP, SmokeVerdict.SKIP)
+
+        finish_server_audit(args, mock_auditor, "https://example.com/mcp", None, smoke=smoke)  # no SystemExit
+
+    def test_json_report_carries_the_smoke_section(
+        self, mock_auditor: MagicMock, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mcpscore.cli import finish_server_audit
+
+        args = build_parser().parse_args(["https://example.com/mcp", "--smoke", "--json"])
+        smoke = _smoke_report(SmokeVerdict.PASS)
+
+        finish_server_audit(args, mock_auditor, "https://example.com/mcp", None, smoke=smoke)
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["smoke"]["executed"] is True
+        assert report["smoke"]["summary"] == {"passed": 1, "failed": 0, "skipped": 0}
+        assert report["smoke"]["checks"][0]["verdict"] == "pass"
+
+    def test_json_report_has_no_smoke_key_without_the_flag(
+        self, mock_auditor: MagicMock, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mcpscore.cli import finish_server_audit
+
+        args = build_parser().parse_args(["https://example.com/mcp", "--json"])
+
+        finish_server_audit(args, mock_auditor, "https://example.com/mcp", None)
+
+        assert "smoke" not in json.loads(capsys.readouterr().out)
+
+    def test_log_smoke_outcome_reports_failures_and_skips(self, caplog: LogCaptureFixture) -> None:
+        from mcpscore.cli import log_smoke_outcome
+
+        smoke = SmokeReport(
+            executed=True,
+            checks=[
+                _smoke_check(SmokeVerdict.PASS),
+                _smoke_check(SmokeVerdict.FAIL),
+                _smoke_check(SmokeVerdict.SKIP),
+                SmokeCheckResult(CHECK_UNKNOWN_TOOL, SmokeVerdict.FAIL, "server-level failure", None),
+            ],
+        )
+
+        with caplog.at_level(logging.INFO):
+            log_smoke_outcome(smoke)
+
+        assert "1 passed, 2 failed, 1 skipped" in caplog.text
+        assert "FAIL smoke_structured_content [reader]: scripted fail" in caplog.text
+        assert "skip smoke_structured_content [reader]: scripted skip" in caplog.text
+        # A server-level check has no [tool] suffix.
+        assert "FAIL smoke_unknown_tool: server-level failure" in caplog.text
+        assert "only readOnlyHint: true tools called" in caplog.text
+
+    def test_log_smoke_outcome_call_all_variant(self, caplog: LogCaptureFixture) -> None:
+        from mcpscore.cli import log_smoke_outcome
+
+        with caplog.at_level(logging.INFO):
+            log_smoke_outcome(_smoke_report(SmokeVerdict.PASS, call_all=True))
+
+        assert "every tool called (--call-all)" in caplog.text
+
+    def test_log_smoke_outcome_not_executed_warns(self, caplog: LogCaptureFixture) -> None:
+        from mcpscore.cli import log_smoke_outcome
+
+        with caplog.at_level(logging.WARNING):
+            log_smoke_outcome(SmokeReport.not_executed("no session available"))
+
+        assert "Smoke checks did not run: no session available" in caplog.text
+
+    async def test_full_audit_with_smoke_runs_checks_and_exits_4(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """The smoke phase runs on the audit's session and its failure gates the run."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://example.com/mcp", "--smoke"])
+        mock_client.session = MagicMock()
+        fake_run = AsyncMock(return_value=_smoke_report(SmokeVerdict.FAIL))
+        monkeypatch.setattr("mcpscore.cli.run_smoke_checks", fake_run)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 4
+        fake_run.assert_awaited_once_with(
+            mock_client.session, mock_auditor.audit_data.tools, call_all=False, catalog_complete=True
+        )
+        mock_client.cleanup.assert_awaited_once()
+
+    async def test_call_all_is_propagated(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        monkeypatch.setattr("sys.argv", ["mcpscore", "https://example.com/mcp", "--smoke", "--call-all"])
+        mock_client.session = MagicMock()
+        fake_run = AsyncMock(return_value=_smoke_report(SmokeVerdict.PASS))
+        monkeypatch.setattr("mcpscore.cli.run_smoke_checks", fake_run)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        fake_run.assert_awaited_once_with(
+            mock_client.session, mock_auditor.audit_data.tools, call_all=True, catalog_complete=True
+        )
+
+    async def test_without_smoke_the_phase_never_runs(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        monkeypatch.setattr("sys.argv", ["mcpscore", "https://example.com/mcp"])
+        fake_run = AsyncMock()
+        monkeypatch.setattr("mcpscore.cli.run_smoke_checks", fake_run)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        fake_run.assert_not_awaited()
+
+    async def test_modern_only_audit_reports_smoke_as_not_executed(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """A probe-only audit has no session; --smoke reports that instead of silently vanishing."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://modern.example/mcp", "--smoke", "--json"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_auditor.audit_modern_only = AsyncMock(return_value=True)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.INFO),
+        ):
+            await async_main()  # not-executed smoke has no failures: no SystemExit
+
+        report = json.loads(capsys.readouterr().out)
+        assert report["smoke"]["executed"] is False
+        assert "modern-only" in report["smoke"]["reason"]
+        assert "Smoke checks did not run" in caplog.text

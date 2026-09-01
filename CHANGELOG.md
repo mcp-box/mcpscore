@@ -29,6 +29,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Smoke mode: `--smoke` invokes your own server's tools after the audit.**
+  The audit itself still never calls `tools/call`; smoke mode is the separate,
+  opt-in surface for developers testing a server they operate (typically in
+  CI). It verifies what listing alone cannot: that a declared `outputSchema`
+  is honored by real `structuredContent` (per MCP 2025-11-25 Tools §Output
+  Schema, a MUST — an explicit empty `{}` schema still requires the field to
+  be present), that schema-invalid arguments are rejected with an `isError`
+  result or a protocol error, and that unknown tool names get a JSON-RPC
+  error rather than a result. For both rejection checks, any error code
+  counts as a rejection except a hang, a closed connection, or `-32603`
+  internal error — those are crashes, not rejections.
+  The probed unknown name is derived deterministically to be
+  provably absent from the server's own catalog; when the tool listing is
+  missing or incomplete, that check skips rather than risk invoking a real
+  tool. By default only tools annotated
+  `readOnlyHint: true` are called; `--call-all` is the explicit consent for
+  the rest — so unannotated tools visibly cost smoke coverage. Argument
+  synthesis is deterministic (defaults / const / examples / enum-first / type
+  zero-values — never an LLM) and tolerates broken schemas: malformed
+  non-string `required` entries are ignored rather than aborting the smoke
+  run. Verdicts are pass/fail/skip, and a tool whose
+  upstream is down reports as *skip*: someone else's outage should not fail
+  the build. Results land in a new `smoke` section of the `--json` report and
+  never touch `score`/`max_score`; any smoke failure exits with the new code
+  **4** (a failed `--fail-under` gate still takes precedence with 3). The
+  web service deliberately has no smoke mode — CLI (and the GitHub Action,
+  in a coming release) only.
+
 - **Modern-only stdio servers are now fully auditable.** When a local server
   rejects the legacy `initialize` handshake but answers MCP 2026-07-28
   stateless requests, mcpscore retains its resolved launch command, probes it

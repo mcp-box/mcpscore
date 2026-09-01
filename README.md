@@ -43,6 +43,7 @@ The final score is reported as `earned/maximum` — higher means a better-qualit
 - **Real handshake verification**: A connection only counts once the server completes the MCP `initialize` handshake — pointing it at a non-MCP endpoint fails cleanly
 - **Any-language**: Audits MCP servers in any language via STDIO — `.py`/`.js` files directly, everything else (Go, Java, C#, Rust, ...) via `--stdio <command>`
 - **Package audits**: `--package npm:<name>` / `pypi:<name>` scores how a server is *published* — resolves, versioned, not withdrawn, source-linked, licensed, described — from registry metadata alone. The package is never downloaded and never executed
+- **Smoke mode**: `--smoke` invokes your *own* server's tools after the audit (only `readOnlyHint: true` tools unless `--call-all`) and verifies what listing alone cannot — declared output schemas are honored, schema-invalid arguments are rejected, unknown tool names are rejected. Reported outside the score; any smoke failure exits with its own code (4) so CI can gate on it independently
 - **Severity-based reporting**: Rules categorized as CRITICAL, HIGH, MEDIUM, or LOW
 - **Library-friendly**: Fully typed (`py.typed`); use `MCPClient` + `MCPAuditor` programmatically
 
@@ -129,6 +130,12 @@ mcpscore path/to/your/server.py --json > report.json
 
 # Gate any CI on a score threshold: exit code 3 when the percentage is below it
 mcpscore https://example.com/mcp --fail-under 80
+
+# Smoke-test YOUR OWN server in CI: audits as usual, then actually calls its
+# tools — by default only those annotated readOnlyHint: true. Exit code 4 on
+# any smoke failure; smoke results never change the score.
+mcpscore path/to/your/server.py --smoke
+mcpscore path/to/your/server.py --smoke --call-all   # consent to call every tool
 ```
 
 ### Example output

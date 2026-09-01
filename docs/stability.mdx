@@ -34,7 +34,8 @@ The report's top-level shape: `schema_version`, `mcpscore_version`,
 `generated_at`, `target`, `transport`, `score`, `max_score`,
 `authenticated`, `partial`, `partial_reason`, `incomplete_listings[]`,
 `server_info`, `package`, `summary`, `results[]`, `skipped_rules[]`, `spec`,
-`readiness`.
+`readiness` — plus `smoke`, present only when the run was invoked with
+[`--smoke`](/smoke-mode).
 
 `server_info` is either `null` when server identity could not be observed, or
 an object containing the `name` and `version` reported by the server during
@@ -54,6 +55,17 @@ records that the package was read from its registry, never downloaded or run.
 For a package audit `transport` is `null` and `spec.negotiated_version` is
 `null`: a coordinate names something installable, not something running.
 
+`smoke` is **absent** unless the run was invoked with
+[`--smoke`](/smoke-mode) — consumers must not require it. When present it
+carries `executed` (false when no session was available to call tools on,
+with the explanation in `reason`), `call_all`, a `summary` of
+`passed`/`failed`/`skipped` counts, and `checks[]` — each check an object of
+`check_id`, `tool_name` (`null` for server-level checks), `verdict`
+(`pass`/`fail`/`skip`), `message`, and `details`. `check_id` values are
+stable identifiers in the same way `rule_id`s are. Smoke results are never
+counted in `score`/`max_score`, and a smoke failure is reported through exit
+code 4, not through the report's score fields.
+
 ### CLI interface
 
 - The invocation shape — `mcpscore <target>` with `--json`, `--header`,
@@ -67,7 +79,10 @@ For a package audit `transport` is `null` and `spec.negotiated_version` is
   token-exchange failure); **2** connection failure to the target server with
   no fallback available; **3** the audit completed but a `--fail-under` /
   `--fail-under-readiness` threshold was not met (a partial audit always
-  fails a `--fail-under` gate — its score cannot demonstrate the threshold).
+  fails a `--fail-under` gate — its score cannot demonstrate the threshold);
+  **4** the audit completed but an opt-in [`--smoke`](/smoke-mode) check
+  failed. When both a threshold gate and a smoke check fail in one run, 3
+  takes precedence.
   Without those flags, 0 keeps its meaning exactly.
 - `--json` writes exactly one JSON document to stdout; all logs go to
   stderr. Pipelines may rely on stdout being clean JSON.
