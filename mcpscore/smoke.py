@@ -375,6 +375,16 @@ async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reas
                 "connection closed on a schema-invalid call — a crash, not a rejection",
                 error_code=exc.code,
             )
+        if exc.code == ERROR_INTERNAL:
+            # Same stance as the unknown-tool check: an internal error means
+            # the server tried to run the call and broke, not that it
+            # rejected the arguments.
+            return result(
+                SmokeVerdict.FAIL,
+                f"answered JSON-RPC internal error {exc.code} to schema-invalid arguments — a server-side "
+                "crash, not a rejection",
+                error_code=exc.code,
+            )
         return result(SmokeVerdict.PASS, f"rejected with JSON-RPC error {exc.code}", error_code=exc.code)
     except RuntimeError:
         # The SDK's output-schema validation fired, meaning the server

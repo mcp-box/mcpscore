@@ -311,6 +311,18 @@ class TestInvalidArgumentsCheck:
         assert check.verdict is SmokeVerdict.FAIL
         assert "crash" in check.message
 
+    async def test_internal_error_fails_as_crash_not_rejection(self) -> None:
+        """Fail -32603 like the unknown-tool check does.
+
+        An internal error means the server ran the schema-invalid call and
+        broke — not that it rejected it.
+        """
+        session = FakeSession({"reader": MCPError(code=ERROR_INTERNAL, message="boom")})
+        check = await single_check(session, read_only_tool(), CHECK_INVALID_ARGUMENTS)
+        assert check.verdict is SmokeVerdict.FAIL
+        assert "crash" in check.message
+        assert check.details["error_code"] == ERROR_INTERNAL
+
     async def test_sdk_validation_error_fails_as_acceptance(self) -> None:
         # The server produced a (schema-violating) success result for invalid
         # input — the defect is the acceptance, not the content.

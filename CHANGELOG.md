@@ -37,9 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Schema, a MUST — an explicit empty `{}` schema still requires the field to
   be present), that schema-invalid arguments are rejected with an `isError`
   result or a protocol error, and that unknown tool names get a JSON-RPC
-  error rather than a result (any error code counts as a rejection except a
-  hang, a closed connection, or `-32603` internal error — those are crashes,
-  not rejections). The probed unknown name is derived deterministically to be
+  error rather than a result. For both rejection checks, any error code
+  counts as a rejection except a hang, a closed connection, or `-32603`
+  internal error — those are crashes, not rejections.
+  The probed unknown name is derived deterministically to be
   provably absent from the server's own catalog; when the tool listing is
   missing or incomplete, that check skips rather than risk invoking a real
   tool. By default only tools annotated
