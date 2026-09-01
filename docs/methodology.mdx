@@ -66,9 +66,9 @@ unobserved. A dedicated presence rule can still judge whether a complete catalog
    latest spec revision's stateless lifecycle. Probes are read-only by design:
    **an audit never invokes `tools/call` against your server**, so it can never
    trigger tool side effects. (The one deliberate exception is the CLI's opt-in
-   `--smoke` flag, which exists for developers to smoke-test their *own* server
-   in CI by actually calling its tools; smoke results are reported separately
-   and never enter the score. The web service has no such mode.)
+   [smoke mode](/smoke-mode), which exists for developers to smoke-test their
+   *own* server in CI by actually calling its tools; smoke results are reported
+   separately and never enter the score. The web service has no such mode.)
 
    Several probes are *deliberately* malformed or security-relevant, because the
    spec defines how a server must answer them. Expect an audit to send a foreign
@@ -209,10 +209,11 @@ safely from the outside is not yet possible:
   accumulation) — not observable from a server audit.
 - **Tool behavior** — the audit never calls your tools, so the *score* cannot
   judge what they do, only how they are described and typed. The CLI's opt-in
-  `--smoke` flag exists for exactly this gap on your own server: it invokes
-  tools (only `readOnlyHint: true` ones unless `--call-all`) and verifies
-  declared output schemas, invalid-argument rejection, and unknown-tool
-  rejection — reported outside the score, with its own exit code (4).
+  [smoke mode](/smoke-mode) exists for exactly this gap on your own server: it
+  invokes tools (only `readOnlyHint: true` ones unless `--call-all`) and
+  verifies declared output schemas, invalid-argument rejection, and
+  unknown-tool rejection — reported outside the score, with its own exit
+  code (4).
 
 ## Stability contract
 

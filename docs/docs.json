@@ -28,6 +28,7 @@
       {
         "group": "Use in CI",
         "pages": [
+          "smoke-mode",
           "github-action"
         ]
       },

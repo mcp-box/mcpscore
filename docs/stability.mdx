@@ -68,8 +68,9 @@ For a package audit `transport` is `null` and `spec.negotiated_version` is
   no fallback available; **3** the audit completed but a `--fail-under` /
   `--fail-under-readiness` threshold was not met (a partial audit always
   fails a `--fail-under` gate — its score cannot demonstrate the threshold);
-  **4** the audit completed but an opt-in `--smoke` check failed. When both
-  a threshold gate and a smoke check fail in one run, 3 takes precedence.
+  **4** the audit completed but an opt-in [`--smoke`](/smoke-mode) check
+  failed. When both a threshold gate and a smoke check fail in one run, 3
+  takes precedence.
   Without those flags, 0 keeps its meaning exactly.
 - `--json` writes exactly one JSON document to stdout; all logs go to
   stderr. Pipelines may rely on stdout being clean JSON.
