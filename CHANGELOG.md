@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-09-03
+
 ### Changed
 
 - **Docs rewritten for developer experience.** Every page now opens with a
@@ -14,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of interrupting it, and failures are listed as symptom, cause, fix. New
   `CLI Reference` page collects every flag, environment variable, and exit
   code in one place; the stability contract is now tables. No engine change.
+- **Toolchain pins can no longer drift.** The ruff version the pre-commit
+  hook runs is pinned equal to the one `make lint` and CI run, a test fails
+  the build when the two disagree, and the codespell hook's `tomli` is pinned
+  too. Developer tooling only; nothing ships in the package.
 
 ## [1.11.0] - 2026-09-01
 
@@ -1300,7 +1306,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.11.1...HEAD
+[1.11.1]: https://github.com/mcp-box/mcpscore/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/mcp-box/mcpscore/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/mcp-box/mcpscore/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/mcp-box/mcpscore/compare/v1.8.0...v1.9.0
