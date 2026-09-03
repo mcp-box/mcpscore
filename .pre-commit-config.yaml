@@ -23,7 +23,7 @@ repos:
     hooks:
       - id: codespell
         additional_dependencies:
-          - tomli
+          - tomli==2.4.1
 
   - repo: local
     hooks:
