@@ -1,0 +1,83 @@
+---
+title: "CLI Reference"
+description: "Every mcpscore flag, environment variable, and exit code in one place."
+icon: "terminal"
+---
+
+```bash
+mcpscore [options] <target>
+mcpscore [options] --stdio <command> [args...]
+mcpscore [options] --package <registry>:<name>[@version]
+```
+
+`target` is a local `.py` or `.js` file, or a URL. The transport is detected:
+stdio for files, Streamable HTTP first and then SSE for URLs. Servers in any
+other language run through `--stdio`.
+
+## Options
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--stdio <command...>` | — | Launch the server as a command, any language. Consumes the rest of the command line, including the server's own flags, so put every mcpscore option before it. Runs without a shell. |
+| `--env NAME=VALUE` | — | Set an environment variable for the `--stdio` server. Repeatable. The value lands in shell history and the process list, so use it for plain config only. |
+| `--env NAME` | — | Copy `NAME` from mcpscore's own environment into the server's. The form for secrets: the value never appears in the report or the process list. |
+| `--package <coordinate>` | — | Score a published package instead of a running server: `npm:@scope/name`, `npm:name@1.2.3`, `pypi:name==1.2.3`. Reads registry metadata only. See [package audits](/package-audits). |
+| `--json` | off | Write one JSON document to stdout. All logs go to stderr. Schema in the [stability contract](/stability). |
+| `--fail-under PCT` | none | Exit `3` when the main score percentage (0–100, rounded) is below `PCT`. A partial audit always fails this gate. |
+| `--fail-under-readiness PCT` | none | Exit `3` when the readiness percentage is below `PCT`. Skipped when readiness was not assessed at all. |
+| `--smoke` | off | After the audit, call the server's tools and check they behave. Only tools annotated `readOnlyHint: true` are called. Unavailable with `--package`; does not run on partial or modern-only probe audits. See [smoke mode](/smoke-mode). |
+| `--call-all` | off | With `--smoke`: call every tool, not only read-only ones. Explicit consent to trigger side effects. |
+| `--header 'Name: Value'` | — | Extra HTTP header for URL targets. Repeatable. Values are never logged or reported. |
+| `--token TOKEN` | `$MCPSCORE_TOKEN` | Shorthand for `--header 'Authorization: Bearer TOKEN'`. |
+| `--oauth` | off | Open the browser for the server's OAuth flow (authorization code + PKCE). The token lives in memory only. Needs dynamic client registration unless `--client-id` is given. |
+| `--client-id ID` | — | Pre-registered OAuth client for `--oauth`, for authorization servers without dynamic registration (GitHub's, for one). The app must allow a loopback redirect, `http://127.0.0.1:<port>/callback`. |
+| `--callback-port PORT` | any free port | Pin the loopback port for the `--oauth` redirect, for authorization servers that require the exact registered URI. |
+| `--version` | — | Print `mcpscore <version>` to stdout and exit `0`. Safe to parse. |
+
+An explicit `Authorization` header wins over `--token` and `MCPSCORE_TOKEN`.
+Only an `Authorization` credential marks the report `authenticated: true`;
+other headers are sent but make no such claim.
+
+## Environment variables
+
+| Variable | Used by | Meaning |
+|---|---|---|
+| `MCPSCORE_TOKEN` | `--token` fallback | Bearer token for auth-gated servers. The form for CI, where the value should never be on a command line. |
+
+Anything passed with `--env NAME` is read from the environment too, but that is
+your server's variable, not mcpscore's.
+
+## Exit codes
+
+| Code | Meaning | In CI |
+|---|---|---|
+| `0` | Audit completed and every gate that was set passed | Green |
+| `1` | Audit never ran: a usage error, or an `--oauth` flow that timed out, was refused, or failed registration or token exchange | Fix the invocation |
+| `2` | Could not connect to the server, or a package's registry could not be read | Fix the target or the network |
+| `3` | Audit completed but `--fail-under` or `--fail-under-readiness` was not met. A partial audit always fails `--fail-under` | The server needs work |
+| `4` | Audit completed but a `--smoke` check failed. When a threshold gate also fails, `3` wins | The tools are broken |
+
+Without gate flags, a completed audit exits `0` whatever the score.
+
+## Output
+
+Human-readable output goes to stderr. With `--json`, stdout carries exactly the
+report and nothing else, so `mcpscore ... --json > report.json` and piping into
+`jq` both work.
+
+```bash
+# Every failed rule id, one per line
+mcpscore https://mcp.deepwiki.com/mcp --json 2>/dev/null \
+  | jq -r '.results[] | select(.passed | not) | .rule_id'
+```
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Stability contract" icon="file-contract" href="/stability">
+    Which flags, fields, and exit codes are guaranteed across releases
+  </Card>
+  <Card title="Authenticated servers" icon="lock" href="/authenticated-servers">
+    The token, header, and OAuth flags in practice
+  </Card>
+</CardGroup>

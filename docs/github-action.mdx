@@ -4,39 +4,10 @@ description: "Audit your MCP server on every pull request — gate the build on 
 icon: "github"
 ---
 
-Run mcpscore in CI with the official
-[**mcpscore-action**](https://github.com/mcp-box/mcpscore-action). It audits your
-MCP server on every pull request, **fails the build** if quality drops below a
-threshold you set, and posts the report as a **pull-request comment**.
-
-```yaml
-- uses: mcp-box/mcpscore-action@v1
-  with:
-    target: https://your-server.example/mcp
-    min-score: 80
-```
-
-## Why run it in CI
-
-A local `mcpscore` check is a snapshot; CI makes quality a **standard you can't
-regress past**:
-
-- **Catch regressions before merge.** A refactor that drops a tool description or
-  breaks a schema shows up as a failing check on the PR — not in production,
-  inside someone else's agent.
-- **A visible quality bar.** The score and its trend live on the PR, so reviewers
-  and contributors see the impact of a change without running anything.
-- **Readiness tracking for the latest spec.** The action reports the separate
-  [readiness score](/methodology#the-readiness-score-separate-axis) for the
-  current 2026-07-28 MCP revision, so you know where you stand as clients
-  adopt it.
-- **Deterministic and fast.** No API keys, no LLM calls — the same server state
-  always produces the same result, in seconds.
-
-## Quick start
-
-Gate a pull request on quality. The `pull-requests: write` permission lets the
-action post its comment.
+A refactor that drops a tool description or breaks a schema should fail the
+pull request, not surface later inside someone's agent. One step does that:
+it audits the server, fails the job below your threshold, and posts the
+report as a comment that updates in place on every push.
 
 ```yaml
 name: MCP quality
@@ -46,7 +17,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write
+      pull-requests: write   # lets the action post its comment
     steps:
       - uses: mcp-box/mcpscore-action@v1
         with:
@@ -54,24 +25,18 @@ jobs:
           min-score: 80
 ```
 
-`pull-requests: write` is the permission GitHub's token uses to comment on a pull
-request — the same scope every PR-comment action uses. (The comment goes through
-the issue-comments API, but the token's `pull-requests` scope is what authorizes
-it for a PR.)
+The comment carries the score, a pass/fail breakdown by severity, the
+negotiated spec version and era, the readiness score, and a collapsible list
+of every failed check by `rule_id`, so a fix is one lookup in the
+[rules reference](/rules) away. The same report lands in the job summary,
+which needs no token at all.
 
-<Note>
-On pull requests **from a fork**, GitHub gives the workflow token read-only
-access, so the comment can't be posted. The audit and the score gate still run
-normally — only the comment is skipped. To comment on fork PRs, run the audit in
-a `pull_request_target` workflow, and review the
-[security implications](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/)
-of doing so first.
-</Note>
+## Variations
 
-### Audit a local server from the repo
+### A server that lives in the repo
 
-For a server that lives in the repository, check out the code and point `target`
-at the entry file:
+Check out the code and point `target` at the entry file. Its runtime must be
+on the runner, so set up Python or Node first when the runner image lacks it.
 
 ```yaml
 - uses: actions/checkout@v4
@@ -81,11 +46,10 @@ at the entry file:
     min-score: 85
 ```
 
-### Audit an auth-gated server
+### An auth-gated server
 
-Store the credential as an Actions secret and export it as `MCPSCORE_TOKEN` —
-the CLI picks it up automatically and the value never appears in logs or in
-the report:
+Store the credential as an Actions secret and export it as `MCPSCORE_TOKEN`.
+The CLI reads it, and the value never reaches the log or the report.
 
 ```yaml
 - uses: mcp-box/mcpscore-action@v1
@@ -96,8 +60,7 @@ the report:
     MCPSCORE_TOKEN: ${{ secrets.MCPSCORE_TOKEN }}
 ```
 
-For API-key servers, pass a header through `args` instead — see
-[Authenticated Servers](/authenticated-servers) for all the flavors:
+API-key servers pass a header through `args`:
 
 ```yaml
 - uses: mcp-box/mcpscore-action@v1
@@ -107,31 +70,27 @@ For API-key servers, pass a header through `args` instead — see
 ```
 
 <Note>
-Without a credential, an auth-gated server gets a **partial audit** of its
-observable surface (auth posture, TLS, transport). Partial scores cover fewer
-checks and are not comparable to full-audit scores — calibrate `min-score`
-against whichever kind of audit the workflow actually runs.
+Without a credential an auth-gated server gets a partial audit, and
+`min-score` is judged on that partial score, which covers only the auth, TLS,
+and transport surface. Pass a credential before trusting the gate. See
+[authenticated servers](/authenticated-servers).
 </Note>
 
-### Also require readiness for the 2026-07-28 spec
+### Also require readiness for the next spec
 
 ```yaml
 - uses: mcp-box/mcpscore-action@v1
   with:
     target: https://your-server.example/mcp
     min-score: 85
-    min-readiness: 50   # fail if less than 50% ready for MCP 2026-07-28
+    min-readiness: 50   # fail below 50% ready for MCP 2026-07-28
 ```
 
-<Note>
-The readiness gate only applies when the server was actually assessed for
-readiness. HTTP and stdio servers are both probed; if the modern lifecycle could
-not be observed at all, `min-readiness` is skipped rather than failing the build.
-</Note>
+The readiness gate applies only when readiness was assessed. If the modern
+lifecycle could not be observed at all, the gate is skipped rather than
+failing the build.
 
-### Use the outputs in later steps
-
-Every number is exposed as a step output:
+### Use the numbers in later steps
 
 ```yaml
 - id: mcp
@@ -141,64 +100,87 @@ Every number is exposed as a step output:
 - run: echo "Scored ${{ steps.mcp.outputs.percentage }}% (era ${{ steps.mcp.outputs.era }})"
 ```
 
-## What you get on the PR
+### Pin everything
 
-The action posts one comment and updates it in place on every re-run — no
-comment spam. It contains the overall score, a pass/fail breakdown by severity,
-the negotiated spec version and era, the separate readiness score, and a
-collapsible list of every failed check by `rule_id` (so a fix is one lookup in
-the [rules reference](/rules) away). The same report is written to the run's job
-summary.
-
-## Inputs
-
-| Input | Default | Description |
-|---|---|---|
-| `target` | — (required) | MCP server URL, or a local `.py` / `.js` path |
-| `version` | latest | mcpscore version to run (e.g. `1.9.0`) |
-| `min-score` | none | Fail if the main score percentage (0–100) is below this |
-| `min-readiness` | none | Fail if the readiness percentage (0–100) is below this |
-| `comment` | `true` | Post / update the report comment on the pull request |
-| `args` | — | Extra arguments passed to the mcpscore CLI |
-| `report-path` | `mcpscore-report.json` | Where the JSON report is written |
-| `github-token` | `github.token` | Token for the PR comment (needs `pull-requests: write`) |
-
-## Outputs
-
-| Output | Description |
-|---|---|
-| `score` / `max-score` / `percentage` | Main score |
-| `readiness-score` / `readiness-max` / `readiness-percentage` | Readiness score for the latest spec revision |
-| `era` | `legacy`, `modern`, or `dual-era` |
-| `negotiated-version` | Spec version the server negotiated |
-
-## Pinning the version
-
-`@v1` follows the latest v1 release, so you get fixes automatically. For fully
-reproducible runs, pin the action to a commit SHA and pin `version` to a specific
-mcpscore release:
+`@v1` follows the latest v1 release. For reproducible runs, pin the action to
+a commit and `version` to an mcpscore release:
 
 ```yaml
 - uses: mcp-box/mcpscore-action@<commit-sha>  # v1.x.y
   with:
     target: https://your-server.example/mcp
-    version: "1.9.0"
+    version: "1.11.0"
     min-score: 80
 ```
 
-## See also
+## Inputs
+
+| Input | Default | What it does |
+|---|---|---|
+| `target` | required | Server URL, or a local `.py` or `.js` path |
+| `min-score` | no gate | Fail the job when the main score percentage (0–100) is below this |
+| `min-readiness` | no gate | Fail the job when the readiness percentage (0–100) is below this. Skipped when readiness was not assessed |
+| `comment` | `true` | Post or update the report comment on the pull request |
+| `args` | — | Extra arguments passed to the mcpscore CLI, for example `--header` |
+| `version` | latest | mcpscore release to run, for example `1.11.0` |
+| `report-path` | `mcpscore-report.json` | Where the JSON report is written |
+| `github-token` | `github.token` | Token for the comment. Needs `pull-requests: write` |
+
+## Outputs
+
+| Output | Meaning |
+|---|---|
+| `score`, `max-score`, `percentage` | Main score: points earned, points available, integer percentage |
+| `readiness-score`, `readiness-max`, `readiness-percentage` | The same three for the readiness axis |
+| `era` | `legacy`, `modern`, or `dual-era` |
+| `negotiated-version` | Spec revision the server negotiated |
+
+## When it fails
+
+**The job fails with `::error::score 70/91 (77%) is below the required 80%`**
+
+- Cause: the server scored under the threshold. This is the action doing its
+  job.
+- Fix: open the comment or job summary, take the failed `rule_id`s to the
+  [rules reference](/rules), and fix the server.
+
+**The job passes but no comment appears on the PR**
+
+- Cause: the workflow token is read-only. GitHub does this on pull requests
+  from forks, and it happens when the job lacks `permissions: pull-requests: write`.
+  Commenting is best-effort and never fails the gate.
+- Fix: add the permission. For fork PRs, the report is still in the job
+  summary. Commenting on fork PRs needs a `pull_request_target` workflow, and
+  its [security implications](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/)
+  deserve a read first.
+
+**The job passes, but the comment says the audit was partial**
+
+- Cause: the server needs a credential and the workflow passed none, so
+  `min-score` was judged on the observable surface only. A clean auth
+  posture scores high on a handful of checks.
+- Fix: export `MCPSCORE_TOKEN` from a secret, as above, so the gate judges the
+  full audit.
+
+**A local target fails with `Server script not found`**
+
+- Cause: no `actions/checkout` step, or the path is relative to the wrong
+  directory.
+- Fix: check out the repo first and use a path relative to its root.
+
+## What's next
 
 <CardGroup cols={2}>
-  <Card title="Scoring Methodology" icon="scale-balanced" href="/methodology">
-    How the score works, and why the readiness axis is separate
+  <Card title="Smoke mode" icon="vial" href="/smoke-mode">
+    Actually call your server's tools from the CLI, and what `args: --smoke` does here today
   </Card>
-  <Card title="Rules Reference" icon="list-check" href="/rules">
-    Every rule the action can flag, by `rule_id`
+  <Card title="Score badge" icon="shield-check" href="/badge">
+    A README badge that follows the score your CI produces
   </Card>
-  <Card title="Action source" icon="github" href="https://github.com/mcp-box/mcpscore-action">
+  <Card title="Scoring methodology" icon="scale-balanced" href="/methodology">
+    What the threshold measures, and why readiness is a separate axis
+  </Card>
+  <Card title="Action source" icon="code" href="https://github.com/mcp-box/mcpscore-action">
     mcp-box/mcpscore-action on GitHub
-  </Card>
-  <Card title="mcpscore CLI" icon="terminal" href="/">
-    Run the same audit locally
   </Card>
 </CardGroup>

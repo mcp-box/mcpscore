@@ -4,132 +4,129 @@ description: "What mcpscore promises to keep stable across releases — and what
 icon: "file-contract"
 ---
 
-From the first stable release (1.1.0), mcpscore commits to a stability
-contract so CI integrations and report consumers can depend on it. This page
-is that contract.
+Build on `rule_id`, the report schema, the CLI shape, and the exit codes.
+Those change only with a major version. Do not build on messages, rule names,
+or the absolute score. Those move in minor releases, on purpose. This page is
+the contract, in force since 1.1.0.
 
-## Stable — breaking changes only with a major version
+## Stable
 
 ### Rule identifiers
 
-Every check has a `rule_id` (e.g. `tools_description_present_in_all`). A
-`rule_id` is **never renamed and never reused** for a different check. Rules
-may be *added* in any release; a rule may be *retired* (stops running) but
-its identifier is never given a new meaning.
-
-Integrations should key on `rule_id` — not on rule names, messages, or
-positions, which may be reworded or reordered in any release.
+A `rule_id` such as `tools_description_present_in_all` is never renamed and
+never reused for a different check. Rules are added in any release. A rule can
+be retired and stop running, but its identifier keeps its meaning forever.
+The [rules reference](/rules) lists retired ones too.
 
 ### Report schema
 
-The `--json` report carries `schema_version` (currently `1`). Within a
-schema version:
+The `--json` report carries `schema_version`, currently `1`. Within a schema
+version, existing fields keep their names, types, and meanings. New fields
+appear in any release, so consumers must ignore unknown fields. A removal or
+type change bumps `schema_version`.
 
-- Existing fields keep their names, types, and meanings.
-- New fields **may be added** in any release — consumers must ignore
-  unknown fields.
-- Field removals or type changes bump `schema_version`.
+| Field | Type | Meaning |
+|---|---|---|
+| `schema_version` | int | Report schema version |
+| `mcpscore_version` | string | Engine that produced the report. Store it next to any score you keep |
+| `generated_at` | string | ISO 8601 timestamp, UTC |
+| `target` | string | What was audited, as given on the command line |
+| `transport` | string or null | `stdio`, `streamable-http`, or `sse`. `null` for a package audit |
+| `score`, `max_score` | int | Points earned and available on the main axis |
+| `authenticated` | bool | An `Authorization` credential was sent. Never the credential itself |
+| `partial` | bool | Only the observable surface of an auth-gated server was scored |
+| `partial_reason` | string or null | Why the audit was partial |
+| `incomplete_listings` | array | Catalogs whose paginated listing could not be fully collected |
+| `server_info` | object or null | `name` and `version` the server reported. `null` when identity was never observed |
+| `package` | object or null | Present only for a package audit. See below |
+| `summary` | object | `total`, `passed`, `failed`, `skipped`, and `by_severity` counts |
+| `results[]` | array | One entry per rule that ran: `rule_id`, `rule_name`, `severity`, `severity_value`, `passed`, `message`, `details` |
+| `skipped_rules[]` | array | One entry per rule that did not run: `rule_id`, `rule_name`, `reason`, `group_name` |
+| `spec` | object | `negotiated_version`, `latest_version`, `readiness_target`, `era` |
+| `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus `assessed`, `skipped`, `total` coverage counts |
+| `smoke` | object | Present only when the run used `--smoke`. See below |
 
-The report's top-level shape: `schema_version`, `mcpscore_version`,
-`generated_at`, `target`, `transport`, `score`, `max_score`,
-`authenticated`, `partial`, `partial_reason`, `incomplete_listings[]`,
-`server_info`, `package`, `summary`, `results[]`, `skipped_rules[]`, `spec`,
-`readiness` — plus `smoke`, present only when the run was invoked with
-[`--smoke`](/smoke-mode).
+### Package audits
 
-`server_info` is either `null` when server identity could not be observed, or
-an object containing the `name` and `version` reported by the server during
-initialization or modern discovery. Baseline consumers can use it to distinguish
-a server release change from an mcpscore engine release change.
+`package` is `null` for every server audit. When it is an object, the report
+is a package audit and its score comes from the packaging rules alone, a rule
+set disjoint from server audits. Anything that compares or aggregates scores
+must branch on this field.
 
-`package` is `null` for every server audit. It is an object only for a package
-audit (`mcpscore --package <coordinate>`), and **its presence is the marker that
-this report's score is not comparable to a server report's**: a package audit
-runs the packaging rules and nothing else, so `score`/`max_score` come from a
-different, disjoint rule set. Consumers that compare or aggregate scores must
-branch on it. The object carries `registry`, `identifier`, `requested_version`,
-`resolved_version`, `outcome`, `error`, `repository_url`, `license`,
-`published_at`, `withdrawn`, and `executed` — the last is always `false` and
-records that the package was read from its registry, never downloaded or run.
+| Field | Meaning |
+|---|---|
+| `registry`, `identifier` | `npm` or `pypi`, and the package name |
+| `requested_version`, `resolved_version` | The pin you gave, and what the registry resolved it to |
+| `outcome`, `error` | Whether the registry read succeeded, and why not |
+| `repository_url`, `license`, `published_at`, `withdrawn` | The metadata the rules judged |
+| `executed` | Always `false`. The package was read, never downloaded or run |
 
-For a package audit `transport` is `null` and `spec.negotiated_version` is
-`null`: a coordinate names something installable, not something running.
+For a package audit `transport` and `spec.negotiated_version` are both `null`.
 
-`smoke` is **absent** unless the run was invoked with
-[`--smoke`](/smoke-mode) — consumers must not require it. When present it
-carries `executed` (false when no session was available to call tools on,
-with the explanation in `reason`), `call_all`, a `summary` of
-`passed`/`failed`/`skipped` counts, and `checks[]` — each check an object of
-`check_id`, `tool_name` (`null` for server-level checks), `verdict`
-(`pass`/`fail`/`skip`), `message`, and `details`. `check_id` values are
-stable identifiers in the same way `rule_id`s are. Smoke results are never
-counted in `score`/`max_score`, and a smoke failure is reported through exit
-code 4, not through the report's score fields.
+### Smoke results
+
+`smoke` is absent unless the run used [`--smoke`](/smoke-mode). Consumers
+must not require it. Smoke results are never counted in `score` or
+`max_score`, and a smoke failure is reported through exit code `4`, not
+through the report's score fields.
+
+| Field | Meaning |
+|---|---|
+| `executed` | `false` when no session existed to call tools on, with the explanation in `reason` |
+| `call_all` | Whether `--call-all` was given |
+| `summary` | `passed`, `failed`, `skipped` counts |
+| `checks[]` | `check_id`, `tool_name` (`null` for server-level checks), `verdict` (`pass`, `fail`, `skip`), `message`, `details` |
+
+`check_id` values are stable in the same way `rule_id`s are.
 
 ### CLI interface
 
-- The invocation shape — `mcpscore <target>` with `--json`, `--header`,
-  `--token` (and the `MCPSCORE_TOKEN` environment variable) — is stable.
-  New flags may be added; existing flags keep their meaning.
-- `mcpscore --version` prints `mcpscore <version>` on stdout and exits 0,
-  with no other output and without needing a target. Scripts may parse it.
-- Exit codes are a contract: **0** audit completed (regardless of score,
-  unless a `--fail-under` gate is set); **1** the audit was never attempted —
-  a usage error or a failed `--oauth` flow (timeout, refusal, registration or
-  token-exchange failure); **2** connection failure to the target server with
-  no fallback available; **3** the audit completed but a `--fail-under` /
-  `--fail-under-readiness` threshold was not met (a partial audit always
-  fails a `--fail-under` gate — its score cannot demonstrate the threshold);
-  **4** the audit completed but an opt-in [`--smoke`](/smoke-mode) check
-  failed. When both a threshold gate and a smoke check fail in one run, 3
-  takes precedence.
-  Without those flags, 0 keeps its meaning exactly.
-- `--json` writes exactly one JSON document to stdout; all logs go to
-  stderr. Pipelines may rely on stdout being clean JSON.
+The invocation shape is stable: `mcpscore <target>` with `--json`, `--header`,
+`--token`, and the `MCPSCORE_TOKEN` variable. New flags are added; existing
+flags keep their meaning. `mcpscore --version` prints `mcpscore <version>` to
+stdout, exits `0`, and needs no target. `--json` writes exactly one JSON
+document to stdout with all logs on stderr.
 
-### Credential handling
+| Exit code | Meaning |
+|---|---|
+| `0` | Audit completed. With no gate flags, this regardless of score |
+| `1` | Audit never attempted: usage error, or `--oauth` failed (timeout, refusal, registration or token-exchange failure) |
+| `2` | Could not connect to the target, with no fallback available |
+| `3` | Audit completed but `--fail-under` or `--fail-under-readiness` was not met. A partial audit always fails `--fail-under` |
+| `4` | Audit completed but a `--smoke` check failed. When a threshold also fails, `3` is returned |
 
-Header and token values are never logged and never written to the report —
-only the boolean `authenticated` flag is recorded. This is a permanent
+### Credentials
+
+Header and token values are never logged and never written to the report. The
+report records only the boolean `authenticated`. This is a permanent
 commitment, not a default.
 
-## Evolving by design — expect movement between releases
+## Evolving by design
 
-### The score
+| What | How it moves | What to do |
+|---|---|---|
+| `score` and `max_score` | Rules are added in most releases, so both numbers change. A score is comparable only within one mcpscore version against one server | Store `mcpscore_version` with every score. Compare across versions by `rule_id`, not by total |
+| `partial: true` | Fewer checks ran | Never compare with a full audit |
+| `readiness.counted_in_main: true` | A modern-lifecycle server's readiness points are inside the main score | A `min-score` threshold means something slightly different on either side of this flag |
+| `message`, `details`, `rule_name`, severities, category groupings | Improved in any release | Show them to humans. Never key logic on them |
+| Readiness rules | Target the newest revision, currently 2026-07-28. As adoption matures they migrate into the main axis and new ones appear for the next draft | Their `rule_id`s still follow the never-reused rule |
 
-**The score is ruleset-dependent and the ruleset grows.** `score` and
-`max_score` are severity-weighted sums over the rules that ran: adding
-rules (most releases) changes both, so **a score is comparable only
-within the same mcpscore version against the same server**. Track
-`mcpscore_version` alongside any score you store. We would rather grow
-the checks than freeze the number early; a calibrated scoring frame is
-planned to revisit this once the ruleset stabilizes.
-
-Two flags qualify a score further:
-
-- `partial: true` — only the observable surface of an auth-gated server
-  was scored; not comparable to a full audit.
-- `readiness.counted_in_main: true` — a modern-lifecycle server's
-  readiness points are included in the main score (see
-  [methodology](/methodology)); a CI `min-score` threshold means something
-  slightly different on either side of this flag.
-
-### Messages, details, and rule metadata
-
-Human-readable `message` strings, `details` contents (including the
-`basis` citations), severities, and category groupings may be improved in
-any release. They are for humans and for context — not for keying logic.
-
-### Readiness rules
-
-Readiness rules target the *newest* spec revision — currently 2026-07-28 —
-so the readiness rule set turns over at each revision: as adoption matures,
-readiness rules migrate into the main axis and new ones appear for the next
-draft. Their `rule_id`s still follow the never-reused rule.
+We would rather grow the checks than freeze the number early. A calibrated
+scoring frame will revisit this once the ruleset settles.
 
 ## Versioning
 
-mcpscore follows [SemVer](https://semver.org/): breaking changes to
-anything in the "Stable" section require a major version; rule additions
-and score movement are minor-version territory; pre-releases (`bN`) may
-change anything and exact-pin their dependencies.
+mcpscore follows [SemVer](https://semver.org/). Breaking anything in the
+Stable section needs a major version. Rule additions and score movement are
+minor-version territory. Pre-releases (`bN`) can change anything.
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="CLI reference" icon="terminal" href="/cli">
+    Every flag and exit code, with defaults
+  </Card>
+  <Card title="Scoring methodology" icon="scale-balanced" href="/methodology">
+    Why the score is ruleset-dependent, and what that means for your CI gate
+  </Card>
+</CardGroup>

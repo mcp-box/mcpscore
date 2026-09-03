@@ -4,67 +4,64 @@ description: "Embed a live mcpscore badge in your README — it updates automati
 icon: "shield-check"
 ---
 
-Every server audited on [mcpscore.dev](https://mcpscore.dev) gets a stable
-badge URL, keyed by the server's URL — not by any single audit. Embed it once
-and it always shows the **latest completed score**:
-
-```
-https://mcpscore.dev/api/v1/servers/badge.svg?url=<url-encoded server URL>
-```
-
-## Embed it
-
-The report page on mcpscore.dev has a copy-paste block with these prefilled
-for your server; the shape is:
+Every server audited on [mcpscore.dev](https://mcpscore.dev) gets a badge URL
+keyed by the server's URL, not by any single audit. Embed it once and it shows
+the latest completed score from then on.
 
 <CodeGroup>
 
 ```markdown Markdown
-[![mcpscore score](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp)](https://mcpscore.dev/audits/<audit-id>)
+[![mcpscore score](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp)](https://mcpscore.dev/s?url=https%3A%2F%2Fyour-server.example%2Fmcp)
 ```
 
 ```html HTML
-<a href="https://mcpscore.dev/audits/<audit-id>">
+<a href="https://mcpscore.dev/s?url=https%3A%2F%2Fyour-server.example%2Fmcp">
   <img src="https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp" alt="mcpscore score" />
 </a>
 ```
 
 </CodeGroup>
 
+Both URLs carry your server's address, URL-encoded. The report page on
+mcpscore.dev has this snippet prefilled. Copy it from there.
+
 ## How it stays fresh
 
-- The badge **image** always reflects the **newest completed audit** for the
-  exact server URL in the query string. Re-audit the server (on mcpscore.dev
-  or via CI) and every README embed updates on its own — no new snippet
-  needed.
-- The **click-through link** is different: it points at the specific audit
-  report you copied the snippet from, and stays pinned to it. Re-copy the
-  snippet from a newer report when you want the link to lead somewhere
-  fresher — the image keeps itself current either way.
-- It's served with a short cache (~5 minutes), so a fresh score shows up
-  quickly.
-- A server that has never been audited gets a neutral **"no data"** badge —
-  the embed never breaks.
+The image and the link are both keyed by the server URL in the query string,
+never by a single audit. Re-audit the server on mcpscore.dev or from CI and
+every README embed shows the new score on its own. The link always opens the
+server's latest report.
 
-<Note>
-The `url` parameter must match the audited server URL exactly (URL-encoded).
-`https://example.com/mcp` and `https://example.com/mcp/other` are different
-servers as far as the badge is concerned.
-</Note>
+The image is cached for 5 minutes, so a new score shows up within that. A
+server that has never been audited gets a neutral "no data" badge, so the
+embed never breaks.
 
-## Safe to embed
+Requesting the badge never triggers an audit. It is a read-only lookup, so a
+high-traffic README costs your server nothing.
 
-Requesting the badge **never triggers an audit** — it's a read-only lookup of
-the latest score, so embedding it in a high-traffic README costs your server
-nothing.
+## When it looks wrong
 
-## See also
+**The badge says "no data" but you audited the server**
+
+- Cause: the `url` parameter does not match the audited URL exactly.
+  `https://example.com/mcp` and `https://example.com/mcp/other` are
+  different servers to the badge.
+- Fix: copy the snippet from the report page, which URL-encodes the exact
+  address.
+
+**The badge shows an old score**
+
+- Cause: the 5-minute cache, or the newer audit ran against a different URL.
+- Fix: wait, then check the URL in the query string against the audit you
+  expect.
+
+## What's next
 
 <CardGroup cols={2}>
   <Card title="GitHub Action" icon="github" href="/github-action">
-    Re-audit on every pull request, so the badge tracks your main branch
+    Re-audit on every pull request so the badge tracks your main branch
   </Card>
-  <Card title="Scoring Methodology" icon="scale-balanced" href="/methodology">
-    What the number on the badge actually measures
+  <Card title="Scoring methodology" icon="scale-balanced" href="/methodology">
+    What the number on the badge measures
   </Card>
 </CardGroup>

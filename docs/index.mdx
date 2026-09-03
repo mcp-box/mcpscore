@@ -4,132 +4,125 @@ description: "Lighthouse for MCP — audit any MCP server and get a scored, acti
 icon: "gauge-high"
 ---
 
-MCP servers that violate the spec fail silently in the worst place: inside someone
-else's AI agent. A missing tool description, an outdated protocol version, or an
-unencrypted endpoint won't crash your server — it will just make agents pick the wrong
-tool, drop your server from their registry, or leak traffic. mcpscore catches these
-issues before your users do — point it at any
-[Model Context Protocol](https://modelcontextprotocol.io) server:
+MCP servers that break the spec fail in the worst place: silently, inside
+someone else's agent. A missing tool description, a stale protocol version, or
+an unencrypted endpoint never crashes your server. It makes agents pick the
+wrong tool, drop you from their registry, or leak traffic. mcpscore finds that
+in seconds, with no API key and no sign-up.
 
 <CodeGroup>
 
 ```bash uvx (no install)
-uvx mcpscore https://your-server.example/mcp
+uvx mcpscore https://mcp.deepwiki.com/mcp
 ```
 
 ```bash npx (no install)
-npx @mcp-box/mcpscore https://your-server.example/mcp
+npx @mcp-box/mcpscore https://mcp.deepwiki.com/mcp
 ```
 
 ```bash uv
 uv tool install mcpscore
-mcpscore https://your-server.example/mcp
+mcpscore https://mcp.deepwiki.com/mcp
 ```
 
 ```bash pip
 pip install mcpscore
-mcpscore https://your-server.example/mcp
+mcpscore https://mcp.deepwiki.com/mcp
 ```
 
 </CodeGroup>
 
-## What you get
-
-- **A severity-weighted score** across the same categories the report and
-  [mcpscore.dev](https://mcpscore.dev) show — Protocol, Primitives (tools,
-  prompts, resources, resource templates, pagination), and Security & Auth —
-  deterministic, no API keys, CI-ready.
-- **A readiness score for the latest spec revision** (2026-07-28, stateless
-  lifecycle) — reported on its own axis. For legacy servers it informs without
-  punishing; servers already on the modern lifecycle have these points counted
-  in the main score (see [promotion](/methodology#the-readiness-score-separate-axis)).
-- **Actionable messages** — every failed check says what to fix, and every rule is
-  anchored to the spec (see the [methodology](/methodology)).
-
-## Quick start
-
-```bash
-# Local servers (stdio, including modern-only stateless servers)
-mcpscore path/to/server.py
-mcpscore path/to/server.js
-
-# Local servers in any language: --stdio runs an arbitrary command
-# (it consumes the rest of the line, so put mcpscore options first)
-mcpscore --stdio ./my-go-server
-mcpscore --stdio java -jar server.jar
-
-# Server env vars: NAME=VALUE inline for plain config; for secrets use
-# the value-less form, which copies from mcpscore's own environment so
-# the value never touches a command line or the report
-mcpscore --env LOG_LEVEL=debug --stdio dotnet run --project ./server
-API_KEY=... mcpscore --env API_KEY --stdio ./my-go-server
-
-# Remote servers (Streamable HTTP / SSE, auto-detected —
-# including modern-only servers on the 2026 stateless lifecycle)
-mcpscore https://example.com/mcp
-
-# Machine-readable report for CI
-mcpscore https://example.com/mcp --json > report.json
-
-# Gate any CI on a threshold: exit code 3 when the score percentage is below it
-mcpscore https://example.com/mcp --fail-under 80
-
-# Auth-gated servers: pass a token to audit behind the gate
-mcpscore https://example.com/mcp --token "$MY_TOKEN"
-mcpscore https://example.com/mcp --header "Authorization: Bearer $MY_TOKEN"
-
-# Published packages: score the npm/PyPI listing without running it
-mcpscore --package npm:@your-scope/your-server
-mcpscore --package pypi:your-server
-```
-
-## Auditing auth-gated servers
-
-Many production MCP servers require OAuth 2.x. With a credential
-(`--token`, `--header`, or the browser `--oauth` flow), mcpscore audits behind
-the gate like any client; without one, the server still gets a **partial
-audit** of its observable surface — auth posture, TLS, and transport — marked
-`partial` and not comparable to a full audit. Credential values are never
-logged or written to the report. The
-[Authenticated Servers guide](/authenticated-servers) walks through every
-flavor, including a worked example against GitHub's Copilot MCP server.
-
-Example output tail (a full audit):
-
-```
+```text
+Welcome to mcpscore!
+Successfully connected to MCP server via Streamable HTTP: https://mcp.deepwiki.com/mcp
+Transport: streamable-http
+Starting the audit...
+✅ Protocol version '2025-11-25' is one of the allowed versions
+❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28', and no stateless-lifecycle support was observed
+✅ Server name is present: 'DeepWiki'
+❌ Server title is not present in server info
+✅ Declares the tools capability and serves 3 via tools/list
+✅ Server uses HTTPS with valid TLS (TLSv1.3)
+...
 Audit finished. Final score: 78/91
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
 Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 21 checks assessed)
 ```
 
-## Learn more
+Every ❌ is one thing to fix. Every rule cites the spec section it enforces,
+and the same server always gets the same score.
+
+## Reading the result
+
+- **`78/91`** is points earned over points available. Each rule has a weight
+  by severity (CRITICAL 5, HIGH 3, MEDIUM 2, LOW 1). Rules that cannot apply to
+  your server are skipped and leave the maximum, never failed.
+- **`era: legacy`** says which MCP lifecycle the server speaks. Servers are
+  scored against the spec revision they negotiated, never against one they
+  don't speak yet.
+- **Readiness** is a second axis: how ready the server is for the 2026-07-28
+  revision. For a legacy server it is guidance. For a server already on the
+  new stateless lifecycle those points count in the main score.
+
+The [methodology](/methodology) explains each of these in full.
+
+## Your own server
+
+<CodeGroup>
+
+```bash Python or Node
+mcpscore path/to/server.py
+mcpscore path/to/server.js
+```
+
+```bash Any language
+# --stdio runs a command and consumes the rest of the line,
+# so put every mcpscore option before it
+mcpscore --stdio ./my-go-server
+mcpscore --stdio java -jar server.jar
+```
+
+```bash Behind auth
+mcpscore https://your-server.example/mcp --token "$TOKEN"
+mcpscore https://your-server.example/mcp --oauth
+```
+
+</CodeGroup>
+
+Local servers need their own runtime on `PATH`. Secrets go in with
+`--env NAME` (copied from your environment, never written to the report), not
+on the command line. Every flag is in the [CLI reference](/cli).
+
+## Put it in CI
+
+```bash
+# Fail the build below 80%, and write the report for later steps
+mcpscore https://your-server.example/mcp --fail-under 80 --json > report.json
+```
+
+Exit code `3` means the gate failed. `1` means the audit never ran, `2` means
+it could not connect, `0` means it passed. The
+[GitHub Action](/github-action) turns this into one step with a PR comment.
+
+## What's next
 
 <CardGroup cols={2}>
-  <Card title="Scoring Methodology" icon="scale-balanced" href="/methodology">
-    How the score works, and why you can trust it
+  <Card title="Authenticated servers" icon="lock" href="/authenticated-servers">
+    Bring a token, run the browser OAuth flow, or score the observable surface
   </Card>
-  <Card title="Rules Reference" icon="list-check" href="/rules">
-    Every rule, its severity, and when it applies
-  </Card>
-  <Card title="Authenticated Servers" icon="lock" href="/authenticated-servers">
-    Audit behind OAuth and API keys — or score the observable surface
-  </Card>
-  <Card title="Smoke Mode" icon="vial" href="/smoke-mode">
-    Verify after every change that your server still works — its tools actually run
+  <Card title="Smoke mode" icon="vial" href="/smoke-mode">
+    After every change, actually call your server's tools and check they behave
   </Card>
   <Card title="GitHub Action" icon="github" href="/github-action">
-    Gate pull requests on quality, with a report comment
+    Gate pull requests on quality, with the report as a comment
   </Card>
-  <Card title="Score Badge" icon="shield-check" href="/badge">
-    A live badge for your README that tracks your latest score
+  <Card title="Score badge" icon="shield-check" href="/badge">
+    A README badge that tracks your latest score
   </Card>
-  <Card title="Package Audits" icon="box" href="/package-audits">
-    Score a published npm or PyPI package without running it
+  <Card title="Package audits" icon="box" href="/package-audits">
+    Score an npm or PyPI listing without running it
   </Card>
-  <Card title="Source" icon="code" href="https://github.com/mcp-box/mcpscore">
-    mcp-box/mcpscore — issues and contributing
-  </Card>
-  <Card title="PyPI" icon="python" href="https://pypi.org/project/mcpscore/">
-    uv tool install mcpscore · pip install mcpscore
+  <Card title="Rules reference" icon="list-check" href="/rules">
+    Every rule, its weight, and the spec section behind it
   </Card>
 </CardGroup>
