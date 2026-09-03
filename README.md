@@ -8,242 +8,227 @@
 
 **Lighthouse for MCP.** Audit any MCP (Model Context Protocol) server and get a scored, actionable report in seconds.
 
-Point mcpscore at a server — from the CLI, a GitHub Action, or [mcpscore.dev](https://mcpscore.dev) — and it grades protocol conformance, tool quality, security and auth posture, and readiness for the 2026-07-28 spec revision, then tells you exactly what to fix. Deterministic, no API key, no sign-up.
-
-## Why mcpscore?
-
-MCP servers that violate the spec fail silently in the worst place: inside someone else's AI agent. A missing tool description, an outdated protocol version, or an unencrypted endpoint won't crash your server — it will just make agents pick the wrong tool, drop your server from their registry, or leak traffic. mcpscore catches these issues in seconds, before your users do.
-
-```bash
-pip install mcpscore
-mcpscore https://your-server.example/mcp
-```
-
-**Documentation**: [docs.mcpscore.dev](https://docs.mcpscore.dev) — including the full
-[scoring methodology](https://docs.mcpscore.dev/methodology/) and
-[rules reference](https://docs.mcpscore.dev/rules/).
-
-## How scoring works
-
-Every rule has a severity, and each passing rule contributes its weight to the score:
-
-| Severity | Points | Meaning                                                                          |
-|----------|--------|----------------------------------------------------------------------------------|
-| CRITICAL | 5      | Spec violations that break interoperability (protocol version, server name, TLS) |
-| HIGH     | 3      | Strong spec expectations (server version, valid tool schemas)                    |
-| MEDIUM   | 2      | Recommendations that improve agent UX (titles, descriptions, error hygiene)      |
-| LOW      | 1      | Nice-to-haves (capability extras, transport recommendations)                     |
-
-The final score is reported as `earned/maximum` — higher means a better-quality server.
-
-## Features
-
-- **Multiple transports**: STDIO (local servers), Streamable HTTP, and SSE (remote servers)
-- **Auto-detection**: Picks the right transport automatically — tries Streamable HTTP first, falls back to SSE for URLs
-- **Real handshake verification**: A connection only counts once the server completes the MCP `initialize` handshake — pointing it at a non-MCP endpoint fails cleanly
-- **Any-language**: Audits MCP servers in any language via STDIO — `.py`/`.js` files directly, everything else (Go, Java, C#, Rust, ...) via `--stdio <command>`
-- **Package audits**: `--package npm:<name>` / `pypi:<name>` scores how a server is *published* — resolves, versioned, not withdrawn, source-linked, licensed, described — from registry metadata alone. The package is never downloaded and never executed
-- **Smoke mode**: `--smoke` invokes your *own* server's tools after the audit (only `readOnlyHint: true` tools unless `--call-all`) and verifies what listing alone cannot — declared output schemas are honored, schema-invalid arguments are rejected, unknown tool names are rejected. Reported outside the score; any smoke failure exits with its own code (4) so CI can gate on it independently
-- **Severity-based reporting**: Rules categorized as CRITICAL, HIGH, MEDIUM, or LOW
-- **Library-friendly**: Fully typed (`py.typed`); use `MCPClient` + `MCPAuditor` programmatically
-
-## What it scores
-
-105 active rules in total: 99 server rules across the same four categories the report,
-the JSON output, and [mcpscore.dev](https://mcpscore.dev) show, plus six separate
-packaging rules. Every rule cites the spec section or RFC it enforces; the full list is
-in the [rules reference](https://docs.mcpscore.dev/rules/).
-
-**Protocol** (17 rules) — protocol version (allowed, latest, not deprecated,
-`supportedVersions` covering the negotiated legacy version on dual-era servers), server
-name, title and version, advertised capabilities, and transport. Streamable HTTP is the
-current standard, so SSE-only servers get migration advice.
-
-**Primitives** (50 rules) — tool names (presence, uniqueness, format), titles,
-descriptions of tools and their input properties, and JSON Schema validity of input and
-output schemas, including the 2026-07-28 `x-mcp-header` constraints — plus the
-equivalent catalog checks for prompts, resources, and resource templates: valid and
-unique URIs/URI templates, MIME types,
-annotations, and argument declarations, collected across the complete paginated
-listings. These decide whether an agent picks the right tool and calls it correctly.
-
-**Security & Auth** (11 rules) — HTTPS/TLS with the actually negotiated version,
-certificate validity, and error responses checked for data leaks. For auth-gated servers,
-the OAuth posture too: the `WWW-Authenticate` challenge, RFC 9728 protected-resource
-metadata, the RFC 8414 authorization-server chain, and whether PKCE (S256) is enforced.
-A gated server is scored on this surface without credentials — see
-[auditing authenticated servers](https://docs.mcpscore.dev/authenticated-servers/).
-
-**Readiness** (21 rules) — how ready the server is for the 2026-07-28 MCP spec revision,
-reported on its own axis. For servers already speaking the new lifecycle those points
-also count toward the main score; for everyone else the axis stays informative.
-
-Package audits (`--package`) run six **Packaging** rules instead — a separate rule set
-with its own denominator, never mixed into a server score: a package audit says how well
-a server is published, not whether it speaks MCP.
-
-## Requirements
-
-- Python 3.11+
-- The server's own runtime on `PATH` when auditing a local server: Node.js for
-  `.js` targets, a Python interpreter for `.py` targets, and for `--stdio`
-  whatever the command names (a JRE for `java -jar`, the .NET SDK for
-  `dotnet run`, nothing extra for a compiled Go/Rust binary)
-
-## Installation
+MCP servers that break the spec fail in the worst place: silently, inside someone
+else's agent. A missing tool description, a stale protocol version, or an
+unencrypted endpoint never crashes your server. It makes agents pick the wrong
+tool, drop you from their registry, or leak traffic. mcpscore finds that before
+your users do. Deterministic, no API key, no sign-up.
 
 ```bash
 pip install mcpscore
+mcpscore https://mcp.deepwiki.com/mcp
 ```
 
-Or with [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv tool install mcpscore
+```text
+Welcome to mcpscore!
+Successfully connected to MCP server via Streamable HTTP: https://mcp.deepwiki.com/mcp
+Transport: streamable-http
+Starting the audit...
+✅ Protocol version '2025-11-25' is one of the allowed versions
+❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28', and no stateless-lifecycle support was observed
+✅ Server name is present: 'DeepWiki'
+❌ Server title is not present in server info
+✅ Declares the tools capability and serves 3 via tools/list
+✅ Server uses HTTPS with valid TLS (TLSv1.3)
+...
+Audit finished. Final score: 78/91
+Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
+Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 21 checks assessed)
 ```
 
-## Quick start
+Every ❌ is one thing to fix, and every result cites the spec section or best
+practice it enforces.
+Full docs: [docs.mcpscore.dev](https://docs.mcpscore.dev).
 
-Run `mcpscore` against any MCP server — local script or remote URL. The transport is detected automatically.
+## Audit any server, in any language
 
 ```bash
-# Local Python MCP server (STDIO)
-mcpscore path/to/your/server.py
+# A local Python or Node server — the transport is detected automatically
+mcpscore path/to/server.py
+mcpscore path/to/server.js
 
-# Local Node.js MCP server (STDIO)
-mcpscore path/to/your/server.js
-
-# Local server in any language — --stdio runs an arbitrary command
-# (put mcpscore options before it; it consumes the rest of the line)
+# Any other language: --stdio runs a command and consumes the rest of the line,
+# so put every mcpscore option before it
 mcpscore --stdio ./my-go-server
 mcpscore --stdio java -jar server.jar
 
-# Server env: --env NAME=VALUE for plain config; value-less --env NAME
-# copies from your environment — use that form for secrets
+# Pass config to the server with --env; for secrets use the value-less form,
+# which copies from your environment and keeps the value out of the report
 API_KEY=... mcpscore --env API_KEY --stdio ./my-go-server
 
-# Remote MCP server (auto-detects Streamable HTTP or SSE)
-mcpscore https://example.com/mcp
+# A remote server (Streamable HTTP or SSE, detected automatically)
+mcpscore https://your-server.example/mcp
 
-# Machine-readable report for CI pipelines and tooling
-mcpscore path/to/your/server.py --json > report.json
-
-# Gate any CI on a score threshold: exit code 3 when the percentage is below it
-mcpscore https://example.com/mcp --fail-under 80
-
-# Smoke-test YOUR OWN server in CI: audits as usual, then actually calls its
-# tools — by default only those annotated readOnlyHint: true. Exit code 4 on
-# any smoke failure; smoke results never change the score.
-mcpscore path/to/your/server.py --smoke
-mcpscore path/to/your/server.py --smoke --call-all   # consent to call every tool
+# Behind OAuth or an API key: bring a token, or let --oauth open the browser
+mcpscore https://your-server.example/mcp --token "$TOKEN"
+mcpscore https://your-server.example/mcp --oauth
 ```
 
-### Example output
+No install at all: `uvx mcpscore <target>` or `npx @mcp-box/mcpscore <target>`.
+Guides: [authenticated servers](https://docs.mcpscore.dev/authenticated-servers),
+[CLI reference](https://docs.mcpscore.dev/cli).
 
-```
-Welcome to mcpscore!
-Connected to the MCP server: /path/to/server.py
-Transport: stdio
-Starting the audit...
-✅ Protocol version '2025-11-25' is one of the allowed versions
-✅ Protocol version '2025-11-25' is not deprecated
-❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28', and no stateless-lifecycle support was observed
-✅ Server name is present: 'weather'
-✅ Server version is present: '1.17.0'
-❌ Server title is not present in server info
-✅ Declares the tools capability and serves 3 via tools/list
-❌ listChanged is not supported by Tools
-✅ Declares the prompts capability and serves 1 via prompts/list
-❌ listChanged is not supported by Prompts
-✅ Declares the resources capability and serves 2 via resources/list
-❌ listChanged is not supported by Resources
-✅ MCP Server provides at least one tool
-✅ All Tools have a Name property specified
-✅ All Tools have a Title property specified
-✅ All Tools have a Description property specified
-✅ All Tools have a valid Input Schema
-✅ All Tools have a valid Output Schema
-Audit finished. Final score: 55/71
+## Use it in CI
+
+```bash
+# Machine-readable report on stdout; logs go to stderr
+mcpscore https://your-server.example/mcp --json > report.json
+
+# Fail the build when the score drops below 80%
+mcpscore https://your-server.example/mcp --fail-under 80
+
+# After the audit, actually call your own server's tools and check they behave
+mcpscore path/to/server.py --smoke
 ```
 
-### JSON output
+| Exit code | Meaning                                                      |
+|-----------|--------------------------------------------------------------|
+| `0`       | Audit completed and every gate passed                        |
+| `1`       | Audit never ran: usage error or a failed `--oauth` flow      |
+| `2`       | Could not connect to the server                              |
+| `3`       | `--fail-under` or `--fail-under-readiness` threshold not met |
+| `4`       | A `--smoke` check failed (`3` wins when both fail)           |
 
-With `--json`, a machine-readable report is written to stdout (all log
-output goes to stderr, so the JSON can be piped or redirected cleanly):
+The [GitHub Action](https://docs.mcpscore.dev/github-action) wraps this into
+one step that gates the pull request and posts the report as a comment.
+[Smoke mode](https://docs.mcpscore.dev/smoke-mode) explains what `--smoke`
+calls and why it never changes the score.
+
+## What the score measures
+
+Each rule has a severity and a weight. Passing rules add their weight, and the
+score is reported as `earned/maximum`. Rules that cannot apply to your server
+are skipped and excluded from the maximum, never failed.
+
+| Severity | Weight | Example                                      |
+|----------|--------|----------------------------------------------|
+| CRITICAL | 5      | Protocol version, server name, TLS           |
+| HIGH     | 3      | Server version, valid tool schemas           |
+| MEDIUM   | 2      | Titles, descriptions, error hygiene          |
+| LOW      | 1      | Capability extras, transport recommendations |
+
+105 rules run today, in four categories:
+
+- **Protocol** (17 rules): protocol version, server name, title and version,
+  advertised capabilities, transport. SSE-only servers get migration advice.
+- **Primitives** (50 rules): tools, prompts, resources, and resource templates.
+  Names, titles, descriptions, JSON Schema validity, URIs, MIME types,
+  annotations, and pagination behavior. These decide whether an agent picks
+  the right tool and calls it correctly.
+- **Security & Auth** (11 rules): TLS version and certificate, error responses
+  that leak data, and for auth-gated servers the OAuth posture: the
+  `WWW-Authenticate` challenge, RFC 9728 resource metadata, the RFC 8414
+  authorization-server chain, and PKCE enforcement.
+- **Readiness** (21 rules): how ready the server is for the 2026-07-28 spec
+  revision, on its own axis. Servers already on the new stateless lifecycle
+  get these points counted in the main score. Legacy servers see them as
+  guidance.
+
+Six separate **Packaging** rules score a published npm or PyPI listing with
+`--package npm:name` or `--package pypi:name`. The package is read from the
+registry and never downloaded or run, and its score has its own denominator.
+
+How it all fits together: [scoring methodology](https://docs.mcpscore.dev/methodology).
+Every rule with its weight and the spec revisions it applies to: [rules reference](https://docs.mcpscore.dev/rules).
+
+## JSON report
+
+`--json` writes one JSON document to stdout. `rule_id` values are stable across
+releases and are the key to build tooling on. Names and messages can be reworded.
 
 ```json
 {
   "schema_version": 1,
-  "mcpscore_version": "0.7.0",
-  "generated_at": "2026-06-10T10:42:22+00:00",
-  "target": "/path/to/server.py",
-  "transport": "stdio",
-  "score": 73,
-  "max_score": 89,
-  "summary": {
-    "total": 26,
-    "passed": 20,
-    "failed": 6,
-    "by_severity": {
-      "CRITICAL": { "total": 9, "passed": 9, "failed": 0 },
-      "HIGH": { "total": 11, "passed": 7, "failed": 4 },
-      "MEDIUM": { "total": 5, "passed": 3, "failed": 2 },
-      "LOW": { "total": 1, "passed": 1, "failed": 0 }
-    }
-  },
+  "mcpscore_version": "1.11.0",
+  "target": "https://mcp.deepwiki.com/mcp",
+  "transport": "streamable-http",
+  "score": 78,
+  "max_score": 91,
+  "partial": false,
+  "spec": { "negotiated_version": "2025-11-25", "latest_version": "2026-07-28", "era": "legacy" },
   "results": [
     {
       "rule_id": "protocol_version_allowed",
-      "rule_name": "MCP Protocol Version - Allowed Versions",
       "severity": "CRITICAL",
       "severity_value": 5,
       "passed": true,
       "message": "✅ Protocol version '2025-11-25' is one of the allowed versions",
-      "details": { "version": "2025-11-25" }
+      "details": {
+        "basis": "MCP 2025-11-25 Lifecycle §Version Negotiation (server MUST respond with a version it supports)"
+      }
     }
   ]
 }
 ```
 
-`rule_id` values are stable identifiers intended for machine consumers
-(snapshots, dashboards); display names and messages may change between
-releases.
+What is stable and what moves between releases:
+[stability contract](https://docs.mcpscore.dev/stability).
 
 ## Score badge
 
-Every server audited on [mcpscore.dev](https://mcpscore.dev) gets a stable badge URL,
-keyed by the server's URL rather than by any single audit — embed it once and it always
-shows the latest completed score:
+Every server audited on [mcpscore.dev](https://mcpscore.dev) gets a badge URL
+keyed by the server URL, and a report link keyed the same way. Embed it once
+and it shows the latest score forever.
 
 ```markdown
-[![mcpscore score](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp)](https://mcpscore.dev/audits/<audit-id>)
+[![mcpscore score](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp)](https://mcpscore.dev/s?url=https%3A%2F%2Fyour-server.example%2Fmcp)
 ```
 
-The report page on mcpscore.dev has a copy-paste block with these prefilled for your
-server. Full details, including the HTML form and how freshness works, are in the
-[badge docs](https://docs.mcpscore.dev/badge/).
+The report page on mcpscore.dev has this snippet prefilled for your server.
+Details: [score badge](https://docs.mcpscore.dev/badge).
 
-## Troubleshooting
+## When it fails
 
-**Connection fails**
+**`Error connecting to the MCP server: https://...`** (exit `2`)
 
-- Check the path or URL is correct and reachable
-- For local servers, make sure the runtime is on `PATH` (Python/Node.js for `.py`/`.js` targets; whatever `--stdio` names for other languages)
-- "Not a valid MCP server (handshake failed)" means the endpoint responded but did not complete the MCP `initialize` handshake — verify the URL points at an actual MCP endpoint (often `/mcp`)
+- Cause: the URL answered, but not as an MCP endpoint. The log above it shows
+  the legacy handshake failing and the modern-only probe finding nothing.
+- Fix: point at the MCP endpoint itself, usually ending in `/mcp`.
 
-**Protocol version errors**
+**`Server script not found: ./server.py`** (exit `2`)
 
-- Confirm your server uses a currently supported MCP protocol version
-- If your server uses a newer version that mcpscore doesn't yet recognize, please [open an issue](https://github.com/mcp-box/mcpscore/issues)
+- Cause: the path does not exist relative to where you ran the command.
+- Fix: check the path. For non-Python, non-Node servers use `--stdio <command>`.
+
+**A local server starts and then the audit hangs or exits `2`**
+
+- Cause: the server's runtime is not on `PATH`, or it needs an environment
+  variable it did not get.
+- Fix: run the command yourself first. Pass config with `--env NAME=VALUE`,
+  secrets with `--env NAME`.
+
+**`PARTIAL score: 24/27 from 10 of 78 checks`**
+
+- Cause: the server answered 401 and you passed no credential, so only the
+  auth, TLS, and transport surface was scored.
+- Fix: pass `--token`, `--header`, or `--oauth`. See
+  [authenticated servers](https://docs.mcpscore.dev/authenticated-servers).
+
+**A rule flags a protocol version mcpscore does not recognize**
+
+- Cause: your server is newer than the installed mcpscore.
+- Fix: upgrade, and if it persists,
+  [open an issue](https://github.com/mcp-box/mcpscore/issues) with the version.
+
+## Requirements
+
+- Python 3.11 or newer.
+- For local servers, the server's own runtime on `PATH`: Node.js for `.js`
+  targets, Python for `.py` targets, and whatever `--stdio` names for the rest.
+
+## Use as a library
+
+The package is fully typed (`py.typed`). `MCPClient` connects and collects,
+`MCPAuditor` runs the rules and builds the same report the CLI prints.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and how to add audit rules. Why this project exists: [MISSION.md](MISSION.md). Security reports: [SECURITY.md](SECURITY.md). Release history: [CHANGELOG.md](CHANGELOG.md).
-
-## Feedback
-
-Bug reports, feature requests, and general feedback are welcome at <https://github.com/mcp-box/mcpscore/issues>.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the development setup and how to add
+a rule. [MISSION.md](MISSION.md) says why the project exists.
+[SECURITY.md](SECURITY.md) is for security reports. [CHANGELOG.md](CHANGELOG.md)
+lists every release. Bugs and ideas go to
+[GitHub issues](https://github.com/mcp-box/mcpscore/issues).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

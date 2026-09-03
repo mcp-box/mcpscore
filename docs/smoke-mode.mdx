@@ -9,7 +9,7 @@ still work? Not "does it compile": does an agent connecting right now get the
 tools you think you ship, with schemas that match what the handlers actually
 return, and sane errors when a call goes wrong? Every change can quietly
 break that contract, and nothing in a typical build pipeline notices —
-teams end up hand-rolling a bespoke MCP test client just to check their own
+teams end up hand-rolling a bespoke MCP test client to check their own
 server still responds.
 
 Smoke mode makes that check one command. `--smoke` runs the normal audit,
@@ -26,6 +26,19 @@ mcpscore https://your-server.example/mcp --smoke --token $TOKEN
 
 # Explicit consent to call every tool, not only read-only ones
 mcpscore path/to/your/server.py --smoke --call-all
+```
+
+```text
+Running smoke checks — invoking tools/call, as requested with --smoke...
+
+Audit finished. Final score: 131/155
+Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
+
+Smoke checks (tools/call): 0 passed, 1 failed, 2 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
+  skip smoke_structured_content [add]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
+  skip smoke_invalid_arguments [add]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
+  FAIL smoke_unknown_tool: reported a tool execution error (isError) for a nonexistent tool — the spec's unknown-tool example is a protocol error, and an isError result claims the tool exists and ran
+Gate failed — --smoke: 1 smoke check(s) failed
 ```
 
 One run answers three questions: *does it connect and speak MCP well?* (the
@@ -130,21 +143,23 @@ reason, instead of silently vanishing.
 
 ## What smoke mode is not
 
-- **Not available on [mcpscore.dev](https://mcpscore.dev)** — invoking tools
-  on arbitrary third-party URLs from our infrastructure is what the security
-  posture forbids. Smoke mode is CLI-only (GitHub Action support is
-  planned).
+- **Not available on [mcpscore.dev](https://mcpscore.dev)**, because
+  invoking tools on third-party URLs from our infrastructure is what the
+  security posture forbids. Smoke mode is CLI-only. In the
+  [GitHub Action](/github-action), `--smoke` in `args` fails the job on a
+  smoke failure but drops the report and comment, since the action treats
+  any non-zero exit as a failed audit. A native input is on the way.
 - **Not a replacement for your test suite.** It proves the MCP contract —
   honest schemas, proper rejections, tools that answer — not your business
   logic.
 - **Not part of the score**, ever. A perfectly passing smoke run adds zero
   points; a failing one subtracts none.
 
-## See also
+## What's next
 
 <CardGroup cols={2}>
   <Card title="GitHub Action" icon="github" href="/github-action">
-    Gate PRs on the score today; smoke input coming
+    Gate PRs on the score; native smoke support is on the way
   </Card>
   <Card title="Stability Contract" icon="file-contract" href="/stability">
     Exit codes and the `smoke` report section

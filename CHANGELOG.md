@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs rewritten for developer experience.** Every page now opens with a
+  working command and its real output, options follow the happy path instead
+  of interrupting it, and failures are listed as symptom, cause, fix. New
+  `CLI Reference` page collects every flag, environment variable, and exit
+  code in one place; the stability contract is now tables. No engine change.
+
 ## [1.11.0] - 2026-09-01
 
 ### Fixed

@@ -4,54 +4,88 @@ description: "Score how well an MCP server is published on npm or PyPI — resol
 icon: "box"
 ---
 
-Before anyone runs your server, they find it on a package registry — and a
-listing that doesn't resolve, hides its license, or links no source loses the
-user before the first `npx`. `mcpscore --package` audits that surface:
+Before anyone runs your server, they find it on a registry. A listing that
+doesn't resolve, hides its license, or links no source loses them before the
+first `npx`. `--package` scores that listing from registry metadata alone.
 
 ```bash
+# Latest release on npm
 mcpscore --package npm:@modelcontextprotocol/server-everything
-mcpscore --package pypi:mcp-server-fetch
 
-# Pin a version to audit a specific release
-mcpscore --package npm:@your-scope/your-server@1.2.3
+# A specific release on PyPI
+mcpscore --package pypi:mcp-server-fetch==2025.4.7
 
-# Machine-readable, same as server audits
+# Same JSON report shape as a server audit
 mcpscore --package pypi:your-server --json > report.json
 ```
 
-## What it checks — and what it deliberately doesn't
+```text
+📦 Auditing package npm:@modelcontextprotocol/server-everything
+Resolved version: 2026.8.31
+✅ Package '@modelcontextprotocol/server-everything' is published on npm
+✅ No version pinned; the registry's latest is '2026.8.31'
+✅ Release '2026.8.31' is not withdrawn
+✅ Source repository declared: https://github.com/modelcontextprotocol/servers
+✅ License declared: SEE LICENSE IN LICENSE
+✅ Description present: 'MCP server that exercises all the features of the MCP protocol'
 
-A package audit reads the package's **registry metadata only**. The package is
-**never downloaded and never executed** — the report's `package.executed`
-field records that, permanently `false`. The six packaging rules check that
-the coordinate resolves, the pinned version exists, the release isn't
-withdrawn/yanked, and that a source repository, license, and description are
-declared — see the [packaging rules](/rules#packaging-rules) for severities.
-
-A package audit answers *"is this server well **published**?"* — not *"does
-it speak MCP?"*. For the second question, run the server itself:
-
-```bash
-# Any-language local servers, via the package's own runner
-mcpscore --stdio npx -y @your-scope/your-server
-mcpscore --stdio uvx your-server
+Audit finished. Final score: 16/16
+Packaging audit of npm:@modelcontextprotocol/server-everything — metadata only, the package was not downloaded or run.
 ```
 
-## Scores are not comparable to server scores
+The package is never downloaded and never executed, so no install hook runs.
+The report's `package.executed` field records that and is always `false`.
 
-Package audits run **only** the packaging rules, and server audits run none
-of them — the two rule sets are disjoint, so their `score`/`max_score` share
-no denominator. In the JSON report, a non-null `package` object is the marker
-that a report is a package audit; consumers that aggregate scores must branch
-on it (see the [stability contract](/stability#report-schema)).
+## What it checks
 
-## See also
+The six packaging rules, in the order the output prints them: the coordinate
+resolves on its registry, the pinned version exists, the release is not
+withdrawn or yanked, and a source repository, a license, and a description are
+declared. Weights and severities are in the
+[rules reference](/rules#packaging-rules).
+
+## Two questions, two scores
+
+A package audit answers *is this server well published?* A server audit
+answers *does it speak MCP?* The two rule sets are disjoint, so their scores
+share no denominator and are never comparable. In the JSON report a non-null
+`package` object is the marker that a report is a package audit. Anything that
+aggregates scores must branch on it.
+
+To answer the second question, run the package through its own runner:
+
+```bash
+mcpscore --stdio npx -y @modelcontextprotocol/server-everything
+mcpscore --stdio uvx mcp-server-fetch
+```
+
+## When it fails
+
+**`❌ No package '@scope/name' published on npm`, then `Final score: 0/5`**
+
+- Cause: the name does not exist on that registry, so the other five rules
+  have nothing to read and skip.
+- Fix: check the coordinate. Scoped npm packages keep their `@`:
+  `npm:@scope/name`. PyPI pins use `==`: `pypi:name==1.2.3`.
+
+**`Could not read npm metadata: ...`** (exit `2`)
+
+- Cause: the registry itself was unreachable.
+- Fix: retry once the network is back. Nothing about the package is scored
+  until the registry answers.
+
+**`Package - Pinned version resolves` fails**
+
+- Cause: the version you pinned was never published, or was removed.
+- Fix: drop the pin to audit the latest release, or pin one that exists.
+
+## What's next
 
 <CardGroup cols={2}>
-  <Card title="Rules Reference" icon="list-check" href="/rules#packaging-rules">
-    The six packaging rules and their severities
+  <Card title="Rules reference" icon="list-check" href="/rules#packaging-rules">
+    The six packaging rules and their weights
   </Card>
-  <Card title="Stability Contract" icon="file-contract" href="/stability">
+  <Card title="Stability contract" icon="file-contract" href="/stability#package-audits">
     The `package` report block, field by field
   </Card>
 </CardGroup>

@@ -26,10 +26,14 @@ regenerated from the rule registry on every change (`make docs-rules`), so the
 tables below always match the code.
 
 - **Rule ID** is the stable machine contract used in JSON reports and CI.
-- **Weight** is the severity's contribution to the score when the rule passes.
-- **Applies to** is the spec-version range; outside it the rule is skipped and
-  excluded from the maximum score (see the
-  [methodology](/methodology#multi-spec-version-scoring)).
+- **Severity** carries its weight in parentheses: the points the rule adds to
+  the score when it passes.
+- **Applies to** is the range of spec revisions the rule judges, by the
+  revision your server negotiated. "2025-11-25 and later" means the
+  requirement was introduced in that revision; "up to" means a later revision
+  removed it. Outside the range the rule is skipped and excluded from the
+  maximum score (see the
+  [methodology](/methodology#scoring-across-spec-revisions)).
 
 """
 
@@ -61,9 +65,12 @@ score whether it speaks MCP.
 def _applies_to(rule: BaseRule) -> str:
     if rule.min_spec_version is None and rule.max_spec_version is None:
         return "all versions"
-    low = rule.min_spec_version or "…"
-    high = rule.max_spec_version or "…"
-    return f"{low} – {high}"
+    low, high = rule.min_spec_version, rule.max_spec_version
+    if high is None:
+        return f"{low} and later"
+    if low is None:
+        return f"up to {high}"
+    return f"{low} to {high}"
 
 
 RETIRED_HEADER = """\
@@ -106,11 +113,11 @@ def generate() -> str:
             lines.append(PACKAGING_HEADER)
         else:
             lines.append(f"## {group_name.replace('_', ' ').title()}\n\n")
-        lines.append("| Rule ID | Name | Severity | Weight | Applies to |\n")
-        lines.append("|---|---|---|---|---|\n")
+        lines.append("| Rule ID | Name | Severity | Applies to |\n")
+        lines.append("|---|---|---|---|\n")
         lines.extend(
-            f"| `{rule.rule_id}` | {rule.rule_name} | {rule.severity.name} "
-            f"| {int(rule.severity)} | {_applies_to(rule)} |\n"
+            f"| `{rule.rule_id}` | {rule.rule_name} | {rule.severity.name} ({int(rule.severity)}) "
+            f"| {_applies_to(rule)} |\n"
             for rule in rules
         )
         lines.append("\n")

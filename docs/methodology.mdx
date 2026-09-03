@@ -4,137 +4,145 @@ description: "Exactly how the mcpscore score is computed, what is and is not che
 icon: "scale-balanced"
 ---
 
-mcpscore's value rests on its score being **trustworthy**. This page explains exactly
-how the score is computed, what is and is not checked, and why — so you can verify
-every claim yourself, dispute a rule you disagree with, or propose a new one.
+A score you cannot check is a score you cannot trust. This page is the whole
+method: how the number is computed, what runs against your server, what is
+deliberately left out, and how to dispute a rule. Every claim here is one you
+can verify from the JSON report and the spec.
 
-## Principles
+## Four principles
 
-1. **Deterministic.** No LLM judging, no API keys, no sampling. The same server state
-   always produces the same score, in seconds. This makes mcpscore usable as a CI gate
-   and its results reproducible by anyone.
-2. **Spec-anchored.** Every rule enforces something the
-   [MCP specification](https://modelcontextprotocol.io/specification) or its published
-   best practices actually says. Readiness rules cite the SEP (Specification
-   Enhancement Proposal) they enforce, and the citation is included in every result.
-3. **Fair across spec versions.** MCP is a versioned protocol; servers on different
-   revisions are scored against the revision *they* negotiated, never punished for a
-   spec they don't speak yet (see [Multi-spec-version scoring](#multi-spec-version-scoring)).
-4. **Honest about limits.** Anything mcpscore cannot verify from the outside is
-   [documented as untested](#what-mcpscore-deliberately-does-not-test), not silently
-   skipped.
+| Principle | What it means for you |
+|---|---|
+| **Deterministic** | No LLM judging, no API keys, no sampling. The same server state always produces the same score, in seconds, so the score works as a CI gate |
+| **Spec-anchored** | Every rule enforces something the [MCP specification](https://modelcontextprotocol.io/specification) or its published best practices say, and the citation ships in every result: `details.basis` for most rules, `details.sep` for readiness rules |
+| **Fair across revisions** | Servers are scored against the revision they negotiated, never punished for a spec they don't speak yet |
+| **Honest about limits** | Anything mcpscore cannot verify from the outside is [listed as untested](#what-mcpscore-does-not-test), not silently skipped |
 
 ## The score
 
-Every rule has a severity, and each **passing** rule contributes its weight to the
-score. The final score is reported as `earned/maximum`.
+Each rule has a severity. A passing rule adds its weight. The score is
+`earned/maximum`.
 
 | Severity | Weight | Meaning |
-|----------|--------|---------|
-| CRITICAL | 5 | Spec violations that break interoperability (protocol version, server name, TLS) |
-| HIGH     | 3 | Strong spec expectations (server version, valid tool schemas) |
-| MEDIUM   | 2 | Recommendations that improve agent UX (titles, descriptions, error hygiene) |
-| LOW      | 1 | Nice-to-haves (capability extras, transport recommendations) |
+|---|---|---|
+| CRITICAL | 5 | Spec violations that break interoperability: protocol version, server name, TLS |
+| HIGH | 3 | Strong spec expectations: server version, valid tool schemas |
+| MEDIUM | 2 | Recommendations that improve agent UX: titles, descriptions, error hygiene |
+| LOW | 1 | Nice-to-haves: capability extras, transport recommendations |
 
-Only **applicable** rules count toward the maximum: a rule that cannot meaningfully
-run against your server is *skipped* and excluded from both the earned and the maximum
-score — never failed. Every skip appears in the JSON report (`skipped_rules`) with one
-of three reasons:
+Only applicable rules count toward the maximum. A rule that cannot
+meaningfully run is skipped and excluded from both numbers, never failed.
+Every skip appears in the report's `skipped_rules` with one of three reasons:
 
-| Skip reason | Meaning |
+| Skip reason | When |
 |---|---|
-| `not-applicable` | The rule has no subject for this audit: its requirement does not exist for the negotiated version or transport, or an optional catalog has no items to judge |
-| `insufficient-data` | The observations the rule needs are unavailable (e.g. a probe errored) — the rule can neither pass nor fail |
-| `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support — the gateway rules already carry that verdict; repeating it per detail would pile on noise |
+| `not-applicable` | The rule has no subject: its requirement does not exist for the negotiated version or transport, or an optional catalog has no items to judge |
+| `insufficient-data` | The observations the rule needs are unavailable, for example a probe errored. The rule can neither pass nor fail |
+| `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support. The gateway rules already carry that verdict |
 
-For example, a successfully fetched empty tools, prompts, resources, or resource-template
-catalog gives per-item quality rules nothing to assess, so those rules contribute 0/0.
-If a declared catalog could not be fetched, or an incomplete listing returned no
-items, the same rules use `insufficient-data` because an item may exist but remain
-unobserved. A dedicated presence rule can still judge whether a complete catalog is empty.
+An empty tools catalog that was fetched successfully gives the per-tool rules
+nothing to assess, so they contribute `0/0` as `not-applicable`. A declared
+catalog that could not be fetched uses `insufficient-data` instead, because an
+item may exist unobserved. A separate presence rule still judges whether a
+complete catalog is empty.
 
 ## How an audit runs
 
-1. **Connect** — stdio (local servers in any language: `.py`/`.js` files directly, or an arbitrary command via `--stdio`), Streamable HTTP, or SSE, with
-   automatic transport detection. mcpscore first attempts the legacy MCP
-   handshake; if that lifecycle is absent, stateless probes can establish that
-   the target is a modern-only server instead of treating it as unreachable.
-2. **Collect** — protocol version, server info, capabilities, tools, resources,
-   prompts, TLS details.
-3. **Probe** — a set of sessionless requests observing
-   behavior outside the negotiated session, e.g. whether the server also speaks the
-   latest spec revision's stateless lifecycle. Probes are read-only by design:
-   **an audit never invokes `tools/call` against your server**, so it can never
-   trigger tool side effects. (The one deliberate exception is the CLI's opt-in
-   [smoke mode](/smoke-mode), which exists for developers to smoke-test their
-   *own* server in CI by actually calling its tools; smoke results are reported
-   separately and never enter the score. The web service has no such mode.)
+<Steps>
+  <Step title="Connect">
+    Stdio for local servers, Streamable HTTP or SSE for URLs, detected
+    automatically. mcpscore tries the legacy `initialize` handshake first. If
+    that lifecycle is absent, stateless probes establish whether the target is
+    a modern-only server rather than an unreachable one.
+  </Step>
+  <Step title="Collect">
+    Protocol version, server info, capabilities, and the complete paginated
+    listings of tools, prompts, resources, and resource templates, plus TLS
+    details for HTTPS targets.
+  </Step>
+  <Step title="Probe">
+    Sessionless requests that observe behavior the spec defines outside the
+    negotiated session. Probes read state and nothing more. **An audit never
+    invokes `tools/call`.** The one opt-in exception is the CLI's
+    [smoke mode](/smoke-mode), for your own server, reported outside the score.
+  </Step>
+  <Step title="Evaluate">
+    Every registered rule runs against the collected data and probe
+    observations. The [rules reference](/rules) lists them all.
+  </Step>
+</Steps>
 
-   Several probes are *deliberately* malformed or security-relevant, because the
-   spec defines how a server must answer them. Expect an audit to send a foreign
-   `Origin` header, a request for an unknown RPC method, an unsupported protocol
-   version, a bogus session ID, a request for a nonexistent resource, fabricated
-   pagination cursors for declared list capabilities, and one truncated JSON
-   body. These can look like probing in a WAF or access log; they read state and
-   nothing more. Each one exists to check documented normative behavior — for
-   example, the spec requires HTTP 403 for an invalid `Origin`, HTTP 404 with
-   JSON-RPC `-32601` for an unknown method, recommends JSON-RPC `-32602` for an
-   invalid cursor, and JSON-RPC requires malformed JSON to produce `-32700` with
-   a null ID.
+### What the probes send
 
-   The modern lifecycle is stateless, so JSON-RPC behaviors that can be expressed
-   through the SDK are probed over stdio too. A successful suite launches two
-   short-lived sibling processes through the MCP SDK's stdio transport and sends
-   no `initialize` handshake: one runs the probe suite, while the other provides
-   an independent connection for catalog-stability comparisons. If the gateway
-   probes establish no modern support, the suite stops after the first process.
-   The truncated-JSON
-   probe currently runs only over HTTP because the SDK path cannot inject malformed
-   wire input safely; stdio therefore reports insufficient evidence for that rule.
-   Questions that only exist in HTTP—such as `Origin`, headers, status codes,
-   sessions, and auth metadata—are recorded as not applicable for stdio rather
-   than failed.
+Several probes are deliberately malformed, because the spec says how a server
+must answer them. They can look like scanning in a WAF log. Each one checks
+documented normative behavior:
 
-   Invalid-cursor probes use the established initialized SDK session when one is
-   available. This matters for legacy and dual-era servers, where a sessionless
-   request may be rejected before its cursor can be judged. Modern-only servers,
-   which have no legacy SDK session, are assessed through the stateless probe path.
-   For modern servers, mcpscore also follows declared paginated list surfaces to
-   compare the actual wire-level `cacheScope` across pages. This traversal is
-   read-only, bounded to 100 pages per surface and 30 seconds in total, and skips
-   when no list returns multiple complete pages.
-4. **Evaluate** — every registered rule runs against the collected data and probe
-   observations. See the [Rules Reference](/rules) for the full list.
+| Probe | What the spec requires |
+|---|---|
+| A foreign `Origin` header | HTTP 403 |
+| An unknown RPC method | HTTP 404 with JSON-RPC `-32601` |
+| An unsupported protocol version | Rejection naming the supported versions |
+| A bogus session ID | Rejection, not a fresh session |
+| A request for a nonexistent resource | The standard `-32602` |
+| A fabricated pagination cursor on each declared list | JSON-RPC `-32602` (recommended) |
+| One truncated JSON body | JSON-RPC `-32700` with a null ID |
 
-## Multi-spec-version scoring
+A few probe details matter when reading a report:
 
-MCP publishes dated spec revisions (`2024-11-05` … `2026-07-28`, the current
-revision, published final on 2026-07-28), and the 2026 revision replaces the
-stateful `initialize` lifecycle with a stateless one. The spec itself describes servers as **Legacy**
-(stateful), **Modern** (stateless), or **Dual-era** (both). mcpscore treats the spec
-version as a *property of your server that it detects*, not a mode of the tool:
+- **Stdio gets the same JSON-RPC probes.** The modern lifecycle is stateless,
+  so behaviors expressible through the SDK are probed over stdio too, using
+  two short-lived sibling processes and no `initialize` handshake. The
+  truncated-JSON probe runs only over HTTP, because the SDK path cannot
+  inject malformed wire input safely, so stdio reports `insufficient-data`
+  for that rule. HTTP-only questions such as `Origin`, headers, status codes,
+  sessions, and auth metadata are `not-applicable` for stdio, never failed.
+- **Invalid-cursor probes use the initialized session** when one exists.
+  Legacy and dual-era servers may reject a sessionless request before the
+  cursor can be judged. Modern-only servers are assessed through the
+  stateless path.
+- **Pagination traversal is bounded.** For modern servers, mcpscore follows
+  declared paginated lists to compare `cacheScope` across pages. It is
+  read-only, capped at 100 pages per surface and 30 seconds in total, and
+  skips when no list returns multiple complete pages.
 
-- Your server is **scored against the spec revision it negotiated**. Rules declare the
-  version range they apply to; outside it they are skipped, keeping scores comparable
-  across servers on different revisions.
-- The report states the **era** your server was observed to support (`legacy`,
-  `modern`, or `dual-era`), following the spec's own detection guidance.
-- **Modern-only HTTP and stdio servers are fully supported**: if the legacy
-  handshake fails but the server answers stateless requests, mcpscore audits it
-  through its probe layer instead of reporting a connection failure.
+## Scoring across spec revisions
 
-## The readiness score (separate axis)
+MCP publishes dated revisions, `2024-11-05` through `2026-07-28`. The 2026
+revision replaces the stateful `initialize` lifecycle with a stateless one,
+and the spec itself describes servers as **legacy** (stateful), **modern**
+(stateless), or **dual-era** (both). mcpscore treats the revision as a
+property of your server that it detects, not a mode of the tool:
 
-mcpscore answers a second question: **"is this server ready for the 2026-07-28
-spec?"** Results always appear as their own axis
-(`readiness.score / readiness.max_score` in the report). For legacy-only servers
-that axis stays informative — guidance, not punishment — so a fully compliant
-2025-11-25 server keeps a clean main score. For servers already on the modern
-lifecycle, readiness points are also counted in the main score (see Promotion
-below).
+- Rules declare the version range they apply to. Outside it they are skipped,
+  which keeps scores comparable across servers on different revisions.
+- The report's `spec.era` states which lifecycle was observed, following the
+  spec's own detection guidance.
+- Modern-only servers are fully supported over HTTP and stdio. If the legacy
+  handshake fails but stateless requests succeed, the audit runs through the
+  probe layer instead of reporting a connection failure.
 
-Readiness rules for the **2026-07-28** revision, each anchored to normative spec
-language (MUST/MUST NOT unless noted):
+## The readiness axis
+
+mcpscore answers a second question: is this server ready for the 2026-07-28
+revision? The answer is always its own axis, `readiness.score` over
+`readiness.max_score`, and how it relates to the main score depends on the
+server:
+
+| Server | Readiness points | Report flag |
+|---|---|---|
+| Legacy only | Informative. Guidance, not punishment. A fully compliant 2025-11-25 server keeps a clean main score | `readiness.counted_in_main: false` |
+| Modern or dual-era | Counted in the main score as well. The readiness block stays as the transparent breakdown of that share | `readiness.counted_in_main: true` |
+| Partial audit | Never counted. A partial score is already not comparable | `readiness.counted_in_main: false` |
+
+Whenever any readiness check was skipped, the human-readable line says how
+many were assessed, and the report carries `readiness.assessed`,
+`readiness.skipped`, and `readiness.total`. A perfect fraction never implies
+that every check ran.
+
+Each readiness rule is anchored to normative language of the 2026-07-28
+revision. The citations were re-verified against the dated spec URLs the day
+the revision went final, and are re-checked whenever a revision does.
 
 | Rule | Severity | Normative basis |
 |---|---|---|
@@ -146,111 +154,75 @@ language (MUST/MUST NOT unless noted):
 | `readiness_2026_response_content_type` | HIGH | Successful responses MUST be `application/json` or `text/event-stream` ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#sending-messages)) |
 | `readiness_2026_meta_validation` | HIGH | Requests missing required `_meta` fields MUST be rejected with `-32602` + HTTP 400 |
 | `readiness_2026_header_validation` | HIGH | Header/body mismatches MUST be rejected with `-32020` (HeaderMismatch) + HTTP 400 ([SEP-2243](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)) |
-| `readiness_2026_missing_protocol_version_rejected` | LOW | Modern-only endpoints MUST reject a missing `MCP-Protocol-Version` with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
-| `readiness_2026_missing_method_header_rejected` | LOW | A missing `Mcp-Method` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
-| `readiness_2026_resource_name_header_mismatch_rejected` | LOW | A `resources/read` `Mcp-Name` that contradicts `params.uri` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
-| `readiness_2026_prompt_name_header_mismatch_rejected` | LOW | A `prompts/get` `Mcp-Name` that contradicts `params.name` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
 | `readiness_2026_cache_metadata` | HIGH | List/discover results MUST carry `ttlMs >= 0` and `cacheScope` ([SEP-2549](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching)) |
+| `readiness_2026_no_session_id` | HIGH | No `Mcp-Session-Id` minted or echoed on modern requests ([SEP-2567](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
 | `readiness_2026_unsupported_version_error` | MEDIUM | Unknown protocol versions MUST be rejected with `-32022` naming the supported versions |
 | `readiness_2026_error_code_migration` | MEDIUM | Missing resources yield `-32602`; the legacy `-32002` MUST NOT be emitted ([SEP-2164](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
 | `readiness_2026_result_type` | MEDIUM | All results carry the `resultType` discriminator ([SEP-2322](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr)) |
 | `readiness_2026_deprecated_features` | MEDIUM | Features deprecated in 2026-07-28 (logging; SHOULD NOT adopt) ([SEP-2577](https://modelcontextprotocol.io/specification/2026-07-28/deprecated)) |
-| `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([SEP-2106](https://modelcontextprotocol.io/specification/2026-07-28/basic/index)) |
-| `readiness_2026_no_session_id` | HIGH | No `Mcp-Session-Id` minted or echoed on modern requests — leaked legacy session bookkeeping ([SEP-2567](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
-| `readiness_2026_removed_methods` | MEDIUM | Removed methods (e.g. `ping`) rejected with 404 + `-32601`, not served — leaked legacy surface ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
+| `readiness_2026_removed_methods` | MEDIUM | Removed methods such as `ping` rejected with 404 + `-32601`, not served ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
 | `readiness_2026_no_get_stream` | MEDIUM | Modern-only endpoints SHOULD reject the removed standalone GET stream with HTTP 405 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#earlier-streamable-http-revisions)) |
+| `readiness_2026_missing_protocol_version_rejected` | LOW | Modern-only endpoints MUST reject a missing `MCP-Protocol-Version` with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
+| `readiness_2026_missing_method_header_rejected` | LOW | A missing `Mcp-Method` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
+| `readiness_2026_resource_name_header_mismatch_rejected` | LOW | A `resources/read` `Mcp-Name` that contradicts `params.uri` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
+| `readiness_2026_prompt_name_header_mismatch_rejected` | LOW | A `prompts/get` `Mcp-Name` that contradicts `params.name` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
+| `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([SEP-2106](https://modelcontextprotocol.io/specification/2026-07-28/basic/index)) |
 
-Two things worth knowing about how these run:
+The session-ID and removed-method rules are legacy-leakage checks and run
+only when the server shows modern support. Missing-protocol-version rejection
+and GET-stream removal skip dual-era endpoints, because the spec explicitly
+permits compatibility with older Streamable HTTP revisions.
 
-- The session-ID and removed-method rules are **legacy-leakage checks**: they only
-  run when your server *shows* modern support. Missing protocol-version rejection
-  and GET-stream removal are narrower still: they skip dual-era endpoints, because
-  the spec explicitly permits compatibility with older Streamable HTTP revisions.
-- **Promotion (since 1.1.0):** a server that negotiates the modern lifecycle
-  (era `modern` or `dual-era`) has its readiness points **counted in the main
-  score** — the report's `readiness.counted_in_main` flag says which mode a
-  given audit used, and the readiness block stays populated as the transparent
-  breakdown of that share. Legacy-only servers keep readiness informative
-  (guidance, not punishment), and **partial audits are never promoted** — a
-  partial score is already not comparable to a full audit's. The `rule_id`s
-  never change, so integrations keyed on rule IDs are unaffected — but
-  **score-based consumers** (e.g. a CI `min-score` threshold) should note
-  that a modern-lifecycle server's `score`/`max_score` now include the
-  readiness points; check `readiness.counted_in_main` to know which mode
-  scored a given audit.
+## What mcpscore does not test
 
-The human-readable readiness line includes how many checks were assessed whenever
-any were skipped. JSON consumers get the same coverage explicitly as
-`readiness.assessed`, `readiness.skipped`, and `readiness.total`; a perfect
-severity-weighted fraction never implies that every readiness check ran.
+Out of scope today, either because it is not observable from outside or
+because testing it safely from outside is not yet possible:
 
-<Note>
-**Citations re-verified 2026-07-28** — the 2026-07-28 revision was published final
-that day, and every citation above was re-checked against the dated spec URLs
-(`/specification/2026-07-28/`): the changelog, the transport header table, the
-error-code allocation and the deprecated-features registry all matched the release
-candidate, so no rule changed. The re-check is mechanical and repeats whenever a
-revision goes final — error codes were renumbered once already, after the RC lock.
-</Note>
-
-## What mcpscore deliberately does not test
-
-Honesty about limits is part of the methodology. The following are currently out of
-scope, either because they are not externally observable or because testing them
-safely from the outside is not yet possible:
-
-- **True statelessness** (no hidden cross-request state) — only probabilistically
-  testable; the spec itself concedes this.
-- **`requestState` integrity enforcement** (MRTR) — only tamper-rejection is
+- **True statelessness**, meaning no hidden cross-request state. Only
+  probabilistically testable, as the spec itself concedes.
+- **`requestState` integrity enforcement** (MRTR). Only tamper rejection is
   observable, and active tampering probes are deferred.
-- **`subscriptions/listen` behavior** and SSE stream semantics.
-- **Tasks and MCP Apps extensions** — they version independently of the core spec.
-- **Client-side OAuth obligations** (issuer validation, credential binding, scope
-  accumulation) — not observable from a server audit.
-- **Tool behavior** — the audit never calls your tools, so the *score* cannot
-  judge what they do, only how they are described and typed. The CLI's opt-in
-  [smoke mode](/smoke-mode) exists for exactly this gap on your own server: it
-  invokes tools (only `readOnlyHint: true` ones unless `--call-all`) and
-  verifies declared output schemas, invalid-argument rejection, and
-  unknown-tool rejection — reported outside the score, with its own exit
-  code (4).
-
-## Stability contract
-
-- **`rule_id` is stable.** Display names and messages may be reworded; the `rule_id`
-  in the JSON report is a machine contract and never changes meaning.
-- **The JSON report schema is versioned** (`schema_version`), bumped only on
-  backwards-incompatible changes. New fields are added additively.
-- Rule additions and severity changes are documented in the
-  [changelog](https://github.com/mcp-box/mcpscore/blob/main/CHANGELOG.md).
+- **`subscriptions/listen`** behavior and SSE stream semantics.
+- **Tasks and MCP Apps extensions**, which version independently of the core.
+- **Client-side OAuth obligations** such as issuer validation and credential
+  binding. Not observable from a server audit.
+- **What tools do.** The audit never calls them, so the score judges how tools
+  are described and typed, not how they behave. [Smoke mode](/smoke-mode)
+  covers that gap for your own server, outside the score.
 
 ## Why did my score change?
 
-The score is deterministic **for the same server state and the same mcpscore
-version** — when it moves, one of these is what moved:
+The score is deterministic for the same server state and the same mcpscore
+version. When it moves, one of three things moved:
 
-1. **A different mcpscore version ran.** The ruleset grows in most releases,
-   which changes both `score` and `max_score` — scores are only comparable
-   within one version (see the [stability contract](/stability#the-score)).
-   The report's `mcpscore_version` field says which version scored it.
-2. **The audit type differs.** A partial audit (auth-gated server, no
-   credential) covers far fewer checks than a full one, and a
-   modern-lifecycle server's main score includes its readiness points
-   (`readiness.counted_in_main`) while a legacy server's does not.
-3. **The server itself answered differently.** Real fleets do this more
-   often than you'd expect: a rolling deploy or mixed replica versions
-   behind a load balancer can make byte-identical probes get different
-   answers across runs, and a server that rate-limits the audit's probes
-   turns some rules into `insufficient-data` skips — which changes the
-   maximum, not just the earned points. If repeated audits of one URL
-   disagree, diff the two JSON reports rule by rule: the flipping `rule_id`
-   is the finding, and it usually points at the server's consistency, not
-   the auditor's.
+1. **A different mcpscore version ran.** Most releases add rules, which
+   changes both numbers. The report's `mcpscore_version` says which engine
+   scored it. Scores compare only within one version, per the
+   [stability contract](/stability#evolving-by-design).
+2. **The audit type differs.** A partial audit covers far fewer checks. A
+   modern-lifecycle server's main score includes readiness points
+   (`readiness.counted_in_main`) and a legacy server's does not.
+3. **The server answered differently.** A rolling deploy or mixed replica
+   versions behind a load balancer make byte-identical probes get different
+   answers. A server that rate-limits the probes turns rules into
+   `insufficient-data` skips, which changes the maximum. Diff the two JSON
+   reports by `rule_id`. The flipping rule is the finding, and it usually
+   points at the server's consistency.
 
 ## Disagree with a rule?
 
-The methodology is open by design. If a rule seems wrong for your server, open an
-issue with the `rule_id` and the spec text you believe contradicts it — rules are
-required to be defensible by citation, and we treat a rule that can't be defended as a
-bug. To propose a new rule, see
+Open an issue with the `rule_id` and the spec text you believe contradicts
+it. Rules are required to be defensible by citation, and a rule that cannot
+be defended is a bug. To propose a new rule, see
 [CONTRIBUTING](https://github.com/mcp-box/mcpscore/blob/main/CONTRIBUTING.md).
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Rules reference" icon="list-check" href="/rules">
+    Every rule, its weight, and the spec range it applies to
+  </Card>
+  <Card title="Stability contract" icon="file-contract" href="/stability">
+    What you can build on, and what moves between releases
+  </Card>
+</CardGroup>
