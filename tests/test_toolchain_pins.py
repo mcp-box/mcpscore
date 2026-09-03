@@ -1,4 +1,4 @@
-"""The ruff the pre-commit hook runs must be the ruff `make lint` and CI run.
+"""Keep the pre-commit ruff rev equal to the ruff pinned in pyproject.toml.
 
 `pyproject.toml` pins ruff exactly and `.pre-commit-config.yaml` pins the
 hook's rev; the comment on the former says they are kept equal, and nothing
