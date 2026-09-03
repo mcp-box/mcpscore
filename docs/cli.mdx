@@ -21,7 +21,7 @@ other language run through `--stdio`.
 |---|---|---|
 | `--stdio <command...>` | — | Launch the server as a command, any language. Consumes the rest of the command line, including the server's own flags, so put every mcpscore option before it. Runs without a shell. |
 | `--env NAME=VALUE` | — | Set an environment variable for the `--stdio` server. Repeatable. The value lands in shell history and the process list, so use it for plain config only. |
-| `--env NAME` | — | Copy `NAME` from mcpscore's own environment into the server's. The form for secrets: the value never appears in the report or the process list. |
+| `--env NAME` | — | Copy `NAME` from mcpscore's own environment into the server's. The form for secrets: the value never appears on a command line or in the report. It does sit in the server process's environment, which process inspection can read with enough privilege, as with any secret passed by environment. |
 | `--package <coordinate>` | — | Score a published package instead of a running server: `npm:@scope/name`, `npm:name@1.2.3`, `pypi:name==1.2.3`. Reads registry metadata only. See [package audits](/package-audits). |
 | `--json` | off | Write one JSON document to stdout. All logs go to stderr. Schema in the [stability contract](/stability). |
 | `--fail-under PCT` | none | Exit `3` when the main score percentage (0–100, rounded) is below `PCT`. A partial audit always fails this gate. |

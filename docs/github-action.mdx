@@ -77,7 +77,7 @@ and transport surface. Pass a credential before trusting the gate. See
 [authenticated servers](/authenticated-servers).
 </Note>
 
-### Also require readiness for the next spec
+### Also require readiness for MCP 2026-07-28
 
 ```yaml
 - uses: mcp-box/mcpscore-action@v1
@@ -87,9 +87,10 @@ and transport surface. Pass a credential before trusting the gate. See
     min-readiness: 50   # fail below 50% ready for MCP 2026-07-28
 ```
 
-The readiness gate applies only when readiness was assessed. If the modern
-lifecycle could not be observed at all, the gate is skipped rather than
-failing the build.
+The gate is skipped only when no readiness check could be assessed at all,
+which the report shows as a zero `readiness.max_score`. A legacy server still
+has its gateway checks assessed, so it is gated on the few points those carry.
+Check the readiness line of a run before choosing the threshold.
 
 ### Use the numbers in later steps
 
