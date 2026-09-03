@@ -36,14 +36,14 @@
         "group": "Scoring",
         "pages": [
           "methodology",
-          "rules"
+          "stability"
         ]
       },
       {
         "group": "Reference",
         "pages": [
           "cli",
-          "stability"
+          "rules"
         ]
       }
     ]
