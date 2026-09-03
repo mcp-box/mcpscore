@@ -14,7 +14,7 @@ can verify from the JSON report and the spec.
 | Principle | What it means for you |
 |---|---|
 | **Deterministic** | No LLM judging, no API keys, no sampling. The same server state always produces the same score, in seconds, so the score works as a CI gate |
-| **Spec-anchored** | Every rule enforces something the [MCP specification](https://modelcontextprotocol.io/specification) says. Readiness rules cite the SEP they enforce, and the citation ships in every result's `details.basis` |
+| **Spec-anchored** | Every rule enforces something the [MCP specification](https://modelcontextprotocol.io/specification) or its published best practices say, and the citation ships in every result: `details.basis` for most rules, `details.sep` for readiness rules |
 | **Fair across revisions** | Servers are scored against the revision they negotiated, never punished for a spec they don't speak yet |
 | **Honest about limits** | Anything mcpscore cannot verify from the outside is [listed as untested](#what-mcpscore-does-not-test), not silently skipped |
 

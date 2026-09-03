@@ -38,7 +38,7 @@ type change bumps `schema_version`.
 | `partial_reason` | string or null | Why the audit was partial |
 | `incomplete_listings` | array | Catalogs whose paginated listing could not be fully collected |
 | `server_info` | object or null | `name` and `version` the server reported. `null` when identity was never observed |
-| `package` | object or null | Present only for a package audit. See below |
+| `package` | object or null | Always present. `null` for a server audit, an object for a package audit. See below |
 | `summary` | object | `total`, `passed`, `failed`, `skipped`, and `by_severity` counts |
 | `results[]` | array | One entry per rule that ran: `rule_id`, `rule_name`, `severity`, `severity_value`, `passed`, `message`, `details` |
 | `skipped_rules[]` | array | One entry per rule that did not run: `rule_id`, `rule_name`, `reason`, `group_name` |

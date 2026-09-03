@@ -7,7 +7,8 @@ icon: "terminal"
 ```bash
 mcpscore [options] <target>
 mcpscore [options] --stdio <command> [args...]
-mcpscore [options] --package <registry>:<name>[@version]
+mcpscore [options] --package npm:<name>[@version]
+mcpscore [options] --package pypi:<name>[==version]
 ```
 
 `target` is a local `.py` or `.js` file, or a URL. The transport is detected:

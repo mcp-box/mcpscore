@@ -36,7 +36,8 @@ Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
 Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 21 checks assessed)
 ```
 
-Every ❌ is one thing to fix, and every rule cites the spec section it enforces.
+Every ❌ is one thing to fix, and every result cites the spec section or best
+practice it enforces.
 Full docs: [docs.mcpscore.dev](https://docs.mcpscore.dev).
 
 ## Audit any server, in any language
@@ -128,7 +129,7 @@ Six separate **Packaging** rules score a published npm or PyPI listing with
 registry and never downloaded or run, and its score has its own denominator.
 
 How it all fits together: [scoring methodology](https://docs.mcpscore.dev/methodology).
-Every rule with its weight and spec citation: [rules reference](https://docs.mcpscore.dev/rules).
+Every rule with its weight and the spec revisions it applies to: [rules reference](https://docs.mcpscore.dev/rules).
 
 ## JSON report
 

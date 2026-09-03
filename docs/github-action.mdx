@@ -60,13 +60,14 @@ The CLI reads it, and the value never reaches the log or the report.
     MCPSCORE_TOKEN: ${{ secrets.MCPSCORE_TOKEN }}
 ```
 
-API-key servers pass a header through `args`:
+API-key servers pass a header through `args`. The action splits `args` on
+whitespace, so write the header as one token with no space after the colon:
 
 ```yaml
 - uses: mcp-box/mcpscore-action@v1
   with:
     target: https://your-server.example/mcp
-    args: --header 'X-Api-Key: ${{ secrets.MCP_API_KEY }}'
+    args: --header=X-Api-Key:${{ secrets.MCP_API_KEY }}
 ```
 
 <Note>
@@ -121,7 +122,7 @@ a commit and `version` to an mcpscore release:
 | `min-score` | no gate | Fail the job when the main score percentage (0–100) is below this |
 | `min-readiness` | no gate | Fail the job when the readiness percentage (0–100) is below this. Skipped when readiness was not assessed |
 | `comment` | `true` | Post or update the report comment on the pull request |
-| `args` | — | Extra arguments passed to the mcpscore CLI, for example `--header` |
+| `args` | — | Extra arguments passed to the mcpscore CLI, split on whitespace. Write each as one token, for example `--header=X-Api-Key:$KEY` |
 | `version` | latest | mcpscore release to run, for example `1.11.0` |
 | `report-path` | `mcpscore-report.json` | Where the JSON report is written |
 | `github-token` | `github.token` | Token for the comment. Needs `pull-requests: write` |
