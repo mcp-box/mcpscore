@@ -20,12 +20,12 @@ repos:
         name: ruff check
         entry: uv run ruff check --fix --exit-non-zero-on-fix
         language: system
-        types_or: [python, pyi]
+        pass_filenames: false  # lint the project as `make lint` does; explicit paths bypass ruff's exclude
       - id: ruff-format
         name: ruff format
         entry: uv run ruff format
         language: system
-        types_or: [python, pyi]
+        pass_filenames: false
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1
