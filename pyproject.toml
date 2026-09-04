@@ -99,12 +99,12 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    # Exact, and kept equal to the ruff rev in .pre-commit-config.yaml:
-    # CI lints via pre-commit while `make lint` uses this one, so a version
-    # gap means the local gate cannot see what CI enforces. A floating pin
-    # (>=0.15.20) against pre-commit's 0.14.8 let `ruff --fix` strip a
-    # `# noqa: S310` that CI still required — green locally, red on push.
-    "ruff==0.16.5",
+    # uv.lock is the pin. The pre-commit hook is a local hook that runs this
+    # same ruff from the venv, so the hook, `make lint`, and CI cannot
+    # disagree (the 0.14.8-vs-0.15.20 `# noqa` incident came from the hook
+    # carrying its own copy of the version), and a Dependabot lock bump is the
+    # whole update.
+    "ruff>=0.16.5,<0.17",
     # `make all` runs the hooks through pre-commit, so a clean `uv sync
     # --all-groups` must provide it — undeclared, it resolved from whatever
     # happened to be on PATH, and a fresh clone failed with
