@@ -13,7 +13,7 @@ repos:
 
   # ruff runs from the project venv, so the hook, `make lint`, and CI all use
   # the one ruff that uv.lock pins. A separate ruff-pre-commit rev was a second
-  # copy of the version that Dependabot could not update (acceptance PR #50).
+  # copy of the version that Dependabot could not update.
   - repo: local
     hooks:
       - id: ruff-check
