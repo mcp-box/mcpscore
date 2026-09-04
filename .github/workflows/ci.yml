@@ -33,14 +33,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      # The ruff hooks run the venv's ruff (see .pre-commit-config.yaml), so the
+      # job needs the synced project, not a standalone pre-commit action.
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
-          python-version: "3.13"
-      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd  # v3.0.1
-        with:
-          extra_args: --all-files
-        env:
-          SKIP: no-commit-to-branch,typecheck
+          enable-cache: true
+      - run: uv sync --all-groups
+      - run: make precommit
 
   typecheck:
     runs-on: ubuntu-latest

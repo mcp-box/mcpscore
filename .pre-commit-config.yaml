@@ -11,12 +11,23 @@ repos:
       - id: no-commit-to-branch
         args: [--branch, main]
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.5
+  # ruff runs from the project venv, so the hook, `make lint`, and CI all use
+  # the one ruff that uv.lock pins. A separate ruff-pre-commit rev was a second
+  # copy of the version that Dependabot could not update.
+  - repo: local
     hooks:
       - id: ruff-check
-        args: [--fix, --exit-non-zero-on-fix]
+        name: ruff check
+        entry: uv run ruff check --fix --exit-non-zero-on-fix
+        language: system
+        pass_filenames: false  # lint the project as `make lint` does; explicit paths bypass ruff's exclude
+        types_or: [python, pyi, toml]  # still only when Python or ruff's config (pyproject) changed
       - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi, toml]
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1

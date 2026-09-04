@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **One ruff, not two.** The pre-commit ruff hooks now run the ruff that
+  `uv.lock` pins instead of a separately pinned `ruff-pre-commit` release, the
+  drift test that policed the two copies is gone, and the CI lint job installs
+  the project with uv so it runs that same ruff. A Dependabot bump of ruff is
+  now the whole update. Developer tooling only.
+
 ## [1.11.1] - 2026-09-03
 
 ### Changed
