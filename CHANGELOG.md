@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-09-04
+
+### Fixed
+
+- **The docs index has its "Quick start" heading back.** The 1.11.1 rewrite
+  dropped it, which broke the `#quick-start` anchor that mcpscore.dev's
+  footer links to and that the production smoke test follows; the site went
+  red the next morning. Docs only, no engine change.
+
 ### Changed
 
+- **Docs navigation regrouped.** The rules reference moved to a Reference
+  group beside the CLI reference, and the stability contract sits with the
+  methodology under Scoring.
+- **Docs favicon is the new brand mark**, the ring with a check.
 - **One ruff, not two.** The pre-commit ruff hooks now run the ruff that
   `uv.lock` pins instead of a separately pinned `ruff-pre-commit` release, the
   drift test that policed the two copies is gone, and the CI lint job installs
@@ -1314,7 +1327,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.11.1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.11.2...HEAD
+[1.11.2]: https://github.com/mcp-box/mcpscore/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/mcp-box/mcpscore/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/mcp-box/mcpscore/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/mcp-box/mcpscore/compare/v1.9.0...v1.10.0
