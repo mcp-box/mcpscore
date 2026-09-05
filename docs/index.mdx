@@ -105,7 +105,9 @@ mcpscore https://your-server.example/mcp --fail-under 80 --json > report.json
 
 Exit code `3` means the gate failed. `1` means the audit never ran, `2` means
 it could not connect, `0` means it passed. The
-[GitHub Action](/github-action) turns this into one step with a PR comment.
+[GitHub Action](/github-action) turns this into one step with a PR comment,
+and a [`mcpscore.toml`](/configure-rules) turns off the rules that don't apply
+to you.
 
 ## What's next
 

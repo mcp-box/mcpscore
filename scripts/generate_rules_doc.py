@@ -21,7 +21,8 @@ description: "Every rule mcpscore runs — generated from the rule registry, so 
 icon: "list-check"
 ---
 
-Use this page to look up any `rule_id` from a report or a CI comment. It is
+Use this page to look up any `rule_id` from a report or a CI comment, or to
+turn one off or re-rank it in a [`mcpscore.toml`](/configure-rules). It is
 regenerated from the rule registry on every change (`make docs-rules`), so the
 tables below always match the code.
 

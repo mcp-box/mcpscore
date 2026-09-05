@@ -45,6 +45,7 @@ type change bumps `schema_version`.
 | `spec` | object | `negotiated_version`, `latest_version`, `readiness_target`, `era` |
 | `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus `assessed`, `skipped`, `total` coverage counts |
 | `smoke` | object | Present only when the run used `--smoke`. See below |
+| `config` | object | Present only when a per-project configuration was applied. See below |
 
 ### Package audits
 
@@ -79,6 +80,27 @@ through the report's score fields.
 
 `check_id` values are stable in the same way `rule_id`s are.
 
+### Configuration
+
+`config` is absent unless a `mcpscore.toml` or `[tool.mcpscore]` was applied
+([configure rules](/configure-rules)). When present, the score was computed
+under that policy: rules turned off did not run and appear in
+`skipped_rules[]` with reason `disabled-by-config` (a canonical skip reason
+is kept when the engine could not have judged the rule anyway), and
+re-ranked rules carry
+their configured severity in `results[]` with the default in
+`details.severity_default`. A configured score is comparable only across
+runs with the same `config.sha256` and engine version. The badge and
+mcpscore.dev never apply a configuration.
+
+| Field | Meaning |
+|---|---|
+| `source`, `sha256` | The file that was applied and a digest of its bytes |
+| `disabled` | Rule ids turned off |
+| `reranked` | Rule id to `{"from": default, "to": configured}` severity names |
+| `unknown` | Configured ids this engine does not have; warned and ignored |
+| `gate` | Present when `[gate]` is set: `fail_on` and the `failed` rule ids that tripped it |
+
 ### CLI interface
 
 The invocation shape is stable: `mcpscore <target>` with `--json`, `--header`,
@@ -92,7 +114,7 @@ document to stdout with all logs on stderr.
 | `0` | Audit completed. With no gate flags, this regardless of score |
 | `1` | Audit never attempted: usage error, or `--oauth` failed (timeout, refusal, registration or token-exchange failure) |
 | `2` | Could not connect to the target, with no fallback available |
-| `3` | Audit completed but `--fail-under` or `--fail-under-readiness` was not met. A partial audit always fails `--fail-under` |
+| `3` | Audit completed but `--fail-under`, `--fail-under-readiness`, or a configured `[gate]` was not met. A partial audit always fails `--fail-under` |
 | `4` | Audit completed but a `--smoke` check failed. When a threshold also fails, `3` is returned |
 
 ### Credentials
@@ -107,6 +129,7 @@ commitment, not a default.
 |---|---|---|
 | `score` and `max_score` | Rules are added in most releases, so both numbers change. A score is comparable only within one mcpscore version against one server | Store `mcpscore_version` with every score. Compare across versions by `rule_id`, not by total |
 | `partial: true` | Fewer checks ran | Never compare with a full audit |
+| `config` present | The run applied a per-project configuration | Compare only across runs with the same `config.sha256` |
 | `readiness.counted_in_main: true` | A modern-lifecycle server's readiness points are inside the main score | A `min-score` threshold means something slightly different on either side of this flag |
 | `message`, `details`, `rule_name`, severities, category groupings | Improved in any release | Show them to humans. Never key logic on them |
 | Readiness rules | Target the newest revision, currently 2026-07-28. As adoption matures they migrate into the main axis and new ones appear for the next draft | Their `rule_id`s still follow the never-reused rule |

@@ -116,3 +116,12 @@ def create_all_rules(**kwargs: Any) -> Iterable[BaseRule]:
 
     """
     return _registry.create_all_rules(**kwargs)
+
+
+def all_rule_ids() -> tuple[str, ...]:
+    """Return every registered rule_id, in registration order.
+
+    The public view of the registry's keys, for callers that validate
+    rule_ids without instantiating rules (the per-project configuration).
+    """
+    return tuple(_registry._types)

@@ -77,6 +77,22 @@ and transport surface. Pass a credential before trusting the gate. See
 [authenticated servers](/authenticated-servers).
 </Note>
 
+### Turn rules off for this repository
+
+A `mcpscore.toml` in the checkout is picked up on its own, so rules you have
+turned off or re-ranked shape the score the action gates on and comments with,
+and a configured `[gate]` failure is reported by name. It never changes the
+badge. See [configure rules](/configure-rules). Needs mcpscore-action 1.x
+from the same release as this feature; `@v1` follows it.
+
+```toml
+[rules]
+server_websiteurl_present = "off"
+
+[gate]
+fail_on = "high"
+```
+
 ### Also require readiness for MCP 2026-07-28
 
 ```yaml
@@ -120,7 +136,7 @@ a commit and `version` to an mcpscore release:
 | Input | Default | What it does |
 |---|---|---|
 | `target` | required | Server URL, or a local `.py` or `.js` path |
-| `min-score` | no gate | Fail the job when the main score percentage (0–100) is below this |
+| `min-score` | no gate | Fail the job when the main score percentage (0–100) is below this. With a `mcpscore.toml` in the repo, that is the configured score |
 | `min-readiness` | no gate | Fail the job when the readiness percentage (0–100) is below this. Skipped when readiness was not assessed |
 | `comment` | `true` | Post or update the report comment on the pull request |
 | `args` | — | Extra arguments passed to the mcpscore CLI, split on whitespace. Write each as one token, for example `--header=X-Api-Key:$KEY` |
