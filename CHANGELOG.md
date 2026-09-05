@@ -10,17 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Per-project rule configuration.** A `mcpscore.toml` next to your code, or
-  a `[tool.mcpscore]` table in `pyproject.toml`, turns rules off (`"off"`,
+  a `[tool.mcpscore]` table in `pyproject.toml`, turns rules off (`"off"`:
   they do not run and are reported as `disabled-by-config`) and re-ranks the
-  rest by severity name, keyed on `rule_id`; a `[gate] fail_on = "<severity>"`
-  table fails the build (exit 3) on any failed rule at or above it, after
-  re-ranking. `--config FILE` names a file, `--no-config` ignores every
-  source, and otherwise the nearest file up to the repository root is used.
-  The score line carries the file and what it changed, and the JSON report
-  gains an additive `config` block. The configuration changes the score for
-  the run that used it and nothing else: the badge and mcpscore.dev never
-  apply one. Library users pass `RuleConfig` to `MCPAuditor(config=...)`.
-  Unknown and retired rule ids warn and are ignored.
+  rest by severity name, keyed on `rule_id`. A `[gate] fail_on = "<severity>"`
+  table fails the build (exit 3) on any failed rule counted in the main score
+  at or above it, after re-ranking; readiness rules count only when promoted.
+  `--config FILE` names a file, `--no-config` ignores every source, and
+  otherwise the nearest file up to the repository root is used. The score
+  line carries the file and what it changed, and the JSON report gains an
+  additive `config` block. The configuration changes the score for the run
+  that used it and nothing else: the badge and mcpscore.dev never apply one.
+  Library users pass `RuleConfig` to `MCPAuditor(config=...)`. Unknown and
+  retired rule ids warn and are ignored.
 
 ## [1.11.2] - 2026-09-04
 
