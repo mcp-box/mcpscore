@@ -41,15 +41,18 @@ Checkout needs `contents: read`, which a job-level `permissions` block does
 not grant unless it is listed.
 
 ```yaml
-permissions:
-  contents: read         # for actions/checkout
-  pull-requests: write
-steps:
-  - uses: actions/checkout@v7
-  - uses: mcp-box/mcpscore-action@v1
-    with:
-      target: ./server.py
-      min-score: 85
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read         # for actions/checkout
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mcp-box/mcpscore-action@v1
+        with:
+          target: ./server.py
+          min-score: 85
 ```
 
 ### An auth-gated server
