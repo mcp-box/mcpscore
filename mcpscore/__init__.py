@@ -13,6 +13,7 @@ aspects of MCP compliance and contributes to an overall audit score.
 """
 
 from . import spec
+from .config import ConfigError, RuleConfig
 from .enums import ConnectionErrorReason, MCPProtocolVersion, MCPTransportType
 from .mcp_auditor import MCPAuditor
 from .mcp_client import ConnectionFailure, MCPClient, StdioCommand
@@ -27,12 +28,14 @@ from .rules import (
 __all__ = (
     "AuditData",
     "BaseRule",
+    "ConfigError",
     "ConnectionErrorReason",
     "ConnectionFailure",
     "MCPAuditor",
     "MCPClient",
     "MCPProtocolVersion",
     "MCPTransportType",
+    "RuleConfig",
     "RuleResult",
     "RuleSeverity",
     "SkippedRule",

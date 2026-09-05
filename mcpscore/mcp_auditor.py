@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 from mcp import StdioServerParameters
 from pydantic import ValidationError
 
+from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
 from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
@@ -92,7 +93,7 @@ class MCPAuditor:
     aspects of MCP compliance and contributes to an overall audit score.
     """
 
-    def __init__(self, headers: dict[str, str] | None = None) -> None:
+    def __init__(self, headers: dict[str, str] | None = None, config: RuleConfig | None = None) -> None:
         """Initialize a new MCPAuditor instance.
 
         Args:
@@ -101,6 +102,11 @@ class MCPAuditor:
                 Should match the headers passed to the MCPClient. Sensitive —
                 never logged or included in the report (only the boolean
                 ``authenticated`` flag is reported).
+            config: A per-project rule configuration (rules turned off,
+                re-ranked, and an optional severity gate). Applied only when
+                given: the backend never passes one, so the website and the
+                badge stay canonical. With None the audit and its report are
+                identical to an unconfigured run.
 
         Sets up the auditor with:
         - Empty audit data container
@@ -111,6 +117,9 @@ class MCPAuditor:
         """
         super().__init__()
         self.headers: dict[str, str] | None = headers or None
+        self.config: RuleConfig | None = config
+        self.config_defaults: dict[str, RuleSeverity] = {}
+        """Own severity of every re-ranked rule that ran, for the report's ``from``."""
         self.mcp_client: MCPClient | None = None
         self.audit_data: AuditData = AuditData()
         self.score: int = 0
@@ -505,6 +514,11 @@ class MCPAuditor:
                 skip_reason = SKIP_REASON_INSUFFICIENT_DATA
             else:
                 skip_reason = rule.skip_reason(self.audit_data)
+            # A rule the configuration turned off does not run. Checked last so
+            # a canonical reason wins when both apply: the report should say
+            # why the engine could not judge, not merely that nobody asked.
+            if skip_reason is None and self._disabled_by_config(rule):
+                skip_reason = SKIP_REASON_DISABLED_BY_CONFIG
 
             if skip_reason is not None:
                 logger.info("⏭️ Skipping rule '%s': %s", rule.rule_id, skip_reason)
@@ -522,6 +536,7 @@ class MCPAuditor:
             res.rule_id = rule.rule_id
             if rule.basis and (res.details is None or "basis" not in res.details):
                 res.details = {**(res.details or {}), "basis": rule.basis}
+            self._apply_rerank(res)
             logger.info(res.message)
 
             if rule.group_name == READINESS_GROUP:
@@ -541,6 +556,65 @@ class MCPAuditor:
                 if res.passed:
                     self.score += res.severity.value
                 self.results.append(res)
+
+    def _disabled_by_config(self, rule: BaseRule) -> bool:
+        return (
+            self.config is not None
+            and rule.rule_id in self.config.overrides
+            and self.config.overrides[rule.rule_id] is None
+        )
+
+    def _apply_rerank(self, res: RuleResult) -> None:
+        """Give a result its configured severity, recording the rule's own in ``details``.
+
+        The configured severity is what the result earns and what it adds to
+        the maximum: re-ranking is a change of weight, nothing else. The
+        default is kept in ``details.severity_default`` so a report is
+        self-explaining without the configuration file beside it.
+        """
+        if self.config is None:
+            return
+        configured = self.config.overrides.get(res.rule_id)
+        if configured is None or configured == res.severity:
+            return
+        self.config_defaults[res.rule_id] = res.severity
+        res.details = {**(res.details or {}), "severity_default": res.severity.name}
+        res.severity = configured
+
+    def config_gate_failures(self) -> list[str]:
+        """Return the rule ids whose failed result is at or above the configured ``[gate] fail_on`` threshold.
+
+        Empty when no gate is configured. Only results that count toward the
+        main score can trip the gate: readiness results are included only when
+        this run promoted them, matching how ``--fail-under`` treats them; the
+        informative axis never fails a build.
+        """
+        if self.config is None or self.config.fail_on is None:
+            return []
+        counted = list(self.results)
+        if self.readiness_promoted:
+            counted.extend(self.readiness_results)
+        return [res.rule_id for res in counted if not res.passed and res.severity >= self.config.fail_on]
+
+    def _config_report(self, config: RuleConfig) -> dict:
+        """Build the additive ``config`` block: what was applied, so a configured score explains itself."""
+        by_id = {rule.rule_id: rule for rule in self.rules}
+        reranked = {}
+        for rule_id, severity in config.reranked.items():
+            default = self.config_defaults.get(rule_id)
+            if default is None and rule_id in by_id:
+                default = by_id[rule_id].severity
+            reranked[rule_id] = {"from": default.name if default is not None else None, "to": severity.name}
+        block: dict = {
+            "source": config.source,
+            "sha256": config.sha256,
+            "disabled": list(config.disabled),
+            "reranked": reranked,
+            "unknown": list(config.unknown),
+        }
+        if config.fail_on is not None:
+            block["gate"] = {"fail_on": config.fail_on.name, "failed": self.config_gate_failures()}
+        return block
 
     async def _collect_transport_metadata(self) -> None:
         """Collect transport and connection metadata from the MCP client.
@@ -796,7 +870,7 @@ class MCPAuditor:
               revision, with its per-rule results and the counted_in_main flag
 
         """
-        return {
+        report: dict = {
             "score": self.score,
             "max_score": self.max_score,
             # True when the audit sent an Authorization credential (--token or
@@ -854,6 +928,11 @@ class MCPAuditor:
                 + sum(1 for s in self.skipped_rules if s.group_name == READINESS_GROUP),
             },
         }
+        # Present only when a configuration was applied, so an unconfigured
+        # report is byte-identical to one from an engine without this feature.
+        if self.config is not None:
+            report["config"] = self._config_report(self.config)
+        return report
 
     def _package_report(self) -> dict | None:
         """Serialize the audited package coordinate and what the registry said.

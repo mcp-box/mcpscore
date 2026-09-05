@@ -81,6 +81,12 @@ mcpscore https://your-server.example/mcp --fail-under 80
 mcpscore path/to/server.py --smoke
 ```
 
+Rules that don't apply to your server, or matter more to you, go in a
+`mcpscore.toml` next to your code: `off` turns a rule off, a severity name
+re-ranks it, and `[gate] fail_on = "high"` fails the build on any failed rule
+at or above it. It changes the score in your CI only, never the badge.
+Details: [configure rules](https://docs.mcpscore.dev/configure-rules).
+
 | Exit code | Meaning                                                      |
 |-----------|--------------------------------------------------------------|
 | `0`       | Audit completed and every gate passed                        |

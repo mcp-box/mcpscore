@@ -1,0 +1,134 @@
+---
+title: "Configure Rules"
+description: "Turn rules off and re-rank the rest for your own CI with a mcpscore.toml — the way you configure a linter. Your badge and mcpscore.dev stay canonical."
+icon: "sliders"
+---
+
+Some rules won't apply to your server, and some matter more to you than their
+default weight says. A `mcpscore.toml` next to your code turns rules off and
+re-ranks the rest by `rule_id`, and the score you see in CI is the score under
+that policy. The badge and mcpscore.dev never read it: they always show the
+canonical score.
+
+```toml
+# mcpscore.toml — checked in next to your server
+[rules]
+server_websiteurl_present = "off"       # we don't publish a website
+server_icons_present      = "off"
+server_title_present      = "critical"  # our agent picks tools by title
+
+[gate]
+fail_on = "critical"   # any failed rule at or above CRITICAL fails the build
+```
+
+```text
+Config: mcpscore.toml — 2 rules off, 1 re-ranked, gate at CRITICAL
+...
+⏭️ Skipping rule 'server_websiteurl_present': disabled-by-config
+⏭️ Skipping rule 'server_icons_present': disabled-by-config
+...
+Audit finished. Final score: 78/92 (mcpscore.toml: 2 rules off, 1 re-ranked, gate at CRITICAL)
+Gate failed — [gate] fail_on = "critical": 1 failed rule at or above CRITICAL: server_title_present
+```
+
+The score line names the file so a pasted number keeps its qualifier, and the
+gate says exactly which rule failed the build.
+
+## What each entry does
+
+| Entry | Effect |
+|---|---|
+| `rule_id = "off"` | The rule does not run. It appears in the report's `skipped_rules` with reason `disabled-by-config` and counts toward neither the score nor the maximum |
+| `rule_id = "low"` / `"medium"` / `"high"` / `"critical"` | The rule runs and counts at that severity, worth 1, 2, 3, or 5 points. The result records the rule's own severity as `details.severity_default` |
+| `[gate] fail_on = "high"` | Exit code `3` when any failed rule sits at or above that severity after re-ranking. Promote a rule to `critical` and it now blocks the build; a rule that is off cannot |
+
+Values are case-insensitive. A `rule_id` that mcpscore doesn't know, including
+one it has retired, is warned about and ignored, so a file written for a newer
+release still works on an older one. Any other value is a usage error and exit
+code `1`. Every `rule_id` is in the [rules reference](/rules).
+
+## Where the file lives
+
+mcpscore looks, in this order, and says which it used:
+
+1. `--config FILE`, any path. A missing file is a usage error.
+2. `mcpscore.toml` in the working directory, then each parent up to the
+   repository root, the first directory that contains `.git`.
+3. `[tool.mcpscore]` in a `pyproject.toml`, searched the same way:
+
+```toml
+[tool.mcpscore.rules]
+server_websiteurl_present = "off"
+
+[tool.mcpscore.gate]
+fail_on = "high"
+```
+
+`--no-config` ignores all of it, which is how you reproduce the canonical
+number inside a configured repository.
+
+## What it changes, and what it doesn't
+
+A configuration changes the score for the run that used it. It does not touch
+the [badge](/badge) or the report on [mcpscore.dev](https://mcpscore.dev),
+which only ever show audits run by the website itself, with every rule at its
+default weight. Two teams with different files get different numbers for the
+same server, and that is the point: compare configured scores only across runs
+with the same `config.sha256`, which the report carries.
+
+In the JSON report the applied configuration is a `config` block:
+
+```json
+"config": {
+  "source": "mcpscore.toml",
+  "sha256": "72346634bd0c…",
+  "disabled": ["server_websiteurl_present", "server_icons_present"],
+  "reranked": {"server_title_present": {"from": "MEDIUM", "to": "CRITICAL"}},
+  "unknown": [],
+  "gate": {"fail_on": "CRITICAL", "failed": ["server_title_present"]}
+}
+```
+
+The [GitHub Action](/github-action) picks the file up from your checkout, so
+`min-score` gates the configured score, and the PR comment carries the same
+qualifier.
+
+## When it fails
+
+**`Usage error: mcpscore.toml: rule 'x' has value 'skip'; expected off, low, medium, high, or critical`** (exit `1`)
+
+- Cause: an unsupported value. `off` is the one spelling.
+- Fix: use `off` or a severity name.
+
+**`Config: unknown rule 'x'; ignored`**
+
+- Cause: a `rule_id` this release doesn't have, or a typo.
+- Fix: check the id in the [rules reference](/rules). A retired rule says so
+  in the warning and can be deleted from the file.
+
+**`Gate failed — [gate] fail_on = "high": …`** (exit `3`)
+
+- Cause: a rule at or above your threshold failed. That is the gate working.
+- Fix: fix the rule, lower the threshold, or re-rank that rule below it.
+
+**The badge still shows the old score after you turned rules off**
+
+- Cause: the badge is canonical by design and never applies a configuration.
+- Fix: none needed. Your CI number and the badge answer different questions.
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Rules reference" icon="list-check" href="/rules">
+    Every `rule_id` you can turn off or re-rank
+  </Card>
+  <Card title="GitHub Action" icon="github" href="/github-action">
+    Gate pull requests on the configured score
+  </Card>
+  <Card title="Stability contract" icon="file-contract" href="/stability">
+    The `config` report block, field by field
+  </Card>
+  <Card title="Scoring methodology" icon="scale-balanced" href="/methodology">
+    What the default weights mean before you change them
+  </Card>
+</CardGroup>

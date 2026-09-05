@@ -9,10 +9,12 @@ from importlib.metadata import PackageNotFoundError, version
 import json
 import logging
 import os
+from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, NoReturn
 
 from mcpscore import MCPAuditor, MCPClient, StdioCommand
+from mcpscore.config import ConfigError, RuleConfig
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
@@ -129,6 +131,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit a machine-readable JSON report to stdout (logs go to stderr)",
+    )
+    parser.add_argument(
+        "--config",
+        metavar="FILE",
+        help=(
+            "Per-project rule configuration to apply: a mcpscore.toml, or a pyproject.toml with a "
+            '[tool.mcpscore] table. Rules set to "off" do not run; rules set to a severity name count at '
+            "that severity; [gate] fail_on fails the build (exit 3) on any failed rule at or above it. "
+            "Without this flag, the nearest mcpscore.toml or [tool.mcpscore] up to the repository root is "
+            "used. The configuration changes the score for this run only; the badge and mcpscore.dev "
+            "never apply one."
+        ),
+    )
+    parser.add_argument(
+        "--no-config",
+        action="store_true",
+        help="Ignore any mcpscore.toml or [tool.mcpscore]: audit with the canonical rule set and weights.",
     )
     parser.add_argument(
         "--fail-under",
@@ -369,7 +388,9 @@ def _mcpscore_version() -> str:
         return "unknown"
 
 
-async def run_package_audit(args: argparse.Namespace, coordinate: PackageCoordinate) -> int:
+async def run_package_audit(
+    args: argparse.Namespace, coordinate: PackageCoordinate, config: RuleConfig | None = None
+) -> int:
     """Score a package coordinate and report it. Returns the process exit code.
 
     Its own entry point rather than a branch inside the server flow: there is no
@@ -380,7 +401,7 @@ async def run_package_audit(args: argparse.Namespace, coordinate: PackageCoordin
     package up (the analogue of "could not connect"), 3 audited but a
     --fail-under threshold was not met.
     """
-    auditor = MCPAuditor()
+    auditor = MCPAuditor(config=config)
     await auditor.audit_package(coordinate)
     report = auditor.get_audit_report()
     package = report["package"]
@@ -459,9 +480,77 @@ def fail_under_exit_code(args: argparse.Namespace, report: dict) -> int:
                     f"{args.fail_under_readiness}%"
                 )
 
+    gate = (report.get("config") or {}).get("gate")
+    if gate and gate["failed"]:
+        failed = gate["failed"]
+        failures.append(
+            f'[gate] fail_on = "{gate["fail_on"].lower()}": {len(failed)} failed rule{"s" if len(failed) != 1 else ""} '
+            f"at or above {gate['fail_on']}: {', '.join(failed)}"
+        )
+
     for failure in failures:
         logger.error("Gate failed — %s", failure)
     return 3 if failures else 0
+
+
+def load_rule_config(args: argparse.Namespace) -> RuleConfig | None:
+    """Resolve the per-project configuration for this run and log what it changes.
+
+    ``--config`` names a file; otherwise the nearest ``mcpscore.toml`` or
+    ``[tool.mcpscore]`` up to the repository root is used; ``--no-config``
+    ignores both. Unknown and retired rule ids warn and are ignored, so a
+    configuration written for a newer engine still runs on an older one.
+
+    Raises:
+        ValueError: ``--config`` and ``--no-config`` together, or a file that
+            cannot be applied. The caller reports it as a usage error.
+
+    """
+    if args.no_config:
+        if args.config:
+            raise ValueError("--config and --no-config cannot be combined")
+        return None
+    try:
+        config = RuleConfig.load(Path(args.config)) if args.config else RuleConfig.discover()
+    except ConfigError as e:
+        raise ValueError(str(e)) from e
+    if config is None:
+        return None
+    logger.info("Config: %s — %s", config.source, config.summary())
+    retired = dict(config.retired)
+    for rule_id in config.unknown:
+        if rule_id in retired:
+            logger.warning("Config: rule '%s' was retired in mcpscore %s; ignored", rule_id, retired[rule_id])
+        else:
+            logger.warning("Config: unknown rule '%s'; ignored", rule_id)
+    return config
+
+
+def resolve_rule_config(args: argparse.Namespace) -> RuleConfig | None:
+    """Load the run's configuration, or exit 1 with a usage error; keeps async_main flat."""
+    try:
+        return load_rule_config(args)
+    except ValueError as e:
+        logger.error("Usage error: %s", e)  # noqa: TRY400 — usage error, not an exception to trace
+        sys.exit(1)
+
+
+def config_qualifier(report: dict) -> str:
+    """Return the score-line qualifier for a configured run, e.g. `` (mcpscore.toml: 2 rules off, 1 re-ranked)``.
+
+    Built from the report rather than the RuleConfig so the line and the JSON
+    cannot disagree. Empty for an unconfigured run.
+    """
+    block = report.get("config")
+    if not block:
+        return ""
+    off, reranked = len(block.get("disabled", [])), len(block.get("reranked", {}))
+    parts = [f"{off} rule{'s' if off != 1 else ''} off"] if off else []
+    if reranked:
+        parts.append(f"{reranked} re-ranked")
+    if block.get("gate"):
+        parts.append(f"gate at {block['gate']['fail_on']}")
+    return f" ({block['source']}: {', '.join(parts) if parts else 'no overrides'})"
 
 
 def finish_server_audit(
@@ -526,14 +615,17 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
         # a chat or a slide (external feedback, 2026-08-18). Saying how many
         # checks actually ran is what makes "25/25" interpretable.
         logger.info(
-            "Audit finished. PARTIAL score: %s/%s from %s of %s checks — not comparable to a full audit.",
+            "Audit finished. PARTIAL score: %s/%s from %s of %s checks — not comparable to a full audit.%s",
             report["score"],
             report["max_score"],
             scored,
             considered,
+            config_qualifier(report),
         )
     else:
-        logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
+        logger.info(
+            "Audit finished. Final score: %s/%s%s", report["score"], report["max_score"], config_qualifier(report)
+        )
     logger.info(
         "Spec: %s negotiated (latest: %s) · era: %s",
         spec["negotiated_version"] or "unknown",
@@ -707,10 +799,12 @@ async def async_main() -> None:
 
     logger.info("Welcome to mcpscore!")
 
+    config = resolve_rule_config(args)
+
     # A package audit shares no machinery with a server audit past this point:
     # no headers, no OAuth, no client, no transport detection, no cleanup.
     if isinstance(target, PackageCoordinate):
-        sys.exit(await run_package_audit(args, target))
+        sys.exit(await run_package_audit(args, target, config))
 
     try:
         headers = collect_headers(args)
@@ -728,7 +822,7 @@ async def async_main() -> None:
         logger.info("Using %d custom header(s).", len(headers))
 
     client: MCPClient = MCPClient(headers=headers or None)
-    auditor: MCPAuditor = MCPAuditor(headers=headers or None)
+    auditor: MCPAuditor = MCPAuditor(headers=headers or None, config=config)
 
     # Everything below runs inside one try/finally: failed detection attempts
     # can leave resources on the client's exit stack, so every path out —

@@ -24,6 +24,8 @@ other language run through `--stdio`.
 | `--env NAME` | — | Copy `NAME` from mcpscore's own environment into the server's. The form for secrets: the value never appears on a command line or in the report. It does sit in the server process's environment, which process inspection can read with enough privilege, as with any secret passed by environment. |
 | `--package <coordinate>` | — | Score a published package instead of a running server: `npm:@scope/name`, `npm:name@1.2.3`, `pypi:name==1.2.3`. Reads registry metadata only. See [package audits](/package-audits). |
 | `--json` | off | Write one JSON document to stdout. All logs go to stderr. Schema in the [stability contract](/stability). |
+| `--config FILE` | nearest `mcpscore.toml` or `[tool.mcpscore]` | Apply a per-project rule configuration: rules off, re-ranked, and a severity gate. Changes the score for this run only. See [configure rules](/configure-rules). |
+| `--no-config` | off | Ignore any configuration and audit with the canonical rule set and weights. |
 | `--fail-under PCT` | none | Exit `3` when the main score percentage (0–100, rounded) is below `PCT`. A partial audit always fails this gate. |
 | `--fail-under-readiness PCT` | none | Exit `3` when the readiness percentage is below `PCT`. Skipped when readiness was not assessed at all. |
 | `--smoke` | off | After the audit, call the server's tools and check they behave. Only tools annotated `readOnlyHint: true` are called. Unavailable with `--package`; does not run on partial or modern-only probe audits. See [smoke mode](/smoke-mode). |
@@ -55,7 +57,7 @@ your server's variable, not mcpscore's.
 | `0` | Audit completed and every gate that was set passed | Green |
 | `1` | Audit never ran: a usage error, or an `--oauth` flow that timed out, was refused, or failed registration or token exchange | Fix the invocation |
 | `2` | Could not connect to the server, or a package's registry could not be read | Fix the target or the network |
-| `3` | Audit completed but `--fail-under` or `--fail-under-readiness` was not met. A partial audit always fails `--fail-under` | The server needs work |
+| `3` | Audit completed but `--fail-under`, `--fail-under-readiness`, or a configured `[gate]` was not met. A partial audit always fails `--fail-under` | The server needs work |
 | `4` | Audit completed but a `--smoke` check failed. When a threshold gate also fails, `3` wins | The tools are broken |
 
 Without gate flags, a completed audit exits `0` whatever the score.
