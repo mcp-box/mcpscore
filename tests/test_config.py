@@ -274,3 +274,53 @@ def test_discover_names_the_source_relative_to_the_working_directory(tmp_path: P
 
     assert config is not None
     assert config.source == CONFIG_FILENAME
+
+
+def test_pyproject_with_invalid_toml_is_a_config_error():
+    with pytest.raises(ConfigError, match=r"pyproject\.toml: not valid TOML"):
+        RuleConfig.parse_pyproject("[tool\n", source="pyproject.toml")
+
+
+def test_discover_finds_a_pyproject_table_when_there_is_no_mcpscore_toml(tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / PYPROJECT_FILENAME).write_text(f'[tool.mcpscore.rules]\n{KNOWN_B} = "high"\n', encoding="utf-8")
+
+    config = RuleConfig.discover(tmp_path)
+
+    assert config is not None
+    assert config.reranked == {KNOWN_B: RuleSeverity.HIGH}
+    assert config.sha256 == hashlib.sha256((tmp_path / PYPROJECT_FILENAME).read_bytes()).hexdigest()
+
+
+def test_discover_defaults_to_the_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / CONFIG_FILENAME).write_text(f'[rules]\n{KNOWN_A} = "off"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    config = RuleConfig.discover()
+
+    assert config is not None
+    assert config.source == CONFIG_FILENAME
+
+
+def test_discover_names_a_source_outside_the_working_directory_by_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    (project / CONFIG_FILENAME).write_text(f'[rules]\n{KNOWN_A} = "off"\n', encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    config = RuleConfig.discover(project)
+
+    assert config is not None
+    assert config.source == str((project / CONFIG_FILENAME).resolve())
+
+
+def test_discover_outside_any_repository_walks_to_the_root_and_finds_nothing(tmp_path: Path):
+    # No .git anywhere above a temp dir, and no config on the way up: the walk
+    # ends at the filesystem root rather than at a repository boundary.
+    assert RuleConfig.discover(tmp_path / "nowhere") is None
