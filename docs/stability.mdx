@@ -85,7 +85,9 @@ through the report's score fields.
 `config` is absent unless a `mcpscore.toml` or `[tool.mcpscore]` was applied
 ([configure rules](/configure-rules)). When present, the score was computed
 under that policy: rules turned off did not run and appear in
-`skipped_rules[]` with reason `disabled-by-config`, and re-ranked rules carry
+`skipped_rules[]` with reason `disabled-by-config` (a canonical skip reason
+is kept when the engine could not have judged the rule anyway), and
+re-ranked rules carry
 their configured severity in `results[]` with the default in
 `details.severity_default`. A configured score is comparable only across
 runs with the same `config.sha256` and engine version. The badge and

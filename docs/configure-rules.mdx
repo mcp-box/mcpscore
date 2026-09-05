@@ -38,9 +38,9 @@ gate says exactly which rule failed the build.
 
 | Entry | Effect |
 |---|---|
-| `rule_id = "off"` | The rule does not run. It appears in the report's `skipped_rules` with reason `disabled-by-config` and counts toward neither the score nor the maximum |
+| `rule_id = "off"` | The rule does not run and counts toward neither the score nor the maximum. It appears in the report's `skipped_rules` with reason `disabled-by-config`, unless the engine could not have judged it anyway, in which case the canonical reason (`not-applicable`, `insufficient-data`) is kept |
 | `rule_id = "low"` / `"medium"` / `"high"` / `"critical"` | The rule runs and counts at that severity, worth 1, 2, 3, or 5 points. The result records the rule's own severity as `details.severity_default` |
-| `[gate] fail_on = "high"` | Exit code `3` when any failed rule sits at or above that severity after re-ranking. Promote a rule to `critical` and it now blocks the build; a rule that is off cannot |
+| `[gate] fail_on = "high"` | Exit code `3` when any failed rule counted in the main score sits at or above that severity after re-ranking. Readiness rules count only when a modern-lifecycle server promotes them, matching `--fail-under`. Promote a rule to `critical` and it now blocks the build; a rule that is off cannot |
 
 Values are case-insensitive. A `rule_id` that mcpscore doesn't know, including
 one it has retired, is warned about and ignored, so a file written for a newer
@@ -52,9 +52,11 @@ code `1`. Every `rule_id` is in the [rules reference](/rules).
 mcpscore looks, in this order, and says which it used:
 
 1. `--config FILE`, any path. A missing file is a usage error.
-2. `mcpscore.toml` in the working directory, then each parent up to the
-   repository root, the first directory that contains `.git`.
-3. `[tool.mcpscore]` in a `pyproject.toml`, searched the same way:
+2. Otherwise the nearest configuration, walking from the working directory up
+   to the repository root, the first directory that contains `.git`. In each
+   directory a `mcpscore.toml` wins over a `pyproject.toml` with a
+   `[tool.mcpscore]` table, and a nearer `pyproject.toml` wins over a
+   `mcpscore.toml` further up:
 
 ```toml
 [tool.mcpscore.rules]

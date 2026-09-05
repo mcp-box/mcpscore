@@ -138,7 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Per-project rule configuration to apply: a mcpscore.toml, or a pyproject.toml with a "
             '[tool.mcpscore] table. Rules set to "off" do not run; rules set to a severity name count at '
-            "that severity; [gate] fail_on fails the build (exit 3) on any failed rule at or above it. "
+            "that severity; [gate] fail_on fails the build (exit 3) on any failed rule counted in the main "
+            "score at or above it. "
             "Without this flag, the nearest mcpscore.toml or [tool.mcpscore] up to the repository root is "
             "used. The configuration changes the score for this run only; the badge and mcpscore.dev "
             "never apply one."
@@ -399,7 +400,9 @@ async def run_package_audit(
 
     Exit codes match the server flow's meaning: 0 audited, 2 could not look the
     package up (the analogue of "could not connect"), 3 audited but a
-    --fail-under threshold was not met.
+    --fail-under threshold or a configured [gate] was not met. The
+    configuration applies to the packaging rules like any other, so the score
+    line carries the same qualifier as a server audit's.
     """
     auditor = MCPAuditor(config=config)
     await auditor.audit_package(coordinate)
@@ -411,7 +414,7 @@ async def run_package_audit(
         logger.error("Could not read %s metadata: %s", package["registry"], package["error"])
         return 2
 
-    logger.info("Audit finished. Final score: %s/%s", report["score"], report["max_score"])
+    logger.info("Audit finished. Final score: %s/%s%s", report["score"], report["max_score"], config_qualifier(report))
     logger.info(
         "Packaging audit of %s — metadata only, the package was not downloaded or run.",
         coordinate.display,

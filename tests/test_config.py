@@ -324,3 +324,20 @@ def test_discover_outside_any_repository_walks_to_the_root_and_finds_nothing(tmp
     # No .git anywhere above a temp dir, and no config on the way up: the walk
     # ends at the filesystem root rather than at a repository boundary.
     assert RuleConfig.discover(tmp_path / "nowhere") is None
+
+
+def test_discover_reports_an_unreadable_pyproject_as_a_config_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    (tmp_path / ".git").mkdir()
+    pyproject = tmp_path / PYPROJECT_FILENAME
+    pyproject.write_text(f'[tool.mcpscore.rules]\n{KNOWN_A} = "off"\n', encoding="utf-8")
+    original = Path.read_bytes
+
+    def denied(self: Path) -> bytes:
+        if self == pyproject:
+            raise PermissionError(13, "Permission denied")
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+
+    with pytest.raises(ConfigError, match=r"pyproject\.toml: cannot read config file: Permission denied"):
+        RuleConfig.discover(tmp_path)

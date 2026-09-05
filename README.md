@@ -84,7 +84,7 @@ mcpscore path/to/server.py --smoke
 Rules that don't apply to your server, or matter more to you, go in a
 `mcpscore.toml` next to your code: `off` turns a rule off, a severity name
 re-ranks it, and `[gate] fail_on = "high"` fails the build on any failed rule
-at or above it. It changes the score in your CI only, never the badge.
+counted in the main score at or above it. It changes the score in your CI only, never the badge.
 Details: [configure rules](https://docs.mcpscore.dev/configure-rules).
 
 | Exit code | Meaning                                                      |

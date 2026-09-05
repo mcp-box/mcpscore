@@ -206,3 +206,39 @@ def test_resolve_rule_config_exits_1_on_a_usage_error(caplog: pytest.LogCaptureF
 
     assert exc.value.code == 1
     assert "Usage error: --config and --no-config cannot be combined" in caplog.text
+
+
+async def test_package_audit_score_line_carries_the_qualifier_and_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """The configuration applies to packaging rules too: same score-line contract, same exit 3."""
+    from mcpscore.cli import run_package_audit
+    from mcpscore.packages import PackageCoordinate, PackageMetadata, PackageOutcome
+
+    async def fake_fetch(coordinate, client=None):
+        # Resolves, versioned, not withdrawn; no repository, license, or description.
+        return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.OK, resolved_version="1.0.0")
+
+    monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+    config_file = tmp_path / "mcpscore.toml"
+    config_file.write_text(
+        "[rules]\n"
+        'package_description_present = "off"\n'
+        'package_license_declared = "critical"\n'
+        "[gate]\n"
+        'fail_on = "critical"\n',
+        encoding="utf-8",
+    )
+    argv = build_parser().parse_args(["--package", "npm:server", "--config", str(config_file)])
+    config = load_rule_config(argv)
+
+    with caplog.at_level(logging.INFO, logger="mcpscore.cli"):
+        code = await run_package_audit(argv, PackageCoordinate.parse("npm:server"), config)
+
+    assert code == 3
+    # 16 canonical points: -1 for the description rule turned off, +3 for license promoted MEDIUM -> CRITICAL.
+    assert f"Final score: 11/18 ({config_file}: 1 rule off, 1 re-ranked, gate at CRITICAL)" in caplog.text
+    assert (
+        'Gate failed — [gate] fail_on = "critical": 1 failed rule at or above CRITICAL: package_license_declared'
+        in caplog.text
+    )

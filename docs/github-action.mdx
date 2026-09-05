@@ -80,8 +80,10 @@ and transport surface. Pass a credential before trusting the gate. See
 ### Turn rules off for this repository
 
 A `mcpscore.toml` in the checkout is picked up on its own, so rules you have
-turned off or re-ranked shape the score the action gates on and comments with.
-It never changes the badge. See [configure rules](/configure-rules).
+turned off or re-ranked shape the score the action gates on and comments with,
+and a configured `[gate]` failure is reported by name. It never changes the
+badge. See [configure rules](/configure-rules). Needs mcpscore-action 1.x
+from the same release as this feature; `@v1` follows it.
 
 ```toml
 [rules]

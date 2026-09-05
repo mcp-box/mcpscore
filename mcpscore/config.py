@@ -12,9 +12,10 @@ A team turns rules off and re-ranks the rest by severity name, keyed on
 
 The configuration changes the score for the run that used it and nothing
 else: the website and the badge never see one (the backend never constructs
-a ``RuleConfig``), and the JSON report records what was applied. Design and
-decision: ``project/tech-design/design-rule-config.md``,
-``project/decision-records/2026-09-04-rule-config-off-rerank-gate.md``.
+a ``RuleConfig``), and the JSON report records what was applied. The gate
+covers failed rules counted in the main score, so readiness rules count only
+when a modern-lifecycle server promotes them. User-facing description:
+https://docs.mcpscore.dev/configure-rules
 
 Discovery lives here and is used by the CLI only; ``MCPAuditor`` applies a
 configuration solely when handed one.
@@ -169,8 +170,12 @@ class RuleConfig:
                 return cls.load(candidate, source=_display(candidate, cwd))
             pyproject = directory / PYPROJECT_FILENAME
             if pyproject.is_file():
-                raw = pyproject.read_bytes()
-                found = cls.parse_pyproject(raw.decode("utf-8"), source=_display(pyproject, cwd), sha256=_digest(raw))
+                display = _display(pyproject, cwd)
+                try:
+                    raw = pyproject.read_bytes()
+                except OSError as e:
+                    raise ConfigError(f"{display}: cannot read config file: {e.strerror or e}") from e
+                found = cls.parse_pyproject(raw.decode("utf-8"), source=display, sha256=_digest(raw))
                 if found is not None:
                     return found
             if (directory / ".git").exists():

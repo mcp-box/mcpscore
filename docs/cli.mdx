@@ -60,7 +60,7 @@ your server's variable, not mcpscore's.
 | `3` | Audit completed but `--fail-under`, `--fail-under-readiness`, or a configured `[gate]` was not met. A partial audit always fails `--fail-under` | The server needs work |
 | `4` | Audit completed but a `--smoke` check failed. When a threshold gate also fails, `3` wins | The tools are broken |
 
-Without gate flags, a completed audit exits `0` whatever the score.
+Without gate flags or a configured `[gate]`, a completed audit exits `0` whatever the score.
 
 ## Output
 
