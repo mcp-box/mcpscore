@@ -17,6 +17,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     permissions:
+      contents: read         # a permissions block turns off every scope it omits
       pull-requests: write   # lets the action post its comment
     steps:
       - uses: mcp-box/mcpscore-action@v1
@@ -167,10 +168,14 @@ a commit and `version` to an mcpscore release:
 - Cause: the workflow token is read-only. GitHub does this on pull requests
   from forks, and it happens when the job lacks `permissions: pull-requests: write`.
   Commenting is best-effort and never fails the gate.
-- Fix: add the permission. For fork PRs, the report is still in the job
-  summary. Commenting on fork PRs needs a `pull_request_target` workflow, and
-  its [security implications](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/)
-  deserve a read first.
+- Fix: add the permission. For fork PRs, read the report in the job
+  summary instead. Do not switch the workflow to `pull_request_target` to get
+  the comment: that event runs with a write token in the base repository's
+  context, and checking out and running the fork's server there hands the
+  token to untrusted code, while leaving the default checkout audits the base
+  branch rather than the proposed change. The
+  [GitHub Security Lab write-up](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/)
+  explains the trap.
 
 **The job passes, but the comment says the audit was partial**
 
