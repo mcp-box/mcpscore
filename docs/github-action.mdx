@@ -17,7 +17,6 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     permissions:
-      contents: read         # checkout needs it once a permissions block is set
       pull-requests: write   # lets the action post its comment
     steps:
       - uses: mcp-box/mcpscore-action@v1
@@ -38,13 +37,19 @@ which needs no token at all.
 
 Check out the code and point `target` at the entry file. Its runtime must be
 on the runner, so set up Python or Node first when the runner image lacks it.
+Checkout needs `contents: read`, which a job-level `permissions` block does
+not grant unless it is listed.
 
 ```yaml
-- uses: actions/checkout@v4
-- uses: mcp-box/mcpscore-action@v1
-  with:
-    target: ./server.py
-    min-score: 85
+permissions:
+  contents: read         # for actions/checkout
+  pull-requests: write
+steps:
+  - uses: actions/checkout@v7
+  - uses: mcp-box/mcpscore-action@v1
+    with:
+      target: ./server.py
+      min-score: 85
 ```
 
 ### An auth-gated server
