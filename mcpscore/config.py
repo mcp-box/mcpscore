@@ -144,7 +144,7 @@ class RuleConfig:
             raw = path.read_bytes()
         except OSError as e:
             raise ConfigError(f"{display}: cannot read config file: {e.strerror or e}") from e
-        text = raw.decode("utf-8")
+        text = _decode(raw, display)
         digest = _digest(raw)
         if path.name == PYPROJECT_FILENAME:
             config = cls.parse_pyproject(text, source=display, sha256=digest)
@@ -175,7 +175,7 @@ class RuleConfig:
                     raw = pyproject.read_bytes()
                 except OSError as e:
                     raise ConfigError(f"{display}: cannot read config file: {e.strerror or e}") from e
-                found = cls.parse_pyproject(raw.decode("utf-8"), source=display, sha256=_digest(raw))
+                found = cls.parse_pyproject(_decode(raw, display), source=display, sha256=_digest(raw))
                 if found is not None:
                     return found
             if (directory / ".git").exists():
@@ -245,6 +245,14 @@ def _parse_severity(value: object) -> RuleSeverity | None:
         return RuleSeverity[value.upper()]
     except KeyError:
         return None
+
+
+def _decode(raw: bytes, source: str) -> str:
+    """Decode a config file as UTF-8, or raise the usage error the CLI expects."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ConfigError(f"{source}: not valid UTF-8 (byte {e.start})") from e
 
 
 def _digest(raw: bytes) -> str:

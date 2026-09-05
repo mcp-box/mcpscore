@@ -341,3 +341,19 @@ def test_discover_reports_an_unreadable_pyproject_as_a_config_error(tmp_path: Pa
 
     with pytest.raises(ConfigError, match=r"pyproject\.toml: cannot read config file: Permission denied"):
         RuleConfig.discover(tmp_path)
+
+
+def test_load_rejects_a_file_that_is_not_utf8(tmp_path: Path):
+    path = tmp_path / CONFIG_FILENAME
+    path.write_bytes(b"[rules]\n# \xe9\n" + f'{KNOWN_A} = "off"\n'.encode())  # a lone Latin-1 byte
+
+    with pytest.raises(ConfigError, match=r"mcpscore\.toml: not valid UTF-8 \(byte 10\)"):
+        RuleConfig.load(path)
+
+
+def test_discover_rejects_a_pyproject_that_is_not_utf8(tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / PYPROJECT_FILENAME).write_bytes(b"[tool.mcpscore.rules]\n# \xff\n")
+
+    with pytest.raises(ConfigError, match=r"pyproject\.toml: not valid UTF-8"):
+        RuleConfig.discover(tmp_path)
