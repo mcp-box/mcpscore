@@ -17,7 +17,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     permissions:
-      contents: read         # a permissions block turns off every scope it omits
+      contents: read         # checkout needs it once a permissions block is set
       pull-requests: write   # lets the action post its comment
     steps:
       - uses: mcp-box/mcpscore-action@v1
