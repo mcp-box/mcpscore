@@ -433,6 +433,23 @@ class TestAsyncClientFactory:
 
         assert tls.client_ssl_context() is before
 
+    @pytest.mark.parametrize("kwargs", [{"verify": False}, {"transport": "custom-transport"}])
+    def test_builds_no_context_when_httpx2_would_not_use_one(self, monkeypatch: pytest.MonkeyPatch, kwargs: dict):
+        # A bad SSL_CERT_FILE must not fail a client that never verifies with it.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/corp.pem")
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("the shared context must not be built here")
+
+        monkeypatch.setattr(tls, "client_ssl_context", boom)
+        seen: dict = {}
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+
+        tls.async_client(**kwargs)
+
+        assert seen == kwargs
+
     def test_emscripten_builds_no_mounts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "emscripten")
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")

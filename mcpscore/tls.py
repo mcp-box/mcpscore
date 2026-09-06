@@ -201,9 +201,10 @@ def async_client(**kwargs: Any) -> httpx2.AsyncClient:
     Accepts the client's own keyword arguments. ``verify=True`` (the default)
     becomes the shared context; ``verify=False`` or a caller's own context is
     passed through untouched, and then the environment proxies are httpx2's
-    business too, since the proxy hop must follow the caller's policy. The
-    same holds when the caller supplies a ``transport``, ``proxy``, or
-    ``mounts``, or turns ``trust_env`` off.
+    business too, since the proxy hop must follow the caller's policy. A
+    caller-supplied ``transport`` is left entirely alone, as httpx2 ignores
+    ``verify`` and environment proxies for it; ``proxy``, ``mounts``, or
+    ``trust_env=False`` keep the shared context but leave proxies to httpx2.
     """
     if "cert" in kwargs:
         # httpx2 would load_cert_chain() the credential into whatever `verify`
@@ -213,17 +214,14 @@ def async_client(**kwargs: Any) -> httpx2.AsyncClient:
         raise TypeError(
             "async_client() does not accept cert=; load the chain into your own context and pass it as verify="
         )
-    trust_env = bool(kwargs.get("trust_env", True))
-    shared = client_ssl_context(trust_env)
-    if kwargs.get("verify", True) is True:
+    # Build the shared context only where httpx2 would build its own: the
+    # default `verify=True` on a client without a caller-supplied transport.
+    # `verify=False`, a caller's context, or a custom transport never touch
+    # it, so a bad SSL_CERT_FILE cannot fail a client that does not verify.
+    if kwargs.get("verify", True) is True and kwargs.get("transport") is None:
+        trust_env = bool(kwargs.get("trust_env", True))
+        shared = client_ssl_context(trust_env)
         kwargs["verify"] = shared
-    if (
-        kwargs["verify"] is shared
-        and isinstance(shared, ssl.SSLContext)
-        and trust_env
-        and kwargs.get("transport") is None
-        and "proxy" not in kwargs
-        and "mounts" not in kwargs
-    ):
-        kwargs["mounts"] = _environment_proxy_mounts(shared, kwargs)
+        if isinstance(shared, ssl.SSLContext) and trust_env and "proxy" not in kwargs and "mounts" not in kwargs:
+            kwargs["mounts"] = _environment_proxy_mounts(shared, kwargs)
     return httpx2.AsyncClient(**kwargs)
