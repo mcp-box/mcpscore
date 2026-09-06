@@ -180,6 +180,61 @@ class TestEnvironmentOverrides:
         assert tls.client_ssl_context(trust_env=True) is not context
         assert env_builds == [{"cafile": str(tmp_path / "corp.pem")}]
 
+    @pytest.mark.parametrize("compiled_in", ["cafile", "capath"])
+    def test_trust_env_off_loads_only_the_compiled_in_openssl_locations(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, compiled_in: str
+    ):
+        # get_default_verify_paths().cafile and set_default_verify_paths() both
+        # resolve SSL_CERT_FILE; with trust_env off, only the compiled-in
+        # openssl_cafile / openssl_capath may be loaded, and by name.
+        monkeypatch.setattr(sys, "platform", "linux")
+        env_bundle = tmp_path / "env.pem"
+        env_bundle.write_text("", encoding="utf-8")
+        monkeypatch.setenv("SSL_CERT_FILE", str(env_bundle))
+        builtin_file = tmp_path / "builtin.pem"
+        builtin_file.write_text("", encoding="utf-8")
+        builtin_dir = tmp_path / "certs"
+        builtin_dir.mkdir()
+        (builtin_dir / "5ed36f99.0").write_text("", encoding="utf-8")
+        paths = ssl.DefaultVerifyPaths(
+            cafile=str(env_bundle),
+            capath=None,
+            openssl_cafile_env="SSL_CERT_FILE",
+            openssl_cafile=str(builtin_file) if compiled_in == "cafile" else str(tmp_path / "absent.pem"),
+            openssl_capath_env="SSL_CERT_DIR",
+            openssl_capath=str(builtin_dir) if compiled_in == "capath" else str(tmp_path / "absent"),
+        )
+        monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: paths)
+        calls: list[tuple[str, object]] = []
+        monkeypatch.setattr(ssl.SSLContext, "set_default_verify_paths", lambda _self: calls.append(("defaults", None)))
+        monkeypatch.setattr(
+            ssl.SSLContext,
+            "load_verify_locations",
+            lambda _self, cafile=None, capath=None, **_kw: calls.append(("load", (cafile, capath))),
+        )
+
+        tls.client_ssl_context(trust_env=False)
+
+        expected = (str(builtin_file), None) if compiled_in == "cafile" else (None, str(builtin_dir))
+        assert calls == [("load", expected)]
+
+    def test_trust_env_off_falls_back_to_a_known_bundle(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        absent = str(tmp_path / "absent")
+        paths = ssl.DefaultVerifyPaths(None, None, "SSL_CERT_FILE", absent, "SSL_CERT_DIR", absent)
+        monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: paths)
+        bundle = tmp_path / "cert.pem"
+        bundle.write_text("", encoding="utf-8")
+        monkeypatch.setattr(tls, "CA_BUNDLE_CANDIDATES", (str(bundle),))
+        loaded: list[str | None] = []
+        monkeypatch.setattr(
+            ssl.SSLContext, "load_verify_locations", lambda _self, cafile=None, **_kw: loaded.append(cafile)
+        )
+
+        tls.client_ssl_context(trust_env=False)
+
+        assert loaded == [str(bundle)]
+
     def test_ssl_cert_dir_when_no_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
@@ -349,6 +404,34 @@ class TestAsyncClientFactory:
 
         assert seen["verify"] is own
         assert "mounts" not in seen
+
+    def test_http_version_options_reach_the_proxy_transports(self, monkeypatch: pytest.MonkeyPatch):
+        # Captured at the transport constructor: enabling HTTP/2 for real needs
+        # the optional h2 package, and what matters here is the forwarding.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
+        built: list[dict] = []
+        monkeypatch.setattr(httpx2, "AsyncHTTPTransport", lambda **kw: built.append(kw) or "transport")
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **_kw: "client")
+
+        tls.async_client(http1=False, http2=True, limits=httpx2.Limits(max_connections=3))
+
+        assert len(built) == 1
+        assert built[0]["http1"] is False
+        assert built[0]["http2"] is True
+        assert built[0]["limits"].max_connections == 3
+        assert built[0]["verify"] is tls.client_ssl_context()
+
+    def test_cert_is_rejected_so_the_shared_context_never_carries_a_credential(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        monkeypatch.setattr(sys, "platform", "linux")
+        before = tls.client_ssl_context()
+
+        with pytest.raises(TypeError, match="cert="):
+            tls.async_client(cert=str(tmp_path / "client.pem"))
+
+        assert tls.client_ssl_context() is before
 
     def test_emscripten_builds_no_mounts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "emscripten")

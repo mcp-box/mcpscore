@@ -79,22 +79,40 @@ def _capath_holds_certs(capath: str) -> bool:
     return any(_HASHED_CERT_FILENAME.match(entry.name) for entry in directory.iterdir())
 
 
-def _openssl_default_context() -> ssl.SSLContext:
+def _openssl_default_context(trust_env: bool) -> ssl.SSLContext:
     """Build a stdlib context trusting what truststore's OpenSSL backend would trust.
 
     Same construction as truststore: a bare client context (``CERT_REQUIRED``
     and hostname checking are its defaults) with the default paths loaded
     once. ``create_default_context()`` is deliberately not used; its extra
     verification flags would change which server chains pass.
+
+    With ``trust_env`` off, OpenSSL's *compiled-in* locations are loaded by
+    name: both ``get_default_verify_paths().cafile``/``capath`` and
+    ``set_default_verify_paths()`` honor ``SSL_CERT_FILE``/``SSL_CERT_DIR``,
+    which is exactly what that flag promises to ignore.
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     defaults = ssl.get_default_verify_paths()
-    if defaults.cafile or (defaults.capath and _capath_holds_certs(defaults.capath)):
-        context.set_default_verify_paths()
-        return context
-    for cafile in CA_BUNDLE_CANDIDATES:
-        if Path(cafile).is_file():
-            context.load_verify_locations(cafile=cafile)
+    if trust_env:
+        if defaults.cafile or (defaults.capath and _capath_holds_certs(defaults.capath)):
+            context.set_default_verify_paths()
+            return context
+    else:
+        cafile = (
+            defaults.openssl_cafile if defaults.openssl_cafile and Path(defaults.openssl_cafile).is_file() else None
+        )
+        capath = (
+            defaults.openssl_capath
+            if defaults.openssl_capath and _capath_holds_certs(defaults.openssl_capath)
+            else None
+        )
+        if cafile or capath:
+            context.load_verify_locations(cafile=cafile, capath=capath)
+            return context
+    for candidate in CA_BUNDLE_CANDIDATES:
+        if Path(candidate).is_file():
+            context.load_verify_locations(cafile=candidate)
             break
     return context
 
@@ -149,29 +167,31 @@ def _build_client_ssl_context(trust_env: bool) -> ssl.SSLContext | bool:
             return ssl.create_default_context(capath=capath)
     if sys.platform in NATIVE_TRUST_PLATFORMS:
         return _serialized_truststore_context()
-    return _openssl_default_context()
+    return _openssl_default_context(trust_env)
 
 
-def _environment_proxy_mounts(context: ssl.SSLContext, limits: httpx2.Limits | None) -> dict[str, Any]:
+_TRANSPORT_OPTIONS = ("limits", "http1", "http2")
+"""Client options httpx2 forwards to the transports it builds for environment proxies."""
+
+
+def _environment_proxy_mounts(context: ssl.SSLContext, client_kwargs: dict[str, Any]) -> dict[str, Any]:
     """Mirror httpx2's environment proxy map, giving an HTTPS proxy the shared context.
 
     ``None`` keeps httpx2's meaning: the pattern (a ``NO_PROXY`` entry) uses
     the client's own transport. A proxy reached over plain HTTP gets no
-    context, which httpcore2 requires for that scheme.
+    context, which httpcore2 requires for that scheme. The transport-level
+    options the client was given travel along, as httpx2 would forward them.
     """
+    transport_options = {name: client_kwargs[name] for name in _TRANSPORT_OPTIONS if name in client_kwargs}
     mounts: dict[str, Any] = {}
     for pattern, url in get_environment_proxies().items():
         if url is None:
             mounts[pattern] = None
             continue
         proxy_context = context if httpx2.URL(url).scheme == "https" else None
-        transport_kwargs: dict[str, Any] = {
-            "verify": context,
-            "proxy": httpx2.Proxy(url=url, ssl_context=proxy_context),
-        }
-        if limits is not None:
-            transport_kwargs["limits"] = limits
-        mounts[pattern] = httpx2.AsyncHTTPTransport(**transport_kwargs)
+        mounts[pattern] = httpx2.AsyncHTTPTransport(
+            verify=context, proxy=httpx2.Proxy(url=url, ssl_context=proxy_context), **transport_options
+        )
     return mounts
 
 
@@ -185,6 +205,14 @@ def async_client(**kwargs: Any) -> httpx2.AsyncClient:
     same holds when the caller supplies a ``transport``, ``proxy``, or
     ``mounts``, or turns ``trust_env`` off.
     """
+    if "cert" in kwargs:
+        # httpx2 would load_cert_chain() the credential into whatever `verify`
+        # holds: on the shared context that leaks it into every later client
+        # and mutates the context mid-handshake. httpx2 deprecates `cert=`
+        # for the same reason; the caller's own context is the way.
+        raise TypeError(
+            "async_client() does not accept cert=; load the chain into your own context and pass it as verify="
+        )
     trust_env = bool(kwargs.get("trust_env", True))
     shared = client_ssl_context(trust_env)
     if kwargs.get("verify", True) is True:
@@ -197,5 +225,5 @@ def async_client(**kwargs: Any) -> httpx2.AsyncClient:
         and "proxy" not in kwargs
         and "mounts" not in kwargs
     ):
-        kwargs["mounts"] = _environment_proxy_mounts(shared, kwargs.get("limits"))
+        kwargs["mounts"] = _environment_proxy_mounts(shared, kwargs)
     return httpx2.AsyncClient(**kwargs)
