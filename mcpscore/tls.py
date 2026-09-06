@@ -27,7 +27,10 @@ The fix keeps the trust behavior and removes the race:
   ``verify=True`` is returned untouched.
 - macOS and Windows: truststore verifies through the native APIs, which a
   stdlib context cannot do, so it stays, with ``wrap_bio`` serialized the
-  way upstream serializes ``wrap_socket``.
+  way upstream serializes ``wrap_socket``. The same lock covers
+  ``set_alpn_protocols``, the one other mutation the HTTP stack makes per
+  connection (httpcore2 calls it before every TLS start, from the event
+  loop thread, while a worker may be inside ``wrap_bio``).
 - ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` keep the precedence httpx2 gives them.
 
 Every ``httpx2.AsyncClient`` in the engine passes ``verify=client_ssl_context()``;
@@ -89,17 +92,27 @@ def _openssl_default_context() -> ssl.SSLContext:
 
 
 def _serialized_truststore_context() -> ssl.SSLContext:
-    """Truststore's native-API context with ``wrap_bio`` serialized (upstream only serializes ``wrap_socket``)."""
+    """Build truststore's native-API context with its per-connection mutations serialized.
+
+    Upstream serializes only ``wrap_socket``. ``wrap_bio`` (which anyio runs
+    on worker threads) and ``set_alpn_protocols`` (which httpcore2 calls
+    before every TLS start) both touch the one underlying OpenSSL context,
+    so they share a lock here.
+    """
     import truststore
 
     class SerializedTruststoreContext(truststore.SSLContext):
         def __init__(self, protocol: int) -> None:
             super().__init__(protocol)
-            self._wrap_bio_lock = threading.Lock()
+            self._context_lock = threading.Lock()
 
         def wrap_bio(self, *args: Any, **kwargs: Any) -> ssl.SSLObject:
-            with self._wrap_bio_lock:
+            with self._context_lock:
                 return super().wrap_bio(*args, **kwargs)
+
+        def set_alpn_protocols(self, alpn_protocols: Any) -> None:
+            with self._context_lock:
+                super().set_alpn_protocols(alpn_protocols)
 
     return SerializedTruststoreContext(ssl.PROTOCOL_TLS_CLIENT)
 

@@ -176,17 +176,48 @@ class TestNativeTrustPlatforms:
 
         assert isinstance(context, truststore.SSLContext)
         assert type(context) is not truststore.SSLContext
-        held: list[bool] = []
+        held: list[str] = []
 
         def fake_wrap_bio(self, *_args, **_kwargs):
-            held.append(self._wrap_bio_lock.locked())
+            held.append(f"wrap_bio:{self._context_lock.locked()}")
             return "ssl-object"
 
+        def fake_set_alpn(self, protocols):
+            held.append(f"alpn:{self._context_lock.locked()}:{protocols}")
+
         monkeypatch.setattr(truststore.SSLContext, "wrap_bio", fake_wrap_bio)
+        monkeypatch.setattr(truststore.SSLContext, "set_alpn_protocols", fake_set_alpn)
 
         assert context.wrap_bio(ssl.MemoryBIO(), ssl.MemoryBIO(), server_hostname="example.com") == "ssl-object"
-        assert held == [True]
-        assert context._wrap_bio_lock.locked() is False
+        # httpcore2 does this before every TLS start, on the event loop thread.
+        context.set_alpn_protocols(["http/1.1"])
+        assert held == ["wrap_bio:True", "alpn:True:['http/1.1']"]
+        assert context._context_lock.locked() is False
+
+
+def _uses_shared_context(value: ast.expr) -> bool:
+    """Accept only a bare ``client_ssl_context()`` call: ``verify=True`` is httpx2's truststore default again."""
+    if not isinstance(value, ast.Call) or value.args or value.keywords:
+        return False
+    func = value.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    return name == "client_ssl_context"
+
+
+def clients_without_shared_context(source: str, label: str = "<source>") -> list[str]:
+    """List every ``AsyncClient(...)`` call in ``source`` whose ``verify`` is not ``client_ssl_context()``."""
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name != "AsyncClient":
+            continue
+        verify = next((kw.value for kw in node.keywords if kw.arg == "verify"), None)
+        if verify is None or not _uses_shared_context(verify):
+            offenders.append(f"{label}:{node.lineno}")
+    return offenders
 
 
 class TestEveryClientUsesIt:
@@ -195,15 +226,31 @@ class TestEveryClientUsesIt:
     def test_every_async_client_in_the_engine_passes_the_shared_context(self):
         offenders: list[str] = []
         for module in sorted(ENGINE_DIR.rglob("*.py")):
-            tree = ast.parse(module.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-                if name != "AsyncClient":
-                    continue
-                keywords = {kw.arg for kw in node.keywords}
-                if "verify" not in keywords:
-                    offenders.append(f"{module.relative_to(ENGINE_DIR)}:{node.lineno}")
+            offenders += clients_without_shared_context(
+                module.read_text(encoding="utf-8"), str(module.relative_to(ENGINE_DIR))
+            )
         assert offenders == [], f"httpx2.AsyncClient without verify=client_ssl_context(): {offenders}"
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            "httpx2.AsyncClient()",
+            "httpx2.AsyncClient(verify=True)",
+            "httpx2.AsyncClient(verify=ssl.create_default_context())",
+            "httpx2.AsyncClient(verify=client_ssl_context(strict=True))",
+            "AsyncClient(verify=other())",
+        ],
+    )
+    def test_guard_rejects_anything_but_the_shared_context(self, snippet: str):
+        assert clients_without_shared_context(snippet) == ["<source>:1"]
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            "httpx2.AsyncClient(verify=client_ssl_context())",
+            "AsyncClient(timeout=1, verify=tls.client_ssl_context())",
+            "httpx2.Client()",  # not an AsyncClient: out of scope
+        ],
+    )
+    def test_guard_accepts_the_shared_context(self, snippet: str):
+        assert clients_without_shared_context(snippet) == []
