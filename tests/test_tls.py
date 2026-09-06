@@ -19,11 +19,11 @@ ENGINE_DIR = Path(__file__).parent.parent / "mcpscore"
 @pytest.fixture(autouse=True)
 def fresh_context(monkeypatch: pytest.MonkeyPatch):
     """Each test builds its own context: clear the cache and the env overrides."""
-    tls.client_ssl_context.cache_clear()
+    tls._build_client_ssl_context.cache_clear()
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.delenv("SSL_CERT_DIR", raising=False)
     yield
-    tls.client_ssl_context.cache_clear()
+    tls._build_client_ssl_context.cache_clear()
 
 
 class TestOpenSSLPlatforms:
@@ -152,6 +152,33 @@ class TestEnvironmentOverrides:
 
         assert seen == {"cafile": str(bundle)}
         assert type(context) is ssl.SSLContext
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin"])
+    def test_trust_env_off_ignores_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str
+    ):
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "corp.pem"))
+        monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
+
+        env_builds: list[dict] = []
+        monkeypatch.setattr(
+            ssl,
+            "create_default_context",
+            lambda **kw: (env_builds.append(kw), ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT))[1],
+        )
+
+        context = tls.client_ssl_context(trust_env=False)
+
+        assert env_builds == []  # the environment bundle was never consulted
+        if platform == "linux":
+            assert type(context) is ssl.SSLContext
+        else:
+            assert type(context) is not ssl.SSLContext  # truststore's native verification stays
+        assert tls.client_ssl_context(trust_env=False) is context
+        # Cached separately from the environment-aware context.
+        assert tls.client_ssl_context(trust_env=True) is not context
+        assert env_builds == [{"cafile": str(tmp_path / "corp.pem")}]
 
     def test_ssl_cert_dir_when_no_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -296,8 +323,32 @@ class TestAsyncClientFactory:
 
         tls.async_client(**kwargs)
 
-        assert seen["verify"] is tls.client_ssl_context()
+        assert seen["verify"] is tls.client_ssl_context(kwargs.get("trust_env", True))
         assert ("mounts" in seen) == ("mounts" in kwargs)
+
+    def test_explicit_verify_true_is_the_shared_context(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        seen: dict = {}
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+
+        tls.async_client(verify=True)
+
+        assert seen["verify"] is tls.client_ssl_context()
+
+    @pytest.mark.parametrize("verify", [False, "own-context"])
+    def test_a_callers_own_verify_passes_through_and_proxies_follow_it(self, monkeypatch: pytest.MonkeyPatch, verify):
+        # verify=False or a private CA context is the caller's policy; the proxy
+        # hop must not be verified against the shared context behind their back.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
+        own = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT) if verify == "own-context" else verify
+        seen: dict = {}
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+
+        tls.async_client(verify=own)
+
+        assert seen["verify"] is own
+        assert "mounts" not in seen
 
     def test_emscripten_builds_no_mounts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "emscripten")

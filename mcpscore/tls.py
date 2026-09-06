@@ -31,7 +31,8 @@ The fix keeps the trust behavior and removes the race:
   ``set_alpn_protocols``, the one other mutation the HTTP stack makes per
   connection (httpcore2 calls it before every TLS start, from the event
   loop thread, while a worker may be inside ``wrap_bio``).
-- ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` keep the precedence httpx2 gives them.
+- ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` keep the precedence httpx2 gives them,
+  and like httpx2 they are consulted only when ``trust_env`` is on.
 
 Every outbound client in the engine is built by :func:`async_client`, which
 passes the context for the target *and* for an HTTPS proxy taken from the
@@ -124,21 +125,28 @@ def _serialized_truststore_context() -> ssl.SSLContext:
     return SerializedTruststoreContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
-@functools.cache
-def client_ssl_context() -> ssl.SSLContext | bool:
+def client_ssl_context(trust_env: bool = True) -> ssl.SSLContext | bool:
     """Return the process-wide client TLS context: built once, safe under concurrent handshakes.
 
-    ``True`` on Emscripten, where httpx2 runs on the browser's fetch and its
-    own default is the only working option.
+    ``trust_env`` mirrors httpx2's: only when it is on do ``SSL_CERT_FILE``
+    and ``SSL_CERT_DIR`` select the bundle. ``True`` on Emscripten, where
+    httpx2 runs on the browser's fetch and its own default is the only
+    working option.
     """
+    return _build_client_ssl_context(bool(trust_env))
+
+
+@functools.cache
+def _build_client_ssl_context(trust_env: bool) -> ssl.SSLContext | bool:
     if sys.platform == "emscripten":
         return True
-    cafile = os.environ.get("SSL_CERT_FILE")
-    if cafile:
-        return ssl.create_default_context(cafile=cafile)
-    capath = os.environ.get("SSL_CERT_DIR")
-    if capath:
-        return ssl.create_default_context(capath=capath)
+    if trust_env:
+        cafile = os.environ.get("SSL_CERT_FILE")
+        if cafile:
+            return ssl.create_default_context(cafile=cafile)
+        capath = os.environ.get("SSL_CERT_DIR")
+        if capath:
+            return ssl.create_default_context(capath=capath)
     if sys.platform in NATIVE_TRUST_PLATFORMS:
         return _serialized_truststore_context()
     return _openssl_default_context()
@@ -170,18 +178,24 @@ def _environment_proxy_mounts(context: ssl.SSLContext, limits: httpx2.Limits | N
 def async_client(**kwargs: Any) -> httpx2.AsyncClient:
     """Build an ``httpx2.AsyncClient`` on the shared context, proxies included.
 
-    Accepts the client's own keyword arguments. When the caller supplies a
-    ``transport``, ``proxy``, or ``mounts``, or turns ``trust_env`` off, the
-    environment proxies are theirs to configure and only ``verify`` is set.
+    Accepts the client's own keyword arguments. ``verify=True`` (the default)
+    becomes the shared context; ``verify=False`` or a caller's own context is
+    passed through untouched, and then the environment proxies are httpx2's
+    business too, since the proxy hop must follow the caller's policy. The
+    same holds when the caller supplies a ``transport``, ``proxy``, or
+    ``mounts``, or turns ``trust_env`` off.
     """
-    context = client_ssl_context()
-    kwargs.setdefault("verify", context)
+    trust_env = bool(kwargs.get("trust_env", True))
+    shared = client_ssl_context(trust_env)
+    if kwargs.get("verify", True) is True:
+        kwargs["verify"] = shared
     if (
-        isinstance(context, ssl.SSLContext)
+        kwargs["verify"] is shared
+        and isinstance(shared, ssl.SSLContext)
+        and trust_env
         and kwargs.get("transport") is None
         and "proxy" not in kwargs
         and "mounts" not in kwargs
-        and kwargs.get("trust_env", True)
     ):
-        kwargs["mounts"] = _environment_proxy_mounts(context, kwargs.get("limits"))
+        kwargs["mounts"] = _environment_proxy_mounts(shared, kwargs.get("limits"))
     return httpx2.AsyncClient(**kwargs)
