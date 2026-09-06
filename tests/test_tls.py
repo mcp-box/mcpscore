@@ -317,6 +317,56 @@ class TestSerializationUnderContention:
         assert context._context_lock.locked() is False
 
 
+class TestHandshakeVerificationIsSerialized:
+    """truststore verifies inside do_handshake using the shared context's flags; wrap_bio toggles them."""
+
+    def _sslobject(self, context):
+        # The context creates objects of its own SSLObject subclass; construct
+        # one without a live TLS state, since only the locking is under test.
+        return object.__new__(context._ctx.sslobject_class)
+
+    def test_wrap_bio_cannot_start_while_a_handshake_is_verifying(self, monkeypatch: pytest.MonkeyPatch):
+        truststore = pytest.importorskip("truststore")
+        monkeypatch.setattr(sys, "platform", "darwin")
+        context = tls.client_ssl_context()
+        sslobject = self._sslobject(context)
+        verifying_class = type(sslobject).__mro__[1]  # truststore's per-context class
+        handshake_entered = threading.Event()
+        release_handshake = threading.Event()
+        wrap_entered = threading.Event()
+
+        def blocking_handshake(self):
+            handshake_entered.set()
+            assert release_handshake.wait(5), "test harness never released the handshake"
+
+        monkeypatch.setattr(verifying_class, "do_handshake", blocking_handshake)
+        monkeypatch.setattr(truststore.SSLContext, "wrap_bio", lambda _self, *_a, **_k: wrap_entered.set())
+
+        handshake = threading.Thread(target=sslobject.do_handshake)
+        handshake.start()
+        assert handshake_entered.wait(5)
+        wrapper = threading.Thread(target=context.wrap_bio, args=(ssl.MemoryBIO(), ssl.MemoryBIO()))
+        wrapper.start()
+
+        # Verification is running under the lock: no wrap_bio may toggle the flags now.
+        assert wrap_entered.wait(0.3) is False
+
+        release_handshake.set()
+        handshake.join(5)
+        wrapper.join(5)
+        assert wrap_entered.is_set()
+        assert context._context_lock.locked() is False
+
+    def test_the_handshake_class_still_verifies_natively(self, monkeypatch: pytest.MonkeyPatch):
+        # Subclassing must keep truststore's own do_handshake (the verifier) in the chain.
+        pytest.importorskip("truststore")
+        monkeypatch.setattr(sys, "platform", "darwin")
+        context = tls.client_ssl_context()
+
+        mro = [cls.__name__ for cls in context._ctx.sslobject_class.__mro__]
+        assert mro[:3] == ["SerializedSSLObject", "TruststoreSSLObject", "SSLObject"]
+
+
 class TestAsyncClientFactory:
     """Every engine client comes from async_client(), which also covers the proxy hop."""
 

@@ -29,8 +29,8 @@ The fix keeps the trust behavior and removes the race:
   stdlib context cannot do, so it stays, with ``wrap_bio`` serialized the
   way upstream serializes ``wrap_socket``. The same lock covers
   ``set_alpn_protocols``, the one other mutation the HTTP stack makes per
-  connection (httpcore2 calls it before every TLS start, from the event
-  loop thread, while a worker may be inside ``wrap_bio``).
+  connection, and the handshake itself, whose native verification reads
+  the very flags ``wrap_bio`` toggles (see ``_serialized_truststore_context``).
 - ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` keep the precedence httpx2 gives them,
   and like httpx2 they are consulted only when ``trust_env`` is on.
 
@@ -118,19 +118,41 @@ def _openssl_default_context(trust_env: bool) -> ssl.SSLContext:
 
 
 def _serialized_truststore_context() -> ssl.SSLContext:
-    """Build truststore's native-API context with its per-connection mutations serialized.
+    """Build truststore's native-API context with everything that touches it serialized.
 
-    Upstream serializes only ``wrap_socket``. ``wrap_bio`` (which anyio runs
-    on worker threads) and ``set_alpn_protocols`` (which httpcore2 calls
-    before every TLS start) both touch the one underlying OpenSSL context,
-    so they share a lock here.
+    Upstream serializes only ``wrap_socket``. Three things touch the one
+    underlying OpenSSL context and share a lock here:
+
+    - ``wrap_bio``, which anyio runs on worker threads, and which on these
+      platforms temporarily sets ``check_hostname=False`` and
+      ``verify_mode=CERT_NONE`` while wrapping;
+    - ``set_alpn_protocols``, which httpcore2 calls before every TLS start;
+    - ``do_handshake`` on the objects the context creates: truststore runs
+      its native certificate verification inside it and reads
+      ``check_hostname`` and ``verify_mode`` from the shared context to
+      decide what to check, so a ``wrap_bio`` in flight on another thread
+      would let an invalid certificate through (sethmlarson/truststore#209).
+
+    Each ``do_handshake`` call is non-blocking and returns or raises
+    ``SSLWantReadError`` at once, so the lock is never held across I/O.
     """
     import truststore
 
     class SerializedTruststoreContext(truststore.SSLContext):
         def __init__(self, protocol: int) -> None:
             super().__init__(protocol)
-            self._context_lock = threading.Lock()
+            lock = threading.Lock()
+            self._context_lock = lock
+            # truststore installs a per-context SSLObject class whose
+            # do_handshake verifies natively; keep it, serialize it.
+            verifying_sslobject = self._ctx.sslobject_class
+
+            class SerializedSSLObject(verifying_sslobject):
+                def do_handshake(self) -> None:
+                    with lock:
+                        super().do_handshake()
+
+            self._ctx.sslobject_class = SerializedSSLObject
 
         def wrap_bio(self, *args: Any, **kwargs: Any) -> ssl.SSLObject:
             with self._context_lock:
