@@ -29,6 +29,8 @@ from urllib.parse import quote
 
 import httpx2
 
+from mcpscore.tls import client_ssl_context
+
 logger = logging.getLogger(__name__)
 
 FETCH_TIMEOUT_S = 15.0
@@ -421,7 +423,7 @@ async def fetch_package_metadata(
     """
     if client is not None:
         return await _fetch(coordinate, client)
-    async with httpx2.AsyncClient(follow_redirects=True) as owned:
+    async with httpx2.AsyncClient(verify=client_ssl_context(), follow_redirects=True) as owned:
         return await _fetch(coordinate, owned)
 
 

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent TLS handshakes no longer crash the audit on Linux.** httpx2
+  verifies through `truststore` by default, which reloads the CA store into
+  its shared OpenSSL context on every handshake and serializes that only on
+  the synchronous `wrap_socket` path; the async `wrap_bio` path anyio uses
+  runs unserialized on worker threads, so the ~23 concurrent probe
+  connections corrupted OpenSSL 3.0's heap (`double free or corruption`,
+  exit 134/139 mid-audit; seen in the GitHub Action's CI and reproduced with
+  a stress loop). Every outbound client now shares one context built once:
+  a stdlib context on Linux, which trusts the same OpenSSL default paths and
+  known bundle locations truststore does, and truststore with `wrap_bio`
+  serialized on macOS and Windows, where it verifies through the OS APIs.
+  `SSL_CERT_FILE` and `SSL_CERT_DIR` keep their precedence. Scores are
+  unchanged.
+
 ## [1.12.0] - 2026-09-05
 
 ### Added

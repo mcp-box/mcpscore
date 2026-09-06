@@ -28,6 +28,8 @@ from mcp.client.auth import OAuthClientProvider, OAuthRegistrationError, OAuthTo
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from pydantic import AnyUrl
 
+from mcpscore.tls import client_ssl_context
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -236,7 +238,7 @@ async def obtain_token_interactively(
         # provider retries the request with the token.
         try:
             async with httpx2.AsyncClient(
-                auth=provider, follow_redirects=True, timeout=30.0, transport=transport
+                verify=client_ssl_context(), auth=provider, follow_redirects=True, timeout=30.0, transport=transport
             ) as client:
                 # A well-formed JSON-RPC request: servers that validate the
                 # body before their auth middleware still answer 401 with the
