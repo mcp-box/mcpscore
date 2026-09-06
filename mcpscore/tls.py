@@ -33,8 +33,12 @@ The fix keeps the trust behavior and removes the race:
   loop thread, while a worker may be inside ``wrap_bio``).
 - ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` keep the precedence httpx2 gives them.
 
-Every ``httpx2.AsyncClient`` in the engine passes ``verify=client_ssl_context()``;
-a test walks the package tree to enforce that.
+Every outbound client in the engine is built by :func:`async_client`, which
+passes the context for the target *and* for an HTTPS proxy taken from the
+environment: httpx2 builds environment proxies with no context of their
+own, and httpcore2 then falls back to a fresh truststore context for the
+TLS connection to the proxy. A test walks the package tree to enforce that
+nothing constructs ``httpx2.AsyncClient`` directly.
 """
 
 from __future__ import annotations
@@ -47,6 +51,9 @@ import ssl
 import sys
 import threading
 from typing import Any
+
+import httpx2
+from httpx2._utils import get_environment_proxies  # the helper httpx2 itself maps env proxies with
 
 # The bundle locations truststore's OpenSSL backend falls back to when the
 # compiled-in default paths hold no certificates (truststore/_openssl.py).
@@ -135,3 +142,46 @@ def client_ssl_context() -> ssl.SSLContext | bool:
     if sys.platform in NATIVE_TRUST_PLATFORMS:
         return _serialized_truststore_context()
     return _openssl_default_context()
+
+
+def _environment_proxy_mounts(context: ssl.SSLContext, limits: httpx2.Limits | None) -> dict[str, Any]:
+    """Mirror httpx2's environment proxy map, giving an HTTPS proxy the shared context.
+
+    ``None`` keeps httpx2's meaning: the pattern (a ``NO_PROXY`` entry) uses
+    the client's own transport. A proxy reached over plain HTTP gets no
+    context, which httpcore2 requires for that scheme.
+    """
+    mounts: dict[str, Any] = {}
+    for pattern, url in get_environment_proxies().items():
+        if url is None:
+            mounts[pattern] = None
+            continue
+        proxy_context = context if httpx2.URL(url).scheme == "https" else None
+        transport_kwargs: dict[str, Any] = {
+            "verify": context,
+            "proxy": httpx2.Proxy(url=url, ssl_context=proxy_context),
+        }
+        if limits is not None:
+            transport_kwargs["limits"] = limits
+        mounts[pattern] = httpx2.AsyncHTTPTransport(**transport_kwargs)
+    return mounts
+
+
+def async_client(**kwargs: Any) -> httpx2.AsyncClient:
+    """Build an ``httpx2.AsyncClient`` on the shared context, proxies included.
+
+    Accepts the client's own keyword arguments. When the caller supplies a
+    ``transport``, ``proxy``, or ``mounts``, or turns ``trust_env`` off, the
+    environment proxies are theirs to configure and only ``verify`` is set.
+    """
+    context = client_ssl_context()
+    kwargs.setdefault("verify", context)
+    if (
+        isinstance(context, ssl.SSLContext)
+        and kwargs.get("transport") is None
+        and "proxy" not in kwargs
+        and "mounts" not in kwargs
+        and kwargs.get("trust_env", True)
+    ):
+        kwargs["mounts"] = _environment_proxy_mounts(context, kwargs.get("limits"))
+    return httpx2.AsyncClient(**kwargs)

@@ -20,10 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exit 134/139 mid-audit; seen in the GitHub Action's CI and reproduced with
   a stress loop). Every outbound client now shares one context built once:
   a stdlib context on Linux, which trusts the same OpenSSL default paths and
-  known bundle locations truststore does, and truststore with `wrap_bio`
-  serialized on macOS and Windows, where it verifies through the OS APIs.
-  `SSL_CERT_FILE` and `SSL_CERT_DIR` keep their precedence. Scores are
-  unchanged.
+  known bundle locations truststore does, and truststore with `wrap_bio` and
+  `set_alpn_protocols` serialized on macOS and Windows, where it verifies
+  through the OS APIs. The same context covers the TLS connection to an
+  HTTPS proxy from `HTTPS_PROXY`, which httpx2 would otherwise give a fresh
+  truststore context. `SSL_CERT_FILE` and `SSL_CERT_DIR` keep their
+  precedence. Scores are unchanged.
 
 ### Changed
 

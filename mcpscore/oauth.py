@@ -23,15 +23,16 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
 
-import httpx2
 from mcp.client.auth import OAuthClientProvider, OAuthRegistrationError, OAuthTokenError
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from pydantic import AnyUrl
 
-from mcpscore.tls import client_ssl_context
+from mcpscore.tls import async_client
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    import httpx2
 
 logger = logging.getLogger(__name__)
 
@@ -237,9 +238,7 @@ async def obtain_token_interactively(
         # discovery → (registration) → browser grant → token exchange, and the
         # provider retries the request with the token.
         try:
-            async with httpx2.AsyncClient(
-                verify=client_ssl_context(), auth=provider, follow_redirects=True, timeout=30.0, transport=transport
-            ) as client:
+            async with async_client(auth=provider, follow_redirects=True, timeout=30.0, transport=transport) as client:
                 # A well-formed JSON-RPC request: servers that validate the
                 # body before their auth middleware still answer 401 with the
                 # WWW-Authenticate challenge discovery needs (an empty {} can
