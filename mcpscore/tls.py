@@ -16,15 +16,22 @@ The fix keeps the trust behavior and removes the race:
 
 - Linux: truststore's backend is OpenSSL's own verification against the
   default paths (plus a few known bundle locations), so a stdlib context
-  built once is the same trust store without the per-handshake reload. A
-  plain ``ssl.SSLContext`` also keeps anyio off worker threads.
+  built once is the same trust store without the per-handshake reload. It
+  is a bare ``SSLContext(PROTOCOL_TLS_CLIENT)`` like truststore's, not
+  ``create_default_context()``, which on Python 3.13+ also turns on
+  ``VERIFY_X509_STRICT`` and ``VERIFY_X509_PARTIAL_CHAIN`` and would reject
+  chains truststore accepts. A plain ``ssl.SSLContext`` also keeps anyio off
+  worker threads.
+- Emscripten (Pyodide): the lockfile swaps in httpx2's browser fetch
+  backend, with no truststore, anyio, or working ``ssl``; httpx2's default
+  ``verify=True`` is returned untouched.
 - macOS and Windows: truststore verifies through the native APIs, which a
   stdlib context cannot do, so it stays, with ``wrap_bio`` serialized the
   way upstream serializes ``wrap_socket``.
 - ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` keep the precedence httpx2 gives them.
 
 Every ``httpx2.AsyncClient`` in the engine passes ``verify=client_ssl_context()``;
-a test enforces that.
+a test walks the package tree to enforce that.
 """
 
 from __future__ import annotations
@@ -62,10 +69,17 @@ def _capath_holds_certs(capath: str) -> bool:
 
 
 def _openssl_default_context() -> ssl.SSLContext:
-    """Build a stdlib context trusting what truststore's OpenSSL backend would trust."""
-    context = ssl.create_default_context()
+    """Build a stdlib context trusting what truststore's OpenSSL backend would trust.
+
+    Same construction as truststore: a bare client context (``CERT_REQUIRED``
+    and hostname checking are its defaults) with the default paths loaded
+    once. ``create_default_context()`` is deliberately not used; its extra
+    verification flags would change which server chains pass.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     defaults = ssl.get_default_verify_paths()
     if defaults.cafile or (defaults.capath and _capath_holds_certs(defaults.capath)):
+        context.set_default_verify_paths()
         return context
     for cafile in CA_BUNDLE_CANDIDATES:
         if Path(cafile).is_file():
@@ -91,8 +105,14 @@ def _serialized_truststore_context() -> ssl.SSLContext:
 
 
 @functools.cache
-def client_ssl_context() -> ssl.SSLContext:
-    """Return the process-wide client TLS context: built once, safe under concurrent handshakes."""
+def client_ssl_context() -> ssl.SSLContext | bool:
+    """Return the process-wide client TLS context: built once, safe under concurrent handshakes.
+
+    ``True`` on Emscripten, where httpx2 runs on the browser's fetch and its
+    own default is the only working option.
+    """
+    if sys.platform == "emscripten":
+        return True
     cafile = os.environ.get("SSL_CERT_FILE")
     if cafile:
         return ssl.create_default_context(cafile=cafile)

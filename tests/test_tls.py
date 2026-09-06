@@ -36,6 +36,46 @@ class TestOpenSSLPlatforms:
         assert context.verify_mode is ssl.CERT_REQUIRED
         assert context.check_hostname is True
 
+    def test_keeps_truststore_verification_policy_not_the_stricter_default(self, monkeypatch: pytest.MonkeyPatch):
+        # create_default_context() adds VERIFY_X509_STRICT and PARTIAL_CHAIN on
+        # 3.13+; truststore starts from a bare client context, and so do we.
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        context = tls.client_ssl_context()
+
+        assert context.verify_flags == ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).verify_flags
+        assert not context.verify_flags & ssl.VERIFY_X509_STRICT
+
+    def test_loads_the_default_paths_once_when_they_hold_certs(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_text("", encoding="utf-8")
+        paths = ssl.DefaultVerifyPaths(str(bundle), None, "SSL_CERT_FILE", str(bundle), "SSL_CERT_DIR", None)
+        monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: paths)
+        calls: list[str] = []
+        monkeypatch.setattr(ssl.SSLContext, "set_default_verify_paths", lambda _self: calls.append("defaults"))
+        monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", lambda _self, **_kw: calls.append("candidate"))
+
+        tls.client_ssl_context()
+
+        assert calls == ["defaults"]
+
+    def test_a_missing_capath_directory_does_not_count(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        assert tls._capath_holds_certs(str(tmp_path / "absent")) is False
+
+    def test_no_bundle_at_all_still_yields_a_verifying_context(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        empty = ssl.DefaultVerifyPaths(None, None, "SSL_CERT_FILE", None, "SSL_CERT_DIR", None)
+        monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: empty)
+        monkeypatch.setattr(tls, "CA_BUNDLE_CANDIDATES", (str(tmp_path / "missing.pem"),))
+        loaded: list[str] = []
+        monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", lambda _self, **_kw: loaded.append("called"))
+
+        context = tls.client_ssl_context()
+
+        assert loaded == []
+        assert context.verify_mode is ssl.CERT_REQUIRED
+
     def test_built_once_per_process(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
 
@@ -70,6 +110,21 @@ class TestOpenSSLPlatforms:
         tls.client_ssl_context()
 
         assert loaded == []
+
+
+class TestEmscripten:
+    """Pyodide gets httpx2's browser fetch backend: no ssl module worth touching, keep httpx2's default."""
+
+    def test_returns_httpx2_default_without_building_a_context(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "platform", "emscripten")
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("ssl must not be touched on emscripten")
+
+        monkeypatch.setattr(ssl, "SSLContext", boom)
+        monkeypatch.setattr(ssl, "create_default_context", boom)
+
+        assert tls.client_ssl_context() is True
 
 
 class TestEnvironmentOverrides:
@@ -139,7 +194,7 @@ class TestEveryClientUsesIt:
 
     def test_every_async_client_in_the_engine_passes_the_shared_context(self):
         offenders: list[str] = []
-        for module in sorted(ENGINE_DIR.glob("*.py")):
+        for module in sorted(ENGINE_DIR.rglob("*.py")):
             tree = ast.parse(module.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -150,5 +205,5 @@ class TestEveryClientUsesIt:
                     continue
                 keywords = {kw.arg for kw in node.keywords}
                 if "verify" not in keywords:
-                    offenders.append(f"{module.name}:{node.lineno}")
+                    offenders.append(f"{module.relative_to(ENGINE_DIR)}:{node.lineno}")
         assert offenders == [], f"httpx2.AsyncClient without verify=client_ssl_context(): {offenders}"

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-09-06
+
 ### Fixed
 
 - **Concurrent TLS handshakes no longer crash the audit on Linux.** httpx2
@@ -22,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialized on macOS and Windows, where it verifies through the OS APIs.
   `SSL_CERT_FILE` and `SSL_CERT_DIR` keep their precedence. Scores are
   unchanged.
+
+### Changed
+
+- **GitHub Action guide tightened.** The minimal workflow grants only
+  `pull-requests: write`; the local-server variant is a full job with
+  `contents: read` and commenting off, because a job that runs the pull
+  request's own server code should hold no write token; and the fork-PR
+  advice no longer suggests `pull_request_target`. Docs only, the same
+  guidance the action's README carries since mcpscore-action 1.1.0.
 
 ## [1.12.0] - 2026-09-05
 
@@ -1361,7 +1372,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.12.1...HEAD
+[1.12.1]: https://github.com/mcp-box/mcpscore/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/mcp-box/mcpscore/compare/v1.11.2...v1.12.0
 [1.11.2]: https://github.com/mcp-box/mcpscore/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/mcp-box/mcpscore/compare/v1.11.0...v1.11.1
