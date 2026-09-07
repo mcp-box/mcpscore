@@ -53,6 +53,7 @@ from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
 
 from mcpscore.spec import DRAFT, LATEST, Era
+from mcpscore.tls import async_client
 
 logger = logging.getLogger(__name__)
 
@@ -1866,9 +1867,9 @@ async def run_all_probes(
     if client is not None:
         return await run_with(lambda _probe_id: client, fresh_client)
     async with (
-        httpx2.AsyncClient(follow_redirects=True, headers=headers) as own_client,
-        httpx2.AsyncClient(follow_redirects=True, headers=headers) as fresh_client,
-        httpx2.AsyncClient(follow_redirects=True) as anon_client,
+        async_client(follow_redirects=True, headers=headers) as own_client,
+        async_client(follow_redirects=True, headers=headers) as fresh_client,
+        async_client(follow_redirects=True) as anon_client,
     ):
         return await run_with(
             lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client,

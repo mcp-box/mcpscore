@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-09-06
+
+### Fixed
+
+- **Concurrent TLS handshakes no longer crash the audit on Linux.** httpx2
+  verifies through `truststore` by default, which reloads the CA store into
+  its shared OpenSSL context on every handshake and serializes that only on
+  the synchronous `wrap_socket` path; the async `wrap_bio` path anyio uses
+  runs unserialized on worker threads, so the ~23 concurrent probe
+  connections corrupted OpenSSL 3.0's heap (`double free or corruption`,
+  exit 134/139 mid-audit; seen in the GitHub Action's CI and reproduced with
+  a stress loop). Every outbound client now gets a context built once for
+  that client and never reconfigured, the lifetime httpx2 itself uses, so
+  rotated trust material reaches the next client: a stdlib context on Linux, which trusts the same OpenSSL default paths and
+  known bundle locations truststore does, and truststore on macOS and
+  Windows, where it verifies through the OS APIs, with `wrap_bio`,
+  `set_alpn_protocols`, and the handshake's native verification serialized
+  (a concurrent `wrap_bio` there also toggles the verify flags the
+  verification reads, so an unserialized handshake could have accepted an
+  invalid certificate). The same context covers the TLS connection to an
+  HTTPS proxy from `HTTPS_PROXY`, which httpx2 would otherwise give a fresh
+  truststore context. `SSL_CERT_FILE` and `SSL_CERT_DIR` keep their
+  precedence. Scores are unchanged.
+
+### Changed
+
+- **GitHub Action guide tightened.** The minimal workflow grants only
+  `pull-requests: write`; the local-server variant is a full job with
+  `contents: read` and commenting off, because a job that runs the pull
+  request's own server code should hold no write token; and the fork-PR
+  advice no longer suggests `pull_request_target`. Docs only, the same
+  guidance the action's README carries since mcpscore-action 1.1.0.
+
 ## [1.12.0] - 2026-09-05
 
 ### Added
@@ -1345,7 +1378,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.12.1...HEAD
+[1.12.1]: https://github.com/mcp-box/mcpscore/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/mcp-box/mcpscore/compare/v1.11.2...v1.12.0
 [1.11.2]: https://github.com/mcp-box/mcpscore/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/mcp-box/mcpscore/compare/v1.11.0...v1.11.1

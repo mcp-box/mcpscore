@@ -44,6 +44,7 @@ from .probes import (
     ProbeResult,
     client_version,
 )
+from .tls import async_client
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -617,7 +618,7 @@ class MCPClient:
 
         try:
             # Configure HTTP client with timeouts and retries
-            client = httpx2.AsyncClient(
+            client = async_client(
                 timeout=httpx2.Timeout(
                     connect=15.0,  # Connection timeout: 15 seconds
                     read=60.0,  # Read timeout: 60 seconds
@@ -718,7 +719,7 @@ class MCPClient:
             },
         }
         try:
-            async with httpx2.AsyncClient(timeout=10.0, headers=self.headers) as client:
+            async with async_client(timeout=10.0, headers=self.headers) as client:
                 response = await client.post(
                     server_url,
                     json=body,
@@ -751,7 +752,7 @@ class MCPClient:
 
         try:
             # Configure HTTP client for SSE with appropriate timeouts
-            client = httpx2.AsyncClient(
+            client = async_client(
                 timeout=httpx2.Timeout(
                     connect=15.0,  # Connection timeout: 15 seconds
                     read=None,  # No read timeout for streaming (handled by keepalive)
