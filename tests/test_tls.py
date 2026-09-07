@@ -1,4 +1,4 @@
-"""The shared client TLS context: trust behavior preserved, per-handshake races removed."""
+"""The client TLS context: trust behavior preserved, per-handshake races removed."""
 
 from __future__ import annotations
 
@@ -17,13 +17,12 @@ ENGINE_DIR = Path(__file__).parent.parent / "mcpscore"
 
 
 @pytest.fixture(autouse=True)
-def fresh_context(monkeypatch: pytest.MonkeyPatch):
-    """Each test builds its own context: clear the cache and the env overrides."""
-    tls._build_client_ssl_context.cache_clear()
+def no_environment_overrides(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.delenv("SSL_CERT_DIR", raising=False)
-    yield
-    tls._build_client_ssl_context.cache_clear()
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
 
 
 class TestOpenSSLPlatforms:
@@ -48,6 +47,19 @@ class TestOpenSSLPlatforms:
         assert context.verify_flags == ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).verify_flags
         assert not context.verify_flags & ssl.VERIFY_X509_STRICT
 
+    def test_a_new_context_per_call_so_rotated_bundles_are_reread(self, monkeypatch: pytest.MonkeyPatch):
+        # httpx2 builds a context per client; a long-running service must not
+        # keep the roots it loaded at startup.
+        monkeypatch.setattr(sys, "platform", "linux")
+        loads: list[str] = []
+        monkeypatch.setattr(ssl.SSLContext, "set_default_verify_paths", lambda _self: loads.append("defaults"))
+
+        first = tls.client_ssl_context()
+        second = tls.client_ssl_context()
+
+        assert first is not second
+        assert loads == ["defaults", "defaults"]
+
     def test_loads_the_default_paths_once_when_they_hold_certs(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setattr(sys, "platform", "linux")
         bundle = tmp_path / "bundle.pem"
@@ -61,38 +73,6 @@ class TestOpenSSLPlatforms:
         tls.client_ssl_context()
 
         assert calls == ["defaults"]
-
-    def test_a_missing_capath_directory_does_not_count(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-        assert tls._capath_holds_certs(str(tmp_path / "absent")) is False
-
-    def test_no_bundle_at_all_still_yields_a_verifying_context(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-        monkeypatch.setattr(sys, "platform", "linux")
-        empty = ssl.DefaultVerifyPaths(None, None, "SSL_CERT_FILE", None, "SSL_CERT_DIR", None)
-        monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: empty)
-        monkeypatch.setattr(tls, "CA_BUNDLE_CANDIDATES", (str(tmp_path / "missing.pem"),))
-        loaded: list[str] = []
-        monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", lambda _self, **_kw: loaded.append("called"))
-
-        context = tls.client_ssl_context()
-
-        assert loaded == []
-        assert context.verify_mode is ssl.CERT_REQUIRED
-
-    def test_built_once_per_configuration(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(sys, "platform", "linux")
-
-        assert tls.client_ssl_context() is tls.client_ssl_context()
-        assert tls.client_ssl_context(http2=True) is tls.client_ssl_context(http2=True)
-
-    def test_distinct_context_per_protocol_policy(self, monkeypatch: pytest.MonkeyPatch):
-        # httpcore2 writes the ALPN list onto the context before each handshake;
-        # an HTTP/2 client and an HTTP/1 client must not share one object.
-        monkeypatch.setattr(sys, "platform", "linux")
-
-        default = tls.client_ssl_context()
-        assert tls.client_ssl_context(http2=True) is not default
-        assert tls.client_ssl_context(http1=False, http2=True) is not tls.client_ssl_context(http2=True)
-        assert type(tls.client_ssl_context(http2=True)) is ssl.SSLContext
 
     def test_falls_back_to_a_known_bundle_when_default_paths_are_empty(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -124,6 +104,22 @@ class TestOpenSSLPlatforms:
 
         assert loaded == []
 
+    def test_a_missing_capath_directory_does_not_count(self, tmp_path: Path):
+        assert tls._capath_holds_certs(str(tmp_path / "absent")) is False
+
+    def test_no_bundle_at_all_still_yields_a_verifying_context(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        empty = ssl.DefaultVerifyPaths(None, None, "SSL_CERT_FILE", None, "SSL_CERT_DIR", None)
+        monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: empty)
+        monkeypatch.setattr(tls, "CA_BUNDLE_CANDIDATES", (str(tmp_path / "missing.pem"),))
+        loaded: list[str] = []
+        monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", lambda _self, **_kw: loaded.append("called"))
+
+        context = tls.client_ssl_context()
+
+        assert loaded == []
+        assert context.verify_mode is ssl.CERT_REQUIRED
+
 
 class TestEmscripten:
     """Pyodide gets httpx2's browser fetch backend: no ssl module worth touching, keep httpx2's default."""
@@ -141,7 +137,7 @@ class TestEmscripten:
 
 
 class TestEnvironmentOverrides:
-    """SSL_CERT_FILE and SSL_CERT_DIR keep the precedence httpx2 gives them, on every platform."""
+    """SSL_CERT_FILE and SSL_CERT_DIR keep the precedence httpx2 gives them, on every platform, when trust_env is on."""
 
     @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
     def test_ssl_cert_file_wins(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str):
@@ -164,6 +160,26 @@ class TestEnvironmentOverrides:
         assert seen == {"cafile": str(bundle)}
         assert type(context) is ssl.SSLContext
 
+    def test_the_variables_are_read_on_every_call(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        # httpx2 reads them per client; a value seen once must not stick.
+        monkeypatch.setattr(sys, "platform", "linux")
+        for name in ("a", "b"):
+            (tmp_path / f"{name}.pem").write_text("", encoding="utf-8")
+        seen: list[dict] = []
+        monkeypatch.setattr(
+            ssl, "create_default_context", lambda **kw: (seen.append(kw), ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT))[1]
+        )
+
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "a.pem"))
+        tls.client_ssl_context()
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "b.pem"))
+        tls.client_ssl_context()
+        monkeypatch.delenv("SSL_CERT_FILE")
+        default = tls.client_ssl_context()
+
+        assert seen == [{"cafile": str(tmp_path / "a.pem")}, {"cafile": str(tmp_path / "b.pem")}]
+        assert type(default) is ssl.SSLContext
+
     @pytest.mark.parametrize("platform", ["linux", "darwin"])
     def test_trust_env_off_ignores_the_environment(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str
@@ -171,7 +187,6 @@ class TestEnvironmentOverrides:
         monkeypatch.setattr(sys, "platform", platform)
         monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "corp.pem"))
         monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
-
         env_builds: list[dict] = []
         monkeypatch.setattr(
             ssl,
@@ -186,10 +201,6 @@ class TestEnvironmentOverrides:
             assert type(context) is ssl.SSLContext
         else:
             assert type(context) is not ssl.SSLContext  # truststore's native verification stays
-        assert tls.client_ssl_context(trust_env=False) is context
-        # Cached separately from the environment-aware context.
-        assert tls.client_ssl_context(trust_env=True) is not context
-        assert env_builds == [{"cafile": str(tmp_path / "corp.pem")}]
 
     @pytest.mark.parametrize("compiled_in", ["cafile", "capath"])
     def test_trust_env_off_loads_only_the_compiled_in_openssl_locations(
@@ -245,26 +256,6 @@ class TestEnvironmentOverrides:
         tls.client_ssl_context(trust_env=False)
 
         assert loaded == [str(bundle)]
-
-    def test_a_changed_certificate_variable_yields_a_new_context(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-        # httpx2 reads the variables on every client; a stale first value must not stick.
-        monkeypatch.setattr(sys, "platform", "linux")
-        for name in ("a", "b"):
-            (tmp_path / f"{name}.pem").write_text("", encoding="utf-8")
-        monkeypatch.setattr(ssl, "create_default_context", lambda **_kw: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
-
-        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "a.pem"))
-        first = tls.client_ssl_context()
-        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "b.pem"))
-        second = tls.client_ssl_context()
-        monkeypatch.delenv("SSL_CERT_FILE")
-        default = tls.client_ssl_context()
-        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "a.pem"))
-
-        assert first is not second
-        assert default is not first
-        assert default is not second
-        assert tls.client_ssl_context() is first  # same variable value, same cached context
 
     def test_ssl_cert_dir_when_no_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -349,7 +340,7 @@ class TestSerializationUnderContention:
 
 
 class TestHandshakeVerificationIsSerialized:
-    """truststore verifies inside do_handshake using the shared context's flags; wrap_bio toggles them."""
+    """truststore verifies inside do_handshake using the context's flags; wrap_bio toggles them."""
 
     def _sslobject(self, context):
         # The context creates objects of its own SSLObject subclass; construct
@@ -398,32 +389,40 @@ class TestHandshakeVerificationIsSerialized:
         assert mro[:3] == ["SerializedSSLObject", "TruststoreSSLObject", "SSLObject"]
 
 
+def _capture_client(monkeypatch: pytest.MonkeyPatch) -> dict:
+    seen: dict = {}
+    monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+    return seen
+
+
 class TestAsyncClientFactory:
     """Every engine client comes from async_client(), which also covers the proxy hop."""
 
-    @pytest.fixture(autouse=True)
-    def no_environment_proxies(self, monkeypatch: pytest.MonkeyPatch):
-        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
-            monkeypatch.delenv(name, raising=False)
-            monkeypatch.delenv(name.lower(), raising=False)
-
-    def test_passes_the_shared_context_as_verify(self, monkeypatch: pytest.MonkeyPatch):
+    def test_passes_a_context_of_its_own_as_verify(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         assert tls.async_client(timeout=3.0) == "client"
 
-        assert seen["verify"] is tls.client_ssl_context()
+        assert type(seen["verify"]) is ssl.SSLContext
         assert seen["timeout"] == 3.0
         assert seen["mounts"] == {}
 
-    def test_an_https_proxy_from_the_environment_gets_the_shared_context(self, monkeypatch: pytest.MonkeyPatch):
+    def test_each_client_gets_its_own_context(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        seen: list[dict] = []
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.append(kw) or "client")
+
+        tls.async_client()
+        tls.async_client()
+
+        assert seen[0]["verify"] is not seen[1]["verify"]
+
+    def test_an_https_proxy_from_the_environment_gets_a_context_of_ours(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
         monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
         monkeypatch.setenv("NO_PROXY", "localhost")
-        context = tls.client_ssl_context()
         limits = httpx2.Limits(max_connections=7)
 
         client = tls.async_client(limits=limits)
@@ -431,15 +430,31 @@ class TestAsyncClientFactory:
         # httpx2 keeps mounted transports keyed by URL pattern; the proxy pool
         # sits on each transport. Private attributes, but they are the only
         # place the proxy's TLS context can be observed.
+        target_context = client._transport._pool._ssl_context
         mounts = {str(pattern.pattern): transport for pattern, transport in client._mounts.items()}
         https_pool = mounts["https://"]._pool
         http_pool = mounts["http://"]._pool
         assert type(https_pool).__name__ == "AsyncHTTPProxy"
-        assert https_pool._proxy_ssl_context is context
-        assert https_pool._ssl_context is context
+        assert https_pool._ssl_context is target_context  # the target verifies with the client's context
+        assert type(https_pool._proxy_ssl_context) is ssl.SSLContext  # the hop has one of ours
+        assert https_pool._proxy_ssl_context is not target_context  # but not the target's (ALPN differs)
         assert https_pool._max_connections == 7
         assert http_pool._proxy_ssl_context is None  # plain-HTTP proxy hop: no TLS to the proxy
         assert mounts["all://localhost"] is None  # NO_PROXY entry keeps the client's own transport
+
+    def test_all_https_proxies_of_a_client_share_one_hop_context(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
+        monkeypatch.setenv("HTTP_PROXY", "https://proxy.example:8443")
+        built: list[dict] = []
+        monkeypatch.setattr(httpx2, "AsyncHTTPTransport", lambda **kw: built.append(kw) or "transport")
+        _capture_client(monkeypatch)
+
+        tls.async_client()
+
+        hops = {id(kw["proxy"].ssl_context) for kw in built}
+        assert len(built) == 2
+        assert len(hops) == 1
 
     def test_a_proxy_transport_without_limits_uses_httpx2_defaults(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
@@ -453,12 +468,11 @@ class TestAsyncClientFactory:
     def test_trust_env_off_builds_no_environment_mounts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(trust_env=False)
 
-        assert seen["verify"] is tls.client_ssl_context(trust_env=False)
+        assert type(seen["verify"]) is ssl.SSLContext
         assert "mounts" not in seen
 
     @pytest.mark.parametrize(
@@ -469,18 +483,16 @@ class TestAsyncClientFactory:
             httpx2.Proxy("https://proxy.example:8443"),
         ],
     )
-    def test_an_explicit_https_proxy_without_a_context_gets_the_shared_one(
-        self, monkeypatch: pytest.MonkeyPatch, proxy
-    ):
+    def test_an_explicit_https_proxy_without_a_context_gets_one_of_ours(self, monkeypatch: pytest.MonkeyPatch, proxy):
         monkeypatch.setattr(sys, "platform", "linux")
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(proxy=proxy)
 
         normalized = seen["proxy"]
         assert isinstance(normalized, httpx2.Proxy)
-        assert normalized.ssl_context is tls.client_ssl_context()
+        assert type(normalized.ssl_context) is ssl.SSLContext
+        assert normalized.ssl_context is not seen["verify"]
         assert normalized.url.host == "proxy.example"
         if isinstance(proxy, str):
             assert normalized.auth == ("user", "pw")  # credentials survive the normalization
@@ -490,8 +502,7 @@ class TestAsyncClientFactory:
         monkeypatch.setattr(sys, "platform", "linux")
         own = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         proxy = httpx2.Proxy("https://proxy.example:8443", ssl_context=own)
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(proxy=proxy)
 
@@ -501,8 +512,7 @@ class TestAsyncClientFactory:
     @pytest.mark.parametrize("proxy", ["http://proxy.example:3128", "socks5://proxy.example:1080"])
     def test_a_non_tls_proxy_hop_gets_no_context(self, monkeypatch: pytest.MonkeyPatch, proxy: str):
         monkeypatch.setattr(sys, "platform", "linux")
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(proxy=proxy)
 
@@ -513,42 +523,38 @@ class TestAsyncClientFactory:
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
         monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(mounts={"http://": "caller-transport"})
 
         assert seen["mounts"]["http://"] == "caller-transport"  # the caller's pattern wins
-        assert seen["mounts"]["https://"]._pool._proxy_ssl_context is tls.client_ssl_context()  # ours underneath
+        assert type(seen["mounts"]["https://"]._pool._proxy_ssl_context) is ssl.SSLContext  # ours underneath
 
     def test_empty_caller_mounts_do_not_disable_the_safe_environment_mounts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(mounts={})
 
-        assert seen["mounts"]["https://"]._pool._proxy_ssl_context is tls.client_ssl_context()
+        assert type(seen["mounts"]["https://"]._pool._proxy_ssl_context) is ssl.SSLContext
 
-    def test_explicit_verify_true_is_the_shared_context(self, monkeypatch: pytest.MonkeyPatch):
+    def test_explicit_verify_true_becomes_a_context_of_ours(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(verify=True)
 
-        assert seen["verify"] is tls.client_ssl_context()
+        assert type(seen["verify"]) is ssl.SSLContext
 
     @pytest.mark.parametrize("verify", [False, "own-context"])
     def test_a_callers_own_verify_passes_through_and_proxies_follow_it(self, monkeypatch: pytest.MonkeyPatch, verify):
         # verify=False or a private CA context is the caller's policy; the proxy
-        # hop must not be verified against the shared context behind their back.
+        # hop must not be verified against a context of ours behind their back.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
         own = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT) if verify == "own-context" else verify
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(verify=own)
 
@@ -562,31 +568,24 @@ class TestAsyncClientFactory:
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
         built: list[dict] = []
         monkeypatch.setattr(httpx2, "AsyncHTTPTransport", lambda **kw: built.append(kw) or "transport")
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **_kw: "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(http1=False, http2=True, limits=httpx2.Limits(max_connections=3))
 
-        policy_context = tls.client_ssl_context(http1=False, http2=True)
         assert len(built) == 1
         assert built[0]["http1"] is False
         assert built[0]["http2"] is True
         assert built[0]["limits"].max_connections == 3
-        assert built[0]["verify"] is policy_context
+        assert built[0]["verify"] is seen["verify"]
         # httpcore2 builds the proxy-hop connection without the pool's http1/http2
-        # flags, so that hop is HTTP/1.1 and verifies with the default-policy context.
-        assert built[0]["proxy"].ssl_context is tls.client_ssl_context()
-        assert policy_context is not tls.client_ssl_context()
+        # flags, so that hop is HTTP/1.1 and gets a context of its own.
+        assert built[0]["proxy"].ssl_context is not seen["verify"]
 
-    def test_cert_is_rejected_so_the_shared_context_never_carries_a_credential(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ):
+    def test_cert_is_rejected(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setattr(sys, "platform", "linux")
-        before = tls.client_ssl_context()
 
         with pytest.raises(TypeError, match="cert="):
             tls.async_client(cert=str(tmp_path / "client.pem"))
-
-        assert tls.client_ssl_context() is before
 
     @pytest.mark.parametrize("kwargs", [{"verify": False}, {"transport": "custom-transport"}])
     def test_builds_no_context_when_httpx2_would_not_use_one(self, monkeypatch: pytest.MonkeyPatch, kwargs: dict):
@@ -595,11 +594,10 @@ class TestAsyncClientFactory:
         monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/corp.pem")
 
         def boom(*_args, **_kwargs):
-            raise AssertionError("the shared context must not be built here")
+            raise AssertionError("no context must be built here")
 
         monkeypatch.setattr(tls, "client_ssl_context", boom)
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client(**kwargs)
 
@@ -608,8 +606,7 @@ class TestAsyncClientFactory:
     def test_emscripten_builds_no_mounts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "emscripten")
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
-        seen: dict = {}
-        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+        seen = _capture_client(monkeypatch)
 
         tls.async_client()
 

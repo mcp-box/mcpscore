@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs unserialized on worker threads, so the ~23 concurrent probe
   connections corrupted OpenSSL 3.0's heap (`double free or corruption`,
   exit 134/139 mid-audit; seen in the GitHub Action's CI and reproduced with
-  a stress loop). Every outbound client now shares one context built once:
-  a stdlib context on Linux, which trusts the same OpenSSL default paths and
+  a stress loop). Every outbound client now gets a context built once for
+  that client and never reconfigured, the lifetime httpx2 itself uses, so
+  rotated trust material reaches the next client: a stdlib context on Linux, which trusts the same OpenSSL default paths and
   known bundle locations truststore does, and truststore on macOS and
   Windows, where it verifies through the OS APIs, with `wrap_bio`,
   `set_alpn_protocols`, and the handshake's native verification serialized
