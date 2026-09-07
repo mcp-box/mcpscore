@@ -47,10 +47,17 @@ class TestOpenSSLPlatforms:
         assert context.verify_flags == ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).verify_flags
         assert not context.verify_flags & ssl.VERIFY_X509_STRICT
 
-    def test_a_new_context_per_call_so_rotated_bundles_are_reread(self, monkeypatch: pytest.MonkeyPatch):
+    def test_a_new_context_per_call_so_rotated_bundles_are_reread(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
         # httpx2 builds a context per client; a long-running service must not
-        # keep the roots it loaded at startup.
+        # keep the roots it loaded at startup. Default paths are pinned: the
+        # Windows runners have none, which would route to the bundle candidates.
         monkeypatch.setattr(sys, "platform", "linux")
+        bundle = tmp_path / "bundle.pem"
+        bundle.write_text("", encoding="utf-8")
+        paths = ssl.DefaultVerifyPaths(str(bundle), None, "SSL_CERT_FILE", str(bundle), "SSL_CERT_DIR", None)
+        monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: paths)
         loads: list[str] = []
         monkeypatch.setattr(ssl.SSLContext, "set_default_verify_paths", lambda _self: loads.append("defaults"))
 
