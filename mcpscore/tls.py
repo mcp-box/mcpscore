@@ -165,28 +165,37 @@ def _serialized_truststore_context() -> ssl.SSLContext:
     return SerializedTruststoreContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
-def client_ssl_context(trust_env: bool = True) -> ssl.SSLContext | bool:
-    """Return the process-wide client TLS context: built once, safe under concurrent handshakes.
+def client_ssl_context(trust_env: bool = True, *, http1: bool = True, http2: bool = False) -> ssl.SSLContext | bool:
+    """Return the shared client TLS context for this configuration: built once, safe under concurrent handshakes.
 
     ``trust_env`` mirrors httpx2's: only when it is on do ``SSL_CERT_FILE``
-    and ``SSL_CERT_DIR`` select the bundle. ``True`` on Emscripten, where
-    httpx2 runs on the browser's fetch and its own default is the only
-    working option.
+    and ``SSL_CERT_DIR`` select the bundle, and they are read on every call
+    as httpx2 reads them on every client, so a changed variable yields a new
+    context rather than a stale one. ``http1``/``http2`` select a distinct
+    context per protocol policy: httpcore2 writes the ALPN list onto the
+    context before each handshake, and on the platforms where anyio threads
+    the wrap, two clients with different policies sharing one context could
+    negotiate each other's. ``True`` on Emscripten, where httpx2 runs on the
+    browser's fetch and its own default is the only working option.
     """
-    return _build_client_ssl_context(bool(trust_env))
+    cafile = capath = None
+    if trust_env:
+        cafile = os.environ.get("SSL_CERT_FILE") or None
+        capath = None if cafile else (os.environ.get("SSL_CERT_DIR") or None)
+    return _build_client_ssl_context(bool(trust_env), cafile, capath, bool(http1), bool(http2))
 
 
 @functools.cache
-def _build_client_ssl_context(trust_env: bool) -> ssl.SSLContext | bool:
+def _build_client_ssl_context(
+    trust_env: bool, cafile: str | None, capath: str | None, _http1: bool, _http2: bool
+) -> ssl.SSLContext | bool:
+    # _http1/_http2 only key the cache: the context is the same, the object is not.
     if sys.platform == "emscripten":
         return True
-    if trust_env:
-        cafile = os.environ.get("SSL_CERT_FILE")
-        if cafile:
-            return ssl.create_default_context(cafile=cafile)
-        capath = os.environ.get("SSL_CERT_DIR")
-        if capath:
-            return ssl.create_default_context(capath=capath)
+    if cafile:
+        return ssl.create_default_context(cafile=cafile)
+    if capath:
+        return ssl.create_default_context(capath=capath)
     if sys.platform in NATIVE_TRUST_PLATFORMS:
         return _serialized_truststore_context()
     return _openssl_default_context(trust_env)
@@ -196,13 +205,18 @@ _TRANSPORT_OPTIONS = ("limits", "http1", "http2")
 """Client options httpx2 forwards to the transports it builds for environment proxies."""
 
 
-def _environment_proxy_mounts(context: ssl.SSLContext, client_kwargs: dict[str, Any]) -> dict[str, Any]:
+def _environment_proxy_mounts(
+    context: ssl.SSLContext, proxy_context: ssl.SSLContext, client_kwargs: dict[str, Any]
+) -> dict[str, Any]:
     """Mirror httpx2's environment proxy map, giving an HTTPS proxy the shared context.
 
     ``None`` keeps httpx2's meaning: the pattern (a ``NO_PROXY`` entry) uses
-    the client's own transport. A proxy reached over plain HTTP gets no
-    context, which httpcore2 requires for that scheme. The transport-level
-    options the client was given travel along, as httpx2 would forward them.
+    the client's own transport. ``context`` verifies the target and follows
+    the client's protocol policy; ``proxy_context`` verifies the hop to an
+    HTTPS proxy, which httpcore2 always negotiates as HTTP/1.1. A proxy
+    reached over plain HTTP gets no context, which httpcore2 requires for
+    that scheme. The transport-level options the client was given travel
+    along, as httpx2 would forward them.
     """
     transport_options = {name: client_kwargs[name] for name in _TRANSPORT_OPTIONS if name in client_kwargs}
     mounts: dict[str, Any] = {}
@@ -210,9 +224,9 @@ def _environment_proxy_mounts(context: ssl.SSLContext, client_kwargs: dict[str, 
         if url is None:
             mounts[pattern] = None
             continue
-        proxy_context = context if httpx2.URL(url).scheme == "https" else None
+        hop_context = proxy_context if httpx2.URL(url).scheme == "https" else None
         mounts[pattern] = httpx2.AsyncHTTPTransport(
-            verify=context, proxy=httpx2.Proxy(url=url, ssl_context=proxy_context), **transport_options
+            verify=context, proxy=httpx2.Proxy(url=url, ssl_context=hop_context), **transport_options
         )
     return mounts
 
@@ -244,17 +258,26 @@ def async_client(**kwargs: Any) -> httpx2.AsyncClient:
     # it, so a bad SSL_CERT_FILE cannot fail a client that does not verify.
     if kwargs.get("verify", True) is True and kwargs.get("transport") is None:
         trust_env = bool(kwargs.get("trust_env", True))
-        shared = client_ssl_context(trust_env)
+        # One context per protocol policy for the target. The hop to an HTTPS
+        # proxy is a separate connection that httpcore2 builds without the
+        # pool's http1/http2 flags, so it always negotiates HTTP/1.1 and gets
+        # the default-policy context.
+        shared = client_ssl_context(trust_env, http1=kwargs.get("http1", True), http2=kwargs.get("http2", False))
         kwargs["verify"] = shared
         if isinstance(shared, ssl.SSLContext):
+            proxy_hop = client_ssl_context(trust_env)
+            assert isinstance(proxy_hop, ssl.SSLContext)  # same platform branch as `shared`  # noqa: S101
             if kwargs.get("proxy") is not None:
                 # An explicit proxy replaces the environment map in httpx2;
-                # its own HTTPS hop still needs the shared context.
-                kwargs["proxy"] = _proxy_with_shared_context(kwargs["proxy"], shared)
+                # its own HTTPS hop still needs a shared context.
+                kwargs["proxy"] = _proxy_with_shared_context(kwargs["proxy"], proxy_hop)
             elif trust_env:
                 # httpx2 lays caller mounts *over* the environment map, so the
                 # safe environment mounts go underneath, never instead.
-                kwargs["mounts"] = {**_environment_proxy_mounts(shared, kwargs), **(kwargs.get("mounts") or {})}
+                kwargs["mounts"] = {
+                    **_environment_proxy_mounts(shared, proxy_hop, kwargs),
+                    **(kwargs.get("mounts") or {}),
+                }
     return httpx2.AsyncClient(**kwargs)
 
 

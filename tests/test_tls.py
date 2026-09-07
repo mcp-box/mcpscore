@@ -78,10 +78,21 @@ class TestOpenSSLPlatforms:
         assert loaded == []
         assert context.verify_mode is ssl.CERT_REQUIRED
 
-    def test_built_once_per_process(self, monkeypatch: pytest.MonkeyPatch):
+    def test_built_once_per_configuration(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
 
         assert tls.client_ssl_context() is tls.client_ssl_context()
+        assert tls.client_ssl_context(http2=True) is tls.client_ssl_context(http2=True)
+
+    def test_distinct_context_per_protocol_policy(self, monkeypatch: pytest.MonkeyPatch):
+        # httpcore2 writes the ALPN list onto the context before each handshake;
+        # an HTTP/2 client and an HTTP/1 client must not share one object.
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        default = tls.client_ssl_context()
+        assert tls.client_ssl_context(http2=True) is not default
+        assert tls.client_ssl_context(http1=False, http2=True) is not tls.client_ssl_context(http2=True)
+        assert type(tls.client_ssl_context(http2=True)) is ssl.SSLContext
 
     def test_falls_back_to_a_known_bundle_when_default_paths_are_empty(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -234,6 +245,26 @@ class TestEnvironmentOverrides:
         tls.client_ssl_context(trust_env=False)
 
         assert loaded == [str(bundle)]
+
+    def test_a_changed_certificate_variable_yields_a_new_context(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        # httpx2 reads the variables on every client; a stale first value must not stick.
+        monkeypatch.setattr(sys, "platform", "linux")
+        for name in ("a", "b"):
+            (tmp_path / f"{name}.pem").write_text("", encoding="utf-8")
+        monkeypatch.setattr(ssl, "create_default_context", lambda **_kw: ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT))
+
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "a.pem"))
+        first = tls.client_ssl_context()
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "b.pem"))
+        second = tls.client_ssl_context()
+        monkeypatch.delenv("SSL_CERT_FILE")
+        default = tls.client_ssl_context()
+        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "a.pem"))
+
+        assert first is not second
+        assert default is not first
+        assert default is not second
+        assert tls.client_ssl_context() is first  # same variable value, same cached context
 
     def test_ssl_cert_dir_when_no_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -535,11 +566,16 @@ class TestAsyncClientFactory:
 
         tls.async_client(http1=False, http2=True, limits=httpx2.Limits(max_connections=3))
 
+        policy_context = tls.client_ssl_context(http1=False, http2=True)
         assert len(built) == 1
         assert built[0]["http1"] is False
         assert built[0]["http2"] is True
         assert built[0]["limits"].max_connections == 3
-        assert built[0]["verify"] is tls.client_ssl_context()
+        assert built[0]["verify"] is policy_context
+        # httpcore2 builds the proxy-hop connection without the pool's http1/http2
+        # flags, so that hop is HTTP/1.1 and verifies with the default-policy context.
+        assert built[0]["proxy"].ssl_context is tls.client_ssl_context()
+        assert policy_context is not tls.client_ssl_context()
 
     def test_cert_is_rejected_so_the_shared_context_never_carries_a_credential(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
