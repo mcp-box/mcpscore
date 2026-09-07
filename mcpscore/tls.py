@@ -225,8 +225,10 @@ def async_client(**kwargs: Any) -> httpx2.AsyncClient:
     passed through untouched, and then the environment proxies are httpx2's
     business too, since the proxy hop must follow the caller's policy. A
     caller-supplied ``transport`` is left entirely alone, as httpx2 ignores
-    ``verify`` and environment proxies for it; ``proxy``, ``mounts``, or
-    ``trust_env=False`` keep the shared context but leave proxies to httpx2.
+    ``verify`` and environment proxies for it. An explicit ``proxy`` gets the
+    shared context for its own HTTPS hop unless it brought one; caller
+    ``mounts`` are laid over the safe environment mounts, as httpx2 lays
+    them over its own environment map.
     """
     if "cert" in kwargs:
         # httpx2 would load_cert_chain() the credential into whatever `verify`
@@ -244,6 +246,27 @@ def async_client(**kwargs: Any) -> httpx2.AsyncClient:
         trust_env = bool(kwargs.get("trust_env", True))
         shared = client_ssl_context(trust_env)
         kwargs["verify"] = shared
-        if isinstance(shared, ssl.SSLContext) and trust_env and "proxy" not in kwargs and "mounts" not in kwargs:
-            kwargs["mounts"] = _environment_proxy_mounts(shared, kwargs)
+        if isinstance(shared, ssl.SSLContext):
+            if kwargs.get("proxy") is not None:
+                # An explicit proxy replaces the environment map in httpx2;
+                # its own HTTPS hop still needs the shared context.
+                kwargs["proxy"] = _proxy_with_shared_context(kwargs["proxy"], shared)
+            elif trust_env:
+                # httpx2 lays caller mounts *over* the environment map, so the
+                # safe environment mounts go underneath, never instead.
+                kwargs["mounts"] = {**_environment_proxy_mounts(shared, kwargs), **(kwargs.get("mounts") or {})}
     return httpx2.AsyncClient(**kwargs)
+
+
+def _proxy_with_shared_context(proxy: Any, context: ssl.SSLContext) -> httpx2.Proxy:
+    """Give an explicit HTTPS proxy without a context of its own the shared one.
+
+    A string or URL becomes a ``Proxy``; a ``Proxy`` that already carries a
+    context is the caller's policy and is returned untouched. Plain-HTTP
+    and SOCKS proxies never get a context, which httpcore2 requires.
+    """
+    if not isinstance(proxy, httpx2.Proxy):
+        proxy = httpx2.Proxy(url=proxy)
+    if proxy.url.scheme != "https" or proxy.ssl_context is not None:
+        return proxy
+    return httpx2.Proxy(url=proxy.url, ssl_context=context, auth=proxy.auth, headers=proxy.headers)

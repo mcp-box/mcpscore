@@ -419,17 +419,86 @@ class TestAsyncClientFactory:
         mounts = {str(pattern.pattern): transport for pattern, transport in client._mounts.items()}
         assert mounts["https://"]._pool._max_connections == httpx2.AsyncHTTPTransport()._pool._max_connections
 
-    @pytest.mark.parametrize("kwargs", [{"proxy": "http://p.example:1"}, {"mounts": {}}, {"trust_env": False}])
-    def test_leaves_explicit_proxy_configuration_alone(self, monkeypatch: pytest.MonkeyPatch, kwargs: dict):
+    def test_trust_env_off_builds_no_environment_mounts(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
         seen: dict = {}
         monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
 
-        tls.async_client(**kwargs)
+        tls.async_client(trust_env=False)
 
-        assert seen["verify"] is tls.client_ssl_context(kwargs.get("trust_env", True))
-        assert ("mounts" in seen) == ("mounts" in kwargs)
+        assert seen["verify"] is tls.client_ssl_context(trust_env=False)
+        assert "mounts" not in seen
+
+    @pytest.mark.parametrize(
+        "proxy",
+        [
+            "https://user:pw@proxy.example:8443",
+            httpx2.URL("https://proxy.example:8443"),
+            httpx2.Proxy("https://proxy.example:8443"),
+        ],
+    )
+    def test_an_explicit_https_proxy_without_a_context_gets_the_shared_one(
+        self, monkeypatch: pytest.MonkeyPatch, proxy
+    ):
+        monkeypatch.setattr(sys, "platform", "linux")
+        seen: dict = {}
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+
+        tls.async_client(proxy=proxy)
+
+        normalized = seen["proxy"]
+        assert isinstance(normalized, httpx2.Proxy)
+        assert normalized.ssl_context is tls.client_ssl_context()
+        assert normalized.url.host == "proxy.example"
+        if isinstance(proxy, str):
+            assert normalized.auth == ("user", "pw")  # credentials survive the normalization
+        assert "mounts" not in seen  # an explicit proxy replaces the environment map in httpx2
+
+    def test_an_explicit_proxy_with_its_own_context_is_untouched(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        own = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        proxy = httpx2.Proxy("https://proxy.example:8443", ssl_context=own)
+        seen: dict = {}
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+
+        tls.async_client(proxy=proxy)
+
+        assert seen["proxy"] is proxy
+        assert seen["proxy"].ssl_context is own
+
+    @pytest.mark.parametrize("proxy", ["http://proxy.example:3128", "socks5://proxy.example:1080"])
+    def test_a_non_tls_proxy_hop_gets_no_context(self, monkeypatch: pytest.MonkeyPatch, proxy: str):
+        monkeypatch.setattr(sys, "platform", "linux")
+        seen: dict = {}
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+
+        tls.async_client(proxy=proxy)
+
+        assert isinstance(seen["proxy"], httpx2.Proxy)
+        assert seen["proxy"].ssl_context is None
+
+    def test_caller_mounts_are_laid_over_the_safe_environment_mounts(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
+        monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
+        seen: dict = {}
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+
+        tls.async_client(mounts={"http://": "caller-transport"})
+
+        assert seen["mounts"]["http://"] == "caller-transport"  # the caller's pattern wins
+        assert seen["mounts"]["https://"]._pool._proxy_ssl_context is tls.client_ssl_context()  # ours underneath
+
+    def test_empty_caller_mounts_do_not_disable_the_safe_environment_mounts(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example:8443")
+        seen: dict = {}
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: seen.update(kw) or "client")
+
+        tls.async_client(mounts={})
+
+        assert seen["mounts"]["https://"]._pool._proxy_ssl_context is tls.client_ssl_context()
 
     def test_explicit_verify_true_is_the_shared_context(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(sys, "platform", "linux")
