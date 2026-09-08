@@ -147,13 +147,15 @@ _REASON_RANK: dict[ConnectionErrorReason, int] = {
     ConnectionErrorReason.NOT_MCP: 1,
     ConnectionErrorReason.HTTP_ERROR: 2,
     ConnectionErrorReason.INVALID_URL: 3,
-    # An off-origin redirect is a property of the URL itself, as definitive
-    # as an unreachable host and with a fix the user can act on.
-    ConnectionErrorReason.REDIRECTED: 4,
     ConnectionErrorReason.UNREACHABLE: 4,
     ConnectionErrorReason.TIMEOUT: 4,
-    ConnectionErrorReason.FORBIDDEN: 5,
-    ConnectionErrorReason.UNAUTHORIZED: 5,
+    # A refused redirect names the URL to audit instead: more actionable than
+    # a transport failure, and either transport may be the one to observe it
+    # (a timed-out POST, then a redirected SSE GET), so it must not tie with
+    # them — ties keep the first transport's failure.
+    ConnectionErrorReason.REDIRECTED: 5,
+    ConnectionErrorReason.FORBIDDEN: 6,
+    ConnectionErrorReason.UNAUTHORIZED: 6,
 }
 
 

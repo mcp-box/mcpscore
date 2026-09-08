@@ -628,3 +628,41 @@ class TestOffOriginRedirect:
         http = ConnectionFailure(ConnectionErrorReason.HTTP_ERROR, 307)
         assert _preferred_failure(http, redirected) is redirected
         assert _preferred_failure(redirected, http) is redirected
+
+    @pytest.mark.parametrize("transport_reason", [ConnectionErrorReason.TIMEOUT, ConnectionErrorReason.UNREACHABLE])
+    def test_outranks_a_transport_failure_seen_first(self, transport_reason: ConnectionErrorReason):
+        """A timed-out POST followed by a redirected SSE GET must report the redirect, not the timeout."""
+        first = ConnectionFailure(transport_reason)
+        redirected = ConnectionFailure(ConnectionErrorReason.REDIRECTED, 307, location="https://other.example/mcp")
+        assert _preferred_failure(first, redirected) is redirected
+
+    def test_auth_still_outranks_a_redirect(self):
+        redirected = ConnectionFailure(ConnectionErrorReason.REDIRECTED, 307, location="https://other.example/mcp")
+        for auth_reason in (ConnectionErrorReason.UNAUTHORIZED, ConnectionErrorReason.FORBIDDEN):
+            auth = ConnectionFailure(auth_reason)
+            assert _preferred_failure(redirected, auth) is auth
+            assert _preferred_failure(auth, redirected) is auth
+
+    async def test_timed_out_post_then_redirected_sse_get_reports_the_redirect(self):
+        client = MCPClient()
+
+        async def time_out(url):
+            client._record_failure(ConnectionErrorReason.TIMEOUT)
+            return False
+
+        async def redirected_get(url):
+            client._record_status_failure(
+                307, unfollowed_redirect(_redirect_error(307, "https://other.example/sse").response)
+            )
+            return False
+
+        with (
+            patch.object(client, "_connect_with_streamable_http", side_effect=time_out),
+            patch.object(client, "_connect_with_sse", side_effect=redirected_get),
+        ):
+            success, _ = await client.detect_and_connect("https://server.example/mcp")
+
+        assert success is False
+        assert client.last_connection_error is not None
+        assert client.last_connection_error.reason is ConnectionErrorReason.REDIRECTED
+        assert client.last_connection_error.location == "https://other.example/sse"
