@@ -45,10 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against the same redirect. Classification reads the redirect from the
   response the transport refused, or from the status recovery request when
   the SDK's error carries no HTTP status; a redirect the SDK would have
-  followed never relabels a different failure. The client skips the SSE
-  fallback, which would only be redirected again; the CLI still runs the
-  modern-only check first, since `initialize` may be the only request the
-  server redirects, then exits 2 with the message.
+  followed never relabels a different failure. When the refusal is a
+  property of the URL (another origin, introduced credentials) the client
+  skips the SSE fallback, which would only be redirected again; a refusal
+  about the POST's method still gets the SSE attempt, whose GET the SDK
+  follows through a same-origin `301`/`302`/`303` unchanged. The CLI runs
+  the modern-only check first, since `initialize` may be the only request
+  the server redirects, then exits 2 with the message.
 
 - **The engine's own HTTP requests apply the SDK's same-origin redirect
   policy** (new module `mcpscore.redirects`). The sessionless probes and the

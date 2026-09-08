@@ -29,6 +29,29 @@ if TYPE_CHECKING:
 REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 """HTTP statuses whose ``Location`` a client may follow."""
 
+REFUSED_OFF_ORIGIN = "another origin"
+"""Refusal reason: the target is not on the endpoint's origin. A property of the URL, whatever the request."""
+
+REFUSED_CREDENTIALS = "the target URL introduces credentials"
+"""Refusal reason: the target carries userinfo the endpoint did not. A property of the URL, whatever the request."""
+
+
+def _redirected_method(status: int, method: str) -> str:
+    """Return the method httpx2 would send to the redirect target (``AsyncClient._redirect_method``).
+
+    A 303 turns anything but HEAD into a GET; a 302 does the same except for
+    HEAD and QUERY; a 301 turns only a POST into a GET; 307/308 keep the
+    method. Mirrored here so a hand-built response classifies the way a
+    client-built one does.
+    """
+    if status == 303 and method != "HEAD":
+        return "GET"
+    if status == 302 and method not in ("HEAD", "QUERY"):
+        return "GET"
+    if status == 301 and method == "POST":
+        return "GET"
+    return method
+
 
 def within_origin(sent: httpx2.URL, location: httpx2.URL) -> bool:
     """Whether ``location`` is on ``sent``'s origin, or its https upgrade on the default ports.
@@ -76,20 +99,24 @@ class RefusedRedirect:
 def _refusal(response: httpx2.Response, target: httpx2.URL) -> str | None:
     """Return why the policy refuses ``response``'s redirect to ``target``, or ``None`` if it follows it.
 
-    Followed only when the redirect keeps the method (307/308 for a POST;
-    httpx2 turns a POST into a body-less GET for 301/302/303, which would
-    drop the message), introduces no userinfo (which httpx2 would send as
-    Basic auth; userinfo the endpoint URL already carries and a relative
-    ``Location`` inherits unchanged is fine, as in the SDK), and stays within
-    the origin of the request just sent.
+    Followed only when the target stays within the origin of the request just
+    sent, introduces no userinfo (which httpx2 would send as Basic auth;
+    userinfo the endpoint URL already carries and a relative ``Location``
+    inherits unchanged is fine, as in the SDK), and the redirect keeps the
+    method (httpx2 turns a POST into a body-less GET for 301/302/303, which
+    would drop the message; see :func:`_redirected_method`). The reasons that
+    hold for any request come first, so an off-origin 303 is reported as
+    off-origin: a caller can then tell a refusal a differently-shaped request
+    would share from one it would not.
     """
     sent = response.request
-    if response.status_code not in (307, 308) and sent.method not in ("GET", "HEAD"):
-        return f"the {sent.method} would become a GET"
-    if target.userinfo and target.userinfo != sent.url.userinfo:
-        return "the target URL introduces credentials"
     if not within_origin(sent.url, target):
-        return "another origin"
+        return REFUSED_OFF_ORIGIN
+    if target.userinfo and target.userinfo != sent.url.userinfo:
+        return REFUSED_CREDENTIALS
+    redirected = _redirected_method(response.status_code, sent.method)
+    if redirected != sent.method:
+        return f"the {sent.method} would become a {redirected}"
     return None
 
 

@@ -21,6 +21,7 @@ from mcpscore.mcp_client import (
     extract_http_status,
     reason_for_status,
 )
+from mcpscore.redirects import unfollowed_redirect
 
 
 def _http_status_error(status_code: int) -> httpx2.HTTPStatusError:
@@ -501,6 +502,44 @@ class TestOffOriginRedirect:
         assert client.last_connection_error is not None
         assert client.last_connection_error.reason is ConnectionErrorReason.HTTP_ERROR
         assert client.last_connection_error.status_code == 307
+
+    async def test_a_method_refusal_on_the_post_still_gets_the_sse_attempt(self):
+        """The SSE fallback opens with a GET, which the SDK follows through a same-origin 303 unchanged."""
+        client = MCPClient()
+
+        async def fail_http(url):
+            client._record_status_failure(303, unfollowed_redirect(_redirect_error(303, f"{url}/").response))
+            return False
+
+        with (
+            patch.object(client, "_connect_with_streamable_http", side_effect=fail_http),
+            patch.object(client, "_connect_with_sse", return_value=True) as sse,
+        ):
+            success, transport = await client.detect_and_connect("https://server.example/mcp")
+
+        assert success is True
+        assert transport is MCPTransportType.SSE
+        sse.assert_called_once()
+
+    async def test_an_off_origin_refusal_skips_the_sse_attempt(self):
+        client = MCPClient()
+
+        async def fail_http(url):
+            client._record_status_failure(
+                303, unfollowed_redirect(_redirect_error(303, "https://other.example/mcp").response)
+            )
+            return False
+
+        with (
+            patch.object(client, "_connect_with_streamable_http", side_effect=fail_http),
+            patch.object(client, "_connect_with_sse") as sse,
+        ):
+            success, _ = await client.detect_and_connect("https://server.example/mcp")
+
+        assert success is False
+        sse.assert_not_called()
+        assert client.last_connection_error is not None
+        assert client.last_connection_error.redirect_reason == "another origin"
 
     def test_message_names_the_target_the_rule_and_the_fix(self):
         failure = ConnectionFailure(

@@ -5,7 +5,15 @@ from __future__ import annotations
 import httpx2
 import pytest
 
-from mcpscore.redirects import RefusedRedirect, redirect_target, send_within_origin, unfollowed_redirect, within_origin
+from mcpscore.redirects import (
+    REFUSED_CREDENTIALS,
+    REFUSED_OFF_ORIGIN,
+    RefusedRedirect,
+    redirect_target,
+    send_within_origin,
+    unfollowed_redirect,
+    within_origin,
+)
 
 ORIGIN = "https://server.example"
 URL = f"{ORIGIN}/mcp"
@@ -64,6 +72,35 @@ class TestUnfollowedRedirect:
 
     def test_same_origin_get_redirect_of_any_status_is_followed(self):
         assert unfollowed_redirect(_redirect(302, "/mcp/", method="GET")) is None
+        assert unfollowed_redirect(_redirect(301, "/mcp/", method="GET")) is None
+        assert unfollowed_redirect(_redirect(303, "/mcp/", method="HEAD")) is None
+
+    @pytest.mark.parametrize(
+        ("status", "method", "followed"),
+        [
+            (301, "DELETE", True),  # httpx2 turns only a POST into a GET on a 301
+            (301, "POST", False),
+            (302, "DELETE", False),  # a 302 turns everything but HEAD/QUERY into a GET
+            (302, "QUERY", True),
+            (303, "DELETE", False),
+            (307, "DELETE", True),
+        ],
+    )
+    def test_method_rule_mirrors_httpx2(self, status: int, method: str, followed: bool):
+        """The refusal tracks the method httpx2 would actually send, not "anything but GET"."""
+        refused = unfollowed_redirect(_redirect(status, "/mcp/", method=method))
+        assert (refused is None) is followed
+        if refused is not None:
+            assert refused.why == f"the {method} would become a GET"
+
+    def test_off_origin_303_is_reported_as_off_origin_not_as_a_method_change(self):
+        """Reasons that hold for any request come first, so a caller can tell them apart."""
+        refused = unfollowed_redirect(_redirect(303, "https://other.example/mcp"))
+        assert refused is not None
+        assert refused.why == REFUSED_OFF_ORIGIN
+        with_credentials = unfollowed_redirect(_redirect(303, "https://u:p@server.example/mcp/"))
+        assert with_credentials is not None
+        assert with_credentials.why == REFUSED_CREDENTIALS
 
     def test_userinfo_introduced_by_the_redirect_is_refused(self):
         assert unfollowed_redirect(_redirect(307, "https://user:pw@server.example/mcp")) == RefusedRedirect(
