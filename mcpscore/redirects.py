@@ -91,7 +91,7 @@ class RefusedRedirect:
     """A redirect the same-origin policy left unfollowed, and why."""
 
     target: str
-    """Absolute URL the server redirected to."""
+    """Absolute URL the server redirected to, without userinfo, query or fragment (see :func:`unfollowed_redirect`)."""
     why: str
     """Short reason for the refusal, phrased to sit in a message: "another origin"."""
 
@@ -126,6 +126,11 @@ def unfollowed_redirect(response: httpx2.Response) -> RefusedRedirect | None:
     ``None`` for a non-redirect, and for a redirect the policy would have
     followed (same origin, same method): such a response reached the caller
     only past the redirect budget, and is a plain HTTP status to it.
+
+    The target is for a message or a log line, so it is reported the way the
+    SDK reports its own: without userinfo, query or fragment, which can carry
+    credentials or state (a relative ``Location`` inherits the endpoint's
+    userinfo, and a signed URL carries its token in the query).
     """
     target = redirect_target(response)
     if target is None:
@@ -133,7 +138,7 @@ def unfollowed_redirect(response: httpx2.Response) -> RefusedRedirect | None:
     why = _refusal(response, target)
     if why is None:
         return None
-    return RefusedRedirect(str(target), why)
+    return RefusedRedirect(str(target.copy_with(userinfo=b"", query=None, fragment=None)), why)
 
 
 async def send_within_origin(

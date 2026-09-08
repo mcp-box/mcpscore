@@ -374,7 +374,7 @@ class TestOffOriginRedirect:
         with (
             patch("mcpscore.mcp_client.streamable_http_client") as mock_http,
             patch.object(client, "_recover_http_response", side_effect=recovered_redirect) as recover,
-            patch.object(client, "_connect_with_sse") as sse,
+            patch.object(client, "_connect_with_sse", return_value=False) as sse,
             caplog.at_level(logging.INFO),
         ):
             mock_http.return_value.__aenter__.side_effect = RuntimeError(
@@ -391,8 +391,8 @@ class TestOffOriginRedirect:
         assert failure.status_code == 307
         assert failure.location == "https://other.example/mcp"
         assert failure.redirect_reason == "another origin"
-        # Definitive about the URL: the SSE fallback would be redirected the same way.
-        sse.assert_not_called()
+        # Redirects can differ by method: the SSE fallback's GET gets its own attempt.
+        sse.assert_called_once()
         assert "Traceback" not in caplog.text
         assert "a redirect mcpscore does not follow" in caplog.text
 
@@ -521,7 +521,11 @@ class TestOffOriginRedirect:
         assert transport is MCPTransportType.SSE
         sse.assert_called_once()
 
-    async def test_an_off_origin_refusal_skips_the_sse_attempt(self):
+    async def test_an_off_origin_refusal_still_tries_sse_and_keeps_the_diagnosis(self):
+        """A legacy endpoint may redirect POST /mcp elsewhere yet serve SSE on GET /mcp; the GET is tried.
+
+        When that attempt fails for less (a 404), the redirect stays the reported failure.
+        """
         client = MCPClient()
 
         async def fail_http(url):
@@ -530,16 +534,39 @@ class TestOffOriginRedirect:
             )
             return False
 
+        async def fail_sse(url):
+            client._record_failure(ConnectionErrorReason.HTTP_ERROR, 404)
+            return False
+
         with (
             patch.object(client, "_connect_with_streamable_http", side_effect=fail_http),
-            patch.object(client, "_connect_with_sse") as sse,
+            patch.object(client, "_connect_with_sse", side_effect=fail_sse) as sse,
         ):
             success, _ = await client.detect_and_connect("https://server.example/mcp")
 
         assert success is False
-        sse.assert_not_called()
+        sse.assert_called_once()
         assert client.last_connection_error is not None
-        assert client.last_connection_error.redirect_reason == "another origin"
+        assert client.last_connection_error.reason is ConnectionErrorReason.REDIRECTED
+        assert client.last_connection_error.location == "https://other.example/mcp"
+
+    async def test_sse_served_directly_behind_a_redirecting_post_connects(self):
+        client = MCPClient()
+
+        async def fail_http(url):
+            client._record_status_failure(
+                307, unfollowed_redirect(_redirect_error(307, "https://other.example/mcp").response)
+            )
+            return False
+
+        with (
+            patch.object(client, "_connect_with_streamable_http", side_effect=fail_http),
+            patch.object(client, "_connect_with_sse", return_value=True),
+        ):
+            success, transport = await client.detect_and_connect("https://server.example/mcp")
+
+        assert success is True
+        assert transport is MCPTransportType.SSE
 
     def test_message_names_the_target_the_rule_and_the_fix(self):
         failure = ConnectionFailure(

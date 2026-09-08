@@ -44,7 +44,7 @@ from .probes import (
     ProbeResult,
     client_version,
 )
-from .redirects import REFUSED_CREDENTIALS, REFUSED_OFF_ORIGIN, RefusedRedirect, unfollowed_redirect
+from .redirects import RefusedRedirect, unfollowed_redirect
 from .tls import async_client
 
 if TYPE_CHECKING:
@@ -370,22 +370,12 @@ class MCPClient:
                 )
                 return (False, None)
 
-            # A redirect refused for leaving the origin or introducing
-            # credentials is a property of the URL, not of the transport: the
-            # SSE fallback would be sent to the same place and refuse it the
-            # same way (mcp 2.2.0). A refusal about the POST's method is not:
-            # the SSE fallback opens with a GET, which the SDK follows through
-            # a same-origin 301/302/303 unchanged, so a legacy SSE endpoint
-            # that redirects POSTs is still reachable and gets its attempt.
-            if (
-                http_failure is not None
-                and http_failure.reason is ConnectionErrorReason.REDIRECTED
-                and http_failure.redirect_reason in (REFUSED_OFF_ORIGIN, REFUSED_CREDENTIALS)
-            ):
-                logger.info(
-                    "Endpoint answers with a redirect mcpscore does not follow — skipping the legacy SSE fallback"
-                )
-                return (False, None)
+            # A refused redirect on the POST does not skip the SSE fallback:
+            # redirect behaviour can differ by method (a legacy endpoint may
+            # redirect POST /mcp elsewhere while serving SSE on GET /mcp), so
+            # the fallback's GET is sent and classified by the same policy on
+            # its own. If it is redirected too, or fails for less, the
+            # ranking below keeps the redirect diagnosis.
 
             # Fall back to SSE
             logger.info("Streamable HTTP failed, trying SSE...")

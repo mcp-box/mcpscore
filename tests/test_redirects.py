@@ -102,10 +102,21 @@ class TestUnfollowedRedirect:
         assert with_credentials is not None
         assert with_credentials.why == REFUSED_CREDENTIALS
 
-    def test_userinfo_introduced_by_the_redirect_is_refused(self):
+    def test_userinfo_introduced_by_the_redirect_is_refused_and_not_echoed(self):
         assert unfollowed_redirect(_redirect(307, "https://user:pw@server.example/mcp")) == RefusedRedirect(
-            "https://user:pw@server.example/mcp", "the target URL introduces credentials"
+            "https://server.example/mcp", "the target URL introduces credentials"
         )
+
+    def test_reported_target_carries_no_userinfo_query_or_fragment(self):
+        """The target lands in logs and the CLI error, so it is reported the way the SDK reports its own."""
+        # A relative 303 from an endpoint with userinfo inherits it; the report must not echo it.
+        refused = unfollowed_redirect(
+            _redirect(303, "/mcp/?token=s3cret#frag", url="https://user:pw@server.example/mcp")
+        )
+        assert refused is not None
+        assert refused.target == "https://server.example/mcp/"
+        assert "pw" not in refused.target
+        assert "s3cret" not in refused.target
 
     def test_userinfo_the_endpoint_already_carries_is_inherited_by_a_relative_redirect(self):
         """As in the SDK (#3450): a relative Location keeps the configured URL's userinfo unchanged."""
