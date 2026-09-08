@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **MCP Python SDK bumped to `mcp==2.2.0`** (from 2.1.1). No engine code
-  changed; the full gate and the DeepWiki live invariant (78/91) are
-  identical. Three SDK behaviour changes ride along and can move outcomes
-  on affected live servers:
+- **MCP Python SDK bumped to `mcp==2.2.0`** (from 2.1.1). The bump itself
+  needs no engine change; the two entries below are the engine's response to
+  the SDK's new redirect policy. The full gate and the DeepWiki live
+  invariant (78/91) are identical. Three SDK behaviour changes ride along
+  and can move outcomes on affected live servers:
   - **Cross-origin redirects are no longer followed by the MCP transports.**
     The SDK follows a 307/308 only within the endpoint's origin (same
     scheme, host and port, or `http`→`https` on the same host) and ignores
@@ -32,19 +33,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     5xx/429 while fetching protected-resource metadata stops the flow
     instead of falling back to the legacy endpoints.
 
-- **A URL that redirects to another origin now fails with the redirect
-  target named.** New connection failure reason `redirected` (the
+- **A URL that redirects where the SDK will not follow now fails with the
+  redirect target named.** New connection failure reason `redirected` (the
   `ConnectionErrorReason` enum, and the `error_reason` the web service
-  relays): "The server redirected (HTTP 307) to `<url>`, another origin,
-  which mcpscore does not follow — audit that URL instead if it is the
-  intended server." Before, the SDK's refusal surfaced as a generic
-  "HTTP 307" handshake error after the SSE fallback and the modern-only
-  probes had been tried against the same redirect. Classification reads the
-  redirect from the response the transport refused, or from the status
-  recovery request when the SDK's error carries no HTTP status; only an
-  off-origin target counts, since a same-origin redirect is one the SDK
-  followed. The CLI exits 2 at once with the message and skips the SSE
-  fallback and the modern-only check, which would only be redirected again.
+  relays): "The server redirected (HTTP 307) to `<url>`, which mcpscore does
+  not follow (another origin) — audit that URL instead if it is the intended
+  server." The parenthetical names the rule that applied: another origin, a
+  `301`/`302`/`303` that would turn the `POST` into a `GET`, or a target
+  that introduces URL credentials. Before, the SDK's refusal surfaced as a
+  generic "HTTP 307" handshake error after the SSE fallback had been tried
+  against the same redirect. Classification reads the redirect from the
+  response the transport refused, or from the status recovery request when
+  the SDK's error carries no HTTP status; a redirect the SDK would have
+  followed never relabels a different failure. The client skips the SSE
+  fallback, which would only be redirected again; the CLI still runs the
+  modern-only check first, since `initialize` may be the only request the
+  server redirects, then exits 2 with the message.
 
 - **The engine's own HTTP requests apply the SDK's same-origin redirect
   policy** (new module `mcpscore.redirects`). The sessionless probes and the
@@ -52,9 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does, so one audit applied two policies to one endpoint: the session
   refused a redirect the probes then followed, judging an origin the user
   never named and carrying caller headers there. Now a probe request follows
-  only a redirect that keeps the method and stays on the endpoint's origin
-  (a trailing-slash 307/308, an `http`→`https` upgrade), up to the client's
-  `max_redirects`, and treats any other redirect as the non-success it is.
+  only a redirect that keeps the method, introduces no URL credentials and
+  stays on the endpoint's origin (a trailing-slash 307/308, an
+  `http`→`https` upgrade), up to the client's `max_redirects`, and treats
+  any other redirect as the non-success it is.
   A caller-injected client's `follow_redirects` setting is not consulted,
   exactly as the SDK transports do not consult it. Security probes that
   already ran with redirects off are unchanged. Package-registry lookups

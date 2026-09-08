@@ -20,6 +20,7 @@ SDK, so a caller-injected client cannot widen the policy.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -62,30 +63,50 @@ def redirect_target(response: httpx2.Response) -> httpx2.URL | None:
     return response.request.url.join(location)
 
 
-def _policy_follows(response: httpx2.Response, target: httpx2.URL) -> bool:
-    """Whether the same-origin policy follows ``response``'s redirect to ``target``.
+@dataclass(frozen=True)
+class RefusedRedirect:
+    """A redirect the same-origin policy left unfollowed, and why."""
 
-    It does only when the redirect keeps the method (307/308 for a POST;
+    target: str
+    """Absolute URL the server redirected to."""
+    why: str
+    """Short reason for the refusal, phrased to sit in a message: "another origin"."""
+
+
+def _refusal(response: httpx2.Response, target: httpx2.URL) -> str | None:
+    """Return why the policy refuses ``response``'s redirect to ``target``, or ``None`` if it follows it.
+
+    Followed only when the redirect keeps the method (307/308 for a POST;
     httpx2 turns a POST into a body-less GET for 301/302/303, which would
-    drop the message), stays within the origin of the request just sent, and
-    carries no userinfo (which httpx2 would send as Basic auth).
+    drop the message), introduces no userinfo (which httpx2 would send as
+    Basic auth; userinfo the endpoint URL already carries and a relative
+    ``Location`` inherits unchanged is fine, as in the SDK), and stays within
+    the origin of the request just sent.
     """
     sent = response.request
-    keeps_method = response.status_code in (307, 308) or sent.method in ("GET", "HEAD")
-    return keeps_method and not target.userinfo and within_origin(sent.url, target)
+    if response.status_code not in (307, 308) and sent.method not in ("GET", "HEAD"):
+        return f"the {sent.method} would become a GET"
+    if target.userinfo and target.userinfo != sent.url.userinfo:
+        return "the target URL introduces credentials"
+    if not within_origin(sent.url, target):
+        return "another origin"
+    return None
 
 
-def unfollowed_redirect(response: httpx2.Response) -> str | None:
-    """Return the absolute target of a redirect the policy leaves unfollowed, else ``None``.
+def unfollowed_redirect(response: httpx2.Response) -> RefusedRedirect | None:
+    """Return the redirect the policy leaves unfollowed, with its reason, else ``None``.
 
     ``None`` for a non-redirect, and for a redirect the policy would have
     followed (same origin, same method): such a response reached the caller
     only past the redirect budget, and is a plain HTTP status to it.
     """
     target = redirect_target(response)
-    if target is None or _policy_follows(response, target):
+    if target is None:
         return None
-    return str(target)
+    why = _refusal(response, target)
+    if why is None:
+        return None
+    return RefusedRedirect(str(target), why)
 
 
 async def send_within_origin(
@@ -105,7 +126,7 @@ async def send_within_origin(
         response = await client.send(request, follow_redirects=False, **send_kwargs)
         target = redirect_target(response)
         next_request = response.next_request
-        if target is None or next_request is None or not _policy_follows(response, target):
+        if target is None or next_request is None or _refusal(response, target) is not None:
             return response
         if followed == client.max_redirects:
             return response

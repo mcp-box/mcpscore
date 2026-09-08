@@ -768,12 +768,14 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str], target
 
 
 def _exit_if_redirected(failure: ConnectionFailure | None, target_display: str) -> None:
-    """Exit 2 with the redirect target when the URL sends every request to another origin.
+    """Exit 2 with the redirect target when the session's requests were redirected.
 
-    The probes apply the session's same-origin policy (mcp 2.2.0 follows a
-    redirect only within the endpoint's origin) and would only refuse it
-    again, so neither the modern-only check nor a partial audit can say more
-    than the failure already does: the fix is the redirect target.
+    Runs after the modern-only check: the legacy ``initialize`` may be the
+    only request the server redirects, and the probes apply the same policy
+    (mcp 2.2.0 follows a redirect only within the endpoint's origin, keeping
+    the request), so a server answering ``server/discover`` at this URL is
+    still audited. Once that has found nothing, a partial audit could say no
+    more than the failure already does: the fix is the redirect target.
     """
     if failure is not None and failure.reason is ConnectionErrorReason.REDIRECTED:
         logger.error(failure.message)
@@ -851,7 +853,6 @@ async def async_main() -> None:
         if not success:
             http_url = target if isinstance(target, str) and target.startswith(("http://", "https://")) else None
             failure = client.last_connection_error
-            _exit_if_redirected(failure, target_display)
             # A missing executable, denied launch, or timed-out handshake is
             # not evidence of a modern-only server. Retrying those commands is
             # both misleading and potentially side-effectful. UNKNOWN remains
@@ -879,6 +880,7 @@ async def async_main() -> None:
                     finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type, smoke=smoke)
                     return
 
+            _exit_if_redirected(failure, target_display)
             if http_url is not None:
                 session_gated = failure is not None and failure.reason in (
                     ConnectionErrorReason.UNAUTHORIZED,

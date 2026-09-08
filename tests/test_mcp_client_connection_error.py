@@ -389,10 +389,11 @@ class TestOffOriginRedirect:
         assert failure.reason is ConnectionErrorReason.REDIRECTED
         assert failure.status_code == 307
         assert failure.location == "https://other.example/mcp"
+        assert failure.redirect_reason == "another origin"
         # Definitive about the URL: the SSE fallback would be redirected the same way.
         sse.assert_not_called()
         assert "Traceback" not in caplog.text
-        assert "redirects off its origin" in caplog.text
+        assert "a redirect mcpscore does not follow" in caplog.text
 
     async def test_failed_recovery_leaves_the_failure_unclassified(self):
         """Recovery is best-effort: when it yields nothing, the original failure stands as UNKNOWN."""
@@ -501,13 +502,43 @@ class TestOffOriginRedirect:
         assert client.last_connection_error.reason is ConnectionErrorReason.HTTP_ERROR
         assert client.last_connection_error.status_code == 307
 
-    def test_message_names_the_target_and_the_fix(self):
-        failure = ConnectionFailure(ConnectionErrorReason.REDIRECTED, 307, location="https://other.example/mcp")
-        assert failure.message == (
-            "The server redirected (HTTP 307) to https://other.example/mcp, another origin, which mcpscore "
-            "does not follow — audit that URL instead if it is the intended server."
+    def test_message_names_the_target_the_rule_and_the_fix(self):
+        failure = ConnectionFailure(
+            ConnectionErrorReason.REDIRECTED,
+            307,
+            location="https://other.example/mcp",
+            redirect_reason="another origin",
         )
-        assert "another origin" in ConnectionFailure(ConnectionErrorReason.REDIRECTED).message
+        assert failure.message == (
+            "The server redirected (HTTP 307) to https://other.example/mcp, which mcpscore does not follow "
+            "(another origin) — audit that URL instead if it is the intended server."
+        )
+        # A same-origin 303 is refused for a different reason, and the message must not claim another origin.
+        same_origin = ConnectionFailure(
+            ConnectionErrorReason.REDIRECTED,
+            303,
+            location="https://server.example/mcp/",
+            redirect_reason="the POST would become a GET",
+        )
+        assert "another origin" not in same_origin.message
+        assert "(the POST would become a GET)" in same_origin.message
+        bare = ConnectionFailure(ConnectionErrorReason.REDIRECTED, 307, location="https://other.example/mcp")
+        assert bare.message.endswith("does not follow — audit that URL instead if it is the intended server.")
+        assert "keeps the request as sent" in ConnectionFailure(ConnectionErrorReason.REDIRECTED).message
+
+    async def test_same_origin_303_on_the_post_is_redirected_with_its_own_reason(self):
+        """The SDK refuses a same-origin 303 too (it would drop the message); the diagnosis must say so."""
+        client = MCPClient()
+
+        with patch("mcpscore.mcp_client.sse_client") as mock_sse:
+            mock_sse.return_value.__aenter__.side_effect = _redirect_error(303, "https://server.example/mcp/")
+            await client.connect_to_server(MCPTransportType.SSE, "https://server.example/mcp")
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.REDIRECTED
+        assert failure.redirect_reason == "the POST would become a GET"
+        assert "another origin" not in failure.message
 
     def test_outranks_the_http_error_the_other_transport_reports(self):
         redirected = ConnectionFailure(ConnectionErrorReason.REDIRECTED, 307, location="https://other.example/mcp")

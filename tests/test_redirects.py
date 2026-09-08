@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx2
 import pytest
 
-from mcpscore.redirects import redirect_target, send_within_origin, unfollowed_redirect, within_origin
+from mcpscore.redirects import RefusedRedirect, redirect_target, send_within_origin, unfollowed_redirect, within_origin
 
 ORIGIN = "https://server.example"
 URL = f"{ORIGIN}/mcp"
@@ -41,11 +41,15 @@ def _redirect(status: int, location: str | None, *, method: str = "POST", url: s
 
 
 class TestUnfollowedRedirect:
-    def test_off_origin_redirect_reports_its_absolute_target(self):
-        assert unfollowed_redirect(_redirect(307, "https://other.example/mcp")) == "https://other.example/mcp"
+    def test_off_origin_redirect_reports_its_absolute_target_and_the_rule(self):
+        assert unfollowed_redirect(_redirect(307, "https://other.example/mcp")) == RefusedRedirect(
+            "https://other.example/mcp", "another origin"
+        )
 
     def test_relative_location_is_resolved_against_the_request(self):
-        assert unfollowed_redirect(_redirect(303, "/mcp/")) == f"{ORIGIN}/mcp/"
+        refused = unfollowed_redirect(_redirect(303, "/mcp/"))
+        assert refused is not None
+        assert refused.target == f"{ORIGIN}/mcp/"
 
     def test_same_origin_method_keeping_redirect_is_followed_so_not_reported(self):
         assert unfollowed_redirect(_redirect(307, f"{ORIGIN}/mcp/")) is None
@@ -54,13 +58,30 @@ class TestUnfollowedRedirect:
     def test_same_origin_redirect_that_would_drop_the_post_body_is_reported(self):
         # httpx2 turns a POST into a body-less GET for 301/302/303 — the
         # message would be lost, so the policy does not follow it.
-        assert unfollowed_redirect(_redirect(303, "/mcp/")) == f"{ORIGIN}/mcp/"
+        assert unfollowed_redirect(_redirect(303, "/mcp/")) == RefusedRedirect(
+            f"{ORIGIN}/mcp/", "the POST would become a GET"
+        )
 
     def test_same_origin_get_redirect_of_any_status_is_followed(self):
         assert unfollowed_redirect(_redirect(302, "/mcp/", method="GET")) is None
 
-    def test_userinfo_in_location_is_never_followed(self):
-        assert unfollowed_redirect(_redirect(307, "https://user:pw@server.example/mcp")) is not None
+    def test_userinfo_introduced_by_the_redirect_is_refused(self):
+        assert unfollowed_redirect(_redirect(307, "https://user:pw@server.example/mcp")) == RefusedRedirect(
+            "https://user:pw@server.example/mcp", "the target URL introduces credentials"
+        )
+
+    def test_userinfo_the_endpoint_already_carries_is_inherited_by_a_relative_redirect(self):
+        """As in the SDK (#3450): a relative Location keeps the configured URL's userinfo unchanged."""
+        endpoint = "https://user:pw@server.example/mcp"
+        assert unfollowed_redirect(_redirect(307, "/mcp/", url=endpoint)) is None
+        # Repeating it verbatim in an absolute Location is unchanged too.
+        assert unfollowed_redirect(_redirect(308, "https://user:pw@server.example/mcp/", url=endpoint)) is None
+
+    def test_userinfo_changed_by_the_redirect_is_refused(self):
+        endpoint = "https://user:pw@server.example/mcp"
+        refused = unfollowed_redirect(_redirect(307, "https://other:secret@server.example/mcp/", url=endpoint))
+        assert refused is not None
+        assert refused.why == "the target URL introduces credentials"
 
     def test_non_redirect_and_locationless_redirect_report_none(self):
         assert unfollowed_redirect(httpx2.Response(200, request=httpx2.Request("POST", URL))) is None
@@ -104,7 +125,7 @@ class TestSendWithinOrigin:
 
         assert response.status_code == 307
         assert hosts == ["server.example"]
-        assert unfollowed_redirect(response) == "https://other.example/mcp"
+        assert unfollowed_redirect(response) == RefusedRedirect("https://other.example/mcp", "another origin")
 
     async def test_ignores_the_clients_own_follow_redirects_setting(self):
         hosts: list[str] = []
@@ -143,6 +164,20 @@ class TestSendWithinOrigin:
         response = await self._send(handler)
 
         assert response.status_code == 303
+
+    async def test_follows_a_relative_redirect_when_the_endpoint_carries_userinfo(self):
+        seen: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(str(request.url))
+            if request.url.path == "/mcp":
+                return httpx2.Response(307, headers={"location": "/mcp/"})
+            return httpx2.Response(200)
+
+        response = await self._send(handler, url="https://user:pw@server.example/mcp")
+
+        assert response.status_code == 200
+        assert seen == ["https://user:pw@server.example/mcp", "https://user:pw@server.example/mcp/"]
 
     async def test_stops_at_the_clients_redirect_budget(self):
         def handler(request: httpx2.Request) -> httpx2.Response:
