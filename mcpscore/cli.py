@@ -23,6 +23,7 @@ from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
 
 if TYPE_CHECKING:
     from mcpscore import MCPTransportType
+    from mcpscore.mcp_client import ConnectionFailure
 
 logger = logging.getLogger(__name__)
 
@@ -766,6 +767,22 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str], target
     logger.info("OAuth flow completed — token held in memory only for this audit.")
 
 
+def _exit_if_redirected(failure: ConnectionFailure | None, target_display: str) -> None:
+    """Exit 2 with the redirect target when the session's requests were redirected.
+
+    Runs after the modern-only check: the legacy ``initialize`` may be the
+    only request the server redirects, and the probes apply the same policy
+    (mcp 2.2.0 follows a redirect only within the endpoint's origin, keeping
+    the request), so a server answering ``server/discover`` at this URL is
+    still audited. Once that has found nothing, a partial audit could say no
+    more than the failure already does: the fix is the redirect target.
+    """
+    if failure is not None and failure.reason is ConnectionErrorReason.REDIRECTED:
+        logger.error(failure.message)
+        logger.error("Error connecting to the MCP server: %s", target_display)
+        sys.exit(2)
+
+
 async def async_main() -> None:
     """Execute the main entry point for the mcpscore CLI application.
 
@@ -863,6 +880,7 @@ async def async_main() -> None:
                     finish_server_audit(args, auditor, target_display, auditor.audit_data.transport_type, smoke=smoke)
                     return
 
+            _exit_if_redirected(failure, target_display)
             if http_url is not None:
                 session_gated = failure is not None and failure.reason in (
                     ConnectionErrorReason.UNAUTHORIZED,

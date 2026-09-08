@@ -2096,3 +2096,57 @@ async def test_catalog_connection_probe_rejects_items_without_identity():
     assert tools.outcome is ProbeOutcome.ERROR
     assert tools.details["exception"] == "ValueError"
     assert tools.details["reason"] == "tools/list returned an item without a valid name"
+
+
+class TestSameOriginRedirectPolicy:
+    """Probe traffic applies the session's redirect policy (mcp 2.2.0): same origin only."""
+
+    OTHER = "https://other.example/mcp"
+
+    async def test_off_origin_redirects_are_not_followed(self):
+        foreign_hits: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.host != "server.example":
+                foreign_hits.append(str(request.url))
+                return _modern_server_handler(request)
+            return httpx2.Response(307, headers={"location": self.OTHER})
+
+        results = await _run(handler)
+
+        assert foreign_hits == []
+        assert results[PROBE_DISCOVER].outcome is not ProbeOutcome.SUPPORTED
+        assert results[PROBE_DISCOVER].details["http_status"] == 307
+        # The anonymous well-known GETs are held to the same rule.
+        assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.UNSUPPORTED
+        assert results[PROBE_AUTH_METADATA].details["http_status"] == 307
+
+    async def test_same_origin_trailing_slash_redirect_is_followed(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "POST" and request.url.path == "/mcp":
+                return httpx2.Response(307, headers={"location": "/mcp/"})
+            return _modern_server_handler(request)
+
+        results = await _run(handler)
+
+        assert results[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
+        assert results[PROBE_AUTH_METADATA].outcome is ProbeOutcome.SUPPORTED
+
+    async def test_an_injected_clients_follow_redirects_cannot_widen_the_policy(self):
+        foreign_hits: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.host != "server.example":
+                foreign_hits.append(str(request.url))
+                return _modern_server_handler(request)
+            return httpx2.Response(307, headers={"location": self.OTHER})
+
+        transport = httpx2.MockTransport(handler)
+        async with (
+            httpx2.AsyncClient(transport=transport, follow_redirects=True) as client,
+            httpx2.AsyncClient(transport=transport, follow_redirects=True) as fresh_client,
+        ):
+            results = await run_all_probes(URL, client=client, fresh_client=fresh_client)
+
+        assert foreign_hits == []
+        assert results[PROBE_DISCOVER].details["http_status"] == 307

@@ -437,3 +437,47 @@ async def test_dropped_connection_does_not_break_the_flow():
     )
     assert token == ACCESS_TOKEN
     await asyncio.gather(*actions)
+
+
+class TestBootstrapRequestRedirects:
+    """The request that triggers the flow follows redirects only within the server's origin."""
+
+    async def test_off_origin_redirect_is_not_followed_so_no_flow_starts(self):
+        fake = FakeAuthServer()
+        elsewhere_hits: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.host == "elsewhere.example":
+                elsewhere_hits.append(str(request.url))
+                return fake.handler(httpx2.Request(request.method, SERVER_URL, headers=request.headers))
+            if str(request.url) == SERVER_URL:
+                return httpx2.Response(307, headers={"location": "https://elsewhere.example/mcp"})
+            return fake.handler(request)
+
+        with pytest.raises(OAuthFlowError, match="no token exchange"):
+            await obtain_token_interactively(
+                SERVER_URL,
+                open_browser=lambda _url: None,
+                transport=httpx2.MockTransport(handler),
+            )
+
+        assert elsewhere_hits == []
+        assert fake.token_calls == []
+
+    async def test_same_origin_trailing_slash_redirect_is_followed(self):
+        fake = FakeAuthServer()
+        actions: list[asyncio.Task] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if str(request.url) == SERVER_URL:
+                return httpx2.Response(307, headers={"location": f"{SERVER_URL}/"})
+            return fake.handler(request)
+
+        token = await obtain_token_interactively(
+            SERVER_URL,
+            open_browser=_fake_user(actions),
+            transport=httpx2.MockTransport(handler),
+        )
+
+        assert token == ACCESS_TOKEN
+        await asyncio.gather(*actions)

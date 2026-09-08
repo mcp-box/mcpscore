@@ -44,10 +44,12 @@ from .probes import (
     ProbeResult,
     client_version,
 )
+from .redirects import REFUSED_DOWNGRADE, REFUSED_TOO_MANY, RefusedRedirect, send_within_origin, unfollowed_redirect
 from .tls import async_client
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
+
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,11 @@ _REASON_MESSAGES: dict[ConnectionErrorReason, str] = {
     ConnectionErrorReason.UNAUTHORIZED: "The MCP server requires authentication (HTTP 401).",
     ConnectionErrorReason.FORBIDDEN: "The MCP server refused access (HTTP 403).",
     ConnectionErrorReason.HTTP_ERROR: "The server returned an HTTP error during the MCP handshake.",
+    ConnectionErrorReason.REDIRECTED: (
+        "The server answered with a redirect mcpscore does not follow (like the MCP SDK, it follows a redirect "
+        "only when it stays on the endpoint's origin and keeps the request as sent) — audit the redirect target "
+        "instead if it is the intended server."
+    ),
     ConnectionErrorReason.NOT_MCP: (
         "The endpoint was reachable but did not complete an MCP handshake — it may not be an MCP server."
     ),
@@ -142,8 +149,13 @@ _REASON_RANK: dict[ConnectionErrorReason, int] = {
     ConnectionErrorReason.INVALID_URL: 3,
     ConnectionErrorReason.UNREACHABLE: 4,
     ConnectionErrorReason.TIMEOUT: 4,
-    ConnectionErrorReason.FORBIDDEN: 5,
-    ConnectionErrorReason.UNAUTHORIZED: 5,
+    # A refused redirect names the URL to audit instead: more actionable than
+    # a transport failure, and either transport may be the one to observe it
+    # (a timed-out POST, then a redirected SSE GET), so it must not tie with
+    # them — ties keep the first transport's failure.
+    ConnectionErrorReason.REDIRECTED: 5,
+    ConnectionErrorReason.FORBIDDEN: 6,
+    ConnectionErrorReason.UNAUTHORIZED: 6,
 }
 
 
@@ -155,6 +167,10 @@ class ConnectionFailure:
     status_code: int | None = None
     detail: str | None = None
     """Sanitized underlying exception text, when a generic failure supplied it."""
+    location: str | None = None
+    """Absolute target of the redirect the server answered with, for REDIRECTED."""
+    redirect_reason: str | None = None
+    """Why the redirect was refused ("another origin", ...), for REDIRECTED."""
 
     @property
     def message(self) -> str:
@@ -162,6 +178,31 @@ class ConnectionFailure:
         # For an unclassified HTTP error, surface the actual status code.
         if self.reason is ConnectionErrorReason.HTTP_ERROR and self.status_code is not None:
             return f"The server returned HTTP {self.status_code} during the MCP handshake."
+        if self.reason is ConnectionErrorReason.REDIRECTED and self.location is not None:
+            status = f" (HTTP {self.status_code})" if self.status_code is not None else ""
+            why = f" ({self.redirect_reason})" if self.redirect_reason else ""
+            if self.redirect_reason == REFUSED_TOO_MANY:
+                # The target is the last hop of a loop or an over-long chain,
+                # not a URL to audit: the endpoint never answers directly.
+                return (
+                    f"The server redirected{status} to {self.location}, which mcpscore stopped following{why} — "
+                    "the endpoint redirects in a loop or a chain past the redirect budget; fix the server or "
+                    "proxy so the endpoint answers directly."
+                )
+            if self.redirect_reason == REFUSED_DOWNGRADE:
+                # Never recommend the plaintext target: a token or custom
+                # header would travel in the clear. Suggest the https form
+                # and the usual cause, as the SDK's own message does.
+                https_form = httpx2.URL(self.location).copy_with(scheme="https")
+                return (
+                    f"The server redirected{status} to {self.location}, which mcpscore does not follow{why} — "
+                    "the server is likely behind a TLS-terminating proxy whose forwarded headers it does not "
+                    f"trust; try {https_form} instead, or fix the proxy settings."
+                )
+            return (
+                f"The server redirected{status} to {self.location}, which mcpscore does not follow{why} — "
+                "audit that URL instead if it is the intended server."
+            )
         if self.detail is not None:
             return f"{base} Details: {self.detail}"
         return base
@@ -176,12 +217,12 @@ def reason_for_status(status_code: int) -> ConnectionErrorReason:
     return ConnectionErrorReason.HTTP_ERROR
 
 
-def extract_http_status(exc: BaseException) -> int | None:
-    """Find an HTTP status code anywhere in an exception tree.
+def find_http_status_error(exc: BaseException) -> httpx2.HTTPStatusError | None:
+    """Find an ``HTTPStatusError`` anywhere in an exception tree.
 
     Transport teardown surfaces the real cause buffered inside an
     ``ExceptionGroup`` (and possibly chained via ``__cause__``/``__context__``);
-    walk all of it to recover the status the server actually returned.
+    walk all of it to recover the response the server actually returned.
     """
     seen: set[int] = set()
     stack: list[BaseException | None] = [exc]
@@ -191,12 +232,18 @@ def extract_http_status(exc: BaseException) -> int | None:
             continue
         seen.add(id(current))
         if isinstance(current, httpx2.HTTPStatusError):
-            return current.response.status_code
+            return current
         if isinstance(current, BaseExceptionGroup):
             stack.extend(current.exceptions)
         stack.append(current.__cause__)
         stack.append(current.__context__)
     return None
+
+
+def extract_http_status(exc: BaseException) -> int | None:
+    """Find an HTTP status code anywhere in an exception tree (see :func:`find_http_status_error`)."""
+    error = find_http_status_error(exc)
+    return error.response.status_code if error is not None else None
 
 
 def _safe_failure_detail(exc: BaseException) -> str:
@@ -226,6 +273,16 @@ def _preferred_failure(
     if second is None:
         return first
     return second if _REASON_RANK[second.reason] > _REASON_RANK[first.reason] else first
+
+
+def _log_refused_redirect(status: int | None, refused: RefusedRedirect, server_url: str) -> None:
+    logger.info(
+        "Server answered with a redirect mcpscore does not follow (HTTP %s to %s: %s): %s",
+        status,
+        refused.target,
+        refused.why,
+        server_url,
+    )
 
 
 class MCPClient:
@@ -282,6 +339,7 @@ class MCPClient:
         self.last_connection_error: ConnectionFailure | None = None
         # HTTP status recovered from a single attempt's buffered teardown error.
         self._pending_http_status: int | None = None
+        self._pending_refused_redirect: RefusedRedirect | None = None
 
     async def detect_and_connect(self, server_path_or_url: str | StdioCommand) -> tuple[bool, MCPTransportType | None]:
         """Automatically detect transport type and connect to MCP server.
@@ -331,6 +389,13 @@ class MCPClient:
                     http_failure.status_code or "401/403",
                 )
                 return (False, None)
+
+            # A refused redirect on the POST does not skip the SSE fallback:
+            # redirect behaviour can differ by method (a legacy endpoint may
+            # redirect POST /mcp elsewhere while serving SSE on GET /mcp), so
+            # the fallback's GET is sent and classified by the same policy on
+            # its own. If it is redirected too, or fails for less, the
+            # ranking below keeps the redirect diagnosis.
 
             # Fall back to SSE
             logger.info("Streamable HTTP failed, trying SSE...")
@@ -398,6 +463,7 @@ class MCPClient:
         # Reset per-attempt teardown state so a stale status from a prior
         # transport attempt can't leak into this one's classification.
         self._pending_http_status = None
+        self._pending_refused_redirect = None
         try:
             start_time = time.perf_counter()
             streams = await stack.enter_async_context(transport_cm)
@@ -443,9 +509,10 @@ class MCPClient:
         try:
             await stack.aclose()
         except Exception as e:  # noqa: BLE001 — teardown must not mask the connect failure
-            status = extract_http_status(e)
-            if status is not None:
-                self._pending_http_status = status
+            error = find_http_status_error(e)
+            if error is not None:
+                self._pending_http_status = error.response.status_code
+                self._pending_refused_redirect = unfollowed_redirect(error.response)
             logger.info("Connection attempt failed: %s", e)
 
     def _record_failure(
@@ -453,9 +520,46 @@ class MCPClient:
         reason: ConnectionErrorReason,
         status_code: int | None = None,
         detail: str | None = None,
+        refused: RefusedRedirect | None = None,
     ) -> None:
         """Record why the current connect attempt failed."""
-        self.last_connection_error = ConnectionFailure(reason=reason, status_code=status_code, detail=detail)
+        self.last_connection_error = ConnectionFailure(
+            reason=reason,
+            status_code=status_code,
+            detail=detail,
+            location=refused.target if refused is not None else None,
+            redirect_reason=refused.why if refused is not None else None,
+        )
+
+    def _record_status_failure(self, status: int, refused: RefusedRedirect | None) -> None:
+        """Record a connect attempt that ended on an HTTP status.
+
+        ``refused`` is a redirect the same-origin policy left unfollowed (see
+        :mod:`mcpscore.redirects`); when the server answered with one, that
+        is the failure, whatever the status.
+        """
+        if refused is not None:
+            self._record_failure(ConnectionErrorReason.REDIRECTED, status, refused=refused)
+        else:
+            self._record_failure(reason_for_status(status), status)
+
+    def _record_http_status(
+        self, status: int, refused: RefusedRedirect | None, server_url: str, error: BaseException
+    ) -> None:
+        """Log and record a connect attempt that ended on an HTTP status.
+
+        An auth challenge and a refused redirect are expected observations,
+        not errors — no traceback for either; the caller acts on the
+        classification (the partial audit, or the redirect target).
+        """
+        if status in (401, 403):
+            logger.info("Server requires authentication (HTTP %s): %s", status, server_url)
+        elif refused is not None:
+            _log_refused_redirect(status, refused, server_url)
+        else:
+            logger.error("HTTP error %s from server: %s", status, server_url, exc_info=error)
+            logger.debug("Error details: %s", error)
+        self._record_status_failure(status, refused)
 
     def _record_unclassified_failure(self, exc: BaseException) -> None:
         """Classify a catch-all failure, recovering an HTTP status if one is buried in it.
@@ -464,14 +568,30 @@ class MCPClient:
         generic handler directly (not only via teardown), so look inside it
         before falling back to UNKNOWN.
         """
-        status = self._pending_http_status or extract_http_status(exc)
+        status, refused = self._observed_status(exc)
         if status is not None:
-            self._record_failure(reason_for_status(status), status)
+            self._record_status_failure(status, refused)
         else:
             # Keep a compact, single-line explanation so a caller can defer
             # showing it until modern-only probing has ruled out an expected
             # rejection of the legacy handshake.
             self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_safe_failure_detail(exc))
+
+    def _observed_status(self, exc: BaseException) -> tuple[int | None, RefusedRedirect | None]:
+        """Return the HTTP status a failed attempt observed, with the redirect it refused, from one response.
+
+        Teardown's observation wins when there is one; otherwise the first
+        ``HTTPStatusError`` in ``exc``. Both values always come from the same
+        response: a status from teardown must never be paired with a
+        redirect found in a different exception, which would report a
+        REDIRECTED failure whose status and target belong to two requests.
+        """
+        if self._pending_http_status is not None:
+            return self._pending_http_status, self._pending_refused_redirect
+        error = find_http_status_error(exc)
+        if error is None:
+            return None, None
+        return error.response.status_code, unfollowed_redirect(error.response)
 
     def _record_handshake_failure(self, server_url: str) -> None:
         """Classify a handshake failure, using any HTTP status seen in teardown.
@@ -482,7 +602,7 @@ class MCPClient:
         """
         logger.error("Not a valid MCP server (handshake failed): %s", server_url)
         if self._pending_http_status is not None:
-            self._record_failure(reason_for_status(self._pending_http_status), self._pending_http_status)
+            self._record_status_failure(self._pending_http_status, self._pending_refused_redirect)
         else:
             self._record_failure(ConnectionErrorReason.NOT_MCP)
 
@@ -625,7 +745,8 @@ class MCPClient:
                     write=30.0,  # Write timeout: 30 seconds
                     pool=5.0,  # Pool timeout: 5 seconds
                 ),
-                follow_redirects=True,
+                # No follow_redirects: the SDK follows same-origin hops itself
+                # and ignores this client's setting (mcp 2.2.0, #3397).
                 headers=self.headers,
                 limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
             )
@@ -651,15 +772,7 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
-            status = e.response.status_code
-            if status in (401, 403):
-                # An auth challenge is an expected observation, not an error —
-                # the partial-audit path handles it. No traceback.
-                logger.info("Server requires authentication (HTTP %s): %s", status, server_url)
-            else:
-                logger.exception("HTTP error %s from server: %s", status, server_url)
-                logger.debug("Error details: %s", e)
-            self._record_failure(reason_for_status(status), status)
+            self._record_http_status(e.response.status_code, unfollowed_redirect(e.response), server_url, e)
             return False
         except TimeoutError:
             logger.error("MCP initialize handshake timed out for server: %s", server_url)  # noqa: TRY400
@@ -670,29 +783,40 @@ class MCPClient:
             self._record_handshake_failure(server_url)
             return False
         except Exception as e:
-            status = self._pending_http_status or extract_http_status(e)
+            status, refused = self._observed_status(e)
             if status is None:
                 # Some SDK failure shapes (e.g. a bare MCPError for a 401
-                # whose body parses as an error response) carry no HTTP
+                # whose body parses as an error response, or the MCPError it
+                # raises for a redirect it refused to follow) carry no HTTP
                 # status anywhere in the exception chain. Recover it with a
-                # single anonymous request so an auth gate classifies as
-                # UNAUTHORIZED instead of UNKNOWN. Only a recovered 401/403
-                # is trusted: the recovery is a *different* request, so any
-                # other status (a 200 from an HTTP-fine but MCP-broken
-                # endpoint, say) must not relabel the original failure.
-                recovered = await self._recover_http_status(server_url)
-                if recovered in (401, 403):
-                    status = recovered
+                # single request so an auth gate classifies as UNAUTHORIZED
+                # and a redirect as REDIRECTED instead of UNKNOWN. Only a
+                # recovered 401/403 or refused redirect is trusted: the
+                # recovery is a *different* request, so any other status (a
+                # 200 from an HTTP-fine but MCP-broken endpoint, say) must
+                # not relabel the original failure. Recovery follows the
+                # hops the SDK follows, so the redirect it stops on is the
+                # one the SDK refused (or, for a loop, the one past its
+                # budget), not a trailing-slash hop the SDK went through.
+                recovered = await self._recover_http_response(server_url)
+                if recovered is not None:
+                    if recovered.status_code in (401, 403):
+                        status = recovered.status_code
+                    elif (recovered_redirect := unfollowed_redirect(recovered)) is not None:
+                        status, refused = recovered.status_code, recovered_redirect
             if status in (401, 403):
                 logger.info("Server requires authentication (HTTP %s): %s", status, server_url)
                 self._record_failure(reason_for_status(status), status)
+            elif refused is not None:
+                _log_refused_redirect(status, refused, server_url)
+                self._record_failure(ConnectionErrorReason.REDIRECTED, status, refused=refused)
             else:
                 logger.exception("Failed to connect to MCP server via Streamable HTTP")
                 self._record_unclassified_failure(e)
             return False
 
-    async def _recover_http_status(self, server_url: str) -> int | None:
-        """Recover the HTTP status of a failed connect attempt with one POST.
+    async def _recover_http_response(self, server_url: str) -> httpx2.Response | None:
+        """Recover the HTTP response of a failed connect attempt with one POST.
 
         Used only when a connect attempt failed without an HTTP status
         anywhere in its exception chain. It **mirrors the failed attempt's
@@ -706,7 +830,10 @@ class MCPClient:
         design (``observed_auth_status``).
 
         Invokes no tools and never raises — a network error simply returns
-        None and classification falls back to UNKNOWN.
+        None and classification falls back to UNKNOWN. Redirects are followed
+        exactly as the SDK follows them (:func:`mcpscore.redirects.send_within_origin`),
+        so for a chain ``/mcp`` → ``/mcp/`` → another origin the response is
+        the off-origin redirect the SDK refused, not the first hop it took.
         """
         body = {
             "jsonrpc": "2.0",
@@ -720,12 +847,13 @@ class MCPClient:
         }
         try:
             async with async_client(timeout=10.0, headers=self.headers) as client:
-                response = await client.post(
+                request = client.build_request(
+                    "POST",
                     server_url,
                     json=body,
                     headers={"Accept": "application/json, text/event-stream"},
                 )
-                return response.status_code
+                return await send_within_origin(client, request)
         except Exception:  # noqa: BLE001 — recovery is best-effort
             return None
 
@@ -759,7 +887,8 @@ class MCPClient:
                     write=30.0,  # Write timeout: 30 seconds
                     pool=5.0,  # Pool timeout: 5 seconds
                 ),
-                follow_redirects=True,
+                # No follow_redirects: the SDK follows same-origin hops itself
+                # and ignores this client's setting (mcp 2.2.0, #3397).
                 headers=self.headers,
                 limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
             )
@@ -793,9 +922,7 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
-            logger.exception("HTTP error %s from server: %s", e.response.status_code, server_url)
-            logger.debug("Error details: %s", e)
-            self._record_failure(reason_for_status(e.response.status_code), e.response.status_code)
+            self._record_http_status(e.response.status_code, unfollowed_redirect(e.response), server_url, e)
             return False
         except TimeoutError:
             logger.error("MCP initialize handshake timed out for server: %s", server_url)  # noqa: TRY400

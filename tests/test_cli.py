@@ -2303,3 +2303,69 @@ class TestSmokeCliFlow:
         assert report["smoke"]["executed"] is False
         assert "modern-only" in report["smoke"]["reason"]
         assert "Smoke checks did not run" in caplog.text
+
+
+class TestOffOriginRedirectExit:
+    """A URL whose session requests are redirected: check for a modern-only server, then name the target and exit 2."""
+
+    async def test_names_the_redirect_target_and_exits_2_after_the_modern_only_check(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://server.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(
+            reason=ConnectionErrorReason.REDIRECTED,
+            status_code=307,
+            location="https://other.example/mcp",
+            redirect_reason="another origin",
+        )
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.ERROR),
+            pytest.raises(SystemExit) as exc,
+        ):
+            await async_main()
+
+        assert exc.value.code == 2
+        assert "https://other.example/mcp" in caplog.text
+        assert "audit that URL instead" in caplog.text
+        # `initialize` may be the only request the server redirects: the
+        # modern-only probes, which apply the same policy, still get their
+        # chance first. A partial audit could add nothing to the message.
+        mock_auditor.audit_modern_only.assert_awaited_once()
+        mock_auditor.audit_partial.assert_not_called()
+
+    async def test_a_modern_only_server_behind_a_redirecting_initialize_is_still_audited(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://server.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(
+            reason=ConnectionErrorReason.REDIRECTED,
+            status_code=307,
+            location="https://other.example/mcp",
+            redirect_reason="another origin",
+        )
+        mock_auditor.audit_modern_only = AsyncMock(return_value=True)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()  # no SystemExit: the modern-only audit completed
+
+        mock_auditor.audit_modern_only.assert_awaited_once()

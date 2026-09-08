@@ -27,6 +27,7 @@ from mcp.client.auth import OAuthClientProvider, OAuthRegistrationError, OAuthTo
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from pydantic import AnyUrl
 
+from mcpscore.redirects import send_within_origin
 from mcpscore.tls import async_client
 
 if TYPE_CHECKING:
@@ -238,16 +239,20 @@ async def obtain_token_interactively(
         # discovery → (registration) → browser grant → token exchange, and the
         # provider retries the request with the token.
         try:
-            async with async_client(auth=provider, follow_redirects=True, timeout=30.0, transport=transport) as client:
+            async with async_client(auth=provider, timeout=30.0, transport=transport) as client:
                 # A well-formed JSON-RPC request: servers that validate the
                 # body before their auth middleware still answer 401 with the
                 # WWW-Authenticate challenge discovery needs (an empty {} can
-                # draw a 400 with no challenge from such servers).
-                await client.post(
+                # draw a 400 with no challenge from such servers). Redirects
+                # are followed only within the server's origin, the policy the
+                # SDK provider applies to its own requests (mcp 2.2.0).
+                request = client.build_request(
+                    "POST",
                     server_url,
                     json={"jsonrpc": "2.0", "id": 0, "method": "ping"},
                     headers={"Accept": "application/json, text/event-stream"},
                 )
+                await send_within_origin(client, request)
         except OAuthFlowError:
             raise
         except Exception as exc:
