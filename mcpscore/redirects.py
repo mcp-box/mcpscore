@@ -83,15 +83,21 @@ def within_origin(sent: httpx2.URL, location: httpx2.URL) -> bool:
 def redirect_target(response: httpx2.Response) -> httpx2.URL | None:
     """Return the absolute ``Location`` of a redirect response, else ``None``.
 
-    A redirect status without a ``Location`` is not a redirect anyone can
-    follow and reports ``None`` too.
+    Where a client produced the response, the target is the URL of the
+    request httpx2 built for it, so the policy judges exactly what httpx2
+    (and so the SDK) would send. A hand-built response resolves its
+    ``Location`` against the request URL the same way. A redirect status
+    without a ``Location`` header is not a redirect anyone can follow and
+    reports ``None``; an *empty* ``Location`` is one, resolving to the
+    current URL, and httpx2 follows it into its own redirect budget.
     """
     if response.status_code not in REDIRECT_STATUSES:
         return None
-    location = response.headers.get("location")
-    if not location:
+    if response.next_request is not None:
+        return response.next_request.url
+    if "location" not in response.headers:
         return None
-    return response.request.url.join(location)
+    return response.request.url.join(response.headers["location"])
 
 
 @dataclass(frozen=True)

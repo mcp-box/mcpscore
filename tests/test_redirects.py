@@ -168,7 +168,24 @@ class TestUnfollowedRedirect:
         assert unfollowed_redirect(httpx2.Response(200, request=httpx2.Request("POST", URL))) is None
         assert unfollowed_redirect(_redirect(307, None)) is None
         assert policy_refusal(_redirect(307, None)) is None
-        assert redirect_target(_redirect(307, "")) is None
+
+    def test_an_empty_location_is_a_redirect_to_the_current_url(self):
+        """httpx2 builds a next request for an empty Location (the current URL) and loops on it until its budget."""
+        assert redirect_target(_redirect(307, "")) == httpx2.URL(URL)
+        assert policy_refusal(_redirect(307, "")) is None
+        assert unfollowed_redirect(_redirect(307, "")) == RefusedRedirect(URL, REFUSED_TOO_MANY)
+
+    async def test_the_target_is_the_request_httpx2_built_when_there_is_one(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(307, headers={"location": "../other/mcp"})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            response = await client.send(
+                client.build_request("POST", f"{ORIGIN}/a/mcp", json={}), follow_redirects=False
+            )
+
+        assert response.next_request is not None
+        assert redirect_target(response) == response.next_request.url
 
 
 class TestSendWithinOrigin:
@@ -260,6 +277,20 @@ class TestSendWithinOrigin:
 
         assert response.status_code == 200
         assert seen == ["https://user:pw@server.example/mcp", "https://user:pw@server.example/mcp/"]
+
+    async def test_an_empty_location_loops_until_the_budget_as_httpx2_does(self):
+        hops = 0
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            nonlocal hops
+            hops += 1
+            return httpx2.Response(307, headers={"location": ""})
+
+        response = await self._send(handler, max_redirects=3)
+
+        assert response.status_code == 307
+        assert hops == 4  # the request plus three followed hops, as httpx2 would count them
+        assert unfollowed_redirect(response) == RefusedRedirect(URL, REFUSED_TOO_MANY)
 
     async def test_stops_at_the_clients_redirect_budget(self):
         def handler(request: httpx2.Request) -> httpx2.Response:
