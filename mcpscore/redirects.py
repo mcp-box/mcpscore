@@ -1,10 +1,12 @@
 """Same-origin redirect policy for the engine's own HTTP requests.
 
 Since mcp 2.2.0 the SDK's HTTP transports follow a redirect only while it
-stays on the endpoint's origin: same scheme, host and port, or ``http`` to
-``https`` on the same host with default ports, keeping the request method (a
-307/308). Anything else is refused and the message fails with ``Redirect to
-<url> not followed``. The probes and the OAuth bootstrap request send raw
+stays on the endpoint's origin (same scheme, host and port, or ``http`` to
+``https`` on the same host with default ports) and keeps the request as
+sent: the method httpx2 would send to the target must be the method sent,
+so a POST follows a 307/308 but not a 301/302/303, which would turn it into
+a body-less GET, while a GET follows any of them. Anything else is refused
+and the message fails with ``Redirect to <url> not followed``. The probes and the OAuth bootstrap request send raw
 HTTP outside the SDK, and until this module they followed every redirect the
 way httpx2 does, so one audit applied two policies to one endpoint: the
 session refused a redirect the probes then followed, judging an origin the
@@ -31,6 +33,9 @@ REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 
 REFUSED_DOWNGRADE = "it would downgrade this HTTPS endpoint to plain HTTP"
 """Refusal reason: an ``https`` endpoint redirected to ``http``. Never a URL to recommend; see the SDK's message."""
+
+REFUSED_TOO_MANY = "too many redirects"
+"""Refusal reason: a redirect the policy would follow reached the caller, which happens only past the budget."""
 
 REFUSED_OFF_ORIGIN = "another origin"
 """Refusal reason: the target is not on the endpoint's origin. A property of the URL, whatever the request."""
@@ -122,18 +127,39 @@ def _refusal(response: httpx2.Response, target: httpx2.URL) -> str | None:
         return REFUSED_OFF_ORIGIN
     if target.userinfo and target.userinfo != sent.url.userinfo:
         return REFUSED_CREDENTIALS
-    redirected = _redirected_method(response.status_code, sent.method)
+    # The method httpx2 will actually send: read off the request it built
+    # where a client produced the response (the rule has shifted between
+    # httpx2 versions, e.g. QUERY on a 302), mirrored for a hand-built one.
+    next_request = response.next_request
+    redirected = (
+        next_request.method if next_request is not None else _redirected_method(response.status_code, sent.method)
+    )
     if redirected != sent.method:
         return f"the {sent.method} would become a {redirected}"
     return None
 
 
-def unfollowed_redirect(response: httpx2.Response) -> RefusedRedirect | None:
-    """Return the redirect the policy leaves unfollowed, with its reason, else ``None``.
+def policy_refusal(response: httpx2.Response) -> str | None:
+    """Return why the policy would refuse to follow ``response``, or ``None`` if it would follow it.
 
-    ``None`` for a non-redirect, and for a redirect the policy would have
-    followed (same origin, same method): such a response reached the caller
-    only past the redirect budget, and is a plain HTTP status to it.
+    ``None`` also for a non-redirect. This is the decision
+    :func:`send_within_origin` makes at each hop; :func:`unfollowed_redirect`
+    is the report for a redirect that has already reached the caller.
+    """
+    target = redirect_target(response)
+    if target is None:
+        return None
+    return _refusal(response, target)
+
+
+def unfollowed_redirect(response: httpx2.Response) -> RefusedRedirect | None:
+    """Return the report for a redirect response that reached the caller unfollowed, else ``None``.
+
+    ``None`` only for a non-redirect. A redirect the policy refuses carries
+    that reason; a redirect the policy would have *followed* can reach a
+    caller only past the redirect budget (the SDK's, or
+    :func:`send_within_origin`'s), so it is reported as too many redirects
+    rather than passed off as a plain HTTP status with its target lost.
 
     The target is for a message or a log line, so it is reported the way the
     SDK reports its own: without userinfo, query or fragment, which can carry
@@ -143,9 +169,7 @@ def unfollowed_redirect(response: httpx2.Response) -> RefusedRedirect | None:
     target = redirect_target(response)
     if target is None:
         return None
-    why = _refusal(response, target)
-    if why is None:
-        return None
+    why = _refusal(response, target) or REFUSED_TOO_MANY
     return RefusedRedirect(str(target.copy_with(userinfo=b"", query=None, fragment=None)), why)
 
 

@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invariant (78/91) are identical. Three SDK behaviour changes ride along
   and can move outcomes on affected live servers:
   - **Cross-origin redirects are no longer followed by the MCP transports.**
-    The SDK follows a 307/308 only within the endpoint's origin (same
-    scheme, host and port, or `http`→`https` on the same host) and ignores
-    the client's `follow_redirects` setting. A server whose configured URL
+    The SDK follows a redirect only within the endpoint's origin (same
+    scheme, host and port, or `http`→`https` on the same host) and only
+    when the request keeps its method: a POST follows a 307/308 but not a
+    301/302/303, which would turn it into a GET, while a GET follows any of
+    them. It ignores the client's `follow_redirects` setting. A server whose configured URL
     redirects elsewhere (`example.com/mcp` → `mcp.example.com/mcp`) was
     audited at the redirect target on 2.1.1 and now fails to connect. See
     the two entries below for how the engine reports and mirrors this.
@@ -40,10 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not follow (another origin) — audit that URL instead if it is the intended
   server." The parenthetical names the rule that applied: another origin, a
   `301`/`302`/`303` that would turn the `POST` into a `GET`, a target that
-  introduces URL credentials, or an `https`→`http` downgrade. For the
-  downgrade the message never recommends the plaintext target: like the
-  SDK's own, it suggests the `https` form and names the usual cause, a
-  TLS-terminating proxy whose forwarded headers the server does not trust.
+  introduces URL credentials, an `https`→`http` downgrade, or too many
+  redirects. For the downgrade the message never recommends the plaintext
+  target: like the SDK's own, it suggests the `https` form and names the
+  usual cause, a TLS-terminating proxy whose forwarded headers the server
+  does not trust. For a loop or a chain past the redirect budget it says
+  the endpoint never answers directly, rather than passing the last hop
+  off as a plain HTTP status. The status recovery request follows the
+  same hops the SDK follows, so a chain such as `/mcp` → `/mcp/` → another
+  origin is classified on the hop the SDK refused.
   Before, the SDK's refusal surfaced as a
   generic "HTTP 307" handshake error after the SSE fallback had been tried
   against the same redirect. Classification reads the redirect from the

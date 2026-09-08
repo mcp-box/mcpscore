@@ -30,6 +30,15 @@ def _http_status_error(status_code: int) -> httpx2.HTTPStatusError:
     return httpx2.HTTPStatusError("boom", request=MagicMock(), response=response)
 
 
+def _mock_client(handler):
+    """Build a stand-in for ``async_client``: a real client over a MockTransport, honoring the caller's kwargs."""
+
+    def factory(**kwargs) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(transport=httpx2.MockTransport(handler), **kwargs)
+
+    return factory
+
+
 class TestReasonForStatus:
     @pytest.mark.parametrize(
         ("status", "reason"),
@@ -325,18 +334,36 @@ class TestAuthGatedHttpFallback:
         probe layer answers that question separately, anonymously by design.
         """
         client = MCPClient(headers={"Authorization": "Bearer caller-token", "X-Trace": "1"})
+        seen: list[httpx2.Headers] = []
 
-        with patch("mcpscore.mcp_client.httpx2.AsyncClient") as mock_cls:
-            instance = mock_cls.return_value.__aenter__.return_value
-            instance.post.return_value = httpx2.Response(401)
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request.headers)
+            return httpx2.Response(401)
+
+        with patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(handler)):
             response = await client._recover_http_response("https://gated.example/mcp")
 
         assert response is not None
         assert response.status_code == 401
-        assert mock_cls.call_args.kwargs["headers"] == {
-            "Authorization": "Bearer caller-token",
-            "X-Trace": "1",
-        }
+        assert seen[0]["Authorization"] == "Bearer caller-token"
+        assert seen[0]["X-Trace"] == "1"
+
+    async def test_recovery_follows_the_hops_the_sdk_follows_and_stops_where_it_stops(self):
+        """`/mcp` → same-origin `/mcp/` → another origin: the SDK took the first hop and refused the second."""
+        client = MCPClient()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path == "/mcp":
+                return httpx2.Response(307, headers={"location": "/mcp/"})
+            return httpx2.Response(307, headers={"location": "https://other.example/mcp"})
+
+        with patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(handler)):
+            response = await client._recover_http_response("https://server.example/mcp")
+
+        assert response is not None
+        assert response.request.url.path == "/mcp/"
+        assert unfollowed_redirect(response) is not None
+        assert unfollowed_redirect(response).target == "https://other.example/mcp"
 
     async def test_recover_http_response_returns_none_on_network_error(self):
         """Recovery is best-effort: a network error yields None, not an exception."""
@@ -349,9 +376,16 @@ class TestAuthGatedHttpFallback:
         assert response is None
 
 
-def _redirect_error(status: int, location: str, *, url: str = "https://server.example/mcp") -> httpx2.HTTPStatusError:
-    """Build an ``HTTPStatusError`` for a real redirect response, as ``raise_for_status`` does."""
-    request = httpx2.Request("POST", url)
+def _redirect_error(
+    status: int, location: str, *, url: str = "https://server.example/mcp", method: str = "POST"
+) -> httpx2.HTTPStatusError:
+    """Build an ``HTTPStatusError`` for a real redirect response, as ``raise_for_status`` does.
+
+    The Streamable HTTP transport POSTs; the SSE transport opens with a GET.
+    Tests routed through ``sse_client`` pass ``method="GET"`` so the response
+    is one that transport could actually have received.
+    """
+    request = httpx2.Request(method, url)
     response = httpx2.Response(status, headers={"location": location}, request=request)
     return httpx2.HTTPStatusError("redirect", request=request, response=response)
 
@@ -415,16 +449,18 @@ class TestOffOriginRedirect:
         assert client.last_connection_error.reason is ConnectionErrorReason.UNKNOWN
         assert client.last_connection_error.location is None
 
-    async def test_recovered_same_origin_redirect_does_not_relabel_the_failure(self):
-        """A trailing-slash 307 is one the SDK followed; whatever failed, it was not the redirect."""
+    async def test_recovery_through_a_trailing_slash_hop_does_not_relabel_the_failure(self):
+        """A trailing-slash 307 is one the SDK followed; recovery follows it too and lands on the real answer."""
         client = MCPClient()
 
-        async def recovered_same_origin(url):
-            return _redirect_error(307, "https://server.example/mcp/").response
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path == "/mcp":
+                return httpx2.Response(307, headers={"location": "/mcp/"})
+            return httpx2.Response(200, text="not json-rpc at all")
 
         with (
             patch("mcpscore.mcp_client.streamable_http_client") as mock_http,
-            patch.object(client, "_recover_http_response", side_effect=recovered_same_origin),
+            patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(handler)),
             patch.object(client, "_connect_with_sse") as sse,
         ):
             mock_http.return_value.__aenter__.side_effect = RuntimeError("bad MCP payload")
@@ -436,6 +472,55 @@ class TestOffOriginRedirect:
         assert client.last_connection_error is not None
         assert client.last_connection_error.reason is ConnectionErrorReason.UNKNOWN
 
+    async def test_statusless_sdk_refusal_of_a_chain_is_classified_on_the_hop_the_sdk_refused(self, caplog):
+        client = MCPClient()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path == "/mcp":
+                return httpx2.Response(307, headers={"location": "/mcp/"})
+            return httpx2.Response(307, headers={"location": "https://other.example/mcp"})
+
+        with (
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_http,
+            patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(handler)),
+            patch.object(client, "_connect_with_sse", return_value=False),
+            caplog.at_level(logging.INFO),
+        ):
+            mock_http.return_value.__aenter__.side_effect = RuntimeError(
+                "Redirect to https://other.example/mcp not followed; use that URL as the endpoint"
+            )
+            await client.detect_and_connect("https://server.example/mcp")
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.REDIRECTED
+        assert failure.location == "https://other.example/mcp"
+        assert failure.redirect_reason == "another origin"
+
+    async def test_a_same_origin_redirect_loop_is_reported_as_too_many_redirects(self):
+        """The SDK exhausts its budget on `/mcp` ⇄ `/mcp/`; the target must not be lost as UNKNOWN."""
+        client = MCPClient()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            location = "/mcp/" if request.url.path == "/mcp" else "/mcp"
+            return httpx2.Response(307, headers={"location": location})
+
+        with (
+            patch("mcpscore.mcp_client.streamable_http_client") as mock_http,
+            patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(handler)),
+            patch.object(client, "_connect_with_sse", return_value=False),
+        ):
+            mock_http.return_value.__aenter__.side_effect = RuntimeError("Redirect to /mcp/ not followed")
+            await client.detect_and_connect("https://server.example/mcp")
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.REDIRECTED
+        assert failure.redirect_reason == "too many redirects"
+        assert failure.location in ("https://server.example/mcp", "https://server.example/mcp/")
+        assert "answers directly" in failure.message
+        assert "audit that URL" not in failure.message
+
     async def test_sse_redirect_status_error_is_redirected_without_a_traceback(self, caplog):
         """The SSE transport raises ``HTTPStatusError`` for the redirect it left unfollowed."""
         client = MCPClient()
@@ -444,7 +529,9 @@ class TestOffOriginRedirect:
             patch("mcpscore.mcp_client.sse_client") as mock_sse,
             caplog.at_level(logging.INFO),
         ):
-            mock_sse.return_value.__aenter__.side_effect = _redirect_error(308, "https://other.example/sse")
+            mock_sse.return_value.__aenter__.side_effect = _redirect_error(
+                308, "https://other.example/sse", method="GET"
+            )
             result = await client.connect_to_server(MCPTransportType.SSE, "https://server.example/sse")
 
         assert result is False
@@ -491,17 +578,39 @@ class TestOffOriginRedirect:
         assert failure.status_code == 307
         assert failure.location == "https://other.example/mcp"
 
-    async def test_same_origin_redirect_status_stays_a_plain_http_error(self):
-        """Past the redirect budget the response is a 307 the policy would have followed: not REDIRECTED."""
+    async def test_same_origin_redirect_surfaced_by_a_transport_is_past_its_budget(self):
+        """A transport only surfaces a redirect it would have followed after exhausting its budget: a loop."""
         client = MCPClient()
 
         with patch("mcpscore.mcp_client.sse_client") as mock_sse:
-            mock_sse.return_value.__aenter__.side_effect = _redirect_error(307, "https://server.example/sse/")
+            mock_sse.return_value.__aenter__.side_effect = _redirect_error(
+                307, "https://server.example/sse/", method="GET"
+            )
             await client.connect_to_server(MCPTransportType.SSE, "https://server.example/sse")
 
-        assert client.last_connection_error is not None
-        assert client.last_connection_error.reason is ConnectionErrorReason.HTTP_ERROR
-        assert client.last_connection_error.status_code == 307
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.REDIRECTED
+        assert failure.status_code == 307
+        assert failure.redirect_reason == "too many redirects"
+
+    async def test_teardown_status_and_redirect_come_from_one_response(self):
+        """A 500 seen at teardown must not be paired with a redirect found in the primary exception."""
+        client = MCPClient()
+        stack = AsyncExitStack()
+
+        async def surface_500() -> None:
+            raise ExceptionGroup("transport", [_http_status_error(500)])
+
+        stack.push_async_callback(surface_500)
+        await client._discard_attempt(stack)
+        client._record_unclassified_failure(_redirect_error(307, "https://other.example/mcp"))
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.HTTP_ERROR
+        assert failure.status_code == 500
+        assert failure.location is None
 
     async def test_a_method_refusal_on_the_post_still_gets_the_sse_attempt(self):
         """The SSE fallback opens with a GET, which the SDK follows through a same-origin 303 unchanged."""
@@ -597,7 +706,9 @@ class TestOffOriginRedirect:
         client = MCPClient()
 
         with patch("mcpscore.mcp_client.sse_client") as mock_sse:
-            mock_sse.return_value.__aenter__.side_effect = _redirect_error(307, "http://server.example/mcp/")
+            mock_sse.return_value.__aenter__.side_effect = _redirect_error(
+                307, "http://server.example/mcp/", method="GET"
+            )
             await client.connect_to_server(MCPTransportType.SSE, "https://server.example/mcp")
 
         failure = client.last_connection_error
@@ -610,12 +721,12 @@ class TestOffOriginRedirect:
         assert "audit that URL" not in failure.message
 
     async def test_same_origin_303_on_the_post_is_redirected_with_its_own_reason(self):
-        """The SDK refuses a same-origin 303 too (it would drop the message); the diagnosis must say so."""
+        """The SDK refuses a same-origin 303 on the POST (it would drop the message); the diagnosis must say so."""
         client = MCPClient()
 
-        with patch("mcpscore.mcp_client.sse_client") as mock_sse:
-            mock_sse.return_value.__aenter__.side_effect = _redirect_error(303, "https://server.example/mcp/")
-            await client.connect_to_server(MCPTransportType.SSE, "https://server.example/mcp")
+        with patch("mcpscore.mcp_client.streamable_http_client") as mock_http:
+            mock_http.return_value.__aenter__.side_effect = _redirect_error(303, "https://server.example/mcp/")
+            await client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, "https://server.example/mcp")
 
         failure = client.last_connection_error
         assert failure is not None

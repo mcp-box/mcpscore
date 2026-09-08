@@ -44,7 +44,7 @@ from .probes import (
     ProbeResult,
     client_version,
 )
-from .redirects import REFUSED_DOWNGRADE, RefusedRedirect, unfollowed_redirect
+from .redirects import REFUSED_DOWNGRADE, REFUSED_TOO_MANY, RefusedRedirect, send_within_origin, unfollowed_redirect
 from .tls import async_client
 
 if TYPE_CHECKING:
@@ -181,6 +181,14 @@ class ConnectionFailure:
         if self.reason is ConnectionErrorReason.REDIRECTED and self.location is not None:
             status = f" (HTTP {self.status_code})" if self.status_code is not None else ""
             why = f" ({self.redirect_reason})" if self.redirect_reason else ""
+            if self.redirect_reason == REFUSED_TOO_MANY:
+                # The target is the last hop of a loop or an over-long chain,
+                # not a URL to audit: the endpoint never answers directly.
+                return (
+                    f"The server redirected{status} to {self.location}, which mcpscore stopped following{why} — "
+                    "the endpoint redirects in a loop or a chain past the redirect budget; fix the server or "
+                    "proxy so the endpoint answers directly."
+                )
             if self.redirect_reason == REFUSED_DOWNGRADE:
                 # Never recommend the plaintext target: a token or custom
                 # header would travel in the clear. Suggest the https form
@@ -560,18 +568,30 @@ class MCPClient:
         generic handler directly (not only via teardown), so look inside it
         before falling back to UNKNOWN.
         """
-        error = find_http_status_error(exc)
-        status = self._pending_http_status or (error.response.status_code if error is not None else None)
+        status, refused = self._observed_status(exc)
         if status is not None:
-            refused = self._pending_refused_redirect or (
-                unfollowed_redirect(error.response) if error is not None else None
-            )
             self._record_status_failure(status, refused)
         else:
             # Keep a compact, single-line explanation so a caller can defer
             # showing it until modern-only probing has ruled out an expected
             # rejection of the legacy handshake.
             self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_safe_failure_detail(exc))
+
+    def _observed_status(self, exc: BaseException) -> tuple[int | None, RefusedRedirect | None]:
+        """Return the HTTP status a failed attempt observed, with the redirect it refused, from one response.
+
+        Teardown's observation wins when there is one; otherwise the first
+        ``HTTPStatusError`` in ``exc``. Both values always come from the same
+        response: a status from teardown must never be paired with a
+        redirect found in a different exception, which would report a
+        REDIRECTED failure whose status and target belong to two requests.
+        """
+        if self._pending_http_status is not None:
+            return self._pending_http_status, self._pending_refused_redirect
+        error = find_http_status_error(exc)
+        if error is None:
+            return None, None
+        return error.response.status_code, unfollowed_redirect(error.response)
 
     def _record_handshake_failure(self, server_url: str) -> None:
         """Classify a handshake failure, using any HTTP status seen in teardown.
@@ -763,11 +783,7 @@ class MCPClient:
             self._record_handshake_failure(server_url)
             return False
         except Exception as e:
-            error = find_http_status_error(e)
-            status = self._pending_http_status or (error.response.status_code if error is not None else None)
-            refused = self._pending_refused_redirect or (
-                unfollowed_redirect(error.response) if error is not None else None
-            )
+            status, refused = self._observed_status(e)
             if status is None:
                 # Some SDK failure shapes (e.g. a bare MCPError for a 401
                 # whose body parses as an error response, or the MCPError it
@@ -778,8 +794,10 @@ class MCPClient:
                 # recovered 401/403 or refused redirect is trusted: the
                 # recovery is a *different* request, so any other status (a
                 # 200 from an HTTP-fine but MCP-broken endpoint, say) must
-                # not relabel the original failure. A same-origin redirect
-                # is one the SDK would have followed, so it explains nothing.
+                # not relabel the original failure. Recovery follows the
+                # hops the SDK follows, so the redirect it stops on is the
+                # one the SDK refused (or, for a loop, the one past its
+                # budget), not a trailing-slash hop the SDK went through.
                 recovered = await self._recover_http_response(server_url)
                 if recovered is not None:
                     if recovered.status_code in (401, 403):
@@ -811,9 +829,11 @@ class MCPClient:
         by the probe layer, whose unauthenticated probe runs anonymously by
         design (``observed_auth_status``).
 
-        Invokes no tools, follows no redirect (a redirect *is* an answer worth
-        classifying) and never raises — a network error simply returns None
-        and classification falls back to UNKNOWN.
+        Invokes no tools and never raises — a network error simply returns
+        None and classification falls back to UNKNOWN. Redirects are followed
+        exactly as the SDK follows them (:func:`mcpscore.redirects.send_within_origin`),
+        so for a chain ``/mcp`` → ``/mcp/`` → another origin the response is
+        the off-origin redirect the SDK refused, not the first hop it took.
         """
         body = {
             "jsonrpc": "2.0",
@@ -827,11 +847,13 @@ class MCPClient:
         }
         try:
             async with async_client(timeout=10.0, headers=self.headers) as client:
-                return await client.post(
+                request = client.build_request(
+                    "POST",
                     server_url,
                     json=body,
                     headers={"Accept": "application/json, text/event-stream"},
                 )
+                return await send_within_origin(client, request)
         except Exception:  # noqa: BLE001 — recovery is best-effort
             return None
 

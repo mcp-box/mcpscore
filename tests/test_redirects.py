@@ -9,7 +9,9 @@ from mcpscore.redirects import (
     REFUSED_CREDENTIALS,
     REFUSED_DOWNGRADE,
     REFUSED_OFF_ORIGIN,
+    REFUSED_TOO_MANY,
     RefusedRedirect,
+    policy_refusal,
     redirect_target,
     send_within_origin,
     unfollowed_redirect,
@@ -60,9 +62,15 @@ class TestUnfollowedRedirect:
         assert refused is not None
         assert refused.target == f"{ORIGIN}/mcp/"
 
-    def test_same_origin_method_keeping_redirect_is_followed_so_not_reported(self):
-        assert unfollowed_redirect(_redirect(307, f"{ORIGIN}/mcp/")) is None
-        assert unfollowed_redirect(_redirect(308, "/mcp/")) is None
+    def test_same_origin_method_keeping_redirect_is_followed_by_the_policy(self):
+        assert policy_refusal(_redirect(307, f"{ORIGIN}/mcp/")) is None
+        assert policy_refusal(_redirect(308, "/mcp/")) is None
+
+    def test_a_followable_redirect_that_reached_the_caller_is_too_many_redirects(self):
+        """The policy follows it, so it can reach a caller only past the redirect budget: a loop, not a status."""
+        assert unfollowed_redirect(_redirect(307, f"{ORIGIN}/mcp/")) == RefusedRedirect(
+            f"{ORIGIN}/mcp/", REFUSED_TOO_MANY
+        )
 
     def test_same_origin_redirect_that_would_drop_the_post_body_is_reported(self):
         # httpx2 turns a POST into a body-less GET for 301/302/303 — the
@@ -72,9 +80,9 @@ class TestUnfollowedRedirect:
         )
 
     def test_same_origin_get_redirect_of_any_status_is_followed(self):
-        assert unfollowed_redirect(_redirect(302, "/mcp/", method="GET")) is None
-        assert unfollowed_redirect(_redirect(301, "/mcp/", method="GET")) is None
-        assert unfollowed_redirect(_redirect(303, "/mcp/", method="HEAD")) is None
+        assert policy_refusal(_redirect(302, "/mcp/", method="GET")) is None
+        assert policy_refusal(_redirect(301, "/mcp/", method="GET")) is None
+        assert policy_refusal(_redirect(303, "/mcp/", method="HEAD")) is None
 
     @pytest.mark.parametrize(
         ("status", "method", "followed"),
@@ -89,10 +97,23 @@ class TestUnfollowedRedirect:
     )
     def test_method_rule_mirrors_httpx2(self, status: int, method: str, followed: bool):
         """The refusal tracks the method httpx2 would actually send, not "anything but GET"."""
-        refused = unfollowed_redirect(_redirect(status, "/mcp/", method=method))
-        assert (refused is None) is followed
-        if refused is not None:
-            assert refused.why == f"the {method} would become a GET"
+        why = policy_refusal(_redirect(status, "/mcp/", method=method))
+        assert (why is None) is followed
+        if why is not None:
+            assert why == f"the {method} would become a GET"
+
+    async def test_method_rule_reads_the_request_httpx2_built_when_there_is_one(self):
+        """A client-built response carries httpx2's own next request; its method is the truth, whatever the version."""
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(302, headers={"location": "/mcp/"})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            request = client.build_request("POST", URL, json={})
+            response = await client.send(request, follow_redirects=False)
+
+        assert response.next_request is not None
+        assert policy_refusal(response) == f"the POST would become a {response.next_request.method}"
 
     def test_https_to_http_is_reported_as_a_downgrade_before_anything_else(self):
         """A downgrade is off-origin too, but the fix differs: the message must never recommend the http URL."""
@@ -103,9 +124,7 @@ class TestUnfollowedRedirect:
         assert other_host is not None
         assert other_host.why == REFUSED_DOWNGRADE
         # http -> https on the same host is the upgrade the policy follows.
-        assert (
-            unfollowed_redirect(_redirect(308, "https://server.example/mcp", url="http://server.example/mcp")) is None
-        )
+        assert policy_refusal(_redirect(308, "https://server.example/mcp", url="http://server.example/mcp")) is None
 
     def test_off_origin_303_is_reported_as_off_origin_not_as_a_method_change(self):
         """Reasons that hold for any request come first, so a caller can tell them apart."""
@@ -135,9 +154,9 @@ class TestUnfollowedRedirect:
     def test_userinfo_the_endpoint_already_carries_is_inherited_by_a_relative_redirect(self):
         """As in the SDK (#3450): a relative Location keeps the configured URL's userinfo unchanged."""
         endpoint = "https://user:pw@server.example/mcp"
-        assert unfollowed_redirect(_redirect(307, "/mcp/", url=endpoint)) is None
+        assert policy_refusal(_redirect(307, "/mcp/", url=endpoint)) is None
         # Repeating it verbatim in an absolute Location is unchanged too.
-        assert unfollowed_redirect(_redirect(308, "https://user:pw@server.example/mcp/", url=endpoint)) is None
+        assert policy_refusal(_redirect(308, "https://user:pw@server.example/mcp/", url=endpoint)) is None
 
     def test_userinfo_changed_by_the_redirect_is_refused(self):
         endpoint = "https://user:pw@server.example/mcp"
@@ -148,6 +167,7 @@ class TestUnfollowedRedirect:
     def test_non_redirect_and_locationless_redirect_report_none(self):
         assert unfollowed_redirect(httpx2.Response(200, request=httpx2.Request("POST", URL))) is None
         assert unfollowed_redirect(_redirect(307, None)) is None
+        assert policy_refusal(_redirect(307, None)) is None
         assert redirect_target(_redirect(307, "")) is None
 
 
@@ -250,5 +270,6 @@ class TestSendWithinOrigin:
 
         assert response.status_code == 307
         assert response.request.url.path == "/mcpxx"
-        # Past the budget the policy would have followed: not an off-origin redirect.
-        assert unfollowed_redirect(response) is None
+        # Past the budget: the policy would have followed it, so the report says so.
+        assert policy_refusal(response) is None
+        assert unfollowed_redirect(response) == RefusedRedirect(f"{ORIGIN}/mcpxxx", REFUSED_TOO_MANY)
