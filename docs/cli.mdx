@@ -68,7 +68,11 @@ redirect only while it stays on the endpoint's origin and keeps the request as
 sent (a trailing slash, an `http` to `https` upgrade), the same rule as the MCP
 Python SDK, so it never audits an origin you did not name and never lets a
 `303` turn your `POST` into a `GET`. The message says which rule applied. Audit
-the URL it names.
+the URL it names. The one exception is a redirect from `https` to `http`: the
+message then suggests the `https` form of the target instead, because a token
+or custom header must not travel to the plaintext URL. That shape usually means
+the server sits behind a TLS-terminating proxy whose forwarded headers it does
+not trust.
 
 ## Output
 

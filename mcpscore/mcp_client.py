@@ -44,7 +44,7 @@ from .probes import (
     ProbeResult,
     client_version,
 )
-from .redirects import RefusedRedirect, unfollowed_redirect
+from .redirects import REFUSED_DOWNGRADE, RefusedRedirect, unfollowed_redirect
 from .tls import async_client
 
 if TYPE_CHECKING:
@@ -179,6 +179,16 @@ class ConnectionFailure:
         if self.reason is ConnectionErrorReason.REDIRECTED and self.location is not None:
             status = f" (HTTP {self.status_code})" if self.status_code is not None else ""
             why = f" ({self.redirect_reason})" if self.redirect_reason else ""
+            if self.redirect_reason == REFUSED_DOWNGRADE:
+                # Never recommend the plaintext target: a token or custom
+                # header would travel in the clear. Suggest the https form
+                # and the usual cause, as the SDK's own message does.
+                https_form = httpx2.URL(self.location).copy_with(scheme="https")
+                return (
+                    f"The server redirected{status} to {self.location}, which mcpscore does not follow{why} — "
+                    "the server is likely behind a TLS-terminating proxy whose forwarded headers it does not "
+                    f"trust; try {https_form} instead, or fix the proxy settings."
+                )
             return (
                 f"The server redirected{status} to {self.location}, which mcpscore does not follow{why} — "
                 "audit that URL instead if it is the intended server."

@@ -29,6 +29,9 @@ if TYPE_CHECKING:
 REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 """HTTP statuses whose ``Location`` a client may follow."""
 
+REFUSED_DOWNGRADE = "it would downgrade this HTTPS endpoint to plain HTTP"
+"""Refusal reason: an ``https`` endpoint redirected to ``http``. Never a URL to recommend; see the SDK's message."""
+
 REFUSED_OFF_ORIGIN = "another origin"
 """Refusal reason: the target is not on the endpoint's origin. A property of the URL, whatever the request."""
 
@@ -110,6 +113,11 @@ def _refusal(response: httpx2.Response, target: httpx2.URL) -> str | None:
     would share from one it would not.
     """
     sent = response.request
+    if sent.url.scheme == "https" and target.scheme == "http":
+        # Checked before the origin: a downgrade is off-origin by definition,
+        # but the diagnosis (and the fix, the https form) is different, and
+        # the http target must never be the URL the message recommends.
+        return REFUSED_DOWNGRADE
     if not within_origin(sent.url, target):
         return REFUSED_OFF_ORIGIN
     if target.userinfo and target.userinfo != sent.url.userinfo:

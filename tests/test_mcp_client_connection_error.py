@@ -592,6 +592,23 @@ class TestOffOriginRedirect:
         assert bare.message.endswith("does not follow — audit that URL instead if it is the intended server.")
         assert "keeps the request as sent" in ConnectionFailure(ConnectionErrorReason.REDIRECTED).message
 
+    async def test_downgrade_message_suggests_the_https_form_never_the_plaintext_target(self):
+        """A server must not be able to make the CLI recommend a URL where the token would travel in the clear."""
+        client = MCPClient()
+
+        with patch("mcpscore.mcp_client.sse_client") as mock_sse:
+            mock_sse.return_value.__aenter__.side_effect = _redirect_error(307, "http://server.example/mcp/")
+            await client.connect_to_server(MCPTransportType.SSE, "https://server.example/mcp")
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.REDIRECTED
+        assert failure.redirect_reason == "it would downgrade this HTTPS endpoint to plain HTTP"
+        assert failure.location == "http://server.example/mcp/"
+        assert "try https://server.example/mcp/ instead" in failure.message
+        assert "TLS-terminating proxy" in failure.message
+        assert "audit that URL" not in failure.message
+
     async def test_same_origin_303_on_the_post_is_redirected_with_its_own_reason(self):
         """The SDK refuses a same-origin 303 too (it would drop the message); the diagnosis must say so."""
         client = MCPClient()

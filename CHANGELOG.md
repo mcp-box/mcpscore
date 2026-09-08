@@ -39,8 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relays): "The server redirected (HTTP 307) to `<url>`, which mcpscore does
   not follow (another origin) — audit that URL instead if it is the intended
   server." The parenthetical names the rule that applied: another origin, a
-  `301`/`302`/`303` that would turn the `POST` into a `GET`, or a target
-  that introduces URL credentials. Before, the SDK's refusal surfaced as a
+  `301`/`302`/`303` that would turn the `POST` into a `GET`, a target that
+  introduces URL credentials, or an `https`→`http` downgrade. For the
+  downgrade the message never recommends the plaintext target: like the
+  SDK's own, it suggests the `https` form and names the usual cause, a
+  TLS-terminating proxy whose forwarded headers the server does not trust.
+  Before, the SDK's refusal surfaced as a
   generic "HTTP 307" handshake error after the SSE fallback had been tried
   against the same redirect. Classification reads the redirect from the
   response the transport refused, or from the status recovery request when

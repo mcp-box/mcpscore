@@ -7,6 +7,7 @@ import pytest
 
 from mcpscore.redirects import (
     REFUSED_CREDENTIALS,
+    REFUSED_DOWNGRADE,
     REFUSED_OFF_ORIGIN,
     RefusedRedirect,
     redirect_target,
@@ -92,6 +93,19 @@ class TestUnfollowedRedirect:
         assert (refused is None) is followed
         if refused is not None:
             assert refused.why == f"the {method} would become a GET"
+
+    def test_https_to_http_is_reported_as_a_downgrade_before_anything_else(self):
+        """A downgrade is off-origin too, but the fix differs: the message must never recommend the http URL."""
+        same_host = unfollowed_redirect(_redirect(307, "http://server.example/mcp/"))
+        other_host = unfollowed_redirect(_redirect(303, "http://other.example/mcp"))
+        assert same_host is not None
+        assert same_host.why == REFUSED_DOWNGRADE
+        assert other_host is not None
+        assert other_host.why == REFUSED_DOWNGRADE
+        # http -> https on the same host is the upgrade the policy follows.
+        assert (
+            unfollowed_redirect(_redirect(308, "https://server.example/mcp", url="http://server.example/mcp")) is None
+        )
 
     def test_off_origin_303_is_reported_as_off_origin_not_as_a_method_change(self):
         """Reasons that hold for any request come first, so a caller can tell them apart."""
