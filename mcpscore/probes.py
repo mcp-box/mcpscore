@@ -52,6 +52,7 @@ from mcp.client.stdio import stdio_client
 from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
 
+from mcpscore.redirects import send_within_origin
 from mcpscore.spec import DRAFT, LATEST, Era
 from mcpscore.tls import async_client
 
@@ -439,9 +440,11 @@ class _HttpTarget:
         the clients itself, anonymous probes additionally run on a client that
         carries no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop
         here also covers caller-injected clients whose defaults it cannot
-        control. ``follow_redirects`` may be disabled for security checks that
-        must judge the target endpoint itself without forwarding caller context
-        elsewhere. ``omit_headers`` is applied after ``build_request`` merges
+        control. ``follow_redirects`` follows only a redirect that stays on the
+        endpoint's origin, the session's own policy (:mod:`mcpscore.redirects`),
+        and may be disabled for security checks that must judge the target
+        endpoint itself without forwarding caller context even one hop.
+        ``omit_headers`` is applied after ``build_request`` merges
         client defaults, so a caller-supplied default cannot accidentally
         restore a header that a negative probe intends to omit. The shared
         client's defaults are never mutated because probes run concurrently.
@@ -451,7 +454,11 @@ class _HttpTarget:
             request.headers.pop("Authorization", None)
         for header in omit_headers:
             request.headers.pop(header, None)
-        response = await self.client.send(request, follow_redirects=follow_redirects)
+        response = (
+            await send_within_origin(self.client, request)
+            if follow_redirects
+            else await self.client.send(request, follow_redirects=False)
+        )
         return _HttpProbeResponse(
             status_code=response.status_code,
             headers=dict(response.headers),
@@ -1324,7 +1331,7 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
     """
     request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
     request.headers.pop("Authorization", None)
-    response = await client.send(request)
+    response = await send_within_origin(client, request)
     if response.status_code != 200:
         return response.status_code, None
     try:
@@ -1866,10 +1873,13 @@ async def run_all_probes(
 
     if client is not None:
         return await run_with(lambda _probe_id: client, fresh_client)
+    # No follow_redirects on the clients: every probe request goes through
+    # the same-origin policy in ``mcpscore.redirects``, which does not consult
+    # the client's setting, exactly as the SDK transports do not.
     async with (
-        async_client(follow_redirects=True, headers=headers) as own_client,
-        async_client(follow_redirects=True, headers=headers) as fresh_client,
-        async_client(follow_redirects=True) as anon_client,
+        async_client(headers=headers) as own_client,
+        async_client(headers=headers) as fresh_client,
+        async_client() as anon_client,
     ):
         return await run_with(
             lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client,

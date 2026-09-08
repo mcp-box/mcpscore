@@ -78,7 +78,7 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "mcp==2.1.1",
+    "mcp==2.2.0",
     "httpx2>=2.5.0",
     "jsonschema>=4.21",
 ]

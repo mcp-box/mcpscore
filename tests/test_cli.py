@@ -2303,3 +2303,38 @@ class TestSmokeCliFlow:
         assert report["smoke"]["executed"] is False
         assert "modern-only" in report["smoke"]["reason"]
         assert "Smoke checks did not run" in caplog.text
+
+
+class TestOffOriginRedirectExit:
+    """A URL that redirects to another origin: name the target, exit 2, probe nothing."""
+
+    async def test_names_the_redirect_target_and_exits_2(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from mcpscore.mcp_client import ConnectionErrorReason, ConnectionFailure
+
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://server.example/mcp"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = ConnectionFailure(
+            reason=ConnectionErrorReason.REDIRECTED, status_code=307, location="https://other.example/mcp"
+        )
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            caplog.at_level(logging.ERROR),
+            pytest.raises(SystemExit) as exc,
+        ):
+            await async_main()
+
+        assert exc.value.code == 2
+        assert "https://other.example/mcp" in caplog.text
+        assert "audit that URL instead" in caplog.text
+        # The probes apply the same policy and would only refuse it again.
+        mock_auditor.audit_modern_only.assert_not_awaited()
+        mock_auditor.audit_partial.assert_not_called()

@@ -62,6 +62,12 @@ your server's variable, not mcpscore's.
 
 Without gate flags or a configured `[gate]`, a completed audit exits `0` whatever the score.
 
+A `2` that reads "redirected (HTTP 307) to `<url>`, another origin" means the
+URL you gave sends every request elsewhere. mcpscore follows a redirect only
+while it stays on the endpoint's origin (a trailing slash, an `http` to `https`
+upgrade), the same rule as the MCP Python SDK, so it never audits an origin you
+did not name. Audit the URL the message names.
+
 ## Output
 
 Human-readable output goes to stderr. With `--json`, stdout carries exactly the

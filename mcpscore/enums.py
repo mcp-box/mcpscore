@@ -55,6 +55,9 @@ class ConnectionErrorReason(StrEnum):
     HTTP_ERROR = "http_error"
     """The server returned some other 4xx/5xx during the handshake."""
 
+    REDIRECTED = "redirected"
+    """The server redirected to another origin, which mcpscore does not follow."""
+
     NOT_MCP = "not_mcp"
     """The endpoint was reachable but did not complete an MCP handshake."""
 

@@ -23,6 +23,7 @@ from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
 
 if TYPE_CHECKING:
     from mcpscore import MCPTransportType
+    from mcpscore.mcp_client import ConnectionFailure
 
 logger = logging.getLogger(__name__)
 
@@ -766,6 +767,20 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str], target
     logger.info("OAuth flow completed — token held in memory only for this audit.")
 
 
+def _exit_if_redirected(failure: ConnectionFailure | None, target_display: str) -> None:
+    """Exit 2 with the redirect target when the URL sends every request to another origin.
+
+    The probes apply the session's same-origin policy (mcp 2.2.0 follows a
+    redirect only within the endpoint's origin) and would only refuse it
+    again, so neither the modern-only check nor a partial audit can say more
+    than the failure already does: the fix is the redirect target.
+    """
+    if failure is not None and failure.reason is ConnectionErrorReason.REDIRECTED:
+        logger.error(failure.message)
+        logger.error("Error connecting to the MCP server: %s", target_display)
+        sys.exit(2)
+
+
 async def async_main() -> None:
     """Execute the main entry point for the mcpscore CLI application.
 
@@ -836,6 +851,7 @@ async def async_main() -> None:
         if not success:
             http_url = target if isinstance(target, str) and target.startswith(("http://", "https://")) else None
             failure = client.last_connection_error
+            _exit_if_redirected(failure, target_display)
             # A missing executable, denied launch, or timed-out handshake is
             # not evidence of a modern-only server. Retrying those commands is
             # both misleading and potentially side-effectful. UNKNOWN remains
