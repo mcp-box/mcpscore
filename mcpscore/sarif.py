@@ -44,7 +44,7 @@ from __future__ import annotations
 import hashlib
 import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from mcpscore.rules import create_all_rules
 
@@ -75,10 +75,16 @@ SECURITY_SEVERITY_BY_SEVERITY: dict[str, str] = {
 SECURITY_GROUP = "security"
 """Rule group whose findings are tagged ``security`` and scored for the Security tab."""
 
-FINGERPRINT_KEY = "mcpscoreFinding/v1"
-"""Name of the partial fingerprint; the ``/v1`` lets a future scheme coexist with old uploads."""
+FINGERPRINT_KEY = "primaryLocationLineHash"
+"""The one ``partialFingerprints`` key GitHub code scanning uses to match alerts across uploads.
+
+Any other key is ignored. ``upload-sarif`` fills this key in only when it is
+absent and the location is a readable file, so the value written here is the
+one GitHub sees."""
 
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_PACKAGE_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")  # npm:, pypi: — two+ letters, so C:\ is a path
+_DRIVE_LETTER = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def build_sarif(report: dict) -> dict:
@@ -146,10 +152,11 @@ def build_sarif(report: dict) -> dict:
                     }
                 },
                 # GitHub keys uploads on this id, so two servers audited in one
-                # workflow stay two sets of alerts. The upload step's `category`
-                # input, when given, overrides it. GitHub reads the text up to
-                # the last slash as the category, hence exactly one trailing
-                # slash whether or not the target ends in one.
+                # workflow stay two sets of alerts. It wins over the upload
+                # step's `category` input: upload-sarif sets automationDetails
+                # only when the run has none. GitHub reads the text up to the
+                # last slash as the category, hence exactly one trailing slash
+                # whether or not the target ends in one.
                 "automationDetails": {"id": f"mcpscore/{target_identity(target)}/"},
                 "invocations": [{"executionSuccessful": True}],
                 "artifacts": [{"location": {"uri": _artifact_uri(target)}, "description": {"text": target}}],
@@ -229,15 +236,36 @@ def fingerprint(rule_id: str, target: str) -> str:
 
 
 def target_identity(target: str) -> str:
-    """Return the target as GitHub should key alerts on: the string itself, minus any trailing slashes."""
-    return target.rstrip("/")
+    """Return the target as GitHub should key alerts on: itself, minus trailing slashes on the path.
+
+    Only the part before any query or fragment is trimmed: ``?resource=https://tenant/``
+    is a different target from ``?resource=https://tenant``.
+    """
+    cut = min((i for i in (target.find("?"), target.find("#")) if i >= 0), default=len(target))
+    return target[:cut].rstrip("/") + target[cut:]
 
 
 def _artifact_uri(target: str) -> str:
-    """Return the target as a URI reference: URLs verbatim, else percent-encoded (a stdio command has spaces)."""
+    """Return a repository-relative path standing for the target, the only location GitHub accepts.
+
+    A URL keeps its host and path (``mcp.example.com/mcp``), a package
+    coordinate becomes ``registry/name``, a local path loses its ``./``,
+    leading slashes, or drive letter, and a stdio command line is used as is.
+    Everything that is not a path character is percent-encoded — including
+    ``:`` and ``?``, so the result can never parse as a scheme or a query.
+    """
     if _URI_SCHEME.match(target):
-        return target
-    return quote(target, safe="/:@+.-_~")
+        parts = urlsplit(target)
+        relative = parts.netloc + parts.path + (f"?{parts.query}" if parts.query else "")
+    elif _PACKAGE_SCHEME.match(target):
+        relative = target.replace(":", "/", 1)
+    elif _DRIVE_LETTER.match(target):
+        relative = target[3:]
+    else:
+        relative = target
+    relative = relative.replace("\\", "/")
+    relative = relative.removeprefix("./")
+    return quote(relative.lstrip("/"), safe="/@+.-_~=")
 
 
 def _pascal_case(rule_id: str) -> str:
