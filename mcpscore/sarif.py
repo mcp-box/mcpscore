@@ -21,7 +21,10 @@ Shape (one ``run``):
   stdio command); GitHub accepts that for non-file scanners.
 - ``partialFingerprints`` derive from the rule id and the target, so a
   re-upload for the same server updates the alert instead of opening a new
-  one, and the same rule on two servers stays two alerts.
+  one, and the same rule on two servers stays two alerts. The target's
+  identity ignores a trailing slash, in both the fingerprint and the run's
+  automation id: ``/mcp`` and ``/mcp/`` are one server (the engine follows
+  that redirect as same-origin), so they must be one series of alerts.
 - Security rules carry GitHub's ``security-severity`` score so they sort
   into the Security tab's critical/high/medium/low bands.
 """
@@ -137,7 +140,7 @@ def build_sarif(report: dict) -> dict:
                 # input, when given, overrides it. GitHub reads the text up to
                 # the last slash as the category, hence exactly one trailing
                 # slash whether or not the target ends in one.
-                "automationDetails": {"id": f"mcpscore/{target.rstrip('/')}/"},
+                "automationDetails": {"id": f"mcpscore/{target_identity(target)}/"},
                 "invocations": [{"executionSuccessful": True}],
                 "artifacts": [{"location": {"uri": _artifact_uri(target)}, "description": {"text": target}}],
                 "results": results,
@@ -205,9 +208,19 @@ def _result_entry(res: dict, rule_index: int, target: str, *, is_readiness: bool
 
 
 def fingerprint(rule_id: str, target: str) -> str:
-    """Stable fingerprint of a finding: the same rule on the same target hashes the same across runs."""
-    digest = hashlib.sha256(f"{rule_id}\n{target}".encode()).hexdigest()
+    """Stable fingerprint of a finding: the same rule on the same target hashes the same across runs.
+
+    The target enters by its identity (``target_identity``), so the alert
+    keys agree with the run's automation id: a trailing slash never splits
+    one server's alerts into two series.
+    """
+    digest = hashlib.sha256(f"{rule_id}\n{target_identity(target)}".encode()).hexdigest()
     return digest[:32]
+
+
+def target_identity(target: str) -> str:
+    """Return the target as GitHub should key alerts on: the string itself, minus any trailing slashes."""
+    return target.rstrip("/")
 
 
 def _artifact_uri(target: str) -> str:

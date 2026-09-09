@@ -233,6 +233,14 @@ class TestFingerprints:
         ]
         assert first == second == {FINGERPRINT_KEY: fingerprint("auth_metadata_https", "https://mcp.example.com/mcp")}
 
+    def test_trailing_slash_does_not_change_the_fingerprint(self) -> None:
+        # Same identity as the automation id: /mcp and /mcp/ are one server,
+        # so a re-upload under either spelling updates the same alerts.
+        assert fingerprint("r", "https://a.example/mcp") == fingerprint("r", "https://a.example/mcp/")
+        with_slash = _run(build_sarif(_report(target="https://mcp.example.com/mcp/")))["results"][0]
+        without = _run(build_sarif(_report(target="https://mcp.example.com/mcp")))["results"][0]
+        assert with_slash["partialFingerprints"] == without["partialFingerprints"]
+
     def test_target_and_rule_both_change_the_fingerprint(self) -> None:
         base = fingerprint("auth_metadata_https", "https://a.example/mcp")
         assert fingerprint("auth_metadata_https", "https://b.example/mcp") != base
