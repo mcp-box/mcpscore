@@ -82,6 +82,9 @@ Any other key is ignored. ``upload-sarif`` fills this key in only when it is
 absent and the location is a readable file, so the value written here is the
 one GitHub sees."""
 
+POINT_REGION: dict[str, int] = {"startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1}
+"""The location's region: a zero-length point at line 1, column 1 (``endColumn`` is the column after the end)."""
+
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _PACKAGE_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")  # npm:, pypi: — two+ letters, so C:\ is a path
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:[\\/]")
@@ -177,17 +180,21 @@ def _rule_entry(res: dict, rule: BaseRule | None, *, is_readiness: bool) -> dict
     rule_id = res["rule_id"]
     group = rule.group_name if rule is not None else ("readiness" if is_readiness else "default")
     basis = (res.get("details") or {}).get("basis") or (rule.basis if rule is not None else None)
+    # GitHub lists shortDescription.text, fullDescription.text and help.text
+    # as required for a rule (its SARIF support tables), so every entry
+    # carries all three; the basis, when the rule declares one, extends the
+    # full description rather than gating it.
+    full_description = f"{res['rule_name']}. Basis: {basis}" if basis else res["rule_name"]
     entry: dict[str, Any] = {
         "id": rule_id,
         "name": _pascal_case(rule_id),
         "shortDescription": {"text": res["rule_name"]},
+        "fullDescription": {"text": full_description},
         "helpUri": f"{RULES_URL}#{_heading_anchor(group)}",
         "help": {"text": f"{res['rule_name']} — {RULES_URL}#{_heading_anchor(group)}"},
         "defaultConfiguration": {"level": LEVEL_BY_SEVERITY.get(res["severity"], "warning")},
         "properties": {"tags": [group], "category": group},
     }
-    if basis:
-        entry["fullDescription"] = {"text": f"{res['rule_name']}. Basis: {basis}"}
     if group == SECURITY_GROUP:
         entry["properties"]["security-severity"] = SECURITY_SEVERITY_BY_SEVERITY.get(res["severity"], "5.0")
     return entry
@@ -215,7 +222,10 @@ def _result_entry(res: dict, rule_index: int, target: str, *, is_readiness: bool
             {
                 "physicalLocation": {
                     "artifactLocation": {"uri": _artifact_uri(target), "index": 0},
-                    "region": {"startLine": 1},
+                    # GitHub requires all four region fields; a zero-length
+                    # point at 1:1 is the honest region for a finding about a
+                    # running server rather than a span of source.
+                    "region": POINT_REGION,
                 }
             }
         ],

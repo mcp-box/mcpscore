@@ -201,7 +201,8 @@ class TestResults:
         run = _run(build_sarif(_report()))
         location = run["results"][0]["locations"][0]["physicalLocation"]
         assert location["artifactLocation"] == {"uri": "mcp.example.com/mcp", "index": 0}
-        assert location["region"] == {"startLine": 1}
+        # GitHub requires all four region fields (its SARIF support tables).
+        assert location["region"] == {"startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1}
         assert run["artifacts"][0] == {
             "location": {"uri": "mcp.example.com/mcp"},
             "description": {"text": "https://mcp.example.com/mcp"},
@@ -338,7 +339,18 @@ class TestRuleCatalog:
         (rule,) = _run(sarif)["tool"]["driver"]["rules"]
         assert rule["id"] == "custom_rule_from_elsewhere"
         assert rule["properties"]["category"] == "default"
-        assert "fullDescription" not in rule
+        assert rule["fullDescription"] == {"text": "Custom Rule From Elsewhere"}
+
+    def test_every_rule_carries_the_descriptions_github_requires(self) -> None:
+        # shortDescription.text, fullDescription.text and help.text are
+        # required by GitHub even though the SARIF schema makes them optional;
+        # a rule without a basis (readiness rules cite SEPs instead) still has all three.
+        for rule in _run(build_sarif(_report()))["tool"]["driver"]["rules"]:
+            assert rule["shortDescription"]["text"]
+            assert rule["fullDescription"]["text"]
+            assert rule["help"]["text"]
+        rules = {r["id"]: r for r in _run(build_sarif(_report()))["tool"]["driver"]["rules"]}
+        assert rules["readiness_2026_server_discover"]["fullDescription"] == {"text": "Readiness 2026 Server Discover"}
 
     def test_package_audit_uses_the_packaging_anchor_and_reports_the_package(self, validator: Draft7Validator) -> None:
         sarif = build_sarif(
