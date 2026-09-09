@@ -107,7 +107,10 @@ The invocation shape is stable: `mcpscore <target>` with `--json`, `--header`,
 `--token`, and the `MCPSCORE_TOKEN` variable. New flags are added; existing
 flags keep their meaning. `mcpscore --version` prints `mcpscore <version>` to
 stdout, exits `0`, and needs no target. `--json` writes exactly one JSON
-document to stdout with all logs on stderr.
+document to stdout with all logs on stderr. `--sarif FILE` writes SARIF 2.1.0
+with one `result` per failed rule, keyed by `ruleId` = `rule_id`; the
+severity-to-level mapping and the `mcpscoreFinding/v1` fingerprint scheme keep
+their meaning, so code scanning alerts survive an upgrade.
 
 | Exit code | Meaning |
 |---|---|
@@ -132,6 +135,7 @@ commitment, not a default.
 | `config` present | The run applied a per-project configuration | Compare only across runs with the same `config.sha256` |
 | `readiness.counted_in_main: true` | A modern-lifecycle server's readiness points are inside the main score | A `min-score` threshold means something slightly different on either side of this flag |
 | `message`, `details`, `rule_name`, severities, category groupings | Improved in any release | Show them to humans. Never key logic on them |
+| SARIF rule metadata (`shortDescription`, `fullDescription`, `helpUri`, `properties`) | Grows as rules gain citations and docs anchors move | Key on `ruleId` and the fingerprint, as GitHub does |
 | Readiness rules | Target the newest revision, currently 2026-07-28. As adoption matures they migrate into the main axis and new ones appear for the next draft | Their `rule_id`s still follow the never-reused rule |
 
 We would rather grow the checks than freeze the number early. A calibrated

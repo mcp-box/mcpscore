@@ -119,6 +119,38 @@ which the report shows as a zero `readiness.max_score`. A legacy server still
 has its gateway checks assessed, so it is gated on the few points those carry.
 Check the readiness line of a run before choosing the threshold.
 
+### Send findings to code scanning
+
+Pass `--sarif` through `args` and upload the file. Every failed rule becomes
+an alert in the repository's Security tab and an annotation on the pull
+request, alongside the findings of your other scanners. The upload needs
+`security-events: write`; the audit itself needs nothing more than before.
+
+```yaml
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      security-events: write   # lets upload-sarif create the alerts
+    steps:
+      - uses: mcp-box/mcpscore-action@v1
+        with:
+          target: https://your-server.example/mcp
+          min-score: 80
+          args: --sarif=mcpscore.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always()             # upload the findings even when the gate failed the job
+        with:
+          sarif_file: mcpscore.sarif
+```
+
+The file is written before the score gate runs, so a failing build still
+carries its findings. Alerts are keyed on the rule and the target: a re-run
+updates them in place, and two servers audited in one workflow stay two sets.
+Severity mapping and the file's shape are on the
+[CLI reference](/cli#sarif-for-github-code-scanning).
+
 ### Use the numbers in later steps
 
 ```yaml

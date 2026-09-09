@@ -33,12 +33,15 @@ from mcpscore.cli import (
     parse_env_vars,
     resolve_target,
     run_package_audit,
+    validate_output_flags,
 )
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.packages import PackageCoordinate, PackageMetadata, PackageOutcome
 from mcpscore.smoke import CHECK_UNKNOWN_TOOL, SmokeCheckResult, SmokeReport, SmokeVerdict
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from _pytest.capture import CaptureFixture
     from _pytest.logging import LogCaptureFixture
     from _pytest.monkeypatch import MonkeyPatch
@@ -2369,3 +2372,171 @@ class TestOffOriginRedirectExit:
             await async_main()  # no SystemExit: the modern-only audit completed
 
         mock_auditor.audit_modern_only.assert_awaited_once()
+
+
+class TestSarifOutput:
+    """--sarif: the failed rules as SARIF 2.1.0, to a file or stdout."""
+
+    @pytest.fixture
+    def audit_report(self) -> dict:
+        return _report_payload(
+            results=[
+                {
+                    "rule_id": "transport_streamable_http",
+                    "rule_name": "Streamable HTTP Transport",
+                    "severity": "LOW",
+                    "severity_value": 1,
+                    "passed": True,
+                    "message": "ok",
+                    "details": None,
+                },
+                {
+                    "rule_id": "tools_description_present_in_all",
+                    "rule_name": "Tool descriptions",
+                    "severity": "HIGH",
+                    "severity_value": 3,
+                    "passed": False,
+                    "message": "1 tool has no description",
+                    "details": {"missing": ["reader"]},
+                },
+            ],
+        )
+
+    async def test_sarif_dash_writes_sarif_to_stdout(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        audit_report: dict,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py", "--sarif", "-"])
+        mock_auditor.get_audit_report = MagicMock(return_value=audit_report)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        sarif = json.loads(capsys.readouterr().out)
+        assert sarif["version"] == "2.1.0"
+        (run,) = sarif["runs"]
+        assert run["tool"]["driver"]["name"] == "mcpscore"
+        assert [r["ruleId"] for r in run["results"]] == ["tools_description_present_in_all"]
+        assert run["results"][0]["level"] == "error"
+        assert run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "/path/to/server.py"
+        assert run["properties"]["transport"] == "stdio"
+
+    async def test_sarif_file_alongside_json_on_stdout(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        audit_report: dict,
+        capsys: pytest.CaptureFixture[str],
+        caplog: LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        destination = tmp_path / "mcpscore.sarif"
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py", "--json", "--sarif", str(destination)])
+        mock_auditor.get_audit_report = MagicMock(return_value=audit_report)
+        caplog.set_level(logging.INFO)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        captured = capsys.readouterr()
+        report = json.loads(captured.out)  # exactly one document on stdout: the JSON report
+        assert report["schema_version"] == 1
+        sarif = json.loads(destination.read_text(encoding="utf-8"))
+        assert sarif["runs"][0]["results"][0]["ruleId"] == "tools_description_present_in_all"
+        assert f"SARIF written to {destination} (1 finding)" in caplog.text
+
+    async def test_sarif_is_written_before_a_failing_gate_exits(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        audit_report: dict,
+        tmp_path: Path,
+    ) -> None:
+        destination = tmp_path / "mcpscore.sarif"
+        monkeypatch.setattr(
+            sys, "argv", ["mcpscore", "/path/to/server.py", "--fail-under", "99", "--sarif", str(destination)]
+        )
+        mock_auditor.get_audit_report = MagicMock(return_value=audit_report)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 3
+        assert destination.exists()
+
+    async def test_json_and_sarif_dash_is_a_usage_error(
+        self, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str], caplog: LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py", "--json", "--sarif", "-"])
+
+        with pytest.raises(SystemExit) as exc_info:
+            await async_main()
+
+        assert exc_info.value.code == 1
+        assert "both write to stdout" in caplog.text
+        assert capsys.readouterr().out == ""
+
+    def test_json_with_a_sarif_file_is_allowed(self) -> None:
+        validate_output_flags(build_parser().parse_args(["srv.py", "--json", "--sarif", "out.sarif"]))
+        validate_output_flags(build_parser().parse_args(["srv.py", "--sarif", "-"]))
+
+    async def test_unwritable_sarif_destination_exits_one(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        audit_report: dict,
+        caplog: LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        destination = tmp_path / "missing-dir" / "mcpscore.sarif"
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py", "--sarif", str(destination)])
+        mock_auditor.get_audit_report = MagicMock(return_value=audit_report)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await async_main()
+
+        assert exc_info.value.code == 1
+        assert "cannot write SARIF" in caplog.text
+
+    async def test_package_audit_writes_sarif(
+        self, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        async def fake_fetch(coordinate, client=None):
+            return PackageMetadata(coordinate=coordinate, outcome=PackageOutcome.OK, resolved_version="1.0.0")
+
+        monkeypatch.setattr("mcpscore.mcp_auditor.fetch_package_metadata", fake_fetch)
+        destination = tmp_path / "pkg.sarif"
+        args = build_parser().parse_args(["--sarif", str(destination), "--package", "npm:server"])
+
+        code = await run_package_audit(args, PackageCoordinate.parse("npm:server"))
+
+        assert code == 0
+        assert capsys.readouterr().out == ""
+        (run,) = json.loads(destination.read_text(encoding="utf-8"))["runs"]
+        assert run["properties"]["package"]["registry"] == "npm"
+        failed = {r["ruleId"] for r in run["results"]}
+        assert failed  # no description, license, or repository: the packaging rules that judge them fail
+        assert all(
+            r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "npm:server" for r in run["results"]
+        )

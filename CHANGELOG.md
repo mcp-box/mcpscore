@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--sarif FILE` writes the failed rules as SARIF 2.1.0 for GitHub code
+  scanning.** One `result` per failed rule (`ruleId` = `rule_id`; critical and
+  high → `error`, medium → `warning`, low → `note`; a readiness rule not
+  counted in the score → `note`), located on the audit target, with a
+  `mcpscoreFinding/v1` fingerprint of the rule and target so a re-upload
+  updates the alert rather than opening a new one. Security & Auth rules carry
+  GitHub's `security-severity`. Passed and skipped rules are not in the file;
+  `--json` remains the full report and both can be requested — `--sarif -`
+  writes to stdout and is refused together with `--json` (exit 1). Works for
+  server and package audits alike. Docs: the CLI reference and a
+  `upload-sarif` recipe in the GitHub Action guide.
+
 ## [1.13.0] - 2026-09-08
 
 ### Added

@@ -74,6 +74,9 @@ Guides: [authenticated servers](https://docs.mcpscore.dev/authenticated-servers)
 # Machine-readable report on stdout; logs go to stderr
 mcpscore https://your-server.example/mcp --json > report.json
 
+# Failed rules as SARIF, for GitHub code scanning (upload with codeql-action/upload-sarif)
+mcpscore https://your-server.example/mcp --sarif mcpscore.sarif
+
 # Fail the build when the score drops below 80%
 mcpscore https://your-server.example/mcp --fail-under 80
 
