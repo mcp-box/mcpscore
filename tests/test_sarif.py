@@ -18,6 +18,7 @@ from mcpscore.sarif import (
     SARIF_VERSION,
     build_sarif,
     fingerprint,
+    target_identity,
 )
 
 # The SARIF 2.1.0 JSON schema as published on schemastore.org (fetched
@@ -196,27 +197,41 @@ class TestResults:
         assert result["message"]["text"] == "❌ auth_metadata_https"
         assert result["properties"]["details"] == {"basis": "MCP Transports §Security"}
 
-    def test_location_is_the_target(self) -> None:
+    def test_location_is_a_repository_relative_path_for_the_target(self) -> None:
         run = _run(build_sarif(_report()))
         location = run["results"][0]["locations"][0]["physicalLocation"]
-        assert location["artifactLocation"] == {"uri": "https://mcp.example.com/mcp", "index": 0}
+        assert location["artifactLocation"] == {"uri": "mcp.example.com/mcp", "index": 0}
         assert location["region"] == {"startLine": 1}
-        assert run["artifacts"][0]["location"]["uri"] == "https://mcp.example.com/mcp"
+        assert run["artifacts"][0] == {
+            "location": {"uri": "mcp.example.com/mcp"},
+            "description": {"text": "https://mcp.example.com/mcp"},
+        }
 
     @pytest.mark.parametrize(
         ("target", "uri"),
         [
-            ("https://mcp.example.com/mcp?x=1", "https://mcp.example.com/mcp?x=1"),
-            ("/srv/server.py", "/srv/server.py"),
+            ("https://mcp.example.com/mcp?x=1", "mcp.example.com/mcp%3Fx=1"),
+            ("https://mcp.example.com:8443/mcp/", "mcp.example.com%3A8443/mcp/"),
+            ("http://localhost:8000/mcp#frag", "localhost%3A8000/mcp"),
+            ("/srv/server.py", "srv/server.py"),
+            ("./server.py", "server.py"),
+            ("C:\\srv\\server.py", "srv/server.py"),
             ("java -jar server.jar --port 9", "java%20-jar%20server.jar%20--port%209"),
-            ("npm:@scope/name@1.2.3", "npm:@scope/name@1.2.3"),
-            ("pypi:name==1.2.3", "pypi:name%3D%3D1.2.3"),
+            ("npm:@scope/name@1.2.3", "npm/@scope/name@1.2.3"),
+            ("pypi:name==1.2.3", "pypi/name==1.2.3"),
         ],
     )
-    def test_non_url_targets_become_uri_references(self, target: str, uri: str, validator: Draft7Validator) -> None:
+    def test_every_target_becomes_a_relative_path_without_a_scheme(
+        self, target: str, uri: str, validator: Draft7Validator
+    ) -> None:
+        # upload-sarif hands GitHub a file:// checkout root, and GitHub rejects
+        # an upload whose absolute location URIs use another scheme — so no
+        # location may start with a slash or parse as `scheme:`.
         sarif = build_sarif(_report(target=target))
         location = _run(sarif)["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
         assert location["uri"] == uri
+        assert not uri.startswith("/")
+        assert ":" not in uri.split("/")[0]
         assert list(validator.iter_errors(sarif)) == []
 
     def test_rule_index_points_at_the_rule_entry(self) -> None:
@@ -233,6 +248,11 @@ class TestFingerprints:
         ]
         assert first == second == {FINGERPRINT_KEY: fingerprint("auth_metadata_https", "https://mcp.example.com/mcp")}
 
+    def test_fingerprint_sits_under_the_key_github_reads(self) -> None:
+        # GitHub matches alerts on partialFingerprints.primaryLocationLineHash
+        # and ignores every other key; upload-sarif keeps a present value.
+        assert FINGERPRINT_KEY == "primaryLocationLineHash"
+
     def test_trailing_slash_does_not_change_the_fingerprint(self) -> None:
         # Same identity as the automation id: /mcp and /mcp/ are one server,
         # so a re-upload under either spelling updates the same alerts.
@@ -240,6 +260,18 @@ class TestFingerprints:
         with_slash = _run(build_sarif(_report(target="https://mcp.example.com/mcp/")))["results"][0]
         without = _run(build_sarif(_report(target="https://mcp.example.com/mcp")))["results"][0]
         assert with_slash["partialFingerprints"] == without["partialFingerprints"]
+
+    @pytest.mark.parametrize(
+        ("left", "right", "same"),
+        [
+            ("https://a.example/mcp/?x=1", "https://a.example/mcp?x=1", True),
+            ("https://a.example/mcp?resource=https://tenant/", "https://a.example/mcp?resource=https://tenant", False),
+            ("https://a.example/mcp#f/", "https://a.example/mcp#f", False),
+        ],
+    )
+    def test_identity_trims_the_path_only_never_the_query_or_fragment(self, left: str, right: str, same: bool) -> None:
+        assert (target_identity(left) == target_identity(right)) is same
+        assert (fingerprint("r", left) == fingerprint("r", right)) is same
 
     def test_target_and_rule_both_change_the_fingerprint(self) -> None:
         base = fingerprint("auth_metadata_https", "https://a.example/mcp")

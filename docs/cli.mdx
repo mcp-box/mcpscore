@@ -91,7 +91,7 @@ mcpscore https://mcp.deepwiki.com/mcp --json 2>/dev/null \
 
 `--sarif` writes the failed rules in SARIF 2.1.0, the format GitHub's
 Security tab ingests. Upload the file and each failed rule becomes a code
-scanning alert, annotated on the pull request that introduced it.
+scanning alert, next to the findings of your other scanners.
 
 ```bash
 # The findings as a file for upload-sarif; the JSON report still goes to stdout
@@ -105,8 +105,8 @@ SARIF written to mcpscore.sarif (12 findings)
 ```
 
 One `result` per failed rule, with the rule's message, its severity, and a
-fingerprint of the rule and target, so a re-upload updates the alert instead
-of opening a second one:
+fingerprint of the rule and target under the one key GitHub matches alerts
+on, so a re-upload updates the alert instead of opening a second one:
 
 ```json
 {
@@ -115,8 +115,8 @@ of opening a second one:
   "message": {
     "text": "❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28', and no stateless-lifecycle support was observed"
   },
-  "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "https://mcp.deepwiki.com/mcp" } } }],
-  "partialFingerprints": { "mcpscoreFinding/v1": "f1dcb75c967781b90dfa2a3e693e639b" },
+  "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "mcp.deepwiki.com/mcp" }, "region": { "startLine": 1 } } }],
+  "partialFingerprints": { "primaryLocationLineHash": "f1dcb75c967781b90dfa2a3e693e639b" },
   "properties": { "severity": "MEDIUM", "readiness": false, "counted_in_score": true }
 }
 ```
@@ -127,6 +127,13 @@ of opening a second one:
 | `MEDIUM` | `warning` | Warning |
 | `LOW` | `note` | Note |
 | Any readiness rule not counted in the score | `note` | Note, whatever its severity: the score waves it through, so the alert must not read as an error |
+
+The location is a repository-relative path standing for the target, because
+GitHub rejects an upload whose locations use another URI scheme: the host and
+path for a URL, `npm/name` for a package, the file itself for a local server.
+The finding is about a running server rather than a line of source, so it is
+never annotated in a pull request diff; the Security tab and the job's exit
+code carry it.
 
 Security & Auth rules also carry GitHub's `security-severity`, so they sort
 into the tab's critical, high, medium, and low bands. Passed and skipped rules

@@ -16,15 +16,25 @@ Shape (one ``run``):
   that this run did not count in the main score is informative, so it is a
   ``note`` whatever its severity: the Security tab must not show as an error
   something the score itself waves through.
-- SARIF requires a physical location. An audit has no source file, so the
-  location is the audit target itself (URL, path, package coordinate, or
-  stdio command); GitHub accepts that for non-file scanners.
-- ``partialFingerprints`` derive from the rule id and the target, so a
-  re-upload for the same server updates the alert instead of opening a new
-  one, and the same rule on two servers stays two alerts. The target's
-  identity ignores a trailing slash, in both the fingerprint and the run's
-  automation id: ``/mcp`` and ``/mcp/`` are one server (the engine follows
-  that redirect as same-origin), so they must be one series of alerts.
+- SARIF requires a physical location, and GitHub requires it to be a path
+  relative to the repository: ``upload-sarif`` hands GitHub a ``file://``
+  checkout root, and an absolute URI with any other scheme (``https://``,
+  ``npm:``) makes GitHub reject the whole upload. An audit has no source
+  file, so the location is a repository-relative path derived from the
+  target (``mcp.example.com/mcp`` for a URL, ``npm/name`` for a package, the
+  file itself for a local server), on line 1. The exact target is kept in
+  the run's ``artifacts`` description. Nothing is annotated in a pull
+  request diff: GitHub annotates only alerts whose lines are in the diff,
+  and these findings are about a running server, not a line of source.
+- ``partialFingerprints.primaryLocationLineHash`` — the one fingerprint key
+  GitHub reads — is a hash of the rule id and the target, so a re-upload
+  for the same server updates the alert instead of opening a new one, and
+  the same rule on two servers stays two alerts. ``upload-sarif`` keeps an
+  existing value (it computes one only for locations it can read from
+  disk, which these are not). The target's identity ignores a trailing
+  slash on its path, in both the fingerprint and the run's automation id:
+  ``/mcp`` and ``/mcp/`` are one server (the engine follows that redirect
+  as same-origin), so they must be one series of alerts.
 - Security rules carry GitHub's ``security-severity`` score so they sort
   into the Security tab's critical/high/medium/low bands.
 """

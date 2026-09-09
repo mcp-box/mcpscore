@@ -139,8 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help=(
             "Write the failed rules as SARIF 2.1.0 to FILE ('-' for stdout), for GitHub code scanning: "
-            "upload it with github/codeql-action/upload-sarif and the findings appear in the repository's "
-            "Security tab and as annotations on the pull request. Findings only — passed and skipped rules "
+            "upload it with github/codeql-action/upload-sarif and the findings appear as alerts in the "
+            "repository's Security tab. Findings only — passed and skipped rules "
             "are not in it; --json remains the full report, and both can be requested (only one on stdout). "
             "A readiness rule not counted in the score is a note, whatever its severity."
         ),

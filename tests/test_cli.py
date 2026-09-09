@@ -2425,7 +2425,7 @@ class TestSarifOutput:
         assert run["tool"]["driver"]["name"] == "mcpscore"
         assert [r["ruleId"] for r in run["results"]] == ["tools_description_present_in_all"]
         assert run["results"][0]["level"] == "error"
-        assert run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "/path/to/server.py"
+        assert run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "path/to/server.py"
         assert run["properties"]["transport"] == "stdio"
 
     async def test_sarif_file_alongside_json_on_stdout(
@@ -2538,5 +2538,5 @@ class TestSarifOutput:
         failed = {r["ruleId"] for r in run["results"]}
         assert failed  # no description, license, or repository: the packaging rules that judge them fail
         assert all(
-            r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "npm:server" for r in run["results"]
+            r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "npm/server" for r in run["results"]
         )

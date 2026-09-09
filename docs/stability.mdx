@@ -109,8 +109,9 @@ flags keep their meaning. `mcpscore --version` prints `mcpscore <version>` to
 stdout, exits `0`, and needs no target. `--json` writes exactly one JSON
 document to stdout with all logs on stderr. `--sarif FILE` writes SARIF 2.1.0
 with one `result` per failed rule, keyed by `ruleId` = `rule_id`; the
-severity-to-level mapping and the `mcpscoreFinding/v1` fingerprint scheme keep
-their meaning, so code scanning alerts survive an upgrade.
+severity-to-level mapping and the `primaryLocationLineHash` fingerprint (a
+hash of the rule and target) keep their meaning, so code scanning alerts
+survive an upgrade.
 
 | Exit code | Meaning |
 |---|---|
