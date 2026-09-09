@@ -80,12 +80,12 @@ def build_sarif(report: dict) -> dict:
 
     """
     target = str(report["target"])
-    catalog = _catalog()
     readiness = report.get("readiness") or {}
     counted_in_main = bool(readiness.get("counted_in_main", False))
 
     findings: list[tuple[dict, bool]] = [(res, False) for res in report.get("results", []) if not res["passed"]]
     findings.extend((res, True) for res in readiness.get("results", []) if not res["passed"])
+    catalog = _catalog() if findings else {}
 
     rules: list[dict] = []
     rule_index: dict[str, int] = {}
@@ -134,8 +134,10 @@ def build_sarif(report: dict) -> dict:
                 },
                 # GitHub keys uploads on this id, so two servers audited in one
                 # workflow stay two sets of alerts. The upload step's `category`
-                # input, when given, overrides it.
-                "automationDetails": {"id": f"mcpscore/{target}/"},
+                # input, when given, overrides it. GitHub reads the text up to
+                # the last slash as the category, hence exactly one trailing
+                # slash whether or not the target ends in one.
+                "automationDetails": {"id": f"mcpscore/{target.rstrip('/')}/"},
                 "invocations": [{"executionSuccessful": True}],
                 "artifacts": [{"location": {"uri": _artifact_uri(target)}, "description": {"text": target}}],
                 "results": results,

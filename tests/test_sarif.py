@@ -119,8 +119,11 @@ class TestEnvelope:
             "transport": "streamable-http",
         }
 
-    def test_automation_id_keys_on_the_target(self) -> None:
-        run = _run(build_sarif(_report()))
+    @pytest.mark.parametrize("target", ["https://mcp.example.com/mcp", "https://mcp.example.com/mcp/"])
+    def test_automation_id_keys_on_the_target_with_one_trailing_slash(self, target: str) -> None:
+        # GitHub reads the id up to its last slash as the category; a target
+        # that already ends in a slash must not produce a `//` suffix.
+        run = _run(build_sarif(_report(target=target)))
         assert run["automationDetails"]["id"] == "mcpscore/https://mcp.example.com/mcp/"
 
     def test_validates_against_the_sarif_schema(self, validator: Draft7Validator) -> None:
@@ -145,7 +148,14 @@ class TestResults:
             "readiness_2026_server_discover",
         ]
 
-    def test_no_findings_is_an_empty_results_array(self, validator: Draft7Validator) -> None:
+    def test_no_findings_is_an_empty_results_array(
+        self, validator: Draft7Validator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A clean run has no rule to describe, so the registry is not consulted at all.
+        def no_registry() -> list:
+            raise AssertionError("catalog built for a run without findings")
+
+        monkeypatch.setattr("mcpscore.sarif.create_all_rules", no_registry)
         sarif = build_sarif(_report(results=[_result("a", passed=True)], readiness={"results": []}))
         assert _run(sarif)["results"] == []
         assert _run(sarif)["tool"]["driver"]["rules"] == []
@@ -273,6 +283,15 @@ class TestRuleCatalog:
         # protocol_version_latest declares a basis on the rule class; the result here has no details.
         rules = {r["id"]: r for r in _run(build_sarif(_report()))["tool"]["driver"]["rules"]}
         assert "Basis:" in rules["protocol_version_latest"]["fullDescription"]["text"]
+
+    def test_a_rule_reported_twice_has_one_entry_and_two_results(self, validator: Draft7Validator) -> None:
+        # SARIF rule ids are unique within the catalog; two findings for one
+        # rule (a report that repeats a rule) both point at the same entry.
+        sarif = build_sarif(_report(results=[_result("r", "LOW"), _result("r", "LOW")], readiness={"results": []}))
+        run = _run(sarif)
+        assert [rule["id"] for rule in run["tool"]["driver"]["rules"]] == ["r"]
+        assert [result["ruleIndex"] for result in run["results"]] == [0, 0]
+        assert list(validator.iter_errors(sarif)) == []
 
     def test_unregistered_rule_still_gets_an_entry(self) -> None:
         sarif = build_sarif(_report(results=[_result("custom_rule_from_elsewhere", "LOW")], readiness={"results": []}))
