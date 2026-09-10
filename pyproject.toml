@@ -111,6 +111,9 @@ dev = [
     # "Failed to spawn: pre-commit". Exact for the same reason as ruff above:
     # the gate has to be reproducible, not "whatever the machine has".
     "pre-commit==4.6.2",
+    # Lets jsonschema check `format: uri-reference` in the SARIF tests; without
+    # it the format checker is present and silently skips URI formats.
+    "rfc3986-validator>=0.1.1",
 ]
 
 [tool.pyright]

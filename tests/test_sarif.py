@@ -17,6 +17,7 @@ from mcpscore.sarif import (
     SARIF_SCHEMA,
     SARIF_VERSION,
     build_sarif,
+    display_target,
     fingerprint,
     target_identity,
 )
@@ -89,7 +90,13 @@ def _report(**overrides: Any) -> dict:
 def validator() -> Draft7Validator:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft7Validator.check_schema(schema)
-    return Draft7Validator(schema)
+    # `format` is advisory in JSON Schema: without a checker, an invalid
+    # `uri-reference` passes. jsonschema registers the URI checkers only when
+    # rfc3986-validator (dev dependency) is importable, so pin that too —
+    # otherwise the checker is present and silently skips exactly these.
+    checker = Draft7Validator.FORMAT_CHECKER
+    assert {"uri", "uri-reference"} <= set(checker.checkers)
+    return Draft7Validator(schema, format_checker=checker)
 
 
 def _run(sarif: dict) -> dict:
@@ -192,10 +199,13 @@ class TestResults:
         assert result["level"] == "error"
         assert result["properties"]["counted_in_score"] is True
 
-    def test_message_and_details_come_from_the_rule_result(self) -> None:
+    def test_message_comes_from_the_rule_result_and_details_stay_out(self) -> None:
+        # Transport and security rules record the audited URL in `details`,
+        # credentials included; the upload is readable by everyone with
+        # access to the repository's alerts, so details stay in --json.
         result = _run(build_sarif(_report()))["results"][0]
         assert result["message"]["text"] == "❌ auth_metadata_https"
-        assert result["properties"]["details"] == {"basis": "MCP Transports §Security"}
+        assert "details" not in result["properties"]
 
     def test_location_is_a_repository_relative_path_for_the_target(self) -> None:
         run = _run(build_sarif(_report()))
@@ -211,7 +221,9 @@ class TestResults:
     @pytest.mark.parametrize(
         ("target", "uri"),
         [
-            ("https://mcp.example.com/mcp?x=1", "mcp.example.com/mcp%3Fx=1"),
+            ("https://mcp.example.com/mcp?x=1", "mcp.example.com/mcp"),
+            ("https://user:secret@mcp.example.com/mcp?sig=abc", "mcp.example.com/mcp"),
+            ("https://[::1]:8000/mcp", "%5B%3A%3A1%5D%3A8000/mcp"),
             ("https://mcp.example.com:8443/mcp/", "mcp.example.com%3A8443/mcp/"),
             ("http://localhost:8000/mcp#frag", "localhost%3A8000/mcp"),
             ("/srv/server.py", "srv/server.py"),
@@ -234,6 +246,24 @@ class TestResults:
         assert not uri.startswith("/")
         assert ":" not in uri.split("/")[0]
         assert list(validator.iter_errors(sarif)) == []
+
+    def test_credentials_in_the_target_never_reach_the_file(self) -> None:
+        target = "https://user:secret@mcp.example.com:8443/mcp?sig=abc123#frag"
+        sarif = build_sarif(_report(target=target))
+        text = json.dumps(sarif)
+        assert "secret" not in text
+        assert "abc123" not in text
+        assert "user:" not in text
+        assert "user@" not in text
+        run = _run(sarif)
+        assert run["automationDetails"]["id"] == "mcpscore/https://mcp.example.com:8443/mcp/"
+        assert run["artifacts"][0]["description"] == {"text": "https://mcp.example.com:8443/mcp"}
+        assert run["artifacts"][0]["location"]["uri"] == "mcp.example.com%3A8443/mcp"
+
+    def test_display_target_leaves_non_url_targets_alone(self) -> None:
+        assert display_target("./server.py") == "./server.py"
+        assert display_target("npm:@scope/name@1.2.3") == "npm:@scope/name@1.2.3"
+        assert display_target("https://mcp.example.com/mcp") == "https://mcp.example.com/mcp"
 
     def test_rule_index_points_at_the_rule_entry(self) -> None:
         run = _run(build_sarif(_report()))
@@ -273,6 +303,13 @@ class TestFingerprints:
     def test_identity_trims_the_path_only_never_the_query_or_fragment(self, left: str, right: str, same: bool) -> None:
         assert (target_identity(left) == target_identity(right)) is same
         assert (fingerprint("r", left) == fingerprint("r", right)) is same
+
+    def test_userinfo_never_enters_the_fingerprint_but_the_query_does(self) -> None:
+        # user@host is the same server as host, so the alert series must not
+        # split on it; a different query is a different endpoint. A token in
+        # the query only ever enters a sha256, never the file.
+        assert fingerprint("r", "https://user:secret@a.example/mcp") == fingerprint("r", "https://a.example/mcp")
+        assert fingerprint("r", "https://a.example/mcp?tenant=1") != fingerprint("r", "https://a.example/mcp?tenant=2")
 
     def test_target_and_rule_both_change_the_fingerprint(self) -> None:
         base = fingerprint("auth_metadata_https", "https://a.example/mcp")

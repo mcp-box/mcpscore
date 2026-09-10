@@ -37,6 +37,14 @@ Shape (one ``run``):
   as same-origin), so they must be one series of alerts.
 - Security rules carry GitHub's ``security-severity`` score so they sort
   into the Security tab's critical/high/medium/low bands.
+- The file carries no credentials. Everyone who can read the repository's
+  alerts can read the upload, a wider audience than a local report, so a
+  URL target is written without userinfo, query, or fragment wherever it is
+  displayed (automation id, artifact, location), and rule ``details`` — which
+  can hold the audited URL verbatim — stay in the ``--json`` report. The
+  fingerprint hashes the target without userinfo but with its query, so two
+  endpoints that differ only by query stay two alerts while a token in
+  the query is never recoverable from the file.
 """
 
 from __future__ import annotations
@@ -44,7 +52,7 @@ from __future__ import annotations
 import hashlib
 import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import SplitResult, quote, urlsplit, urlunsplit
 
 from mcpscore.rules import create_all_rules
 
@@ -102,6 +110,7 @@ def build_sarif(report: dict) -> dict:
 
     """
     target = str(report["target"])
+    shown = display_target(target)
     readiness = report.get("readiness") or {}
     counted_in_main = bool(readiness.get("counted_in_main", False))
 
@@ -122,6 +131,7 @@ def build_sarif(report: dict) -> dict:
                 res,
                 rule_index[rule_id],
                 target,
+                shown,
                 is_readiness=is_readiness,
                 counted_in_main=counted_in_main,
             )
@@ -160,9 +170,9 @@ def build_sarif(report: dict) -> dict:
                 # only when the run has none. GitHub reads the text up to the
                 # last slash as the category, hence exactly one trailing slash
                 # whether or not the target ends in one.
-                "automationDetails": {"id": f"mcpscore/{target_identity(target)}/"},
+                "automationDetails": {"id": f"mcpscore/{target_identity(shown)}/"},
                 "invocations": [{"executionSuccessful": True}],
-                "artifacts": [{"location": {"uri": _artifact_uri(target)}, "description": {"text": target}}],
+                "artifacts": [{"location": {"uri": _artifact_uri(shown)}, "description": {"text": shown}}],
                 "results": results,
                 "properties": run_properties,
             }
@@ -200,8 +210,10 @@ def _rule_entry(res: dict, rule: BaseRule | None, *, is_readiness: bool) -> dict
     return entry
 
 
-def _result_entry(res: dict, rule_index: int, target: str, *, is_readiness: bool, counted_in_main: bool) -> dict:
-    """SARIF ``result`` for one failed rule."""
+def _result_entry(
+    res: dict, rule_index: int, target: str, shown: str, *, is_readiness: bool, counted_in_main: bool
+) -> dict:
+    """SARIF ``result`` for one failed rule: ``target`` keys the fingerprint, ``shown`` is what the file displays."""
     severity = res["severity"]
     informative = is_readiness and not counted_in_main
     level = "note" if informative else LEVEL_BY_SEVERITY.get(severity, "warning")
@@ -211,8 +223,9 @@ def _result_entry(res: dict, rule_index: int, target: str, *, is_readiness: bool
         "readiness": is_readiness,
         "counted_in_score": not informative,
     }
-    if res.get("details"):
-        properties["details"] = res["details"]
+    # No `details`: several rules record the audited URL there verbatim,
+    # credentials included, and the message plus the rule's basis already
+    # say what failed. The --json report keeps the details.
     return {
         "ruleId": res["rule_id"],
         "ruleIndex": rule_index,
@@ -221,7 +234,7 @@ def _result_entry(res: dict, rule_index: int, target: str, *, is_readiness: bool
         "locations": [
             {
                 "physicalLocation": {
-                    "artifactLocation": {"uri": _artifact_uri(target), "index": 0},
+                    "artifactLocation": {"uri": _artifact_uri(shown), "index": 0},
                     # GitHub requires all four region fields; a zero-length
                     # point at 1:1 is the honest region for a finding about a
                     # running server rather than a span of source.
@@ -241,8 +254,37 @@ def fingerprint(rule_id: str, target: str) -> str:
     keys agree with the run's automation id: a trailing slash never splits
     one server's alerts into two series.
     """
-    digest = hashlib.sha256(f"{rule_id}\n{target_identity(target)}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{rule_id}\n{target_identity(_without_userinfo(target))}".encode()).hexdigest()
     return digest[:32]
+
+
+def display_target(target: str) -> str:
+    """Return the target as the file may show it: a URL without userinfo, query, or fragment; anything else as is.
+
+    A query can carry a signed credential and userinfo is one by definition,
+    and code scanning data is readable by everyone with access to the
+    repository's alerts.
+    """
+    if not _URI_SCHEME.match(target):
+        return target
+    parts = urlsplit(target)
+    return urlunsplit((parts.scheme, _host_port(parts), parts.path, "", ""))
+
+
+def _without_userinfo(target: str) -> str:
+    """Return a URL target minus its userinfo, keeping query and fragment; anything else unchanged."""
+    if not _URI_SCHEME.match(target):
+        return target
+    parts = urlsplit(target)
+    return urlunsplit((parts.scheme, _host_port(parts), parts.path, parts.query, parts.fragment))
+
+
+def _host_port(parts: SplitResult) -> str:
+    """Return ``host`` or ``host:port`` from a split URL, never its userinfo."""
+    host = parts.hostname or ""
+    if ":" in host:  # an IPv6 literal keeps its brackets
+        host = f"[{host}]"
+    return f"{host}:{parts.port}" if parts.port is not None else host
 
 
 def target_identity(target: str) -> str:
@@ -256,17 +298,17 @@ def target_identity(target: str) -> str:
 
 
 def _artifact_uri(target: str) -> str:
-    """Return a repository-relative path standing for the target, the only location GitHub accepts.
+    """Return a repository-relative path standing for the (displayable) target, the only location GitHub accepts.
 
     A URL keeps its host and path (``mcp.example.com/mcp``), a package
     coordinate becomes ``registry/name``, a local path loses its ``./``,
     leading slashes, or drive letter, and a stdio command line is used as is.
     Everything that is not a path character is percent-encoded — including
-    ``:`` and ``?``, so the result can never parse as a scheme or a query.
+    ``:``, so the result can never parse as a scheme.
     """
     if _URI_SCHEME.match(target):
         parts = urlsplit(target)
-        relative = parts.netloc + parts.path + (f"?{parts.query}" if parts.query else "")
+        relative = parts.netloc + parts.path
     elif _PACKAGE_SCHEME.match(target):
         relative = target.replace(":", "/", 1)
     elif _DRIVE_LETTER.match(target):

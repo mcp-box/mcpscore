@@ -133,7 +133,11 @@ GitHub rejects an upload whose locations use another URI scheme: the host and
 path for a URL, `npm/name` for a package, the file itself for a local server.
 The finding is about a running server rather than a line of source, so it is
 never annotated in a pull request diff; the Security tab and the job's exit
-code carry it.
+code carry it. The file carries no credentials: a URL target is written
+without userinfo, query, or fragment, and rule `details`, which can hold the
+audited URL verbatim, stay in the JSON report. Keep credentials in `--token`
+or `--header` rather than the URL, and the alert identity stays stable across
+token rotations.
 
 Security & Auth rules also carry GitHub's `security-severity`, so they sort
 into the tab's critical, high, medium, and low bands. Passed and skipped rules
