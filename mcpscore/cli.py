@@ -19,6 +19,7 @@ from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
 from mcpscore.probes import observed_auth_status
+from mcpscore.sarif import build_sarif
 from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
 
 if TYPE_CHECKING:
@@ -132,6 +133,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit a machine-readable JSON report to stdout (logs go to stderr)",
+    )
+    parser.add_argument(
+        "--sarif",
+        metavar="FILE",
+        help=(
+            "Write the failed rules as SARIF 2.1.0 to FILE ('-' for stdout), for GitHub code scanning: "
+            "upload it with github/codeql-action/upload-sarif and the findings appear as alerts in the "
+            "repository's Security tab. Findings only — passed and skipped rules "
+            "are not in it; --json remains the full report, and both can be requested (only one on stdout). "
+            "A readiness rule not counted in the score is a note, whatever its severity."
+        ),
     )
     parser.add_argument(
         "--config",
@@ -422,9 +434,12 @@ async def run_package_audit(
     )
     logger.info("This scores how the server is published, not whether it speaks MCP; use --stdio for that.")
 
-    if args.json:
+    if args.json or args.sarif:
         full = build_report(coordinate.display, None, auditor)
-        sys.stdout.write(json.dumps(full, indent=2, default=str) + "\n")
+        if args.json:
+            sys.stdout.write(json.dumps(full, indent=2, default=str) + "\n")
+        if args.sarif:
+            write_sarif(args.sarif, full, command=False)
     # A package audit has no readiness axis (max 0), so only --fail-under can gate it —
     # against the packaging percentage, the only score this audit has.
     return fail_under_exit_code(args, report)
@@ -564,7 +579,7 @@ def finish_server_audit(
     transport: MCPTransportType | None,
     smoke: SmokeReport | None = None,
 ) -> None:
-    """Finish a server audit: log the outcome, emit --json, apply the gates.
+    """Finish a server audit: log the outcome, emit --json and --sarif, apply the gates.
 
     The shared tail of every completed server audit (full, partial, and
     modern-only). Exits with code 3 when a --fail-under gate fails, else
@@ -575,17 +590,61 @@ def finish_server_audit(
     log_audit_outcome(auditor)
     if smoke is not None:
         log_smoke_outcome(smoke)
-    if args.json:
+    if args.json or args.sarif:
         report = build_report(target_display, transport, auditor)
         if smoke is not None:
             report["smoke"] = smoke.to_dict()
-        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+        if args.json:
+            sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+        if args.sarif:
+            write_sarif(args.sarif, report, command=args.stdio is not None)
     code = fail_under_exit_code(args, auditor.get_audit_report())
     if code == 0 and smoke is not None and smoke.failed:
         logger.error("Gate failed — --smoke: %d smoke check(s) failed", smoke.failed)
         code = 4
     if code:
         sys.exit(code)
+
+
+def validate_output_flags(args: argparse.Namespace) -> None:
+    """Reject an empty --sarif destination, and --json together with --sarif - (stdout carries one document).
+
+    Raises:
+        ValueError: ``--sarif=`` (which would silently write nothing), or both
+            outputs asked to write to stdout, where a consumer must not find
+            two concatenated JSON objects.
+
+    """
+    if args.sarif is not None and not args.sarif.strip():
+        raise ValueError("--sarif needs a file name, or - for stdout")
+    if args.json and args.sarif == "-":
+        raise ValueError("--json and --sarif - both write to stdout; give --sarif a file name")
+
+
+def write_sarif(destination: str, report: dict, *, command: bool) -> None:
+    """Write the report's findings as SARIF to ``destination`` (``-`` is stdout).
+
+    ``command`` says the target is a ``--stdio`` command line, of which the
+    file shows the program name only; a path with whitespace is not one.
+
+    Written before the gates run, so a failing build still carries its
+    findings to code scanning. A destination that cannot be written is a
+    usage error (exit 1): the audit ran, but the caller asked for a file it
+    cannot have, and silently dropping it would leave the upload step with
+    nothing.
+    """
+    sarif = build_sarif(report, command=command)
+    text = json.dumps(sarif, indent=2, default=str) + "\n"
+    findings = len(sarif["runs"][0]["results"])
+    if destination == "-":
+        sys.stdout.write(text)
+        return
+    try:
+        Path(destination).write_text(text, encoding="utf-8")
+    except OSError as e:
+        logger.error("Usage error: cannot write SARIF to %s: %s", destination, e)  # noqa: TRY400 — usage error
+        sys.exit(1)
+    logger.info("SARIF written to %s (%d finding%s)", destination, findings, "" if findings == 1 else "s")
 
 
 def log_audit_outcome(auditor: MCPAuditor) -> None:
@@ -791,7 +850,7 @@ async def async_main() -> None:
     2. Creating MCP client and auditor instances
     3. Auto-detecting transport and connecting to the MCP server
     4. Running the audit process and displaying results
-    5. Optionally emitting a JSON report to stdout (--json)
+    5. Optionally emitting a JSON report to stdout (--json) and SARIF (--sarif)
     6. Cleaning up resources
 
     Supports local servers (.py, .js) via STDIO and remote servers via
@@ -813,6 +872,7 @@ async def async_main() -> None:
     # a banner.
     try:
         target = resolve_target(args)
+        validate_output_flags(args)
     except ValueError as e:
         logger.error("Usage error: %s", e)  # noqa: TRY400 — usage error, not an exception to trace
         sys.exit(1)

@@ -119,6 +119,48 @@ which the report shows as a zero `readiness.max_score`. A legacy server still
 has its gateway checks assessed, so it is gated on the few points those carry.
 Check the readiness line of a run before choosing the threshold.
 
+### Send findings to code scanning
+
+Pass `--sarif` through `args` and upload the file. Every failed rule becomes
+an alert in the repository's Security tab, alongside the findings of your
+other scanners. The upload needs `security-events: write`, and in a private
+repository `contents: read` as well; the audit itself needs nothing more
+than before.
+
+```yaml
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      security-events: write   # lets upload-sarif create the alerts
+      contents: read           # upload-sarif needs it in a private repository
+    steps:
+      - uses: mcp-box/mcpscore-action@v1
+        with:
+          target: https://your-server.example/mcp
+          min-score: 80
+          args: --sarif=mcpscore.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        # A failed gate still wrote the file; a connection failure did not.
+        if: ${{ !cancelled() && hashFiles('mcpscore.sarif') != '' }}
+        with:
+          sarif_file: mcpscore.sarif
+```
+
+The file is written before the score gate runs, so a failing build still
+carries its findings. Alerts are keyed on the rule and the target, so a
+re-run updates them in place. `upload-sarif` files them under a category per
+workflow and job, and allows one upload per job for a given tool and
+category: to audit two servers in one job, give each upload step its own
+`category:` input, or the second upload is rejected with "only one run of
+the codeql/upload-sarif action is allowed per job per tool/category". The findings
+are about the running server, not a line of source, so they appear in the
+Security tab rather than as annotations in the pull request diff; the
+`min-score` gate is what fails the pull request. Severity mapping, the file's
+shape, and what it shows of the target are on the
+[CLI reference](/cli#sarif-for-github-code-scanning).
+
 ### Use the numbers in later steps
 
 ```yaml

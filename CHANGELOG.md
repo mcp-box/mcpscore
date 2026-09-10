@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--sarif FILE` writes the failed rules as SARIF 2.1.0 for GitHub code
+  scanning.** One `result` per failed rule (`ruleId` = `rule_id`; critical and
+  high → `error`, medium → `warning`, low → `note`; a readiness rule not
+  counted in the score → `note`), located on a repository-relative path
+  derived from the target (GitHub rejects any other URI scheme), with a
+  `primaryLocationLineHash` fingerprint of the rule and target — the key
+  GitHub matches alerts on — so a re-upload updates the alert rather than
+  opening a new one. What the file shows of the target is a fixed rule: a
+  URL's scheme, host, port and path, a `--stdio` command's program name, a
+  path, a package coordinate — never userinfo, query, fragment, command
+  arguments or rule `details`, and URLs quoted in rule messages are cut down
+  the same way. Security & Auth rules carry
+  GitHub's `security-severity`. Passed and skipped rules are not in the file;
+  `--json` remains the full report and both can be requested — `--sarif -`
+  writes to stdout and is refused together with `--json` (exit 1). Works for
+  server and package audits alike. Docs: the CLI reference and a
+  `upload-sarif` recipe in the GitHub Action guide.
+
 ## [1.13.0] - 2026-09-08
 
 ### Added

@@ -24,6 +24,7 @@ other language run through `--stdio`.
 | `--env NAME` | — | Copy `NAME` from mcpscore's own environment into the server's. The form for secrets: the value never appears on a command line or in the report. It does sit in the server process's environment, which process inspection can read with enough privilege, as with any secret passed by environment. |
 | `--package <coordinate>` | — | Score a published package instead of a running server: `npm:@scope/name`, `npm:name@1.2.3`, `pypi:name==1.2.3`. Reads registry metadata only. See [package audits](/package-audits). |
 | `--json` | off | Write one JSON document to stdout. All logs go to stderr. Schema in the [stability contract](/stability). |
+| `--sarif FILE` | off | Write the failed rules as SARIF 2.1.0 to `FILE`, or to stdout with `-`, for [GitHub code scanning](#sarif-for-github-code-scanning). Findings only; combine with `--json` for the full report. |
 | `--config FILE` | nearest `mcpscore.toml` or `[tool.mcpscore]` | Apply a per-project rule configuration: rules off, re-ranked, and a severity gate. Changes the score for this run only. See [configure rules](/configure-rules). |
 | `--no-config` | off | Ignore any configuration and audit with the canonical rule set and weights. |
 | `--fail-under PCT` | none | Exit `3` when the main score percentage (0–100, rounded) is below `PCT`. A partial audit always fails this gate. |
@@ -85,6 +86,73 @@ report and nothing else, so `mcpscore ... --json > report.json` and piping into
 mcpscore https://mcp.deepwiki.com/mcp --json 2>/dev/null \
   | jq -r '.results[] | select(.passed | not) | .rule_id'
 ```
+
+### SARIF for GitHub code scanning
+
+`--sarif` writes the failed rules in SARIF 2.1.0, the format GitHub's
+Security tab ingests. Upload the file and each failed rule becomes a code
+scanning alert, next to the findings of your other scanners.
+
+```bash
+# The findings as a file for upload-sarif; the JSON report still goes to stdout
+mcpscore https://mcp.deepwiki.com/mcp --json --sarif mcpscore.sarif > report.json
+```
+
+```text
+...
+Audit finished. Final score: 78/91
+SARIF written to mcpscore.sarif (12 findings)
+```
+
+One `result` per failed rule, with the rule's message, its severity, and a
+fingerprint of the rule and target under the one key GitHub matches alerts
+on, so a re-upload updates the alert instead of opening a second one:
+
+```json
+{
+  "ruleId": "protocol_version_latest",
+  "level": "warning",
+  "message": {
+    "text": "❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28', and no stateless-lifecycle support was observed"
+  },
+  "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "mcp.deepwiki.com/mcp" }, "region": { "startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1 } } }],
+  "partialFingerprints": { "primaryLocationLineHash": "f1dcb75c967781b90dfa2a3e693e639b" },
+  "properties": { "severity": "MEDIUM", "readiness": false, "counted_in_score": true }
+}
+```
+
+| mcpscore severity | SARIF level | In the Security tab |
+|---|---|---|
+| `CRITICAL`, `HIGH` | `error` | Error |
+| `MEDIUM` | `warning` | Warning |
+| `LOW` | `note` | Note |
+| Any readiness rule not counted in the score | `note` | Note, whatever its severity: the score waves it through, so the alert must not read as an error |
+
+The location is a repository-relative path standing for the target, because
+GitHub rejects an upload whose locations use another URI scheme: the host and
+path for a URL, `npm/name` for a package, the file itself for a local server.
+The finding is about a running server rather than a line of source, so it is
+never annotated in a pull request diff; the Security tab and the job's exit
+code carry it.
+
+**What the file shows of the target**, and this is the whole rule: a URL's
+scheme, host, port, and path; a `--stdio` command's program name, such as
+`npx` or `python`; a local path; a package coordinate. Never a URL's userinfo,
+query, or fragment, never a command's arguments, never rule `details`, which
+can hold the audited URL verbatim. URLs quoted in rule messages are cut down
+the same way, and the alert identity is hashed from that shown form, so
+nothing the file hides enters a hash either. The file's readers are everyone
+who can read the repository's alerts, a wider audience than a local report.
+What the export cannot do is tell which part of a path or a program name is
+secret, so keep credentials in `--token`, `--header`, or `--env NAME`, never
+in a URL or on a command line.
+
+Security & Auth rules also carry GitHub's `security-severity`, so they sort
+into the tab's critical, high, medium, and low bands. Passed and skipped rules
+are not in the file: SARIF carries findings, and `--json` stays the complete
+record. `--sarif -` writes to stdout and cannot be combined with `--json`,
+which exits `1` before the audit runs. The workflow that uploads the file is
+in the [GitHub Action guide](/github-action#send-findings-to-code-scanning).
 
 ## What's next
 
