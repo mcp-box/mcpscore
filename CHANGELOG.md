@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-09-10
+
 ### Added
 
 - **`--sarif FILE` writes the failed rules as SARIF 2.1.0 for GitHub code
@@ -1488,7 +1490,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.13.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/mcp-box/mcpscore/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/mcp-box/mcpscore/compare/v1.12.1...v1.13.0
 [1.12.1]: https://github.com/mcp-box/mcpscore/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/mcp-box/mcpscore/compare/v1.11.2...v1.12.0
