@@ -151,8 +151,10 @@ jobs:
 The file is written before the score gate runs, so a failing build still
 carries its findings. Alerts are keyed on the rule and the target, so a
 re-run updates them in place. `upload-sarif` files them under a category per
-workflow and job; to audit two servers in one job, give each upload step its
-own `category:` input, or the second upload replaces the first. The findings
+workflow and job, and allows one upload per job for a given tool and
+category: to audit two servers in one job, give each upload step its own
+`category:` input, or the second upload is rejected with "only one run of
+the codeql/upload-sarif action is allowed per job per tool/category". The findings
 are about the running server, not a line of source, so they appear in the
 Security tab rather than as annotations in the pull request diff; the
 `min-score` gate is what fails the pull request. Severity mapping, the file's
