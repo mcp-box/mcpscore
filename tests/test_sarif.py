@@ -343,6 +343,27 @@ class TestResults:
         assert display_target("python 'my server.py' --port 9") == "python 'my server.py'"
         assert target_identity("python 'my server.py' --port 9") == "python 'my server.py' --port"
 
+    @pytest.mark.parametrize(
+        ("command", "shown"),
+        [
+            # A runner's selector names the server; two servers through one runner stay two identities.
+            ("npx -y @modelcontextprotocol/server-everything", "npx @modelcontextprotocol/server-everything"),
+            ("npx -y @other/server --api-key k", "npx @other/server"),
+            ("uvx mcp-server-time --local-timezone Europe/Berlin", "uvx mcp-server-time"),
+            ("uvx --from pkg cmd", "uvx pkg"),
+            ("pipx run pkg", "pipx run pkg"),
+            ("uv run server.py --port 9", "uv run server.py"),
+            ("docker run -e API_KEY=hunter2 --rm ghcr.io/o/img:1", "docker run ghcr.io/o/img:1"),
+            ("python -m my_server --token t", "python -m my_server"),
+            ("/usr/bin/python3.12 -m my_server", "/usr/bin/python3.12 -m my_server"),
+            ("node server.js /tmp/hunter2", "node server.js"),
+        ],
+    )
+    def test_a_runner_keeps_its_server_selector(self, command: str, shown: str) -> None:
+        assert display_target(command) == shown
+        assert "hunter2" not in shown
+        assert fingerprint("r", "npx -y @a/server") != fingerprint("r", "npx -y @b/server")
+
     def test_a_url_that_cannot_be_parsed_never_raises(self) -> None:
         # Auth metadata is server-supplied text; a port that is not a number
         # makes urlsplit raise, and the file must still be written.
@@ -458,6 +479,8 @@ class TestFingerprints:
             == "https://a.example/mcp?apiKey=&X-Auth-Token="
         )
         assert target_identity("https://a.example/mcp?monkey=1") == "https://a.example/mcp?monkey=1"
+        # An OAuth authorization code is a credential.
+        assert target_identity("https://a.example/mcp?code=abc&state=s") == "https://a.example/mcp?code=&state=s"
         assert fingerprint("r", "https://a.example/mcp?monkey=1") != fingerprint("r", "https://a.example/mcp?monkey=2")
         assert fingerprint("r", "https://a.example/mcp?sig=a") == fingerprint("r", "https://a.example/mcp?sig=b")
         assert fingerprint("r", "https://a.example/mcp?sig=a") != fingerprint("r", "https://a.example/mcp?tenant=a")

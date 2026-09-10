@@ -60,6 +60,7 @@ Shape (one ``run``):
 from __future__ import annotations
 
 import hashlib
+from pathlib import PurePath
 import re
 import shlex
 from typing import TYPE_CHECKING, Any
@@ -132,11 +133,33 @@ _CREDENTIAL_WORDS = frozenset(
         "bearer",
         "jwt",
         "sas",
+        # An OAuth authorization code or a one-time code is a credential too.
+        "code",
+        "nonce",
+        "otp",
     }
 )
 """Words that make a query parameter name credential-like, matched as whole words of the decoded name."""
 _NAME_WORDS = re.compile(r"[A-Za-z][a-z0-9]*|[0-9]+")  # splits on separators and camelCase: apiKey -> api, Key
 _SCRIPT_EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".ts", ".jar", ".rb", ".sh", ".php", ".pl", ".exe")
+_LAUNCHER_POSITIONALS: dict[str, int] = {
+    # Runners whose first positional argument(s) select the server (a package,
+    # a module, an image) rather than configure it: keep that many so two
+    # servers launched through one runner stay two identities.
+    "npx": 1,
+    "bunx": 1,
+    "pnpx": 1,
+    "uvx": 1,
+    "deno": 1,
+    "yarn": 1,
+    "pnpm": 1,
+    "npm": 2,
+    "pipx": 2,
+    "uv": 2,
+    "docker": 2,
+    "podman": 2,
+}
+_PYTHON_PROGRAM = re.compile(r"^(python|py)[0-9.]*$")  # python, python3, python3.12, py
 """What a syntactically unusable URL (a non-numeric port, say) becomes in the file; it is server-supplied text."""
 
 
@@ -391,11 +414,28 @@ def display_target(target: str) -> str:
 
 
 def _command_head(target: str) -> str:
-    """Return a command line's program plus at most one script-like argument; a path or coordinate as is."""
+    """Return the part of a command line that names the server, never the part that configures it.
+
+    - A known runner keeps its selector positionals: ``npx -y @scope/server``
+      → ``npx @scope/server``, ``docker run -e KEY=v image`` → ``docker run
+      image``, ``pipx run pkg`` → ``pipx run pkg``. Options and ``NAME=value``
+      tokens are skipped, so an environment value never counts as a selector.
+    - ``python -m module`` keeps the module.
+    - Anything else keeps the program plus at most one script-like argument.
+    A path or coordinate (no whitespace) is itself.
+    """
     if not any(ch.isspace() for ch in target):
         return target
     program, *rest = _tokens(target)
-    head = [program, rest[0]] if rest and _looks_like_file(rest[0]) else [program]
+    name = PurePath(program).name.lower().removesuffix(".exe")
+    head = [program]
+    if _PYTHON_PROGRAM.match(name) and "-m" in rest and rest.index("-m") + 1 < len(rest):
+        head += ["-m", rest[rest.index("-m") + 1]]
+    elif name in _LAUNCHER_POSITIONALS:
+        selectors = [token for token in rest if not token.startswith("-") and "=" not in token]
+        head += selectors[: _LAUNCHER_POSITIONALS[name]]
+    elif rest and _looks_like_file(rest[0]):
+        head.append(rest[0])
     return shlex.join(head)
 
 
