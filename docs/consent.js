@@ -70,7 +70,10 @@
   var fromSite = readCookie();
   if (fromSite !== null) {
     store(fromSite);
-    if (stored === 'granted' && fromSite === 'denied') {
+    // Reload only once the denial is actually persisted: if storage is
+    // read-only, the next load would see the same stale grant and reload
+    // again, forever.
+    if (stored === 'granted' && fromSite === 'denied' && readStorage() === 'denied') {
       window.location.reload();
     }
     return;
