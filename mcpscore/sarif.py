@@ -140,7 +140,33 @@ _CREDENTIAL_WORDS = frozenset(
     }
 )
 """Words that make a query parameter name credential-like, matched as whole words of the decoded name."""
-_NAME_WORDS = re.compile(r"[A-Za-z][a-z0-9]*|[0-9]+")  # splits on separators and camelCase: apiKey -> api, Key
+_NAME_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+|[0-9]+")
+"""Splits a parameter name into words on separators, camelCase and acronym runs (apiKey, API_KEY, HTTPToken)."""
+_VALUELESS_FLAGS = frozenset(
+    {
+        "-y",
+        "--yes",
+        "-q",
+        "--quiet",
+        "-s",
+        "--silent",
+        "--no-install",
+        "--prefer-online",
+        "--prefer-offline",
+        "--rm",
+        "-i",
+        "-t",
+        "-it",
+        "-d",
+        "--detach",
+        "--isolated",
+        "--refresh",
+        "--offline",
+        "--no-cache",
+        "--frozen",
+    }
+)
+"""Launcher flags known to take no value; any other option ends the search for the selector."""
 _SCRIPT_EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".ts", ".jar", ".rb", ".sh", ".php", ".pl", ".exe")
 _LAUNCHER_POSITIONALS: dict[str, int] = {
     # Runners whose first positional argument(s) select the server (a package,
@@ -417,9 +443,11 @@ def _command_head(target: str) -> str:
     """Return the part of a command line that names the server, never the part that configures it.
 
     - A known runner keeps its selector positionals: ``npx -y @scope/server``
-      → ``npx @scope/server``, ``docker run -e KEY=v image`` → ``docker run
-      image``, ``pipx run pkg`` → ``pipx run pkg``. Options and ``NAME=value``
-      tokens are skipped, so an environment value never counts as a selector.
+      → ``npx @scope/server``, ``docker run --rm image`` → ``docker run
+      image``, ``pipx run pkg`` → ``pipx run pkg``. Only flags known to be
+      valueless are skipped; any other option ends the search (``docker run
+      -e KEY=v image`` → ``docker run``), so an option's value never poses
+      as the server.
     - ``python -m module`` keeps the module.
     - Anything else keeps the program plus at most one script-like argument.
     A path or coordinate (no whitespace) is itself.
@@ -432,11 +460,30 @@ def _command_head(target: str) -> str:
     if _PYTHON_PROGRAM.match(name) and "-m" in rest and rest.index("-m") + 1 < len(rest):
         head += ["-m", rest[rest.index("-m") + 1]]
     elif name in _LAUNCHER_POSITIONALS:
-        selectors = [token for token in rest if not token.startswith("-") and "=" not in token]
-        head += selectors[: _LAUNCHER_POSITIONALS[name]]
+        head += _selectors(rest, _LAUNCHER_POSITIONALS[name])
     elif rest and _looks_like_file(rest[0]):
         head.append(rest[0])
     return shlex.join(head)
+
+
+def _selectors(arguments: list[str], count: int) -> list[str]:
+    """Return up to ``count`` leading positional arguments, stopping at the first option that may take a value.
+
+    Option arity is unknown in general (``npx --registry <url> pkg``), so
+    only flags known to be valueless are skipped; an unknown option ends the
+    search, and the display falls back to the program alone rather than
+    risk showing an option's value as the server.
+    """
+    selectors: list[str] = []
+    for token in arguments:
+        if token in _VALUELESS_FLAGS or "=" in token:
+            continue
+        if token.startswith("-"):
+            break
+        selectors.append(token)
+        if len(selectors) == count:
+            break
+    return selectors
 
 
 def _tokens(command_line: str) -> list[str]:

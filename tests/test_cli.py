@@ -2492,6 +2492,17 @@ class TestSarifOutput:
         assert "both write to stdout" in caplog.text
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.parametrize("empty", ["--sarif=", "--sarif= "])
+    async def test_an_empty_sarif_destination_is_a_usage_error(
+        self, monkeypatch: MonkeyPatch, caplog: LogCaptureFixture, empty: str
+    ) -> None:
+        # `--sarif=` parses as "", which every output branch would read as off.
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "/path/to/server.py", empty])
+        with pytest.raises(SystemExit) as exc_info:
+            await async_main()
+        assert exc_info.value.code == 1
+        assert "--sarif needs a file name" in caplog.text
+
     def test_json_with_a_sarif_file_is_allowed(self) -> None:
         validate_output_flags(build_parser().parse_args(["srv.py", "--json", "--sarif", "out.sarif"]))
         validate_output_flags(build_parser().parse_args(["srv.py", "--sarif", "-"]))

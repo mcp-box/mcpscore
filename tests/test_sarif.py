@@ -350,10 +350,16 @@ class TestResults:
             ("npx -y @modelcontextprotocol/server-everything", "npx @modelcontextprotocol/server-everything"),
             ("npx -y @other/server --api-key k", "npx @other/server"),
             ("uvx mcp-server-time --local-timezone Europe/Berlin", "uvx mcp-server-time"),
-            ("uvx --from pkg cmd", "uvx pkg"),
+            # An option of unknown arity ends the search: its value must not pose as the server.
+            ("uvx --from pkg cmd", "uvx"),
+            ("npx --registry https://user:pw@registry.example @scope/server", "npx"),
+            ("npx --token hunter2 @scope/server", "npx"),
+            ("npx -y --quiet @scope/server", "npx @scope/server"),
             ("pipx run pkg", "pipx run pkg"),
             ("uv run server.py --port 9", "uv run server.py"),
-            ("docker run -e API_KEY=hunter2 --rm ghcr.io/o/img:1", "docker run ghcr.io/o/img:1"),
+            ("docker run --rm ghcr.io/o/img:1", "docker run ghcr.io/o/img:1"),
+            ("docker run -e API_KEY=hunter2 --rm ghcr.io/o/img:1", "docker run"),
+            ("docker run -e API_KEY hunter2-img", "docker run"),
             ("python -m my_server --token t", "python -m my_server"),
             ("/usr/bin/python3.12 -m my_server", "/usr/bin/python3.12 -m my_server"),
             ("node server.js /tmp/hunter2", "node server.js"),
@@ -477,6 +483,10 @@ class TestFingerprints:
         assert (
             target_identity("https://a.example/mcp?apiKey=K&X-Auth-Token=T")
             == "https://a.example/mcp?apiKey=&X-Auth-Token="
+        )
+        # Uppercase spellings and acronym runs are words too, not letters.
+        assert target_identity("https://a.example/mcp?TOKEN=x&API_KEY=y&HTTPToken=z&ID=1") == (
+            "https://a.example/mcp?TOKEN=&API_KEY=&HTTPToken=&ID=1"
         )
         assert target_identity("https://a.example/mcp?monkey=1") == "https://a.example/mcp?monkey=1"
         # An OAuth authorization code is a credential.

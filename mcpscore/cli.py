@@ -607,13 +607,16 @@ def finish_server_audit(
 
 
 def validate_output_flags(args: argparse.Namespace) -> None:
-    """Reject --json together with --sarif - : stdout carries exactly one document.
+    """Reject an empty --sarif destination, and --json together with --sarif - (stdout carries one document).
 
     Raises:
-        ValueError: Both were asked to write to stdout; a consumer parsing it
-            must not find two concatenated JSON objects.
+        ValueError: ``--sarif=`` (which would silently write nothing), or both
+            outputs asked to write to stdout, where a consumer must not find
+            two concatenated JSON objects.
 
     """
+    if args.sarif is not None and not args.sarif.strip():
+        raise ValueError("--sarif needs a file name, or - for stdout")
     if args.json and args.sarif == "-":
         raise ValueError("--json and --sarif - both write to stdout; give --sarif a file name")
 
