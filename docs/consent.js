@@ -7,12 +7,18 @@
 // mcpscore.dev writes (mcpscore-web/src/lib/analytics.ts). localStorage is
 // per origin, so this script does two things the site's banner cannot:
 //
-// 1. Adopt a choice made on mcpscore.dev. The site's banner also writes a
-//    `mcpscore.analytics-consent` cookie on the shared parent domain; a
-//    visitor who already chose there is not asked again here. Mintlify read
-//    localStorage before this script ran, so a synced grant takes effect on
-//    the next full page load; that first page view goes unmeasured on purpose
-//    rather than reloading a page the visitor did not ask to reload.
+// 1. Adopt a choice made on mcpscore.dev. Both banners write a
+//    `mcpscore.analytics-consent` cookie on the shared parent domain on every
+//    choice, so the cookie always carries the newest one and is authoritative
+//    over this origin's localStorage (which can hold a grant the visitor has
+//    since withdrawn on the site). A visitor who already chose there is not
+//    asked again here. Mintlify read localStorage before this script ran, so
+//    a synced grant takes effect on the next full page load; that first page
+//    view goes unmeasured on purpose rather than reloading a page the visitor
+//    did not ask to reload. A synced withdrawal that finds a stale grant here
+//    does reload, so the tag that stale value let Mintlify start stops now.
+//    A choice stored here before the cookie existed is copied into it, so
+//    the site learns it too.
 // 2. Ask, with the same words as the site, when no choice exists anywhere.
 //    Accept stores the choice in both places and reloads once so Mintlify
 //    picks it up; Decline stores it and shows nothing more.
@@ -60,11 +66,17 @@
       cookieDomain();
   }
 
-  if (readStorage() !== null) return;
-
+  var stored = readStorage();
   var fromSite = readCookie();
   if (fromSite !== null) {
     store(fromSite);
+    if (stored === 'granted' && fromSite === 'denied') {
+      window.location.reload();
+    }
+    return;
+  }
+  if (stored !== null) {
+    store(stored);
     return;
   }
 
