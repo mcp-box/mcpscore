@@ -149,9 +149,11 @@ jobs:
 
 The file is written before the score gate runs, so a failing build still
 carries its findings. Alerts are keyed on the rule and the target, and each
-target names its own analysis category (`mcpscore/<target>/`), so a re-run
-updates alerts in place and two servers audited in one workflow stay two
-sets. The upload step's `category` input has no effect here: the file already
+target names its own analysis category (`mcpscore/<target>/<digest>/`, with
+`partial` or `incomplete` added when the audit was one), so a re-run updates
+alerts in place, two servers audited in one workflow stay two sets, and a
+partial audit never closes a full audit's alerts. The upload step's
+`category` input has no effect here: the file already
 carries its category, and `upload-sarif` sets one only when it is missing. The
 findings are about the running server, not a line of source, so they appear in
 the Security tab rather than as annotations in the pull request diff; the

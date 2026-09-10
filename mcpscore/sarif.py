@@ -47,7 +47,15 @@ Shape (one ``run``):
   target without userinfo or fragment but with its query, so two endpoints
   that differ only by query stay two alerts while a token in the query is
   never recoverable from the file. Only a URL target is normalized at all:
-  a stdio command line is its own identity, verbatim.
+  a stdio command line is its own identity, verbatim — but it is *shown*
+  only up to its first option, since option values are where a secret
+  passed on a command line sits.
+- The run's category (``automationDetails.id``) is the shown target, the
+  audit scope (``partial`` or ``incomplete`` when the audit was one), and
+  a short digest of the full identity. GitHub keeps one upload per
+  category and commit, so two endpoints that differ only by query, or a
+  partial audit after a full one, must not share a category: the partial
+  run would otherwise mark every finding it could not assess as fixed.
 """
 
 from __future__ import annotations
@@ -99,7 +107,10 @@ POINT_REGION: dict[str, int] = {"startLine": 1, "startColumn": 1, "endLine": 1, 
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _PACKAGE_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")  # npm:, pypi: — two+ letters, so C:\ is a path
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:[\\/]")
-_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>,)]+")
+_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
+_TRAILING_PUNCTUATION = re.compile(r"[\'\")\],.;:>]+$")
+INVALID_URL = "<invalid-url>"
+"""What a syntactically unusable URL (a non-numeric port, say) becomes in the file; it is server-supplied text."""
 
 
 def build_sarif(report: dict) -> dict:
@@ -142,18 +153,23 @@ def build_sarif(report: dict) -> dict:
         )
 
     package = report.get("package")
+    partial = bool(report.get("partial", False))
     run_properties: dict[str, Any] = {
         "score": report.get("score"),
         "max_score": report.get("max_score"),
-        "partial": bool(report.get("partial", False)),
+        "partial": partial,
         "authenticated": bool(report.get("authenticated", False)),
     }
     if report.get("partial_reason"):
-        run_properties["partial_reason"] = report["partial_reason"]
+        run_properties["partial_reason"] = scrub_urls(str(report["partial_reason"]))
     if package is not None:
-        run_properties["package"] = package
+        # The registry supplies repository_url and error text; scrub them like any URL.
+        run_properties["package"] = {k: scrub_urls(v) if isinstance(v, str) else v for k, v in package.items()}
     if report.get("transport") is not None:
         run_properties["transport"] = report["transport"]
+
+    scope = "/partial" if partial else ("/incomplete" if report.get("incomplete_listings") else "")
+    category = f"mcpscore/{target_identity(shown)}{scope}/{_identity_digest(target)}/"
 
     return {
         "$schema": SARIF_SCHEMA,
@@ -172,9 +188,10 @@ def build_sarif(report: dict) -> dict:
                 # workflow stay two sets of alerts. It wins over the upload
                 # step's `category` input: upload-sarif sets automationDetails
                 # only when the run has none. GitHub reads the text up to the
-                # last slash as the category, hence exactly one trailing slash
-                # whether or not the target ends in one.
-                "automationDetails": {"id": f"mcpscore/{target_identity(shown)}/"},
+                # last slash as the category, hence exactly one trailing slash.
+                # The digest keeps endpoints apart that display the same
+                # (query-distinct URLs, stdio commands differing in options).
+                "automationDetails": {"id": category},
                 "invocations": [{"executionSuccessful": True}],
                 "artifacts": [{"location": {"uri": _artifact_uri(shown)}, "description": {"text": shown}}],
                 "results": results,
@@ -262,17 +279,40 @@ def fingerprint(rule_id: str, target: str) -> str:
     return digest[:32]
 
 
+def _identity_digest(target: str) -> str:
+    """Return a short, credential-free digest of the target's full identity, for the run's category."""
+    return hashlib.sha256(target_identity(_canonical(target)).encode()).hexdigest()[:8]
+
+
 def display_target(target: str) -> str:
     """Return the target as the file may show it: a URL without userinfo, query, or fragment; anything else as is.
 
     A query can carry a signed credential and userinfo is one by definition,
     and code scanning data is readable by everyone with access to the
-    repository's alerts.
+    repository's alerts. A stdio command line is shown up to its first
+    option: ``server --api-key secret`` shows as ``server``, ``python
+    server.py --port 9`` as ``python server.py``. A URL that cannot be
+    parsed (server-supplied text can be anything) becomes ``INVALID_URL``.
     """
     if not _URI_SCHEME.match(target):
+        return _command_head(target)
+    try:
+        parts = urlsplit(target)
+        return urlunsplit((parts.scheme, _host_port(parts), parts.path, "", ""))
+    except ValueError:
+        return INVALID_URL
+
+
+def _command_head(target: str) -> str:
+    """Return a command line up to its first option; a path or coordinate (no whitespace) as is."""
+    if not any(ch.isspace() for ch in target):
         return target
-    parts = urlsplit(target)
-    return urlunsplit((parts.scheme, _host_port(parts), parts.path, "", ""))
+    head: list[str] = []
+    for token in target.split():
+        if token.startswith("-"):
+            break
+        head.append(token)
+    return " ".join(head) or target.split()[0]
 
 
 def scrub_urls(text: str) -> str:
@@ -282,7 +322,18 @@ def scrub_urls(text: str) -> str:
     ``resource_metadata``, an issuer), and those can carry credentials as
     easily as the target can.
     """
-    return _URL_IN_TEXT.sub(lambda m: display_target(m.group(0)), text)
+
+    def replace(match: re.Match[str]) -> str:
+        # Greedy to the next whitespace, so a credential containing a comma or
+        # a quote cannot survive as a suffix; closing punctuation that merely
+        # follows the URL in prose is put back after the scrubbed form.
+        url = match.group(0)
+        trailing = _TRAILING_PUNCTUATION.search(url)
+        if trailing:
+            url = url[: trailing.start()]
+        return display_target(url) + (trailing.group(0) if trailing else "")
+
+    return _URL_IN_TEXT.sub(replace, text)
 
 
 def _canonical(target: str) -> str:
@@ -294,8 +345,11 @@ def _canonical(target: str) -> str:
     """
     if not _URI_SCHEME.match(target):
         return target
-    parts = urlsplit(target)
-    return urlunsplit((parts.scheme, _host_port(parts), parts.path, parts.query, ""))
+    try:
+        parts = urlsplit(target)
+        return urlunsplit((parts.scheme, _host_port(parts), parts.path, parts.query, ""))
+    except ValueError:
+        return target
 
 
 def _host_port(parts: SplitResult) -> str:

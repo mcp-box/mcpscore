@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from jsonschema import Draft7Validator
@@ -131,9 +132,32 @@ class TestEnvelope:
     @pytest.mark.parametrize("target", ["https://mcp.example.com/mcp", "https://mcp.example.com/mcp/"])
     def test_automation_id_keys_on_the_target_with_one_trailing_slash(self, target: str) -> None:
         # GitHub reads the id up to its last slash as the category; a target
-        # that already ends in a slash must not produce a `//` suffix.
+        # that already ends in a slash must not produce a `//` suffix, and
+        # both spellings are one category. The digest is of the full identity.
         run = _run(build_sarif(_report(target=target)))
-        assert run["automationDetails"]["id"] == "mcpscore/https://mcp.example.com/mcp/"
+        assert re.fullmatch(r"mcpscore/https://mcp\.example\.com/mcp/[0-9a-f]{8}/", run["automationDetails"]["id"])
+        assert run["automationDetails"]["id"] == _run(build_sarif(_report()))["automationDetails"]["id"]
+
+    def test_category_separates_what_displays_the_same(self) -> None:
+        # GitHub keeps one upload per category and commit. Two endpoints that
+        # differ only by query display the same, so the digest must keep them
+        # apart; the same for stdio commands that differ in their options.
+        def category(target: str) -> str:
+            return _run(build_sarif(_report(target=target)))["automationDetails"]["id"]
+
+        assert category("https://a.example/mcp?tenant=1") != category("https://a.example/mcp?tenant=2")
+        assert category("server --root /tmp/a") != category("server --root /tmp/b")
+        assert category("https://a.example/mcp#x") == category("https://a.example/mcp")
+
+    def test_category_separates_audit_scopes(self) -> None:
+        # A partial audit after a full one must not mark every finding it could
+        # not assess as fixed, so it uploads into its own category.
+        full = _run(build_sarif(_report()))["automationDetails"]["id"]
+        partial = _run(build_sarif(_report(partial=True, partial_reason="auth-gated")))["automationDetails"]["id"]
+        incomplete = _run(build_sarif(_report(incomplete_listings=["tools"])))["automationDetails"]["id"]
+        assert "/partial/" in partial
+        assert "/incomplete/" in incomplete
+        assert len({full, partial, incomplete}) == 3
 
     def test_validates_against_the_sarif_schema(self, validator: Draft7Validator) -> None:
         errors = list(validator.iter_errors(build_sarif(_report())))
@@ -230,7 +254,9 @@ class TestResults:
             ("/srv/server.py", "srv/server.py"),
             ("./server.py", "server.py"),
             ("C:\\srv\\server.py", "srv/server.py"),
-            ("java -jar server.jar --port 9", "java%20-jar%20server.jar%20--port%209"),
+            # A stdio command line is shown up to its first option (see display_target).
+            ("java -jar server.jar --port 9", "java"),
+            ("python server.py --port 9", "python%20server.py"),
             ("npm:@scope/name@1.2.3", "npm/@scope/name@1.2.3"),
             ("pypi:name==1.2.3", "pypi/name==1.2.3"),
         ],
@@ -257,7 +283,7 @@ class TestResults:
         assert "user:" not in text
         assert "user@" not in text
         run = _run(sarif)
-        assert run["automationDetails"]["id"] == "mcpscore/https://mcp.example.com:8443/mcp/"
+        assert run["automationDetails"]["id"].startswith("mcpscore/https://mcp.example.com:8443/mcp/")
         assert run["artifacts"][0]["description"] == {"text": "https://mcp.example.com:8443/mcp"}
         assert run["artifacts"][0]["location"]["uri"] == "mcp.example.com%3A8443/mcp"
 
@@ -279,10 +305,70 @@ class TestResults:
         assert "user:pw" not in text
         assert "https://as.example/.well-known/x" in text
 
-    def test_display_target_leaves_non_url_targets_alone(self) -> None:
+    def test_display_target_leaves_paths_and_coordinates_alone(self) -> None:
         assert display_target("./server.py") == "./server.py"
         assert display_target("npm:@scope/name@1.2.3") == "npm:@scope/name@1.2.3"
         assert display_target("https://mcp.example.com/mcp") == "https://mcp.example.com/mcp"
+
+    def test_a_stdio_command_is_shown_up_to_its_first_option(self) -> None:
+        # --stdio takes the server's own flags, and a flag value is where a
+        # secret passed on a command line sits; the file shows the program only.
+        assert display_target("server --api-key secret --root /tmp/a") == "server"
+        assert display_target("python server.py --port 9") == "python server.py"
+        assert display_target("-x") == "-x"
+        sarif = build_sarif(_report(target="python server.py --api-key hunter2"))
+        text = json.dumps(sarif)
+        assert "hunter2" not in text
+        run = _run(sarif)
+        assert run["artifacts"][0] == {
+            "location": {"uri": "python%20server.py"},
+            "description": {"text": "python server.py"},
+        }
+        assert run["automationDetails"]["id"].startswith("mcpscore/python server.py/")
+        # The options still tell the commands apart.
+        assert fingerprint("r", "python server.py --root a") != fingerprint("r", "python server.py --root b")
+
+    def test_a_url_that_cannot_be_parsed_never_raises(self) -> None:
+        # Auth metadata is server-supplied text; a port that is not a number
+        # makes urlsplit raise, and the file must still be written.
+        bad = "https://issuer.example:not-a-port/realm"
+        assert display_target(bad) == "<invalid-url>"
+        assert scrub_urls(f"❌ Authorization server '{bad}' publishes no metadata") == (
+            "❌ Authorization server '<invalid-url>' publishes no metadata"
+        )
+        odd = {**_result("r"), "message": f"issuer {bad}"}
+        sarif = build_sarif(_report(target=bad, results=[odd], readiness={"results": []}))
+        assert _run(sarif)["results"][0]["message"]["text"] == "issuer <invalid-url>"
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            # A credential with a comma or quote must not survive as a suffix.
+            (
+                "metadata 'https://as.example/x?token=prefix,secret' rejected",
+                "metadata 'https://as.example/x' rejected",
+            ),
+            ("see https://as.example/x?sig=a'b), then", "see https://as.example/x), then"),
+            # Closing punctuation after a plain URL stays where it was.
+            ("(see https://as.example/path).", "(see https://as.example/path)."),
+            ("issuer https://idp.example/realm/, target", "issuer https://idp.example/realm/, target"),
+        ],
+    )
+    def test_scrub_matches_the_whole_url_and_keeps_trailing_prose_punctuation(self, text: str, expected: str) -> None:
+        assert scrub_urls(text) == expected
+
+    def test_package_and_partial_reason_strings_are_scrubbed(self) -> None:
+        sarif = build_sarif(
+            _report(
+                target="npm:example",
+                partial=True,
+                partial_reason="gated at https://user:pw@a.example/x?sig=1",
+                package={"registry": "npm", "repository_url": "https://token@github.com/o/r?x=1", "withdrawn": False},
+            )
+        )
+        props = _run(sarif)["properties"]
+        assert props["partial_reason"] == "gated at https://a.example/x"
+        assert props["package"] == {"registry": "npm", "repository_url": "https://github.com/o/r", "withdrawn": False}
 
     def test_rule_index_points_at_the_rule_entry(self) -> None:
         run = _run(build_sarif(_report()))
@@ -326,11 +412,11 @@ class TestFingerprints:
     def test_identity_trims_url_paths_only(self, left: str, right: str, same: bool) -> None:
         assert (fingerprint("r", left) == fingerprint("r", right)) is same
 
-    def test_non_url_targets_keep_their_trailing_slash_everywhere(self) -> None:
-        run = _run(build_sarif(_report(target="server --root /tmp/a/")))
+    def test_non_url_targets_keep_their_trailing_slash_in_the_identity(self) -> None:
         assert target_identity("server --root /tmp/a/") == "server --root /tmp/a/"
-        assert run["automationDetails"]["id"] == "mcpscore/server --root /tmp/a//"
-        assert run["artifacts"][0]["description"] == {"text": "server --root /tmp/a/"}
+        with_slash = _run(build_sarif(_report(target="server --root /tmp/a/")))["automationDetails"]["id"]
+        without = _run(build_sarif(_report(target="server --root /tmp/a")))["automationDetails"]["id"]
+        assert with_slash != without
 
     def test_userinfo_never_enters_the_fingerprint_but_the_query_does(self) -> None:
         # user@host is the same server as host, so the alert series must not
