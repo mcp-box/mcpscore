@@ -439,7 +439,7 @@ async def run_package_audit(
         if args.json:
             sys.stdout.write(json.dumps(full, indent=2, default=str) + "\n")
         if args.sarif:
-            write_sarif(args.sarif, full)
+            write_sarif(args.sarif, full, command=False)
     # A package audit has no readiness axis (max 0), so only --fail-under can gate it —
     # against the packaging percentage, the only score this audit has.
     return fail_under_exit_code(args, report)
@@ -597,7 +597,7 @@ def finish_server_audit(
         if args.json:
             sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
         if args.sarif:
-            write_sarif(args.sarif, report)
+            write_sarif(args.sarif, report, command=args.stdio is not None)
     code = fail_under_exit_code(args, auditor.get_audit_report())
     if code == 0 and smoke is not None and smoke.failed:
         logger.error("Gate failed — --smoke: %d smoke check(s) failed", smoke.failed)
@@ -621,8 +621,11 @@ def validate_output_flags(args: argparse.Namespace) -> None:
         raise ValueError("--json and --sarif - both write to stdout; give --sarif a file name")
 
 
-def write_sarif(destination: str, report: dict) -> None:
+def write_sarif(destination: str, report: dict, *, command: bool) -> None:
     """Write the report's findings as SARIF to ``destination`` (``-`` is stdout).
+
+    ``command`` says the target is a ``--stdio`` command line, of which the
+    file shows the program name only; a path with whitespace is not one.
 
     Written before the gates run, so a failing build still carries its
     findings to code scanning. A destination that cannot be written is a
@@ -630,7 +633,7 @@ def write_sarif(destination: str, report: dict) -> None:
     cannot have, and silently dropping it would leave the upload step with
     nothing.
     """
-    sarif = build_sarif(report)
+    sarif = build_sarif(report, command=command)
     text = json.dumps(sarif, indent=2, default=str) + "\n"
     findings = len(sarif["runs"][0]["results"])
     if destination == "-":

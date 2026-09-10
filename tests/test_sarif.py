@@ -231,8 +231,7 @@ class TestResults:
             ("../server.py", "server.py"),
             ("../../etc/../server.py", "etc/server.py"),
             ("C:\\srv\\server.py", "srv/server.py"),
-            ("java -jar server.jar --port 9", "java"),
-            ("python server.py --port 9", "python"),
+            ("/srv/my server.py", "srv/my%20server.py"),
             ("npm:@scope/name@1.2.3", "npm/@scope/name@1.2.3"),
             ("pypi:name==1.2.3", "pypi/name==1.2.3"),
         ],
@@ -304,17 +303,28 @@ class TestWhatTheFileShows:
             ("https://user:secret@mcp.example.com:8443/mcp?sig=abc123#frag", "https://mcp.example.com:8443/mcp"),
             ("https://issuer.example:not-a-port/realm", "<invalid-url>"),
             ("./server.py", "./server.py"),
+            ("/srv/my server.py", "/srv/my server.py"),  # a path is a path, whitespace or not
             ("npm:@scope/name@1.2.3", "npm:@scope/name@1.2.3"),
+        ],
+    )
+    def test_display_target(self, target: str, shown: str) -> None:
+        assert display_target(target) == shown
+
+    @pytest.mark.parametrize(
+        ("command_line", "shown"),
+        [
             ("python server.py --api-key hunter2", "python"),
             ("/usr/bin/python3.12 -m my_server --token t", "python3.12"),
             ("npx -y @modelcontextprotocol/server-everything", "npx"),
             ("node server.js hunter2", "node"),
             ("server -khunter2", "server"),
             ("'/opt/my server/bin/server' --root /tmp/a", "server"),
+            ("server", "server"),
         ],
     )
-    def test_display_target(self, target: str, shown: str) -> None:
-        assert display_target(target) == shown
+    def test_display_of_a_stdio_command_is_its_program_name(self, command_line: str, shown: str) -> None:
+        # The CLI says whether the target is a command; the string alone cannot.
+        assert display_target(command_line, command=True) == shown
 
     def test_credentials_in_the_target_never_reach_the_file(self) -> None:
         target = "https://user:secret@mcp.example.com:8443/mcp?sig=abc123#frag"
@@ -325,11 +335,13 @@ class TestWhatTheFileShows:
         assert "user@" not in text
 
     def test_command_arguments_never_reach_the_file(self) -> None:
-        text = json.dumps(build_sarif(_report(target="npx --token hunter2 @scope/server --root /tmp/hunter2")))
+        command = "npx --token hunter2 @scope/server --root /tmp/hunter2"
+        text = json.dumps(build_sarif(_report(target=command), command=True))
         assert "hunter2" not in text
         assert "@scope/server" not in text
-        run = _run(build_sarif(_report(target="npx --token hunter2 @scope/server")))
+        run = _run(build_sarif(_report(target=command), command=True))
         assert run["artifacts"][0] == {"location": {"uri": "npx"}, "description": {"text": "npx"}}
+        assert run["results"][0]["partialFingerprints"] == {FINGERPRINT_KEY: fingerprint("auth_metadata_https", "npx")}
 
     def test_a_url_that_cannot_be_parsed_never_raises(self) -> None:
         # Auth metadata is server-supplied text; a port that is not a number
@@ -348,18 +360,22 @@ class TestWhatTheFileShows:
                     "is not on this server's origin (issuer https://idp.example:8443/realm/, target unchanged)"
                 ),
                 (
-                    "❌ The challenge's resource_metadata 'https://as.example/.well-known/x' "
+                    "❌ The challenge's resource_metadata 'https://as.example/.well-known/x "
                     "is not on this server's origin (issuer https://idp.example:8443/realm/, target unchanged)"
                 ),
             ),
             # A credential with a comma or quote must not survive as a suffix.
             (
                 "metadata 'https://as.example/x?token=prefix,secret' rejected",
-                "metadata 'https://as.example/x' rejected",
+                # The closing quote goes too: after a query nothing is known to be prose.
+                "metadata 'https://as.example/x rejected",
             ),
-            ("see https://as.example/x?sig=a'b), then", "see https://as.example/x), then"),
-            # Closing punctuation after a plain URL stays where it was.
+            ("see https://as.example/x?sig=a'b), then", "see https://as.example/x then"),
+            # Closing punctuation after a plain URL stays where it was...
             ("(see https://as.example/path).", "(see https://as.example/path)."),
+            # ...but never after a query or fragment: it may be the value itself.
+            ("token 'https://a.example/x?token=....' rejected", "token 'https://a.example/x rejected"),
+            ("see https://a.example/x#f).", "see https://a.example/x"),
             ("no url here", "no url here"),
         ],
     )
@@ -405,10 +421,9 @@ class TestFingerprints:
             ("https://user:secret@a.example/mcp", "https://a.example/mcp", True),
             ("https://a.example/mcp?token=a", "https://a.example/mcp?token=b", True),
             ("https://a.example/mcp#a", "https://a.example/mcp#b", True),
-            # A command's arguments never enter it either; its program does.
-            ("npx -y @a/server", "npx -y @b/server", True),
-            ("npx -y @a/server", "uvx a-server", False),
-            ("server --root /tmp/a", "server --root /tmp/b", True),
+            # A path's whitespace is part of it.
+            ("/srv/my server.py", "/srv/my server.py", True),
+            ("/srv/my server.py", "/srv/my", False),
             # Different servers stay different.
             ("https://a.example/mcp", "https://b.example/mcp", False),
             ("https://a.example/mcp", "https://a.example/other", False),
@@ -416,8 +431,18 @@ class TestFingerprints:
         ],
     )
     def test_identity(self, left: str, right: str, same: bool) -> None:
-        assert (target_identity(left) == target_identity(right)) is same
-        assert (fingerprint("r", left) == fingerprint("r", right)) is same
+        shown_left, shown_right = display_target(left), display_target(right)
+        assert (target_identity(shown_left) == target_identity(shown_right)) is same
+        assert (fingerprint("r", shown_left) == fingerprint("r", shown_right)) is same
+
+    def test_a_command_is_keyed_on_its_program_name(self) -> None:
+        # Arguments never enter the identity; the upload step's `category:` tells servers apart.
+        def key(command_line: str) -> str:
+            return fingerprint("r", display_target(command_line, command=True))
+
+        assert key("npx -y @a/server") == key("npx -y @b/server")
+        assert key("server --root /tmp/a") == key("server --root /tmp/b")
+        assert key("npx -y @a/server") != key("uvx a-server")
 
     def test_rule_changes_the_fingerprint(self) -> None:
         assert fingerprint("a", "https://a.example/mcp") != fingerprint("b", "https://a.example/mcp")

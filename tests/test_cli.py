@@ -2503,6 +2503,32 @@ class TestSarifOutput:
         assert exc_info.value.code == 1
         assert "--sarif needs a file name" in caplog.text
 
+    async def test_a_stdio_target_shows_its_program_name_only(
+        self,
+        monkeypatch: MonkeyPatch,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+        audit_report: dict,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # The CLI knows the target is a command line; the file shows `java`, never the arguments.
+        monkeypatch.setattr(
+            sys, "argv", ["mcpscore", "--sarif", "-", "--stdio", "java", "-jar", "server.jar", "--token", "hunter2"]
+        )
+        mock_auditor.get_audit_report = MagicMock(return_value=audit_report)
+
+        with (
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        out = capsys.readouterr().out
+        assert "hunter2" not in out
+        assert "server.jar" not in out
+        run = json.loads(out)["runs"][0]
+        assert run["artifacts"][0]["description"] == {"text": "java"}
+
     def test_json_with_a_sarif_file_is_allowed(self) -> None:
         validate_output_flags(build_parser().parse_args(["srv.py", "--json", "--sarif", "out.sarif"]))
         validate_output_flags(build_parser().parse_args(["srv.py", "--sarif", "-"]))

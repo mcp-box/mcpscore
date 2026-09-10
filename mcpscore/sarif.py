@@ -114,19 +114,22 @@ _URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
 _TRAILING_PUNCTUATION = re.compile(r"['\")\],.;:>]+$")
 
 
-def build_sarif(report: dict) -> dict:
+def build_sarif(report: dict, *, command: bool = False) -> dict:
     """Build a SARIF 2.1.0 log from a ``--json``-shaped report (see ``cli.build_report``).
 
     Args:
         report: The full report dictionary: ``target``, ``mcpscore_version``,
             ``results``, ``readiness``, ``score``/``max_score``, ``partial``.
+        command: Whether the target is a ``--stdio`` command line rather than
+            a URL, path or coordinate. The caller knows; the string does not
+            (a path may contain whitespace).
 
     Returns:
         The SARIF log as a JSON-serializable dictionary.
 
     """
     target = str(report["target"])
-    shown = display_target(target)
+    shown = display_target(target, command=command)
     readiness = report.get("readiness") or {}
     counted_in_main = bool(readiness.get("counted_in_main", False))
 
@@ -146,7 +149,6 @@ def build_sarif(report: dict) -> dict:
             _result_entry(
                 res,
                 rule_index[rule_id],
-                target,
                 shown,
                 is_readiness=is_readiness,
                 counted_in_main=counted_in_main,
@@ -224,10 +226,8 @@ def _rule_entry(res: dict, rule: BaseRule | None, *, is_readiness: bool) -> dict
     return entry
 
 
-def _result_entry(
-    res: dict, rule_index: int, target: str, shown: str, *, is_readiness: bool, counted_in_main: bool
-) -> dict:
-    """SARIF ``result`` for one failed rule: ``target`` keys the fingerprint, ``shown`` is what the file displays."""
+def _result_entry(res: dict, rule_index: int, shown: str, *, is_readiness: bool, counted_in_main: bool) -> dict:
+    """SARIF ``result`` for one failed rule; ``shown`` is the displayed target, which also keys the fingerprint."""
     severity = res["severity"]
     informative = is_readiness and not counted_in_main
     level = "note" if informative else LEVEL_BY_SEVERITY.get(severity, "warning")
@@ -247,7 +247,7 @@ def _result_entry(
                 }
             }
         ],
-        "partialFingerprints": {FINGERPRINT_KEY: fingerprint(res["rule_id"], target)},
+        "partialFingerprints": {FINGERPRINT_KEY: fingerprint(res["rule_id"], shown)},
         "properties": {
             "severity": severity,
             "severity_value": res.get("severity_value"),
@@ -257,39 +257,39 @@ def _result_entry(
     }
 
 
-def fingerprint(rule_id: str, target: str) -> str:
+def fingerprint(rule_id: str, shown: str) -> str:
     """Stable fingerprint of a finding: the same rule on the same target hashes the same across runs.
 
-    The target enters by ``target_identity``, the shown form of the target,
-    so nothing the file hides is in the digest.
+    ``shown`` is the displayed target (``display_target``); it enters by
+    ``target_identity``, so nothing the file hides is in the digest.
     """
-    digest = hashlib.sha256(f"{rule_id}\n{target_identity(target)}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{rule_id}\n{target_identity(shown)}".encode()).hexdigest()
     return digest[:32]
 
 
-def target_identity(target: str) -> str:
-    """Return the target as alerts are keyed on: its shown form, minus one trailing slash on a URL path.
+def target_identity(shown: str) -> str:
+    """Return the shown target as alerts are keyed on: itself, minus one trailing slash on a URL path.
 
     ``/mcp`` and ``/mcp/`` are one server (the engine follows that redirect
     as same-origin), so they must be one series of alerts; ``/mcp//`` is a
     different path and stays different.
     """
-    shown = display_target(target)
     if _URI_SCHEME.match(shown) and shown.endswith("/"):
         return shown[:-1]
     return shown
 
 
-def display_target(target: str) -> str:
+def display_target(target: str, *, command: bool = False) -> str:
     """Return the target as the file shows it, and all of it that the file shows.
 
     A URL keeps scheme, host, port and path; userinfo, query and fragment
     never appear. A URL that cannot be parsed (server-supplied text can be
-    anything) becomes ``INVALID_URL``. A stdio command line shows its
-    program's name only (``npx``, ``python3``, ``server``): the arguments
-    are where a secret passed on a command line sits, and no parser of
-    arbitrary command lines can tell a package name from a password. A local
-    path or a package coordinate (no whitespace) is itself.
+    anything) becomes ``INVALID_URL``. A stdio command line (``command``)
+    shows its program's name only (``npx``, ``python3``, ``server``): the
+    arguments are where a secret passed on a command line sits, and no
+    parser of arbitrary command lines can tell a package name from a
+    password. A local path — whitespace included — or a package coordinate
+    is itself.
     """
     if _URI_SCHEME.match(target):
         try:
@@ -297,11 +297,11 @@ def display_target(target: str) -> str:
             return urlunsplit((parts.scheme, _host_port(parts), parts.path, "", ""))
         except ValueError:
             return INVALID_URL
-    if any(ch.isspace() for ch in target):
+    if command:
         try:
             program = shlex.split(target)[0]
         except (ValueError, IndexError):
-            program = target.split()[0]
+            program = target.split()[0] if target.split() else target
         return PurePath(program).name
     return target
 
@@ -316,13 +316,16 @@ def scrub_urls(text: str) -> str:
 
     def replace(match: re.Match[str]) -> str:
         # Greedy to the next whitespace, so a credential containing a comma or
-        # a quote cannot survive as a suffix; closing punctuation that merely
-        # follows the URL in prose is put back after the scrubbed form.
+        # a quote cannot survive as a suffix. Closing punctuation that merely
+        # follows the URL in prose is put back after the scrubbed form — but
+        # only when the URL had no query or fragment: `?token=....` would
+        # otherwise hand its value back as "punctuation".
         url = match.group(0)
         trailing = _TRAILING_PUNCTUATION.search(url)
         if trailing:
             url = url[: trailing.start()]
-        return display_target(url) + (trailing.group(0) if trailing else "")
+        keep = trailing.group(0) if trailing and "?" not in url and "#" not in url else ""
+        return display_target(url) + keep
 
     return _URL_IN_TEXT.sub(replace, text)
 
