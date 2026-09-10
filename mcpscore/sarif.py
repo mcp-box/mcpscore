@@ -40,11 +40,14 @@ Shape (one ``run``):
 - The file carries no credentials. Everyone who can read the repository's
   alerts can read the upload, a wider audience than a local report, so a
   URL target is written without userinfo, query, or fragment wherever it is
-  displayed (automation id, artifact, location), and rule ``details`` — which
-  can hold the audited URL verbatim — stay in the ``--json`` report. The
-  fingerprint hashes the target without userinfo but with its query, so two
-  endpoints that differ only by query stay two alerts while a token in
-  the query is never recoverable from the file.
+  displayed (automation id, artifact, location), every URL inside a rule
+  message (auth rules quote server-supplied metadata and issuer URLs) is
+  written the same way, and rule ``details`` — which can hold the audited
+  URL verbatim — stay in the ``--json`` report. The fingerprint hashes the
+  target without userinfo or fragment but with its query, so two endpoints
+  that differ only by query stay two alerts while a token in the query is
+  never recoverable from the file. Only a URL target is normalized at all:
+  a stdio command line is its own identity, verbatim.
 """
 
 from __future__ import annotations
@@ -96,6 +99,7 @@ POINT_REGION: dict[str, int] = {"startLine": 1, "startColumn": 1, "endLine": 1, 
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _PACKAGE_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")  # npm:, pypi: — two+ letters, so C:\ is a path
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:[\\/]")
+_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>,)]+")
 
 
 def build_sarif(report: dict) -> dict:
@@ -230,7 +234,7 @@ def _result_entry(
         "ruleId": res["rule_id"],
         "ruleIndex": rule_index,
         "level": level,
-        "message": {"text": res["message"]},
+        "message": {"text": scrub_urls(res["message"])},
         "locations": [
             {
                 "physicalLocation": {
@@ -254,7 +258,7 @@ def fingerprint(rule_id: str, target: str) -> str:
     keys agree with the run's automation id: a trailing slash never splits
     one server's alerts into two series.
     """
-    digest = hashlib.sha256(f"{rule_id}\n{target_identity(_without_userinfo(target))}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{rule_id}\n{target_identity(_canonical(target))}".encode()).hexdigest()
     return digest[:32]
 
 
@@ -271,12 +275,27 @@ def display_target(target: str) -> str:
     return urlunsplit((parts.scheme, _host_port(parts), parts.path, "", ""))
 
 
-def _without_userinfo(target: str) -> str:
-    """Return a URL target minus its userinfo, keeping query and fragment; anything else unchanged."""
+def scrub_urls(text: str) -> str:
+    """Return ``text`` with every URL in it reduced to its displayable form (no userinfo, query, or fragment).
+
+    Rule messages quote URLs the server supplied (a challenge's
+    ``resource_metadata``, an issuer), and those can carry credentials as
+    easily as the target can.
+    """
+    return _URL_IN_TEXT.sub(lambda m: display_target(m.group(0)), text)
+
+
+def _canonical(target: str) -> str:
+    """Return a URL target minus userinfo and fragment, keeping the query; anything else unchanged.
+
+    Userinfo is a credential, and a fragment never reaches the server, so
+    neither can make two spellings of one endpoint two alerts. The query is
+    part of the endpoint and stays.
+    """
     if not _URI_SCHEME.match(target):
         return target
     parts = urlsplit(target)
-    return urlunsplit((parts.scheme, _host_port(parts), parts.path, parts.query, parts.fragment))
+    return urlunsplit((parts.scheme, _host_port(parts), parts.path, parts.query, ""))
 
 
 def _host_port(parts: SplitResult) -> str:
@@ -288,11 +307,15 @@ def _host_port(parts: SplitResult) -> str:
 
 
 def target_identity(target: str) -> str:
-    """Return the target as GitHub should key alerts on: itself, minus trailing slashes on the path.
+    """Return the target as GitHub should key alerts on: a URL minus trailing slashes on its path, else itself.
 
-    Only the part before any query or fragment is trimmed: ``?resource=https://tenant/``
-    is a different target from ``?resource=https://tenant``.
+    Only a URL is normalized, and only the part before any query or fragment:
+    ``?resource=https://tenant/`` is a different target from
+    ``?resource=https://tenant``, and a stdio command such as
+    ``server --root /tmp/a/`` names what it names.
     """
+    if not _URI_SCHEME.match(target):
+        return target
     cut = min((i for i in (target.find("?"), target.find("#")) if i >= 0), default=len(target))
     return target[:cut].rstrip("/") + target[cut:]
 

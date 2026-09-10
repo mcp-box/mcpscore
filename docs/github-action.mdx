@@ -123,8 +123,9 @@ Check the readiness line of a run before choosing the threshold.
 
 Pass `--sarif` through `args` and upload the file. Every failed rule becomes
 an alert in the repository's Security tab, alongside the findings of your
-other scanners. The upload needs `security-events: write`; the audit itself
-needs nothing more than before.
+other scanners. The upload needs `security-events: write`, and in a private
+repository `contents: read` as well; the audit itself needs nothing more
+than before.
 
 ```yaml
 jobs:
@@ -133,6 +134,7 @@ jobs:
     permissions:
       pull-requests: write
       security-events: write   # lets upload-sarif create the alerts
+      contents: read           # upload-sarif needs it in a private repository
     steps:
       - uses: mcp-box/mcpscore-action@v1
         with:

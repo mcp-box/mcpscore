@@ -19,6 +19,7 @@ from mcpscore.sarif import (
     build_sarif,
     display_target,
     fingerprint,
+    scrub_urls,
     target_identity,
 )
 
@@ -260,6 +261,24 @@ class TestResults:
         assert run["artifacts"][0]["description"] == {"text": "https://mcp.example.com:8443/mcp"}
         assert run["artifacts"][0]["location"]["uri"] == "mcp.example.com%3A8443/mcp"
 
+    def test_urls_quoted_in_messages_are_scrubbed_too(self) -> None:
+        # Auth rules quote server-supplied URLs (a challenge's resource_metadata,
+        # an issuer); those can carry credentials as easily as the target can.
+        message = (
+            "❌ The challenge's resource_metadata 'https://user:pw@as.example/.well-known/x?sig=abc123#f' "
+            "is not on this server's origin (issuer https://idp.example:8443/realm/, target unchanged)"
+        )
+        assert scrub_urls(message) == (
+            "❌ The challenge's resource_metadata 'https://as.example/.well-known/x' "
+            "is not on this server's origin (issuer https://idp.example:8443/realm/, target unchanged)"
+        )
+        odd = {**_result("r"), "message": message}
+        sarif = build_sarif(_report(results=[odd], readiness={"results": []}))
+        text = json.dumps(sarif)
+        assert "abc123" not in text
+        assert "user:pw" not in text
+        assert "https://as.example/.well-known/x" in text
+
     def test_display_target_leaves_non_url_targets_alone(self) -> None:
         assert display_target("./server.py") == "./server.py"
         assert display_target("npm:@scope/name@1.2.3") == "npm:@scope/name@1.2.3"
@@ -297,12 +316,21 @@ class TestFingerprints:
         [
             ("https://a.example/mcp/?x=1", "https://a.example/mcp?x=1", True),
             ("https://a.example/mcp?resource=https://tenant/", "https://a.example/mcp?resource=https://tenant", False),
-            ("https://a.example/mcp#f/", "https://a.example/mcp#f", False),
+            # A fragment never reaches the server: one endpoint, one alert series.
+            ("https://a.example/mcp#a", "https://a.example/mcp#b", True),
+            ("https://a.example/mcp/#f", "https://a.example/mcp", True),
+            # A stdio command line is its own identity, slash and all.
+            ("server --root /tmp/a/", "server --root /tmp/a", False),
         ],
     )
-    def test_identity_trims_the_path_only_never_the_query_or_fragment(self, left: str, right: str, same: bool) -> None:
-        assert (target_identity(left) == target_identity(right)) is same
+    def test_identity_trims_url_paths_only(self, left: str, right: str, same: bool) -> None:
         assert (fingerprint("r", left) == fingerprint("r", right)) is same
+
+    def test_non_url_targets_keep_their_trailing_slash_everywhere(self) -> None:
+        run = _run(build_sarif(_report(target="server --root /tmp/a/")))
+        assert target_identity("server --root /tmp/a/") == "server --root /tmp/a/"
+        assert run["automationDetails"]["id"] == "mcpscore/server --root /tmp/a//"
+        assert run["artifacts"][0]["description"] == {"text": "server --root /tmp/a/"}
 
     def test_userinfo_never_enters_the_fingerprint_but_the_query_does(self) -> None:
         # user@host is the same server as host, so the alert series must not

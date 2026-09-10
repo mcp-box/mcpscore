@@ -16,9 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   derived from the target (GitHub rejects any other URI scheme), with a
   `primaryLocationLineHash` fingerprint of the rule and target — the key
   GitHub matches alerts on — so a re-upload updates the alert rather than
-  opening a new one. The file carries no credentials: a URL target is shown
-  without userinfo, query, or fragment, and rule `details` stay in the JSON
-  report. Security & Auth rules carry
+  opening a new one. The file carries no credentials: a URL target, and
+  every URL a rule message quotes, is shown without userinfo, query, or
+  fragment, and rule `details` stay in the JSON report. Security & Auth rules carry
   GitHub's `security-severity`. Passed and skipped rules are not in the file;
   `--json` remains the full report and both can be requested — `--sarif -`
   writes to stdout and is refused together with `--json` (exit 1). Works for
