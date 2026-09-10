@@ -1,0 +1,99 @@
+/* Analytics consent banner for docs.mcpscore.dev — built by consent.js.
+   Colors are mcpscore-brand/color.md: Teal / text #08715b on white, Ink
+   #0f172a, Slate #475569, Mist #f1f5f9. Mintlify toggles a `dark` class on
+   <html>; the dark palette inverts to Ink surfaces with white text. */
+.mcpscore-consent {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 50;
+  border-top: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  font-family:
+    Inter,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+}
+.mcpscore-consent__inner {
+  margin: 0 auto;
+  max-width: 48rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+@media (min-width: 640px) {
+  .mcpscore-consent__inner {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+.mcpscore-consent__copy {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: #475569;
+}
+.mcpscore-consent__link {
+  color: #08715b;
+  text-decoration: underline;
+}
+.mcpscore-consent__link:hover {
+  text-decoration: none;
+}
+.mcpscore-consent__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.5rem;
+}
+.mcpscore-consent__button {
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  background: transparent;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #475569;
+  cursor: pointer;
+}
+.mcpscore-consent__button:hover {
+  background: #f1f5f9;
+}
+.mcpscore-consent__button--primary {
+  border-color: #08715b;
+  background: #08715b;
+  color: #ffffff;
+}
+.mcpscore-consent__button--primary:hover {
+  opacity: 0.9;
+  background: #08715b;
+}
+html.dark .mcpscore-consent {
+  border-top-color: #334155;
+  background: rgba(15, 23, 42, 0.95);
+}
+html.dark .mcpscore-consent__copy,
+html.dark .mcpscore-consent__button {
+  color: #cbd5e1;
+}
+html.dark .mcpscore-consent__button {
+  border-color: #334155;
+}
+html.dark .mcpscore-consent__button:hover {
+  background: #1e293b;
+}
+html.dark .mcpscore-consent__link {
+  color: #2ebd85;
+}
+html.dark .mcpscore-consent__button--primary {
+  border-color: #0d9373;
+  background: #0d9373;
+  color: #ffffff;
+}
