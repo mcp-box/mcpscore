@@ -133,14 +133,19 @@ GitHub rejects an upload whose locations use another URI scheme: the host and
 path for a URL, `npm/name` for a package, the file itself for a local server.
 The finding is about a running server rather than a line of source, so it is
 never annotated in a pull request diff; the Security tab and the job's exit
-code carry it. The file carries no credentials: a URL target is written
-without userinfo, query, or fragment, every URL quoted in a rule message is
-written the same way, a `--stdio` command shows only its program and script,
-and rule `details`, which can hold the audited URL verbatim, stay in the JSON
-report. Nothing hidden enters a hash either: the alert identity blanks the
-values of credential-looking query parameters and drops command-line option
-values. Keep credentials in `--token` or `--header` rather than the URL all
-the same, and the alert identity stays stable across token rotations.
+code carry it.
+
+**What the file shows of the target**, and this is the whole rule: a URL's
+scheme, host, port, and path; a `--stdio` command's program name, such as
+`npx` or `python`; a local path; a package coordinate. Never a URL's userinfo,
+query, or fragment, never a command's arguments, never rule `details`, which
+can hold the audited URL verbatim. URLs quoted in rule messages are cut down
+the same way, and the alert identity is hashed from that shown form, so
+nothing the file hides enters a hash either. The file's readers are everyone
+who can read the repository's alerts, a wider audience than a local report.
+What the export cannot do is tell which part of a path or a program name is
+secret, so keep credentials in `--token`, `--header`, or `--env NAME`, never
+in a URL or on a command line.
 
 Security & Auth rules also carry GitHub's `security-severity`, so they sort
 into the tab's critical, high, medium, and low bands. Passed and skipped rules

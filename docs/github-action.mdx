@@ -142,23 +142,21 @@ jobs:
           min-score: 80
           args: --sarif=mcpscore.sarif
       - uses: github/codeql-action/upload-sarif@v4
-        if: always()             # upload the findings even when the gate failed the job
+        # A failed gate still wrote the file; a connection failure did not.
+        if: ${{ !cancelled() && hashFiles('mcpscore.sarif') != '' }}
         with:
           sarif_file: mcpscore.sarif
 ```
 
 The file is written before the score gate runs, so a failing build still
-carries its findings. Alerts are keyed on the rule and the target, and each
-target names its own analysis category (`mcpscore/<target>/<digest>/`, with
-`partial` added when the audit was one), so a re-run updates alerts in place,
-two servers audited in one workflow stay two sets, and a partial audit never
-closes a full audit's alerts. The upload step's
-`category` input has no effect here: the file already
-carries its category, and `upload-sarif` sets one only when it is missing. The
-findings are about the running server, not a line of source, so they appear in
-the Security tab rather than as annotations in the pull request diff; the
-`min-score` gate is what fails the pull request.
-Severity mapping and the file's shape are on the
+carries its findings. Alerts are keyed on the rule and the target, so a
+re-run updates them in place. `upload-sarif` files them under a category per
+workflow and job; to audit two servers in one job, give each upload step its
+own `category:` input, or the second upload replaces the first. The findings
+are about the running server, not a line of source, so they appear in the
+Security tab rather than as annotations in the pull request diff; the
+`min-score` gate is what fails the pull request. Severity mapping, the file's
+shape, and what it shows of the target are on the
 [CLI reference](/cli#sarif-for-github-code-scanning).
 
 ### Use the numbers in later steps

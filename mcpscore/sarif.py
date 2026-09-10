@@ -10,7 +10,9 @@ Shape (one ``run``):
 - ``tool.driver`` names mcpscore, its version, and the docs site; ``rules[]``
   carries one entry per rule that produced a finding, with the rule's name,
   its primary-source basis where the rule declares one, and a help link to
-  the rules reference.
+  the rules reference. GitHub requires ``shortDescription``,
+  ``fullDescription`` and ``help`` text on every rule, so every entry has
+  all three.
 - Each ``result`` maps the rule's severity to a SARIF level (critical and
   high → ``error``, medium → ``warning``, low → ``note``). A readiness rule
   that this run did not count in the main score is informative, so it is a
@@ -20,41 +22,38 @@ Shape (one ``run``):
   relative to the repository: ``upload-sarif`` hands GitHub a ``file://``
   checkout root, and an absolute URI with any other scheme (``https://``,
   ``npm:``) makes GitHub reject the whole upload. An audit has no source
-  file, so the location is a repository-relative path derived from the
+  file, so the location is a repository-relative path standing for the
   target (``mcp.example.com/mcp`` for a URL, ``npm/name`` for a package, the
-  file itself for a local server), on line 1. The exact target is kept in
-  the run's ``artifacts`` description. Nothing is annotated in a pull
+  file itself for a local server), as a zero-length point at line 1, column 1
+  (GitHub requires all four region fields). Nothing is annotated in a pull
   request diff: GitHub annotates only alerts whose lines are in the diff,
   and these findings are about a running server, not a line of source.
 - ``partialFingerprints.primaryLocationLineHash`` — the one fingerprint key
-  GitHub reads — is a hash of the rule id and the target, so a re-upload
-  for the same server updates the alert instead of opening a new one, and
-  the same rule on two servers stays two alerts. ``upload-sarif`` keeps an
-  existing value (it computes one only for locations it can read from
-  disk, which these are not). The target's identity ignores a trailing
-  slash on its path, in both the fingerprint and the run's automation id:
-  ``/mcp`` and ``/mcp/`` are one server (the engine follows that redirect
-  as same-origin), so they must be one series of alerts.
+  GitHub reads — is a hash of the rule id and the target's identity, so a
+  re-upload for the same server updates the alert instead of opening a new
+  one. ``upload-sarif`` keeps an existing value (it computes one only for
+  locations it can read from disk, which these are not).
+- No ``automationDetails``: ``upload-sarif`` assigns a category per workflow
+  and job when the file carries none, and its ``category`` input is the
+  standard way to keep two servers audited in one job apart. Fingerprints
+  only have to be distinct within a category, so the identity below can be
+  coarse.
 - Security rules carry GitHub's ``security-severity`` score so they sort
   into the Security tab's critical/high/medium/low bands.
-- The file carries no credentials. Everyone who can read the repository's
-  alerts can read the upload, a wider audience than a local report, so a
-  URL target is written without userinfo, query, or fragment wherever it is
-  displayed (automation id, artifact, location), every URL inside a rule
-  message (auth rules quote server-supplied metadata and issuer URLs) is
-  written the same way, and rule ``details`` — which can hold the audited
-  URL verbatim — stay in the ``--json`` report. The fingerprint hashes the
-  target without userinfo or fragment but with its query, so two endpoints
-  that differ only by query stay two alerts while a token in the query is
-  never recoverable from the file, because it never enters any hash
-  either (``target_identity``): credential-looking query values are
-  blanked and a stdio command contributes only its head and option names.
-- The run's category (``automationDetails.id``) is the shown target,
-  ``partial`` when the audit was one, and a short digest of the identity.
-  GitHub keeps one upload per category and commit, so two endpoints that
-  differ only by query, or a partial audit after a full one, must not share
-  a category: the partial run would otherwise mark every finding it could
-  not assess as fixed.
+
+What the file shows of the target — and this is the whole rule, there is no
+heuristic behind it: a URL's scheme, host, port and path; a stdio command's
+program name; a local path; a package coordinate. Never a URL's userinfo,
+query or fragment, never a command's arguments, never rule ``details``
+(transport and security rules record the audited URL there verbatim). URLs
+quoted in rule messages (auth rules cite server-supplied metadata and issuer
+URLs) are cut down the same way. The identity that is hashed is that shown
+form, so nothing the file hides enters a hash either. Code scanning data is
+readable by everyone who can read the repository's alerts, a wider audience
+than a local report; what this export cannot do is guess which part of a
+path or a program name is secret, and the CLI already says never to put a
+credential in a URL or on a command line — ``--token``, ``--header`` and
+``--env NAME`` exist for that.
 """
 
 from __future__ import annotations
@@ -64,7 +63,7 @@ from pathlib import PurePath
 import re
 import shlex
 from typing import TYPE_CHECKING, Any
-from urllib.parse import SplitResult, quote, unquote_plus, urlsplit, urlunsplit
+from urllib.parse import SplitResult, quote, urlsplit, urlunsplit
 
 from mcpscore.rules import create_all_rules
 
@@ -105,88 +104,14 @@ one GitHub sees."""
 POINT_REGION: dict[str, int] = {"startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1}
 """The location's region: a zero-length point at line 1, column 1 (``endColumn`` is the column after the end)."""
 
+INVALID_URL = "<invalid-url>"
+"""What a syntactically unusable URL (a non-numeric port, say) becomes in the file; it is server-supplied text."""
+
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _PACKAGE_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]+:")  # npm:, pypi: — two+ letters, so C:\ is a path
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:[\\/]")
 _URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
-_TRAILING_PUNCTUATION = re.compile(r"[\'\")\],.;:>]+$")
-INVALID_URL = "<invalid-url>"
-_CREDENTIAL_WORDS = frozenset(
-    {
-        "token",
-        "key",
-        "apikey",
-        "secret",
-        "password",
-        "passwd",
-        "pwd",
-        "pass",
-        "auth",
-        "authorization",
-        "sig",
-        "signature",
-        "cred",
-        "credential",
-        "credentials",
-        "session",
-        "sessionid",
-        "bearer",
-        "jwt",
-        "sas",
-        # An OAuth authorization code or a one-time code is a credential too.
-        "code",
-        "nonce",
-        "otp",
-    }
-)
-"""Words that make a query parameter name credential-like, matched as whole words of the decoded name."""
-_NAME_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+|[0-9]+")
-"""Splits a parameter name into words on separators, camelCase and acronym runs (apiKey, API_KEY, HTTPToken)."""
-_VALUELESS_FLAGS = frozenset(
-    {
-        "-y",
-        "--yes",
-        "-q",
-        "--quiet",
-        "-s",
-        "--silent",
-        "--no-install",
-        "--prefer-online",
-        "--prefer-offline",
-        "--rm",
-        "-i",
-        "-t",
-        "-it",
-        "-d",
-        "--detach",
-        "--isolated",
-        "--refresh",
-        "--offline",
-        "--no-cache",
-        "--frozen",
-    }
-)
-"""Launcher flags known to take no value; any other option ends the search for the selector."""
-_SCRIPT_EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".ts", ".jar", ".rb", ".sh", ".php", ".pl", ".exe")
-_LAUNCHER_POSITIONALS: dict[str, int] = {
-    # Runners whose first positional argument(s) select the server (a package,
-    # a module, an image) rather than configure it: keep that many so two
-    # servers launched through one runner stay two identities.
-    "npx": 1,
-    "bunx": 1,
-    "pnpx": 1,
-    "uvx": 1,
-    "deno": 1,
-    "yarn": 1,
-    "pnpm": 1,
-    "npm": 2,
-    "pipx": 2,
-    "uv": 2,
-    "docker": 2,
-    "podman": 2,
-}
-_PYTHON_PROGRAM = re.compile(r"^(python|py)[0-9.]*$")  # python, python3, python3.12, py
-"""What a syntactically unusable URL (a non-numeric port, say) becomes in the file; it is server-supplied text."""
+_TRAILING_PUNCTUATION = re.compile(r"['\")\],.;:>]+$")
 
 
 def build_sarif(report: dict) -> dict:
@@ -229,11 +154,10 @@ def build_sarif(report: dict) -> dict:
         )
 
     package = report.get("package")
-    partial = bool(report.get("partial", False))
     run_properties: dict[str, Any] = {
         "score": report.get("score"),
         "max_score": report.get("max_score"),
-        "partial": partial,
+        "partial": bool(report.get("partial", False)),
         "authenticated": bool(report.get("authenticated", False)),
     }
     if report.get("partial_reason"):
@@ -248,14 +172,6 @@ def build_sarif(report: dict) -> dict:
         # tell a finding closed by a transient pagination failure from a fix.
         run_properties["incomplete_listings"] = sorted(report["incomplete_listings"])
 
-    # One category per target, plus `partial` for an auth-gated audit, whose
-    # score the docs say never to compare with a full one. Nothing finer: a
-    # category that is never uploaded again strands its alerts open forever,
-    # so an incomplete listing or a changed mcpscore.toml must land in the
-    # same category and close what it no longer finds, as every scanner does.
-    scope = "/partial" if partial else ""
-    category = f"mcpscore/{display_target(target).removesuffix('/')}{scope}/{_identity_digest(target)}/"
-
     return {
         "$schema": SARIF_SCHEMA,
         "version": SARIF_VERSION,
@@ -269,14 +185,6 @@ def build_sarif(report: dict) -> dict:
                         "rules": rules,
                     }
                 },
-                # GitHub keys uploads on this id, so two servers audited in one
-                # workflow stay two sets of alerts. It wins over the upload
-                # step's `category` input: upload-sarif sets automationDetails
-                # only when the run has none. GitHub reads the text up to the
-                # last slash as the category, hence exactly one trailing slash.
-                # The digest keeps endpoints apart that display the same
-                # (query-distinct URLs, stdio commands differing in options).
-                "automationDetails": {"id": category},
                 "invocations": [{"executionSuccessful": True}],
                 "artifacts": [{"location": {"uri": _artifact_uri(shown)}, "description": {"text": shown}}],
                 "results": results,
@@ -323,15 +231,9 @@ def _result_entry(
     severity = res["severity"]
     informative = is_readiness and not counted_in_main
     level = "note" if informative else LEVEL_BY_SEVERITY.get(severity, "warning")
-    properties: dict[str, Any] = {
-        "severity": severity,
-        "severity_value": res.get("severity_value"),
-        "readiness": is_readiness,
-        "counted_in_score": not informative,
-    }
-    # No `details`: several rules record the audited URL there verbatim,
-    # credentials included, and the message plus the rule's basis already
-    # say what failed. The --json report keeps the details.
+    # No `details`: several rules record the audited URL there verbatim, and
+    # the message plus the rule's basis already say what failed. The --json
+    # report keeps the details.
     return {
         "ruleId": res["rule_id"],
         "ruleIndex": rule_index,
@@ -341,164 +243,67 @@ def _result_entry(
             {
                 "physicalLocation": {
                     "artifactLocation": {"uri": _artifact_uri(shown), "index": 0},
-                    # GitHub requires all four region fields; a zero-length
-                    # point at 1:1 is the honest region for a finding about a
-                    # running server rather than a span of source.
                     "region": POINT_REGION,
                 }
             }
         ],
         "partialFingerprints": {FINGERPRINT_KEY: fingerprint(res["rule_id"], target)},
-        "properties": properties,
+        "properties": {
+            "severity": severity,
+            "severity_value": res.get("severity_value"),
+            "readiness": is_readiness,
+            "counted_in_score": not informative,
+        },
     }
 
 
 def fingerprint(rule_id: str, target: str) -> str:
     """Stable fingerprint of a finding: the same rule on the same target hashes the same across runs.
 
-    The target enters by its identity (``target_identity``), which carries
-    no credential, so the digest is not an offline verifier for anything
-    the displayed target hides.
+    The target enters by ``target_identity``, the shown form of the target,
+    so nothing the file hides is in the digest.
     """
     digest = hashlib.sha256(f"{rule_id}\n{target_identity(target)}".encode()).hexdigest()
     return digest[:32]
 
 
-def _identity_digest(target: str) -> str:
-    """Return a short digest of the target's identity, for the run's category."""
-    return hashlib.sha256(target_identity(target).encode()).hexdigest()[:8]
-
-
 def target_identity(target: str) -> str:
-    """Return the target as alerts are keyed on: what names the server, with nothing that could be a credential.
+    """Return the target as alerts are keyed on: its shown form, minus one trailing slash on a URL path.
 
-    - A URL keeps scheme, host, port, path (minus at most one trailing slash:
-      the engine follows that redirect as same-origin, while ``/mcp//`` is a
-      different path) and its query with the values of credential-looking
-      parameters (``token``, ``key``, ``sig``, ``auth``, ...) blanked. Userinfo
-      and fragment never enter it. A URL that cannot be parsed is
-      ``INVALID_URL``.
-    - A stdio command line keeps what ``display_target`` shows plus its
-      option *names*: ``server --root /tmp/a`` and ``server --root /tmp/b``
-      are one identity, ``server --root x`` and ``server --port x`` two. An
-      option value is where a secret passed on a command line sits.
-    - A path or package coordinate is itself.
+    ``/mcp`` and ``/mcp/`` are one server (the engine follows that redirect
+    as same-origin), so they must be one series of alerts; ``/mcp//`` is a
+    different path and stays different.
+    """
+    shown = display_target(target)
+    if _URI_SCHEME.match(shown) and shown.endswith("/"):
+        return shown[:-1]
+    return shown
+
+
+def display_target(target: str) -> str:
+    """Return the target as the file shows it, and all of it that the file shows.
+
+    A URL keeps scheme, host, port and path; userinfo, query and fragment
+    never appear. A URL that cannot be parsed (server-supplied text can be
+    anything) becomes ``INVALID_URL``. A stdio command line shows its
+    program's name only (``npx``, ``python3``, ``server``): the arguments
+    are where a secret passed on a command line sits, and no parser of
+    arbitrary command lines can tell a package name from a password. A local
+    path or a package coordinate (no whitespace) is itself.
     """
     if _URI_SCHEME.match(target):
         try:
             parts = urlsplit(target)
-            path = parts.path.removesuffix("/")
-            return urlunsplit((parts.scheme, _host_port(parts), path, _blank_sensitive(parts.query), ""))
+            return urlunsplit((parts.scheme, _host_port(parts), parts.path, "", ""))
         except ValueError:
             return INVALID_URL
     if any(ch.isspace() for ch in target):
-        names = [token.split("=", 1)[0] for token in _tokens(target) if token.startswith("-")]
-        return " ".join([display_target(target), *names])
+        try:
+            program = shlex.split(target)[0]
+        except (ValueError, IndexError):
+            program = target.split()[0]
+        return PurePath(program).name
     return target
-
-
-def _blank_sensitive(query: str) -> str:
-    """Return the query with the value of every credential-looking parameter blanked, names and order kept."""
-    if not query:
-        return query
-    pairs = []
-    for pair in query.split("&"):
-        name = pair.split("=", 1)[0]
-        pairs.append(f"{name}=" if _is_credential_name(name) else pair)
-    return "&".join(pairs)
-
-
-def _is_credential_name(raw_name: str) -> bool:
-    """Whether a query parameter name, percent-decoded and split into words, contains a credential word.
-
-    ``api_key``, ``apiKey``, ``X-Auth-Token`` and ``to%6ben`` are; ``monkey``
-    and ``tenant`` are not.
-    """
-    words = {w.lower() for w in _NAME_WORDS.findall(unquote_plus(raw_name))}
-    return not words.isdisjoint(_CREDENTIAL_WORDS)
-
-
-def display_target(target: str) -> str:
-    """Return the target as the file may show it: a URL without userinfo, query, or fragment; a command's head.
-
-    A query can carry a signed credential and userinfo is one by definition,
-    and code scanning data is readable by everyone with access to the
-    repository's alerts. A stdio command line shows its program and, when
-    the next argument looks like a script, that one argument and nothing
-    more: ``python server.py --api-key secret`` shows as ``python
-    server.py``, ``node server.js /tmp/hunter2`` as ``node server.js``. A URL
-    that cannot be parsed (server-supplied text can be anything) becomes
-    ``INVALID_URL``.
-    """
-    if not _URI_SCHEME.match(target):
-        return _command_head(target)
-    try:
-        parts = urlsplit(target)
-        return urlunsplit((parts.scheme, _host_port(parts), parts.path, "", ""))
-    except ValueError:
-        return INVALID_URL
-
-
-def _command_head(target: str) -> str:
-    """Return the part of a command line that names the server, never the part that configures it.
-
-    - A known runner keeps its selector positionals: ``npx -y @scope/server``
-      → ``npx @scope/server``, ``docker run --rm image`` → ``docker run
-      image``, ``pipx run pkg`` → ``pipx run pkg``. Only flags known to be
-      valueless are skipped; any other option ends the search (``docker run
-      -e KEY=v image`` → ``docker run``), so an option's value never poses
-      as the server.
-    - ``python -m module`` keeps the module.
-    - Anything else keeps the program plus at most one script-like argument.
-    A path or coordinate (no whitespace) is itself.
-    """
-    if not any(ch.isspace() for ch in target):
-        return target
-    program, *rest = _tokens(target)
-    name = PurePath(program).name.lower().removesuffix(".exe")
-    head = [program]
-    if _PYTHON_PROGRAM.match(name) and "-m" in rest and rest.index("-m") + 1 < len(rest):
-        head += ["-m", rest[rest.index("-m") + 1]]
-    elif name in _LAUNCHER_POSITIONALS:
-        head += _selectors(rest, _LAUNCHER_POSITIONALS[name])
-    elif rest and _looks_like_file(rest[0]):
-        head.append(rest[0])
-    return shlex.join(head)
-
-
-def _selectors(arguments: list[str], count: int) -> list[str]:
-    """Return up to ``count`` leading positional arguments, stopping at the first option that may take a value.
-
-    Option arity is unknown in general (``npx --registry <url> pkg``), so
-    only flags known to be valueless are skipped; an unknown option ends the
-    search, and the display falls back to the program alone rather than
-    risk showing an option's value as the server.
-    """
-    selectors: list[str] = []
-    for token in arguments:
-        if token in _VALUELESS_FLAGS or "=" in token:
-            continue
-        if token.startswith("-"):
-            break
-        selectors.append(token)
-        if len(selectors) == count:
-            break
-    return selectors
-
-
-def _tokens(command_line: str) -> list[str]:
-    """Split a stdio command line the way ``StdioCommand.display`` joined it (shlex); whitespace as a fallback."""
-    try:
-        return shlex.split(command_line) or [command_line]
-    except ValueError:
-        return command_line.split()
-
-
-def _looks_like_file(token: str) -> bool:
-    """Whether a command-line token names a file: has a path separator or a known script extension."""
-    if token.startswith("-"):
-        return False
-    return "/" in token or "\\" in token or token.lower().endswith(_SCRIPT_EXTENSIONS)
 
 
 def scrub_urls(text: str) -> str:
@@ -530,27 +335,27 @@ def _host_port(parts: SplitResult) -> str:
     return f"{host}:{parts.port}" if parts.port is not None else host
 
 
-def _artifact_uri(target: str) -> str:
-    """Return a repository-relative path standing for the (displayable) target, the only location GitHub accepts.
+def _artifact_uri(shown: str) -> str:
+    """Return a repository-relative path standing for the shown target, the only location GitHub accepts.
 
     A URL keeps its host and path (``mcp.example.com/mcp``), a package
     coordinate becomes ``registry/name``, a local path loses its ``./``,
-    leading slashes, or drive letter, and a stdio command line is used as is.
+    leading slashes, drive letter and any ``..`` segment (the path must not
+    resolve outside the checkout), and a program name is used as is.
     Everything that is not a path character is percent-encoded — including
     ``:``, so the result can never parse as a scheme.
     """
-    if _URI_SCHEME.match(target):
-        parts = urlsplit(target)
+    if _URI_SCHEME.match(shown):
+        parts = urlsplit(shown)
         relative = parts.netloc + parts.path
-    elif _PACKAGE_SCHEME.match(target):
-        relative = target.replace(":", "/", 1)
-    elif _DRIVE_LETTER.match(target):
-        relative = target[3:]
+    elif _PACKAGE_SCHEME.match(shown):
+        relative = shown.replace(":", "/", 1)
+    elif _DRIVE_LETTER.match(shown):
+        relative = shown[3:]
     else:
-        relative = target
-    relative = relative.replace("\\", "/")
-    relative = relative.removeprefix("./")
-    return quote(relative.lstrip("/"), safe="/@+.-_~=")
+        relative = shown
+    segments = [seg for seg in relative.replace("\\", "/").split("/") if seg not in ("", ".", "..")]
+    return quote("/".join(segments), safe="/@+.-_~=")
 
 
 def _pascal_case(rule_id: str) -> str:

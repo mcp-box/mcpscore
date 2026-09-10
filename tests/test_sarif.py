@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import re
 from typing import Any
 
 from jsonschema import Draft7Validator
@@ -129,44 +128,11 @@ class TestEnvelope:
             "transport": "streamable-http",
         }
 
-    @pytest.mark.parametrize("target", ["https://mcp.example.com/mcp", "https://mcp.example.com/mcp/"])
-    def test_automation_id_keys_on_the_target_with_one_trailing_slash(self, target: str) -> None:
-        # GitHub reads the id up to its last slash as the category; a target
-        # that already ends in a slash must not produce a `//` suffix, and
-        # both spellings are one category. The digest is of the full identity.
-        run = _run(build_sarif(_report(target=target)))
-        assert re.fullmatch(r"mcpscore/https://mcp\.example\.com/mcp/[0-9a-f]{8}/", run["automationDetails"]["id"])
-        assert run["automationDetails"]["id"] == _run(build_sarif(_report()))["automationDetails"]["id"]
-
-    def test_category_separates_what_displays_the_same(self) -> None:
-        # GitHub keeps one upload per category and commit. Two endpoints that
-        # differ only by query display the same, so the digest must keep them
-        # apart; the same for stdio commands that differ in their options.
-        def category(target: str) -> str:
-            return _run(build_sarif(_report(target=target)))["automationDetails"]["id"]
-
-        assert category("https://a.example/mcp?tenant=1") != category("https://a.example/mcp?tenant=2")
-        assert category("server --root x") != category("server --port x")
-        assert category("https://a.example/mcp#x") == category("https://a.example/mcp")
-        # Credential-looking query values are blanked before hashing, so the
-        # digest is no offline verifier for a token the display hides.
-        assert category("https://a.example/mcp?token=a") == category("https://a.example/mcp?token=b")
-
-    def test_category_separates_audit_scopes(self) -> None:
-        # A partial audit after a full one must not mark every finding it could
-        # not assess as fixed, so it uploads into its own category.
-        full = _run(build_sarif(_report()))["automationDetails"]["id"]
-        partial = _run(build_sarif(_report(partial=True, partial_reason="auth-gated")))["automationDetails"]["id"]
-        assert "/partial/" in partial
-        assert full != partial
-        # Nothing finer than that: a category never uploaded again strands its
-        # alerts open forever, so an incomplete listing or a changed config
-        # lands in the same category and closes what it no longer finds.
-        incomplete = _run(build_sarif(_report(incomplete_listings=["tools"])))["automationDetails"]["id"]
-        configured = _run(build_sarif(_report(config={"source": "mcpscore.toml", "sha256": "x"})))["automationDetails"][
-            "id"
-        ]
-        assert incomplete == configured == full
+    def test_no_automation_details(self) -> None:
+        # upload-sarif assigns a category per workflow and job when the file
+        # carries none, and its `category` input keeps two servers in one job
+        # apart; a category derived from the target would only fight that.
+        assert "automationDetails" not in _run(build_sarif(_report()))
 
     def test_validates_against_the_sarif_schema(self, validator: Draft7Validator) -> None:
         errors = list(validator.iter_errors(build_sarif(_report())))
@@ -257,15 +223,16 @@ class TestResults:
         [
             ("https://mcp.example.com/mcp?x=1", "mcp.example.com/mcp"),
             ("https://user:secret@mcp.example.com/mcp?sig=abc", "mcp.example.com/mcp"),
+            ("https://mcp.example.com:8443/mcp/", "mcp.example.com%3A8443/mcp"),
             ("https://[::1]:8000/mcp", "%5B%3A%3A1%5D%3A8000/mcp"),
-            ("https://mcp.example.com:8443/mcp/", "mcp.example.com%3A8443/mcp/"),
             ("http://localhost:8000/mcp#frag", "localhost%3A8000/mcp"),
             ("/srv/server.py", "srv/server.py"),
             ("./server.py", "server.py"),
+            ("../server.py", "server.py"),
+            ("../../etc/../server.py", "etc/server.py"),
             ("C:\\srv\\server.py", "srv/server.py"),
-            # A stdio command line is shown up to its first option (see display_target).
             ("java -jar server.jar --port 9", "java"),
-            ("python server.py --port 9", "python%20server.py"),
+            ("python server.py --port 9", "python"),
             ("npm:@scope/name@1.2.3", "npm/@scope/name@1.2.3"),
             ("pypi:name==1.2.3", "pypi/name==1.2.3"),
         ],
@@ -275,109 +242,99 @@ class TestResults:
     ) -> None:
         # upload-sarif hands GitHub a file:// checkout root, and GitHub rejects
         # an upload whose absolute location URIs use another scheme — so no
-        # location may start with a slash or parse as `scheme:`.
+        # location may start with a slash, parse as `scheme:`, or leave the checkout.
         sarif = build_sarif(_report(target=target))
         location = _run(sarif)["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
         assert location["uri"] == uri
         assert not uri.startswith("/")
         assert ":" not in uri.split("/")[0]
+        assert ".." not in uri.split("/")
         assert list(validator.iter_errors(sarif)) == []
+
+    def test_rule_index_points_at_the_rule_entry(self) -> None:
+        run = _run(build_sarif(_report()))
+        for result in run["results"]:
+            assert run["tool"]["driver"]["rules"][result["ruleIndex"]]["id"] == result["ruleId"]
+
+    def test_a_rule_reported_twice_has_one_entry_and_two_results(self, validator: Draft7Validator) -> None:
+        # SARIF rule ids are unique within the catalog; two findings for one
+        # rule (a report that repeats a rule) both point at the same entry.
+        sarif = build_sarif(_report(results=[_result("r", "LOW"), _result("r", "LOW")], readiness={"results": []}))
+        run = _run(sarif)
+        assert [rule["id"] for rule in run["tool"]["driver"]["rules"]] == ["r"]
+        assert [result["ruleIndex"] for result in run["results"]] == [0, 0]
+        assert list(validator.iter_errors(sarif)) == []
+
+    def test_package_and_partial_reason_strings_are_scrubbed(self, validator: Draft7Validator) -> None:
+        sarif = build_sarif(
+            _report(
+                target="npm:example",
+                transport=None,
+                partial=True,
+                partial_reason="gated at https://user:pw@a.example/x?sig=1",
+                package={"registry": "npm", "repository_url": "https://token@github.com/o/r?x=1", "withdrawn": False},
+                results=[_result("package_repository_declared", "MEDIUM")],
+                readiness={"results": []},
+            )
+        )
+        run = _run(sarif)
+        assert run["properties"]["partial_reason"] == "gated at https://a.example/x"
+        assert run["properties"]["package"] == {
+            "registry": "npm",
+            "repository_url": "https://github.com/o/r",
+            "withdrawn": False,
+        }
+        assert "transport" not in run["properties"]
+        assert run["tool"]["driver"]["rules"][0]["helpUri"] == f"{RULES_URL}#packaging-rules"
+        assert list(validator.iter_errors(sarif)) == []
+
+    def test_incomplete_listings_are_declared_on_the_run(self) -> None:
+        props = _run(build_sarif(_report(incomplete_listings=["tools", "prompts"])))["properties"]
+        assert props["incomplete_listings"] == ["prompts", "tools"]
+        assert "incomplete_listings" not in _run(build_sarif(_report()))["properties"]
+
+
+class TestWhatTheFileShows:
+    """The whole rule: a URL's scheme/host/port/path, a command's program name, a path, a coordinate."""
+
+    @pytest.mark.parametrize(
+        ("target", "shown"),
+        [
+            ("https://mcp.example.com/mcp", "https://mcp.example.com/mcp"),
+            ("https://user:secret@mcp.example.com:8443/mcp?sig=abc123#frag", "https://mcp.example.com:8443/mcp"),
+            ("https://issuer.example:not-a-port/realm", "<invalid-url>"),
+            ("./server.py", "./server.py"),
+            ("npm:@scope/name@1.2.3", "npm:@scope/name@1.2.3"),
+            ("python server.py --api-key hunter2", "python"),
+            ("/usr/bin/python3.12 -m my_server --token t", "python3.12"),
+            ("npx -y @modelcontextprotocol/server-everything", "npx"),
+            ("node server.js hunter2", "node"),
+            ("server -khunter2", "server"),
+            ("'/opt/my server/bin/server' --root /tmp/a", "server"),
+        ],
+    )
+    def test_display_target(self, target: str, shown: str) -> None:
+        assert display_target(target) == shown
 
     def test_credentials_in_the_target_never_reach_the_file(self) -> None:
         target = "https://user:secret@mcp.example.com:8443/mcp?sig=abc123#frag"
-        sarif = build_sarif(_report(target=target))
-        text = json.dumps(sarif)
+        text = json.dumps(build_sarif(_report(target=target)))
         assert "secret" not in text
         assert "abc123" not in text
         assert "user:" not in text
         assert "user@" not in text
-        run = _run(sarif)
-        assert run["automationDetails"]["id"].startswith("mcpscore/https://mcp.example.com:8443/mcp/")
-        assert run["artifacts"][0]["description"] == {"text": "https://mcp.example.com:8443/mcp"}
-        assert run["artifacts"][0]["location"]["uri"] == "mcp.example.com%3A8443/mcp"
 
-    def test_urls_quoted_in_messages_are_scrubbed_too(self) -> None:
-        # Auth rules quote server-supplied URLs (a challenge's resource_metadata,
-        # an issuer); those can carry credentials as easily as the target can.
-        message = (
-            "❌ The challenge's resource_metadata 'https://user:pw@as.example/.well-known/x?sig=abc123#f' "
-            "is not on this server's origin (issuer https://idp.example:8443/realm/, target unchanged)"
-        )
-        assert scrub_urls(message) == (
-            "❌ The challenge's resource_metadata 'https://as.example/.well-known/x' "
-            "is not on this server's origin (issuer https://idp.example:8443/realm/, target unchanged)"
-        )
-        odd = {**_result("r"), "message": message}
-        sarif = build_sarif(_report(results=[odd], readiness={"results": []}))
-        text = json.dumps(sarif)
-        assert "abc123" not in text
-        assert "user:pw" not in text
-        assert "https://as.example/.well-known/x" in text
-
-    def test_display_target_leaves_paths_and_coordinates_alone(self) -> None:
-        assert display_target("./server.py") == "./server.py"
-        assert display_target("npm:@scope/name@1.2.3") == "npm:@scope/name@1.2.3"
-        assert display_target("https://mcp.example.com/mcp") == "https://mcp.example.com/mcp"
-
-    def test_a_stdio_command_is_shown_up_to_its_first_option(self) -> None:
-        # --stdio takes the server's own flags, and a flag value is where a
-        # secret passed on a command line sits; the file shows the program only.
-        assert display_target("server --api-key secret --root /tmp/a") == "server"
-        assert display_target("python server.py --port 9") == "python server.py"
-        assert display_target("-x") == "-x"
-        sarif = build_sarif(_report(target="python server.py --api-key hunter2"))
-        text = json.dumps(sarif)
+    def test_command_arguments_never_reach_the_file(self) -> None:
+        text = json.dumps(build_sarif(_report(target="npx --token hunter2 @scope/server --root /tmp/hunter2")))
         assert "hunter2" not in text
-        run = _run(sarif)
-        assert run["artifacts"][0] == {
-            "location": {"uri": "python%20server.py"},
-            "description": {"text": "python server.py"},
-        }
-        assert run["automationDetails"]["id"].startswith("mcpscore/python server.py/")
-        # Nothing after the script is known to be safe, file-looking or not.
-        assert display_target("node server.js hunter2 --port 9") == "node server.js"
-        assert display_target("node server.js /tmp/hunter2") == "node server.js"
-        assert "hunter2" not in json.dumps(build_sarif(_report(target="node server.js /tmp/hunter2")))
-        assert display_target("./bin/server extra") == "./bin/server"
-        # The command line is shlex-joined by the CLI; a quoted script survives whole.
-        assert display_target("python 'my server.py' --port 9") == "python 'my server.py'"
-        assert target_identity("python 'my server.py' --port 9") == "python 'my server.py' --port"
-
-    @pytest.mark.parametrize(
-        ("command", "shown"),
-        [
-            # A runner's selector names the server; two servers through one runner stay two identities.
-            ("npx -y @modelcontextprotocol/server-everything", "npx @modelcontextprotocol/server-everything"),
-            ("npx -y @other/server --api-key k", "npx @other/server"),
-            ("uvx mcp-server-time --local-timezone Europe/Berlin", "uvx mcp-server-time"),
-            # An option of unknown arity ends the search: its value must not pose as the server.
-            ("uvx --from pkg cmd", "uvx"),
-            ("npx --registry https://user:pw@registry.example @scope/server", "npx"),
-            ("npx --token hunter2 @scope/server", "npx"),
-            ("npx -y --quiet @scope/server", "npx @scope/server"),
-            ("pipx run pkg", "pipx run pkg"),
-            ("uv run server.py --port 9", "uv run server.py"),
-            ("docker run --rm ghcr.io/o/img:1", "docker run ghcr.io/o/img:1"),
-            ("docker run -e API_KEY=hunter2 --rm ghcr.io/o/img:1", "docker run"),
-            ("docker run -e API_KEY hunter2-img", "docker run"),
-            ("python -m my_server --token t", "python -m my_server"),
-            ("/usr/bin/python3.12 -m my_server", "/usr/bin/python3.12 -m my_server"),
-            ("node server.js /tmp/hunter2", "node server.js"),
-        ],
-    )
-    def test_a_runner_keeps_its_server_selector(self, command: str, shown: str) -> None:
-        assert display_target(command) == shown
-        assert "hunter2" not in shown
-        assert fingerprint("r", "npx -y @a/server") != fingerprint("r", "npx -y @b/server")
+        assert "@scope/server" not in text
+        run = _run(build_sarif(_report(target="npx --token hunter2 @scope/server")))
+        assert run["artifacts"][0] == {"location": {"uri": "npx"}, "description": {"text": "npx"}}
 
     def test_a_url_that_cannot_be_parsed_never_raises(self) -> None:
         # Auth metadata is server-supplied text; a port that is not a number
         # makes urlsplit raise, and the file must still be written.
         bad = "https://issuer.example:not-a-port/realm"
-        assert display_target(bad) == "<invalid-url>"
-        assert scrub_urls(f"❌ Authorization server '{bad}' publishes no metadata") == (
-            "❌ Authorization server '<invalid-url>' publishes no metadata"
-        )
         odd = {**_result("r"), "message": f"issuer {bad}"}
         sarif = build_sarif(_report(target=bad, results=[odd], readiness={"results": []}))
         assert _run(sarif)["results"][0]["message"]["text"] == "issuer <invalid-url>"
@@ -385,6 +342,16 @@ class TestResults:
     @pytest.mark.parametrize(
         ("text", "expected"),
         [
+            (
+                (
+                    "❌ The challenge's resource_metadata 'https://user:pw@as.example/.well-known/x?sig=abc123#f' "
+                    "is not on this server's origin (issuer https://idp.example:8443/realm/, target unchanged)"
+                ),
+                (
+                    "❌ The challenge's resource_metadata 'https://as.example/.well-known/x' "
+                    "is not on this server's origin (issuer https://idp.example:8443/realm/, target unchanged)"
+                ),
+            ),
             # A credential with a comma or quote must not survive as a suffix.
             (
                 "metadata 'https://as.example/x?token=prefix,secret' rejected",
@@ -393,120 +360,67 @@ class TestResults:
             ("see https://as.example/x?sig=a'b), then", "see https://as.example/x), then"),
             # Closing punctuation after a plain URL stays where it was.
             ("(see https://as.example/path).", "(see https://as.example/path)."),
-            ("issuer https://idp.example/realm/, target", "issuer https://idp.example/realm/, target"),
+            ("no url here", "no url here"),
         ],
     )
-    def test_scrub_matches_the_whole_url_and_keeps_trailing_prose_punctuation(self, text: str, expected: str) -> None:
+    def test_urls_quoted_in_messages_are_scrubbed(self, text: str, expected: str) -> None:
         assert scrub_urls(text) == expected
 
-    def test_package_and_partial_reason_strings_are_scrubbed(self) -> None:
-        sarif = build_sarif(
-            _report(
-                target="npm:example",
-                partial=True,
-                partial_reason="gated at https://user:pw@a.example/x?sig=1",
-                package={"registry": "npm", "repository_url": "https://token@github.com/o/r?x=1", "withdrawn": False},
-            )
-        )
-        props = _run(sarif)["properties"]
-        assert props["partial_reason"] == "gated at https://a.example/x"
-        assert props["package"] == {"registry": "npm", "repository_url": "https://github.com/o/r", "withdrawn": False}
-
-    def test_incomplete_listings_are_declared_on_the_run(self) -> None:
-        props = _run(build_sarif(_report(incomplete_listings=["tools", "prompts"])))["properties"]
-        assert props["incomplete_listings"] == ["prompts", "tools"]
-        assert "incomplete_listings" not in _run(build_sarif(_report()))["properties"]
-
-    def test_rule_index_points_at_the_rule_entry(self) -> None:
-        run = _run(build_sarif(_report()))
-        for result in run["results"]:
-            assert run["tool"]["driver"]["rules"][result["ruleIndex"]]["id"] == result["ruleId"]
+    def test_scrubbed_message_lands_in_the_result(self) -> None:
+        message = "❌ resource_metadata 'https://user:pw@as.example/x?sig=abc123' is not on this origin"
+        odd = {**_result("r"), "message": message}
+        text = json.dumps(build_sarif(_report(results=[odd], readiness={"results": []})))
+        assert "abc123" not in text
+        assert "user:pw" not in text
+        assert "https://as.example/x" in text
 
 
 class TestFingerprints:
-    def test_same_rule_and_target_hash_the_same_across_runs(self) -> None:
+    def test_sits_under_the_key_github_reads(self) -> None:
+        # GitHub matches alerts on partialFingerprints.primaryLocationLineHash
+        # and ignores every other key; upload-sarif keeps a present value.
+        assert FINGERPRINT_KEY == "primaryLocationLineHash"
         first = _run(build_sarif(_report()))["results"][0]["partialFingerprints"]
         second = _run(build_sarif(_report(generated_at="2026-09-10T00:00:00+00:00", score=1)))["results"][0][
             "partialFingerprints"
         ]
         assert first == second == {FINGERPRINT_KEY: fingerprint("auth_metadata_https", "https://mcp.example.com/mcp")}
 
-    def test_fingerprint_sits_under_the_key_github_reads(self) -> None:
-        # GitHub matches alerts on partialFingerprints.primaryLocationLineHash
-        # and ignores every other key; upload-sarif keeps a present value.
-        assert FINGERPRINT_KEY == "primaryLocationLineHash"
-
-    def test_trailing_slash_does_not_change_the_fingerprint(self) -> None:
-        # Same identity as the automation id: /mcp and /mcp/ are one server,
-        # so a re-upload under either spelling updates the same alerts.
-        assert fingerprint("r", "https://a.example/mcp") == fingerprint("r", "https://a.example/mcp/")
-        with_slash = _run(build_sarif(_report(target="https://mcp.example.com/mcp/")))["results"][0]
-        without = _run(build_sarif(_report(target="https://mcp.example.com/mcp")))["results"][0]
-        assert with_slash["partialFingerprints"] == without["partialFingerprints"]
-
-    @pytest.mark.parametrize(
-        ("left", "right", "same"),
-        [
-            ("https://a.example/mcp/?x=1", "https://a.example/mcp?x=1", True),
-            ("https://a.example/mcp?resource=https://tenant/", "https://a.example/mcp?resource=https://tenant", False),
-            # A fragment never reaches the server: one endpoint, one alert series.
-            ("https://a.example/mcp#a", "https://a.example/mcp#b", True),
-            ("https://a.example/mcp/#f", "https://a.example/mcp", True),
-            # At most one trailing slash: servers can route /mcp// differently.
-            ("https://a.example/mcp//", "https://a.example/mcp", False),
-            ("https://a.example/mcp//", "https://a.example/mcp/", False),
-        ],
-    )
-    def test_identity_trims_one_trailing_slash_of_a_url_path(self, left: str, right: str, same: bool) -> None:
-        assert (fingerprint("r", left) == fingerprint("r", right)) is same
-
-    def test_a_stdio_command_identity_is_its_head_and_option_names(self) -> None:
-        # An option value is where a secret passed on a command line sits, so
-        # values never enter the identity; option names still tell configs apart.
-        assert target_identity("server --root /tmp/a/") == "server --root"
-        assert target_identity("server --root=/tmp/b") == "server --root"
-        assert fingerprint("r", "server --root /tmp/a") == fingerprint("r", "server --root /tmp/b")
-        assert fingerprint("r", "server --root x") != fingerprint("r", "server --port x")
-        assert fingerprint("r", "node server.js hunter2") == fingerprint("r", "node server.js hunter3")
-
-    def test_userinfo_never_enters_the_fingerprint_but_the_query_does(self) -> None:
-        # user@host is the same server as host, so the alert series must not
-        # split on it; a different query is a different endpoint. A token in
-        # the query only ever enters a sha256, never the file.
-        assert fingerprint("r", "https://user:secret@a.example/mcp") == fingerprint("r", "https://a.example/mcp")
-        assert fingerprint("r", "https://a.example/mcp?tenant=1") != fingerprint("r", "https://a.example/mcp?tenant=2")
-        # A credential-looking parameter keeps its name and loses its value.
-        assert target_identity("https://a.example/mcp?api_key=K&tenant=1") == "https://a.example/mcp?api_key=&tenant=1"
-        # Names are matched as decoded whole words: an encoded name cannot slip
-        # its value into the hash, and `monkey` is not `key`.
-        assert target_identity("https://a.example/mcp?to%6ben=K") == "https://a.example/mcp?to%6ben="
-        assert (
-            target_identity("https://a.example/mcp?apiKey=K&X-Auth-Token=T")
-            == "https://a.example/mcp?apiKey=&X-Auth-Token="
-        )
-        # Uppercase spellings and acronym runs are words too, not letters.
-        assert target_identity("https://a.example/mcp?TOKEN=x&API_KEY=y&HTTPToken=z&ID=1") == (
-            "https://a.example/mcp?TOKEN=&API_KEY=&HTTPToken=&ID=1"
-        )
-        assert target_identity("https://a.example/mcp?monkey=1") == "https://a.example/mcp?monkey=1"
-        # An OAuth authorization code is a credential.
-        assert target_identity("https://a.example/mcp?code=abc&state=s") == "https://a.example/mcp?code=&state=s"
-        assert fingerprint("r", "https://a.example/mcp?monkey=1") != fingerprint("r", "https://a.example/mcp?monkey=2")
-        assert fingerprint("r", "https://a.example/mcp?sig=a") == fingerprint("r", "https://a.example/mcp?sig=b")
-        assert fingerprint("r", "https://a.example/mcp?sig=a") != fingerprint("r", "https://a.example/mcp?tenant=a")
-
-    def test_target_and_rule_both_change_the_fingerprint(self) -> None:
-        base = fingerprint("auth_metadata_https", "https://a.example/mcp")
-        assert fingerprint("auth_metadata_https", "https://b.example/mcp") != base
-        assert fingerprint("tools_description_present_in_all", "https://a.example/mcp") != base
-
-    def test_fingerprint_scheme_is_pinned(self) -> None:
+    def test_scheme_is_pinned(self) -> None:
         # Alert de-duplication on GitHub depends on this value never changing
-        # for a given rule and target; a new scheme needs a new FINGERPRINT_KEY.
+        # for a given rule and target.
         value = fingerprint("r", "t")
         assert len(value) == 32
         int(value, 16)
         assert value == "8e43bffb54fa994ba087a08caabc039f"
+
+    @pytest.mark.parametrize(
+        ("left", "right", "same"),
+        [
+            # One trailing slash is the same server (the engine follows that redirect); two is another path.
+            ("https://a.example/mcp/", "https://a.example/mcp", True),
+            ("https://a.example/mcp//", "https://a.example/mcp", False),
+            ("https://a.example/mcp//", "https://a.example/mcp/", False),
+            # Userinfo, query and fragment never enter the identity.
+            ("https://user:secret@a.example/mcp", "https://a.example/mcp", True),
+            ("https://a.example/mcp?token=a", "https://a.example/mcp?token=b", True),
+            ("https://a.example/mcp#a", "https://a.example/mcp#b", True),
+            # A command's arguments never enter it either; its program does.
+            ("npx -y @a/server", "npx -y @b/server", True),
+            ("npx -y @a/server", "uvx a-server", False),
+            ("server --root /tmp/a", "server --root /tmp/b", True),
+            # Different servers stay different.
+            ("https://a.example/mcp", "https://b.example/mcp", False),
+            ("https://a.example/mcp", "https://a.example/other", False),
+            ("https://a.example:8443/mcp", "https://a.example/mcp", False),
+        ],
+    )
+    def test_identity(self, left: str, right: str, same: bool) -> None:
+        assert (target_identity(left) == target_identity(right)) is same
+        assert (fingerprint("r", left) == fingerprint("r", right)) is same
+
+    def test_rule_changes_the_fingerprint(self) -> None:
+        assert fingerprint("a", "https://a.example/mcp") != fingerprint("b", "https://a.example/mcp")
 
 
 class TestRuleCatalog:
@@ -528,6 +442,17 @@ class TestRuleCatalog:
         assert rule["helpUri"] == f"{RULES_URL}#security"
         assert rule["defaultConfiguration"] == {"level": "error"}
 
+    def test_every_rule_carries_the_descriptions_github_requires(self) -> None:
+        # shortDescription.text, fullDescription.text and help.text are
+        # required by GitHub even though the SARIF schema makes them optional;
+        # a rule without a basis (readiness rules cite SEPs instead) still has all three.
+        rules = {r["id"]: r for r in _run(build_sarif(_report()))["tool"]["driver"]["rules"]}
+        for rule in rules.values():
+            assert rule["shortDescription"]["text"]
+            assert rule["fullDescription"]["text"]
+            assert rule["help"]["text"]
+        assert rules["readiness_2026_server_discover"]["fullDescription"] == {"text": "Readiness 2026 Server Discover"}
+
     def test_security_rules_carry_github_security_severity(self) -> None:
         rules = {r["id"]: r for r in _run(build_sarif(_report()))["tool"]["driver"]["rules"]}
         security = rules["auth_metadata_https"]["properties"]
@@ -546,45 +471,9 @@ class TestRuleCatalog:
         rules = {r["id"]: r for r in _run(build_sarif(_report()))["tool"]["driver"]["rules"]}
         assert "Basis:" in rules["protocol_version_latest"]["fullDescription"]["text"]
 
-    def test_a_rule_reported_twice_has_one_entry_and_two_results(self, validator: Draft7Validator) -> None:
-        # SARIF rule ids are unique within the catalog; two findings for one
-        # rule (a report that repeats a rule) both point at the same entry.
-        sarif = build_sarif(_report(results=[_result("r", "LOW"), _result("r", "LOW")], readiness={"results": []}))
-        run = _run(sarif)
-        assert [rule["id"] for rule in run["tool"]["driver"]["rules"]] == ["r"]
-        assert [result["ruleIndex"] for result in run["results"]] == [0, 0]
-        assert list(validator.iter_errors(sarif)) == []
-
     def test_unregistered_rule_still_gets_an_entry(self) -> None:
         sarif = build_sarif(_report(results=[_result("custom_rule_from_elsewhere", "LOW")], readiness={"results": []}))
         (rule,) = _run(sarif)["tool"]["driver"]["rules"]
         assert rule["id"] == "custom_rule_from_elsewhere"
         assert rule["properties"]["category"] == "default"
         assert rule["fullDescription"] == {"text": "Custom Rule From Elsewhere"}
-
-    def test_every_rule_carries_the_descriptions_github_requires(self) -> None:
-        # shortDescription.text, fullDescription.text and help.text are
-        # required by GitHub even though the SARIF schema makes them optional;
-        # a rule without a basis (readiness rules cite SEPs instead) still has all three.
-        for rule in _run(build_sarif(_report()))["tool"]["driver"]["rules"]:
-            assert rule["shortDescription"]["text"]
-            assert rule["fullDescription"]["text"]
-            assert rule["help"]["text"]
-        rules = {r["id"]: r for r in _run(build_sarif(_report()))["tool"]["driver"]["rules"]}
-        assert rules["readiness_2026_server_discover"]["fullDescription"] == {"text": "Readiness 2026 Server Discover"}
-
-    def test_package_audit_uses_the_packaging_anchor_and_reports_the_package(self, validator: Draft7Validator) -> None:
-        sarif = build_sarif(
-            _report(
-                target="npm:example",
-                transport=None,
-                package={"registry": "npm", "outcome": "ok"},
-                results=[_result("package_repository_declared", "MEDIUM")],
-                readiness={"results": []},
-            )
-        )
-        run = _run(sarif)
-        assert run["properties"]["package"] == {"registry": "npm", "outcome": "ok"}
-        assert "transport" not in run["properties"]
-        assert run["tool"]["driver"]["rules"][0]["helpUri"] == f"{RULES_URL}#packaging-rules"
-        assert list(validator.iter_errors(sarif)) == []
