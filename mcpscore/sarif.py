@@ -46,16 +46,15 @@ Shape (one ``run``):
   URL verbatim — stay in the ``--json`` report. The fingerprint hashes the
   target without userinfo or fragment but with its query, so two endpoints
   that differ only by query stay two alerts while a token in the query is
-  never recoverable from the file. Only a URL target is normalized at all:
-  a stdio command line is its own identity, verbatim — but it is *shown*
-  only up to its first option, since option values are where a secret
-  passed on a command line sits.
-- The run's category (``automationDetails.id``) is the shown target, the
-  audit scope (``partial`` or ``incomplete`` when the audit was one), and
-  a short digest of the full identity. GitHub keeps one upload per
-  category and commit, so two endpoints that differ only by query, or a
-  partial audit after a full one, must not share a category: the partial
-  run would otherwise mark every finding it could not assess as fixed.
+  never recoverable from the file, because it never enters any hash
+  either (``target_identity``): credential-looking query values are
+  blanked and a stdio command contributes only its head and option names.
+- The run's category (``automationDetails.id``) is the shown target,
+  ``partial`` when the audit was one, and a short digest of the identity.
+  GitHub keeps one upload per category and commit, so two endpoints that
+  differ only by query, or a partial audit after a full one, must not share
+  a category: the partial run would otherwise mark every finding it could
+  not assess as fixed.
 """
 
 from __future__ import annotations
@@ -110,6 +109,8 @@ _DRIVE_LETTER = re.compile(r"^[A-Za-z]:[\\/]")
 _URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
 _TRAILING_PUNCTUATION = re.compile(r"[\'\")\],.;:>]+$")
 INVALID_URL = "<invalid-url>"
+_SENSITIVE_PARAM = re.compile(r"token|key|secret|pass|auth|sig|cred|session", re.IGNORECASE)
+_SCRIPT_EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".ts", ".jar", ".rb", ".sh", ".php", ".pl", ".exe")
 """What a syntactically unusable URL (a non-numeric port, say) becomes in the file; it is server-supplied text."""
 
 
@@ -168,8 +169,13 @@ def build_sarif(report: dict) -> dict:
     if report.get("transport") is not None:
         run_properties["transport"] = report["transport"]
 
-    scope = "/partial" if partial else ("/incomplete" if report.get("incomplete_listings") else "")
-    category = f"mcpscore/{target_identity(shown)}{scope}/{_identity_digest(target)}/"
+    # One category per target, plus `partial` for an auth-gated audit, whose
+    # score the docs say never to compare with a full one. Nothing finer: a
+    # category that is never uploaded again strands its alerts open forever,
+    # so an incomplete listing or a changed mcpscore.toml must land in the
+    # same category and close what it no longer finds, as every scanner does.
+    scope = "/partial" if partial else ""
+    category = f"mcpscore/{display_target(target).removesuffix('/')}{scope}/{_identity_digest(target)}/"
 
     return {
         "$schema": SARIF_SCHEMA,
@@ -271,27 +277,67 @@ def _result_entry(
 def fingerprint(rule_id: str, target: str) -> str:
     """Stable fingerprint of a finding: the same rule on the same target hashes the same across runs.
 
-    The target enters by its identity (``target_identity``), so the alert
-    keys agree with the run's automation id: a trailing slash never splits
-    one server's alerts into two series.
+    The target enters by its identity (``target_identity``), which carries
+    no credential, so the digest is not an offline verifier for anything
+    the displayed target hides.
     """
-    digest = hashlib.sha256(f"{rule_id}\n{target_identity(_canonical(target))}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{rule_id}\n{target_identity(target)}".encode()).hexdigest()
     return digest[:32]
 
 
 def _identity_digest(target: str) -> str:
-    """Return a short, credential-free digest of the target's full identity, for the run's category."""
-    return hashlib.sha256(target_identity(_canonical(target)).encode()).hexdigest()[:8]
+    """Return a short digest of the target's identity, for the run's category."""
+    return hashlib.sha256(target_identity(target).encode()).hexdigest()[:8]
+
+
+def target_identity(target: str) -> str:
+    """Return the target as alerts are keyed on: what names the server, with nothing that could be a credential.
+
+    - A URL keeps scheme, host, port, path (minus at most one trailing slash:
+      the engine follows that redirect as same-origin, while ``/mcp//`` is a
+      different path) and its query with the values of credential-looking
+      parameters (``token``, ``key``, ``sig``, ``auth``, ...) blanked. Userinfo
+      and fragment never enter it. A URL that cannot be parsed is
+      ``INVALID_URL``.
+    - A stdio command line keeps what ``display_target`` shows plus its
+      option *names*: ``server --root /tmp/a`` and ``server --root /tmp/b``
+      are one identity, ``server --root x`` and ``server --port x`` two. An
+      option value is where a secret passed on a command line sits.
+    - A path or package coordinate is itself.
+    """
+    if _URI_SCHEME.match(target):
+        try:
+            parts = urlsplit(target)
+            path = parts.path.removesuffix("/")
+            return urlunsplit((parts.scheme, _host_port(parts), path, _blank_sensitive(parts.query), ""))
+        except ValueError:
+            return INVALID_URL
+    if any(ch.isspace() for ch in target):
+        names = [token.split("=", 1)[0] for token in target.split() if token.startswith("-")]
+        return " ".join([display_target(target), *names])
+    return target
+
+
+def _blank_sensitive(query: str) -> str:
+    """Return the query with the value of every credential-looking parameter blanked, names and order kept."""
+    if not query:
+        return query
+    pairs = []
+    for pair in query.split("&"):
+        name = pair.split("=", 1)[0]
+        pairs.append(f"{name}=" if _SENSITIVE_PARAM.search(name) else pair)
+    return "&".join(pairs)
 
 
 def display_target(target: str) -> str:
-    """Return the target as the file may show it: a URL without userinfo, query, or fragment; anything else as is.
+    """Return the target as the file may show it: a URL without userinfo, query, or fragment; a command's head.
 
     A query can carry a signed credential and userinfo is one by definition,
     and code scanning data is readable by everyone with access to the
-    repository's alerts. A stdio command line is shown up to its first
-    option: ``server --api-key secret`` shows as ``server``, ``python
-    server.py --port 9`` as ``python server.py``. A URL that cannot be
+    repository's alerts. A stdio command line shows its program and the
+    script-like arguments that follow it, stopping at the first other token:
+    ``python server.py --api-key secret`` shows as ``python server.py``,
+    ``node server.js hunter2`` as ``node server.js``. A URL that cannot be
     parsed (server-supplied text can be anything) becomes ``INVALID_URL``.
     """
     if not _URI_SCHEME.match(target):
@@ -304,15 +350,23 @@ def display_target(target: str) -> str:
 
 
 def _command_head(target: str) -> str:
-    """Return a command line up to its first option; a path or coordinate (no whitespace) as is."""
+    """Return a command line's program plus following script-like arguments; a path or coordinate as is."""
     if not any(ch.isspace() for ch in target):
         return target
-    head: list[str] = []
-    for token in target.split():
-        if token.startswith("-"):
+    program, *rest = target.split()
+    head = [program]
+    for token in rest:
+        if not _looks_like_file(token):
             break
         head.append(token)
-    return " ".join(head) or target.split()[0]
+    return " ".join(head)
+
+
+def _looks_like_file(token: str) -> bool:
+    """Whether a command-line token names a file: has a path separator or a known script extension."""
+    if token.startswith("-"):
+        return False
+    return "/" in token or "\\" in token or token.lower().endswith(_SCRIPT_EXTENSIONS)
 
 
 def scrub_urls(text: str) -> str:
@@ -336,42 +390,12 @@ def scrub_urls(text: str) -> str:
     return _URL_IN_TEXT.sub(replace, text)
 
 
-def _canonical(target: str) -> str:
-    """Return a URL target minus userinfo and fragment, keeping the query; anything else unchanged.
-
-    Userinfo is a credential, and a fragment never reaches the server, so
-    neither can make two spellings of one endpoint two alerts. The query is
-    part of the endpoint and stays.
-    """
-    if not _URI_SCHEME.match(target):
-        return target
-    try:
-        parts = urlsplit(target)
-        return urlunsplit((parts.scheme, _host_port(parts), parts.path, parts.query, ""))
-    except ValueError:
-        return target
-
-
 def _host_port(parts: SplitResult) -> str:
     """Return ``host`` or ``host:port`` from a split URL, never its userinfo."""
     host = parts.hostname or ""
     if ":" in host:  # an IPv6 literal keeps its brackets
         host = f"[{host}]"
     return f"{host}:{parts.port}" if parts.port is not None else host
-
-
-def target_identity(target: str) -> str:
-    """Return the target as GitHub should key alerts on: a URL minus trailing slashes on its path, else itself.
-
-    Only a URL is normalized, and only the part before any query or fragment:
-    ``?resource=https://tenant/`` is a different target from
-    ``?resource=https://tenant``, and a stdio command such as
-    ``server --root /tmp/a/`` names what it names.
-    """
-    if not _URI_SCHEME.match(target):
-        return target
-    cut = min((i for i in (target.find("?"), target.find("#")) if i >= 0), default=len(target))
-    return target[:cut].rstrip("/") + target[cut:]
 
 
 def _artifact_uri(target: str) -> str:

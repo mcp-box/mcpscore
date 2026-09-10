@@ -146,18 +146,27 @@ class TestEnvelope:
             return _run(build_sarif(_report(target=target)))["automationDetails"]["id"]
 
         assert category("https://a.example/mcp?tenant=1") != category("https://a.example/mcp?tenant=2")
-        assert category("server --root /tmp/a") != category("server --root /tmp/b")
+        assert category("server --root x") != category("server --port x")
         assert category("https://a.example/mcp#x") == category("https://a.example/mcp")
+        # Credential-looking query values are blanked before hashing, so the
+        # digest is no offline verifier for a token the display hides.
+        assert category("https://a.example/mcp?token=a") == category("https://a.example/mcp?token=b")
 
     def test_category_separates_audit_scopes(self) -> None:
         # A partial audit after a full one must not mark every finding it could
         # not assess as fixed, so it uploads into its own category.
         full = _run(build_sarif(_report()))["automationDetails"]["id"]
         partial = _run(build_sarif(_report(partial=True, partial_reason="auth-gated")))["automationDetails"]["id"]
-        incomplete = _run(build_sarif(_report(incomplete_listings=["tools"])))["automationDetails"]["id"]
         assert "/partial/" in partial
-        assert "/incomplete/" in incomplete
-        assert len({full, partial, incomplete}) == 3
+        assert full != partial
+        # Nothing finer than that: a category never uploaded again strands its
+        # alerts open forever, so an incomplete listing or a changed config
+        # lands in the same category and closes what it no longer finds.
+        incomplete = _run(build_sarif(_report(incomplete_listings=["tools"])))["automationDetails"]["id"]
+        configured = _run(build_sarif(_report(config={"source": "mcpscore.toml", "sha256": "x"})))["automationDetails"][
+            "id"
+        ]
+        assert incomplete == configured == full
 
     def test_validates_against_the_sarif_schema(self, validator: Draft7Validator) -> None:
         errors = list(validator.iter_errors(build_sarif(_report())))
@@ -325,8 +334,10 @@ class TestResults:
             "description": {"text": "python server.py"},
         }
         assert run["automationDetails"]["id"].startswith("mcpscore/python server.py/")
-        # The options still tell the commands apart.
-        assert fingerprint("r", "python server.py --root a") != fingerprint("r", "python server.py --root b")
+        # A positional argument after the script is not known to be safe either.
+        assert display_target("node server.js hunter2 --port 9") == "node server.js"
+        assert "hunter2" not in json.dumps(build_sarif(_report(target="node server.js hunter2")))
+        assert display_target("./bin/server extra") == "./bin/server"
 
     def test_a_url_that_cannot_be_parsed_never_raises(self) -> None:
         # Auth metadata is server-supplied text; a port that is not a number
@@ -405,18 +416,22 @@ class TestFingerprints:
             # A fragment never reaches the server: one endpoint, one alert series.
             ("https://a.example/mcp#a", "https://a.example/mcp#b", True),
             ("https://a.example/mcp/#f", "https://a.example/mcp", True),
-            # A stdio command line is its own identity, slash and all.
-            ("server --root /tmp/a/", "server --root /tmp/a", False),
+            # At most one trailing slash: servers can route /mcp// differently.
+            ("https://a.example/mcp//", "https://a.example/mcp", False),
+            ("https://a.example/mcp//", "https://a.example/mcp/", False),
         ],
     )
-    def test_identity_trims_url_paths_only(self, left: str, right: str, same: bool) -> None:
+    def test_identity_trims_one_trailing_slash_of_a_url_path(self, left: str, right: str, same: bool) -> None:
         assert (fingerprint("r", left) == fingerprint("r", right)) is same
 
-    def test_non_url_targets_keep_their_trailing_slash_in_the_identity(self) -> None:
-        assert target_identity("server --root /tmp/a/") == "server --root /tmp/a/"
-        with_slash = _run(build_sarif(_report(target="server --root /tmp/a/")))["automationDetails"]["id"]
-        without = _run(build_sarif(_report(target="server --root /tmp/a")))["automationDetails"]["id"]
-        assert with_slash != without
+    def test_a_stdio_command_identity_is_its_head_and_option_names(self) -> None:
+        # An option value is where a secret passed on a command line sits, so
+        # values never enter the identity; option names still tell configs apart.
+        assert target_identity("server --root /tmp/a/") == "server --root"
+        assert target_identity("server --root=/tmp/b") == "server --root"
+        assert fingerprint("r", "server --root /tmp/a") == fingerprint("r", "server --root /tmp/b")
+        assert fingerprint("r", "server --root x") != fingerprint("r", "server --port x")
+        assert fingerprint("r", "node server.js hunter2") == fingerprint("r", "node server.js hunter3")
 
     def test_userinfo_never_enters_the_fingerprint_but_the_query_does(self) -> None:
         # user@host is the same server as host, so the alert series must not
@@ -424,6 +439,10 @@ class TestFingerprints:
         # the query only ever enters a sha256, never the file.
         assert fingerprint("r", "https://user:secret@a.example/mcp") == fingerprint("r", "https://a.example/mcp")
         assert fingerprint("r", "https://a.example/mcp?tenant=1") != fingerprint("r", "https://a.example/mcp?tenant=2")
+        # A credential-looking parameter keeps its name and loses its value.
+        assert target_identity("https://a.example/mcp?api_key=K&tenant=1") == "https://a.example/mcp?api_key=&tenant=1"
+        assert fingerprint("r", "https://a.example/mcp?sig=a") == fingerprint("r", "https://a.example/mcp?sig=b")
+        assert fingerprint("r", "https://a.example/mcp?sig=a") != fingerprint("r", "https://a.example/mcp?tenant=a")
 
     def test_target_and_rule_both_change_the_fingerprint(self) -> None:
         base = fingerprint("auth_metadata_https", "https://a.example/mcp")
