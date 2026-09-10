@@ -61,8 +61,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 from typing import TYPE_CHECKING, Any
-from urllib.parse import SplitResult, quote, urlsplit, urlunsplit
+from urllib.parse import SplitResult, quote, unquote_plus, urlsplit, urlunsplit
 
 from mcpscore.rules import create_all_rules
 
@@ -109,7 +110,32 @@ _DRIVE_LETTER = re.compile(r"^[A-Za-z]:[\\/]")
 _URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
 _TRAILING_PUNCTUATION = re.compile(r"[\'\")\],.;:>]+$")
 INVALID_URL = "<invalid-url>"
-_SENSITIVE_PARAM = re.compile(r"token|key|secret|pass|auth|sig|cred|session", re.IGNORECASE)
+_CREDENTIAL_WORDS = frozenset(
+    {
+        "token",
+        "key",
+        "apikey",
+        "secret",
+        "password",
+        "passwd",
+        "pwd",
+        "pass",
+        "auth",
+        "authorization",
+        "sig",
+        "signature",
+        "cred",
+        "credential",
+        "credentials",
+        "session",
+        "sessionid",
+        "bearer",
+        "jwt",
+        "sas",
+    }
+)
+"""Words that make a query parameter name credential-like, matched as whole words of the decoded name."""
+_NAME_WORDS = re.compile(r"[A-Za-z][a-z0-9]*|[0-9]+")  # splits on separators and camelCase: apiKey -> api, Key
 _SCRIPT_EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".ts", ".jar", ".rb", ".sh", ".php", ".pl", ".exe")
 """What a syntactically unusable URL (a non-numeric port, say) becomes in the file; it is server-supplied text."""
 
@@ -168,6 +194,10 @@ def build_sarif(report: dict) -> dict:
         run_properties["package"] = {k: scrub_urls(v) if isinstance(v, str) else v for k, v in package.items()}
     if report.get("transport") is not None:
         run_properties["transport"] = report["transport"]
+    if report.get("incomplete_listings"):
+        # The run says which listings paginated incompletely, so a reader can
+        # tell a finding closed by a transient pagination failure from a fix.
+        run_properties["incomplete_listings"] = sorted(report["incomplete_listings"])
 
     # One category per target, plus `partial` for an auth-gated audit, whose
     # score the docs say never to compare with a full one. Nothing finer: a
@@ -313,7 +343,7 @@ def target_identity(target: str) -> str:
         except ValueError:
             return INVALID_URL
     if any(ch.isspace() for ch in target):
-        names = [token.split("=", 1)[0] for token in target.split() if token.startswith("-")]
+        names = [token.split("=", 1)[0] for token in _tokens(target) if token.startswith("-")]
         return " ".join([display_target(target), *names])
     return target
 
@@ -325,8 +355,18 @@ def _blank_sensitive(query: str) -> str:
     pairs = []
     for pair in query.split("&"):
         name = pair.split("=", 1)[0]
-        pairs.append(f"{name}=" if _SENSITIVE_PARAM.search(name) else pair)
+        pairs.append(f"{name}=" if _is_credential_name(name) else pair)
     return "&".join(pairs)
+
+
+def _is_credential_name(raw_name: str) -> bool:
+    """Whether a query parameter name, percent-decoded and split into words, contains a credential word.
+
+    ``api_key``, ``apiKey``, ``X-Auth-Token`` and ``to%6ben`` are; ``monkey``
+    and ``tenant`` are not.
+    """
+    words = {w.lower() for w in _NAME_WORDS.findall(unquote_plus(raw_name))}
+    return not words.isdisjoint(_CREDENTIAL_WORDS)
 
 
 def display_target(target: str) -> str:
@@ -334,11 +374,12 @@ def display_target(target: str) -> str:
 
     A query can carry a signed credential and userinfo is one by definition,
     and code scanning data is readable by everyone with access to the
-    repository's alerts. A stdio command line shows its program and the
-    script-like arguments that follow it, stopping at the first other token:
-    ``python server.py --api-key secret`` shows as ``python server.py``,
-    ``node server.js hunter2`` as ``node server.js``. A URL that cannot be
-    parsed (server-supplied text can be anything) becomes ``INVALID_URL``.
+    repository's alerts. A stdio command line shows its program and, when
+    the next argument looks like a script, that one argument and nothing
+    more: ``python server.py --api-key secret`` shows as ``python
+    server.py``, ``node server.js /tmp/hunter2`` as ``node server.js``. A URL
+    that cannot be parsed (server-supplied text can be anything) becomes
+    ``INVALID_URL``.
     """
     if not _URI_SCHEME.match(target):
         return _command_head(target)
@@ -350,16 +391,20 @@ def display_target(target: str) -> str:
 
 
 def _command_head(target: str) -> str:
-    """Return a command line's program plus following script-like arguments; a path or coordinate as is."""
+    """Return a command line's program plus at most one script-like argument; a path or coordinate as is."""
     if not any(ch.isspace() for ch in target):
         return target
-    program, *rest = target.split()
-    head = [program]
-    for token in rest:
-        if not _looks_like_file(token):
-            break
-        head.append(token)
-    return " ".join(head)
+    program, *rest = _tokens(target)
+    head = [program, rest[0]] if rest and _looks_like_file(rest[0]) else [program]
+    return shlex.join(head)
+
+
+def _tokens(command_line: str) -> list[str]:
+    """Split a stdio command line the way ``StdioCommand.display`` joined it (shlex); whitespace as a fallback."""
+    try:
+        return shlex.split(command_line) or [command_line]
+    except ValueError:
+        return command_line.split()
 
 
 def _looks_like_file(token: str) -> bool:

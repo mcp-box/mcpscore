@@ -334,10 +334,14 @@ class TestResults:
             "description": {"text": "python server.py"},
         }
         assert run["automationDetails"]["id"].startswith("mcpscore/python server.py/")
-        # A positional argument after the script is not known to be safe either.
+        # Nothing after the script is known to be safe, file-looking or not.
         assert display_target("node server.js hunter2 --port 9") == "node server.js"
-        assert "hunter2" not in json.dumps(build_sarif(_report(target="node server.js hunter2")))
+        assert display_target("node server.js /tmp/hunter2") == "node server.js"
+        assert "hunter2" not in json.dumps(build_sarif(_report(target="node server.js /tmp/hunter2")))
         assert display_target("./bin/server extra") == "./bin/server"
+        # The command line is shlex-joined by the CLI; a quoted script survives whole.
+        assert display_target("python 'my server.py' --port 9") == "python 'my server.py'"
+        assert target_identity("python 'my server.py' --port 9") == "python 'my server.py' --port"
 
     def test_a_url_that_cannot_be_parsed_never_raises(self) -> None:
         # Auth metadata is server-supplied text; a port that is not a number
@@ -380,6 +384,11 @@ class TestResults:
         props = _run(sarif)["properties"]
         assert props["partial_reason"] == "gated at https://a.example/x"
         assert props["package"] == {"registry": "npm", "repository_url": "https://github.com/o/r", "withdrawn": False}
+
+    def test_incomplete_listings_are_declared_on_the_run(self) -> None:
+        props = _run(build_sarif(_report(incomplete_listings=["tools", "prompts"])))["properties"]
+        assert props["incomplete_listings"] == ["prompts", "tools"]
+        assert "incomplete_listings" not in _run(build_sarif(_report()))["properties"]
 
     def test_rule_index_points_at_the_rule_entry(self) -> None:
         run = _run(build_sarif(_report()))
@@ -441,6 +450,15 @@ class TestFingerprints:
         assert fingerprint("r", "https://a.example/mcp?tenant=1") != fingerprint("r", "https://a.example/mcp?tenant=2")
         # A credential-looking parameter keeps its name and loses its value.
         assert target_identity("https://a.example/mcp?api_key=K&tenant=1") == "https://a.example/mcp?api_key=&tenant=1"
+        # Names are matched as decoded whole words: an encoded name cannot slip
+        # its value into the hash, and `monkey` is not `key`.
+        assert target_identity("https://a.example/mcp?to%6ben=K") == "https://a.example/mcp?to%6ben="
+        assert (
+            target_identity("https://a.example/mcp?apiKey=K&X-Auth-Token=T")
+            == "https://a.example/mcp?apiKey=&X-Auth-Token="
+        )
+        assert target_identity("https://a.example/mcp?monkey=1") == "https://a.example/mcp?monkey=1"
+        assert fingerprint("r", "https://a.example/mcp?monkey=1") != fingerprint("r", "https://a.example/mcp?monkey=2")
         assert fingerprint("r", "https://a.example/mcp?sig=a") == fingerprint("r", "https://a.example/mcp?sig=b")
         assert fingerprint("r", "https://a.example/mcp?sig=a") != fingerprint("r", "https://a.example/mcp?tenant=a")
 
