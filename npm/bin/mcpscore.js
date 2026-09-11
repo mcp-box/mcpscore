@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // mcpscore npm wrapper: runs the Python mcpscore CLI at the exact version
 // this package pins (package.json -> mcpscore.pythonVersion), so
-// `npx mcpscore <target>` and `uvx mcpscore <target>` behave identically.
+// `npx @mcp-box/mcpscore <target>` runs the matching Python release.
 //
 // Resolution order: uvx (uv) -> pipx. No implicit installs into the user's
 // environment; if neither runner exists, print clear instructions and exit 1.
@@ -26,22 +26,34 @@ function tryRun(cmd, prefix) {
     process.exit(1);
   }
   // Propagate the CLI's exit code (mcpscore's codes are a documented contract:
-  // 0 ok, 1 usage error, 2 connection failure).
+  // 0 ok, 1 usage error, 2 connection failure, 3 score gate, 4 smoke gate).
   process.exit(result.status === null ? 1 : result.status);
 }
 
 tryRun("uvx", [spec]);
 tryRun("pipx", ["run", spec]);
 
+// Show a harmless verification command, not a reconstruction of argv: targets
+// and flags can contain credentials, and quoting differs across user shells.
+const installCommand = process.platform === "win32"
+  ? "winget install --id=astral-sh.uv -e"
+  : "curl -LsSf https://astral.sh/uv/install.sh | sh";
+
 console.error(
   [
-    `mcpscore is a Python CLI (this npm package is a thin wrapper for ${spec}).`,
-    "It needs one of these Python runners on your PATH:",
+    `mcpscore needs a Python runner (this npm package launches ${spec}).`,
+    "Neither uvx nor pipx was found on PATH. Node.js alone is not enough.",
     "",
-    "  uv    https://docs.astral.sh/uv/  (then this command just works)",
-    "  pipx  https://pipx.pypa.io/",
+    "1. Install uv (includes uvx):",
+    `   ${installCommand}`,
+    "   Other installation methods: https://docs.astral.sh/uv/getting-started/installation/",
+    "2. Open a new terminal, then verify:",
+    "   uvx --version",
+    "   npx @mcp-box/mcpscore --help",
+    "3. Retry your original command.",
     "",
-    "Or install it directly:  pip install mcpscore",
+    "Already installed uv or pipx? Ensure its executable directory is on PATH.",
+    "The wrapper does not install a runner automatically.",
     "Docs: https://docs.mcpscore.dev",
   ].join("\n"),
 );

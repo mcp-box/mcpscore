@@ -64,7 +64,9 @@ mcpscore https://your-server.example/mcp --token "$TOKEN"
 mcpscore https://your-server.example/mcp --oauth
 ```
 
-No install at all: `uvx mcpscore <target>` or `npx @mcp-box/mcpscore <target>`.
+With uv installed: `uvx mcpscore <target>`. Node users can run
+`npx @mcp-box/mcpscore <target>` with **uv or pipx also on PATH**; the npm
+package launches the Python engine. See the [npm setup guide](npm/README.md).
 Guides: [authenticated servers](https://docs.mcpscore.dev/authenticated-servers),
 [CLI reference](https://docs.mcpscore.dev/cli).
 
