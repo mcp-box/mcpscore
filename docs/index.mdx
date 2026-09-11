@@ -12,13 +12,20 @@ in seconds, with no API key and no sign-up.
 
 ## Quick start
 
+The `uvx` command requires [uv](https://docs.astral.sh/uv/getting-started/installation/).
+The npm command requires Node.js **and uv or pipx on PATH**: it launches the
+Python engine in an isolated environment. Node.js alone is not enough.
+See the [npm setup guide](https://github.com/mcp-box/mcpscore/tree/main/npm#requirements)
+for installation and troubleshooting. The first run may take longer while
+the runner downloads the engine.
+
 <CodeGroup>
 
-```bash uvx (no install)
+```bash uvx
 uvx mcpscore https://mcp.deepwiki.com/mcp
 ```
 
-```bash npx (no install)
+```bash npx (requires uv or pipx)
 npx @mcp-box/mcpscore https://mcp.deepwiki.com/mcp
 ```
 

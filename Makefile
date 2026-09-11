@@ -62,7 +62,11 @@ release-dry-run: ## Run all release checks without creating anything
 	uv run python scripts/release.py --dry-run
 
 .PHONY: all
-all: lint typecheck testcov ## Run all checks (mirrors CI)
+all: lint typecheck testcov test-npm ## Run all checks (mirrors CI)
+
+.PHONY: test-npm
+test-npm: ## Test the npm launcher (requires Node.js 18+)
+	npm --prefix npm test
 
 .PHONY: clean
 clean: ## Clean build artifacts and caches
