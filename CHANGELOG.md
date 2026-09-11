@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`npx @mcp-box/mcpscore` works on uv releases before 0.6 again.** The npm
+  wrapper launched the CLI as `uvx mcpscore==<version>`, an undocumented
+  form that uv 0.4 and 0.5 reject as an invalid package name ("Not a valid
+  package or extra name"). It now uses the documented
+  `uvx --from mcpscore==<version> mcpscore`, which every uv release accepts;
+  the pipx fallback is unchanged. Until the next npm release, affected users
+  can run `uvx mcpscore@<version>` directly or upgrade uv.
+
 ## [1.14.1] - 2026-09-11
 
 Documentation-site release: no change to the CLI or the engine.
