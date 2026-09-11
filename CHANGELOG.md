@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **docs.mcpscore.dev asks for analytics consent, and shares the answer with
+  mcpscore.dev.** The docs report to the same Google Analytics property as
+  the website, and load nothing until a visitor accepts: Mintlify's consent
+  gate holds all telemetry until `mcpscore.analytics-consent=granted` is in
+  local storage, the key the website's banner writes. A small banner in the
+  docs (`docs/consent.js`) asks with the same words as the site, and both
+  banners also write a `mcpscore.analytics-consent` cookie on the shared
+  parent domain, so one choice covers both origins and neither asks twice.
+  Documentation-site change only; the CLI is unaffected.
+
 ## [1.14.0] - 2026-09-10
 
 ### Added

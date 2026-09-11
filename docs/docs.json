@@ -76,5 +76,14 @@
     "metatags": {
       "og:site_name": "mcpscore"
     }
+  },
+  "integrations": {
+    "ga4": {
+      "measurementId": "G-PPFVP99VKS"
+    },
+    "cookies": {
+      "key": "mcpscore.analytics-consent",
+      "value": "granted"
+    }
   }
 }
