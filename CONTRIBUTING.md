@@ -5,7 +5,9 @@ requests, and pull requests are all welcome.
 
 ## Development setup
 
-Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Requirements: Python 3.11+, [uv](https://docs.astral.sh/uv/), and
+[Node.js](https://nodejs.org/) with npm for the wrapper tests in `make all`.
+Use Node.js 22 or newer for development; the wrapper also supports Node.js 18.
 
 ```bash
 git clone https://github.com/mcp-box/mcpscore.git
@@ -21,11 +23,13 @@ make lint           # Lint without fixing
 make typecheck      # Pyright (0 errors required in mcpscore/)
 make test           # Run the test suite
 make testcov        # Tests with coverage report (97% minimum enforced)
+make test-npm       # npm wrapper tests (Node.js; no npm install needed)
 make all            # Everything CI runs
 ```
 
 `make all` must pass before a PR — CI runs the same checks on Linux, macOS,
-and Windows against Python 3.11–3.13.
+and Windows against Python 3.11–3.13. Wrapper tests run on Node.js 22 across
+all three operating systems, plus Node.js 18 on Linux for compatibility.
 
 ## Adding an audit rule
 
