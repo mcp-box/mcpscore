@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pipx fallback is unchanged. Until the next npm release, affected users
   can run `uvx mcpscore@<version>` directly or upgrade uv.
 
+### Changed
+
+- The npm wrapper now explains its Python-runner prerequisite and provides
+  platform-specific uv installation, PATH verification, and retry steps when
+  neither uvx nor pipx is available. Setup guides state the prerequisite
+  before the first audit command; runner selection and audit exit codes are
+  unchanged.
+
 ## [1.14.1] - 2026-09-11
 
 Documentation-site release: no change to the CLI or the engine.

@@ -5,6 +5,9 @@
   "bin": {
     "mcpscore": "bin/mcpscore.js"
   },
+  "scripts": {
+    "test": "node --test test/wrapper.test.js"
+  },
   "files": [
     "bin/"
   ],
