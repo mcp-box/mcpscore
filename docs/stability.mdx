@@ -158,3 +158,36 @@ minor-version territory. Pre-releases (`bN`) can change anything.
     Why the score is ruleset-dependent, and what that means for your CI gate
   </Card>
 </CardGroup>
+
+## Failure guidance
+
+A failed rule may include `suggested_fix`: a nonblank plain-text repair hint of
+at most 255 Unicode code points. The field is omitted on passing results and on
+older findings without authored guidance; skipped rules remain separate.
+Consumers must tolerate its absence. In JavaScript, count code points with
+`Array.from(text).length`, rather than UTF-16 `text.length`.
+
+The first supported findings are input/output schema validation and capability
+declarations. The CLI prints their hint as `Fix:` on stderr. JSON stdout remains
+one complete report. Other rules retain their existing messages during rollout.
+
+Schema failures retain existing detail keys and add `details.issues`, with a tool
+catalog index, a JSON Pointer field path, a reason and an expected constraint.
+These diagnostics explain the existing validator; they do not broaden it into
+complete JSON Schema conformance checking. A tool's optional output schema is
+checked only when present. Arbitrary schema values are not copied into issues.
+
+Each tool contributes its first failing predicate; at most 20 issues are included.
+`issues_total` and `issues_omitted` describe the evidence limit. Paths longer than
+255 escaped characters are omitted with `path_omitted: true`; control characters
+are JSON-escaped for terminal display. Indexes still identify the affected tool.
+
+Catalog collection failures are recorded in report `listing_errors`, and in
+`details.collection_error` when a declaration rule fails. Outcomes distinguish
+`invalid_response`, `timeout`, `rpc_error` and an unspecified `collection_error`.
+Validation locations and expected types are retained without raw response values
+or exception messages. These diagnostics do not change verdicts or score weights.
+
+Requirement strength is not inferred from severity or the presence of a hint.
+Use the rule's source basis and applicability; a repair hint is advice for that
+finding, not a claim that every scored recommendation is mandatory.

@@ -135,8 +135,12 @@ class CapabilityDeclarationRule(BaseRule):
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
-    def _evaluate(self, capabilities: ServerCapabilities | None, items: list | None) -> RuleResult:
+    def _evaluate(
+        self, capabilities: ServerCapabilities | None, items: list | None, listing_errors: dict | None = None
+    ) -> RuleResult:
         """Compare the declared capability against what the server served."""
+        collection_error = (listing_errors or {}).get(self.feature, {})
+        suggested_fix = None
         declared = getattr(capabilities, self.feature, None) is not None if capabilities is not None else False
         served = items is not None
 
@@ -151,16 +155,40 @@ class CapabilityDeclarationRule(BaseRule):
             )
         elif served and not declared:
             passed = False
+            suggested_fix = (
+                f"Declare capabilities.{self.feature} in server metadata to match the "
+                f"{self.method} method you implement."
+            )
             message = (
                 f"❌ Server serves {len(items or [])} {self.feature} but does not declare the "
                 f"{self.feature} capability — servers that support {self.feature} MUST declare it"
             )
         else:
             passed = False
-            message = (
-                f"❌ Server declares the {self.feature} capability but {self.method} did not answer — "
-                "clients will call it and fail"
-            )
+            outcome = collection_error.get("outcome")
+            if outcome == "invalid_response":
+                message = f"❌ {self.method} returned an invalid catalog response."
+                suggested_fix = (
+                    f"Correct the reported response fields in {self.method} to match the "
+                    f"expected catalog types, then audit again."
+                )
+            elif outcome == "timeout":
+                message = f"❌ {self.method} timed out before a catalog page was collected."
+                suggested_fix = f"Check {self.method} latency and server availability, then retry the audit."
+            elif outcome == "rpc_error":
+                message = f"❌ {self.method} returned JSON-RPC error {collection_error.get('error_code')}."
+                suggested_fix = (
+                    f"Check the server-side error for {self.method} and correct the method or "
+                    f"access configuration, then retry."
+                )
+            else:
+                message = (
+                    f"❌ No usable {self.method} catalog was collected for the declared {self.feature} capability."
+                )
+                suggested_fix = (
+                    f"Check the {self.method} response and connection in server logs, then "
+                    f"retry. The audit could not determine a more specific cause."
+                )
 
         return RuleResult(
             rule_name=self.rule_name,
@@ -171,7 +199,9 @@ class CapabilityDeclarationRule(BaseRule):
                 f"capability_{self.feature}": _wire_str(getattr(capabilities, self.feature, None)),
                 "declared": declared,
                 "served": served,
+                **({"collection_error": collection_error} if collection_error else {}),
             },
+            suggested_fix=suggested_fix,
         )
 
 
@@ -189,10 +219,12 @@ class CapabilityToolsPresentRule(CapabilityDeclarationRule):
     def rule_name(self) -> str:
         return "Capabilities - Tools Declared Consistently"
 
-    @requires_fields("capabilities", "tools")
-    def check(self, capabilities: ServerCapabilities | None, items: list | None) -> RuleResult:  # type: ignore[override]
+    @requires_fields("capabilities", "tools", "listing_errors")
+    def check(  # type: ignore[override]
+        self, capabilities: ServerCapabilities | None, items: list | None, listing_errors: dict | None = None
+    ) -> RuleResult:
         """Compare the declared tools capability against the served tools."""
-        return self._evaluate(capabilities, items)
+        return self._evaluate(capabilities, items, listing_errors)
 
 
 class CapabilityListChangedRule(CapabilityBaseRule):
@@ -287,10 +319,12 @@ class CapabilityPromptsPresentRule(CapabilityDeclarationRule):
     def rule_name(self) -> str:
         return "Capabilities - Prompts Declared Consistently"
 
-    @requires_fields("capabilities", "prompts")
-    def check(self, capabilities: ServerCapabilities | None, items: list | None) -> RuleResult:  # type: ignore[override]
+    @requires_fields("capabilities", "prompts", "listing_errors")
+    def check(  # type: ignore[override]
+        self, capabilities: ServerCapabilities | None, items: list | None, listing_errors: dict | None = None
+    ) -> RuleResult:
         """Compare the declared prompts capability against the served prompts."""
-        return self._evaluate(capabilities, items)
+        return self._evaluate(capabilities, items, listing_errors)
 
 
 @register_rule
@@ -353,10 +387,12 @@ class CapabilityResourcesPresentRule(CapabilityDeclarationRule):
     def rule_name(self) -> str:
         return "Capabilities - Resources Declared Consistently"
 
-    @requires_fields("capabilities", "resources")
-    def check(self, capabilities: ServerCapabilities | None, items: list | None) -> RuleResult:  # type: ignore[override]
+    @requires_fields("capabilities", "resources", "listing_errors")
+    def check(  # type: ignore[override]
+        self, capabilities: ServerCapabilities | None, items: list | None, listing_errors: dict | None = None
+    ) -> RuleResult:
         """Compare the declared resources capability against the served resources."""
-        return self._evaluate(capabilities, items)
+        return self._evaluate(capabilities, items, listing_errors)
 
 
 @register_rule

@@ -538,6 +538,7 @@ class MCPAuditor:
                 res.details = {**(res.details or {}), "basis": rule.basis}
             self._apply_rerank(res)
             logger.info(res.message)
+            self._log_guidance(res)
 
             if rule.group_name == READINESS_GROUP:
                 self.readiness_max += res.severity.value
@@ -563,6 +564,22 @@ class MCPAuditor:
             and rule.rule_id in self.config.overrides
             and self.config.overrides[rule.rule_id] is None
         )
+
+    @staticmethod
+    def _log_guidance(res: RuleResult) -> None:
+        """Render bounded failure evidence without changing result or scoring state."""
+        if not res.passed and res.suggested_fix:
+            logger.info("  Fix: %s", res.suggested_fix)
+            for issue in (res.details or {}).get("issues", []):
+                logger.info(
+                    "  Tool index %s · %s · expected %s",
+                    issue.get("entity_index"),
+                    issue.get("path", "path omitted"),
+                    issue.get("expected"),
+                )
+
+            for issue in (res.details or {}).get("collection_error", {}).get("issues", []):
+                logger.info("  Response %s · expected %s", issue.get("path", "path omitted"), issue.get("expected"))
 
     def _apply_rerank(self, res: RuleResult) -> None:
         """Give a result its configured severity, recording the rule's own in ``details``.
@@ -766,6 +783,9 @@ class MCPAuditor:
         absent on this server), and those must not leak into the report or
         skip uniqueness rules without cause.
         """
+        errors = getattr(self.mcp_client, "listing_errors", {})
+        if isinstance(errors, dict) and listing in errors:
+            self.audit_data.listing_errors[listing] = errors[listing]
         if listing in getattr(self.mcp_client, "incomplete_listings", frozenset()):
             self.audit_data.incomplete_listings |= {listing}
 
@@ -888,6 +908,7 @@ class MCPAuditor:
             # page bound): their items were judged, but completeness-dependent
             # rules were skipped as insufficient-data.
             "incomplete_listings": sorted(self.audit_data.incomplete_listings),
+            "listing_errors": self.audit_data.listing_errors,
             # Keep this deliberately narrower than the SDK's Implementation
             # model. Reports need stable server identity for baselines; copying
             # the whole model would silently grow the public schema and could
