@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from functools import wraps
 from typing import TYPE_CHECKING, Any
@@ -60,6 +60,15 @@ class RuleResult:
     message, it is a stable contract for machine consumers (JSON reports,
     snapshot-based acceptance tests)."""
 
+    suggested_fix: str | None = None
+    """Optional authored repair hint, at most 255 Unicode code points; failures only."""
+
+    def __post_init__(self) -> None:
+        if self.suggested_fix is not None and (
+            self.passed or not self.suggested_fix.strip() or len(self.suggested_fix) > 255
+        ):
+            raise ValueError("suggested_fix requires a failure and 1-255 nonblank characters")
+
     def to_dict(self) -> dict:
         """Serialize this result for machine-readable reports.
 
@@ -76,6 +85,7 @@ class RuleResult:
             "passed": self.passed,
             "message": self.message,
             "details": self.details,
+            **({"suggested_fix": self.suggested_fix} if not self.passed and self.suggested_fix is not None else {}),
         }
 
 
@@ -162,6 +172,9 @@ class AuditData:
 
     # Listings for which the client returned only partial evidence because
     # pagination failed, repeated a cursor, or exceeded its safety bound.
+    listing_errors: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Bounded, sanitized collection errors, keyed by listing name."""
+
     incomplete_listings: frozenset[str] = frozenset()
 
 
