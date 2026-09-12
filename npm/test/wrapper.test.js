@@ -62,7 +62,8 @@ for (const code of [0, 1, 2, 3, 4]) {
     const result = run("linux", args, [{ status: code }]);
     assert.equal(result.code, code);
     assert.equal(result.calls.length, 1);
-    assert.deepEqual(result.calls[0].argv, [`mcpscore==${pkg.mcpscore.pythonVersion}`, ...args]);
+    // The documented form: uv before 0.6 rejects a bare `mcpscore==<version>` target.
+    assert.deepEqual(result.calls[0].argv, ["--from", `mcpscore==${pkg.mcpscore.pythonVersion}`, "mcpscore", ...args]);
     assert.equal(result.calls[0].command, "uvx");
     assert.equal(result.calls[0].options.stdio, "inherit");
     assert.ok(!result.calls[0].options.shell);
