@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.2] - 2026-09-12
+
+npm wrapper release: no change to the CLI or the engine.
+
 ### Fixed
 
 - **`npx @mcp-box/mcpscore` works on uv releases before 0.6 again.** The npm
@@ -14,8 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   form that uv 0.4 and 0.5 reject as an invalid package name ("Not a valid
   package or extra name"). It now uses the documented
   `uvx --from mcpscore==<version> mcpscore`, which every uv release accepts;
-  the pipx fallback is unchanged. Until the next npm release, affected users
-  can run `uvx mcpscore@<version>` directly or upgrade uv.
+  the pipx fallback is unchanged. Anyone stuck on an older wrapper can run
+  `uvx mcpscore@<version>` directly or upgrade uv.
 
 ### Changed
 
@@ -1524,7 +1528,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.14.1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.14.2...HEAD
+[1.14.2]: https://github.com/mcp-box/mcpscore/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/mcp-box/mcpscore/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/mcp-box/mcpscore/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/mcp-box/mcpscore/compare/v1.12.1...v1.13.0
