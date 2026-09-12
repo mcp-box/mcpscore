@@ -30,7 +30,12 @@ function tryRun(cmd, prefix) {
   process.exit(result.status === null ? 1 : result.status);
 }
 
-tryRun("uvx", [spec]);
+// `uvx --from <spec> mcpscore`, not `uvx <spec>`: the bare form is
+// undocumented and uv before 0.6 parses the first argument as a package
+// *name*, failing with 'Not a valid package or extra name: "mcpscore==…"'
+// (reported against 1.14.1; reproduced on uv 0.4.x and 0.5.x, fine on
+// 0.6+). `--from` is the documented form and works on every uv release.
+tryRun("uvx", ["--from", spec, "mcpscore"]);
 tryRun("pipx", ["run", spec]);
 
 // Show a harmless verification command, not a reconstruction of argv: targets
