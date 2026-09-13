@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-09-13
+
+Failure guidance release: failed findings now carry a repair hint and bounded
+schema diagnostics. Rule verdicts, severities and scores are unchanged.
+
 ### Added
 
 - Failure-only `suggested_fix` repair hints (up to 255 Unicode code points) for
@@ -1554,7 +1559,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.14.2...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.15.0...HEAD
+[1.15.0]: https://github.com/mcp-box/mcpscore/compare/v1.14.2...v1.15.0
 [1.14.2]: https://github.com/mcp-box/mcpscore/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/mcp-box/mcpscore/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/mcp-box/mcpscore/compare/v1.13.0...v1.14.0
