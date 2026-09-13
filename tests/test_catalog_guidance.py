@@ -375,3 +375,56 @@ def test_cli_labels_the_actual_entity_kind(rule_id: str, label: str, caplog: pyt
         MCPAuditor._log_guidance(result)
     assert f"{label} · " in caplog.text
     assert "index None" not in caplog.text
+
+
+@pytest.mark.parametrize("feature", ["tools", "resources", "prompts"])
+def test_absent_feature_advisory_does_not_prescribe_list_changed(feature: str) -> None:
+    rule = RULES[f"capability_{feature}_list_changed"]
+    data = AuditData(capabilities=ServerCapabilities())
+    assert rule.skip_reason(data) == "not-applicable"
+    # Direct callers still receive a failure under the existing rule contract.
+    result = rule.check(data)
+    assert not result.passed
+    assert result.details["issues"][0]["path"] == f"/capabilities/{feature}"
+    assert result.details["issues"][0]["reason"] == "missing_capability"
+    assert "listChanged" not in result.suggested_fix
+    assert "not applicable" in result.suggested_fix
+
+
+@pytest.mark.parametrize("feature", ["tools", "resources", "prompts"])
+def test_undeclared_served_catalog_message_identifies_the_field(feature: str) -> None:
+    result = RULES[f"capability_{feature}_present"].check(AuditData(capabilities=ServerCapabilities(), **{feature: []}))
+    assert not result.passed
+    assert f'First affected field: server "/capabilities/{feature}".' in result.message
+    assert result.details["issues_total"] == 1
+    assert result.details["issues_omitted"] == 0
+    assert "collection_error" not in result.details
+
+
+def test_failure_without_field_evidence_keeps_diagnosis_and_repair() -> None:
+    from mcpscore.rules.base import RuleSeverity
+    from mcpscore.rules.catalog_diagnostics import catalog_result
+
+    result = catalog_result(
+        rule_name="Collection finding",
+        severity=RuleSeverity.LOW,
+        passed=False,
+        message="No field location was collected",
+        details={"observed": False},
+        suggested_fix="Retry collection before editing individual fields.",
+        issues=iter(()),
+    )
+    assert result.message == "No field location was collected."
+    assert result.suggested_fix == "Retry collection before editing individual fields."
+    assert result.details == {"observed": False, "issues": [], "issues_total": 0, "issues_omitted": 0}
+
+
+@pytest.mark.parametrize("feature", ["tools", "resources", "prompts"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_list_changed_judges_only_its_own_feature(feature: str, enabled: bool) -> None:
+    data = AuditData(capabilities=ServerCapabilities.model_validate({feature: {"listChanged": enabled}}))
+    result = RULES[f"capability_{feature}_list_changed"].check(data)
+    assert result.passed is enabled
+    assert "is not present" not in result.message
+    if not enabled:
+        assert result.details["issues"][0]["reason"] == "list_changed_not_declared"

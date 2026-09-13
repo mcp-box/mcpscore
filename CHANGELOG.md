@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Capability advisories identify the missing capability when called without it,
+  rather than suggesting an optional listChanged declaration. Served-but-undeclared
+  capability findings include their field location in the human-readable message.
+
 ### Added
 
 - Failure-only repair guidance across tool, resource, resource-template, prompt,

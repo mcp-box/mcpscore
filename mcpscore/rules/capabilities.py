@@ -194,34 +194,39 @@ class CapabilityDeclarationRule(BaseRule):
                     f"retry. The audit could not determine a more specific cause."
                 )
 
+        details = {
+            f"capability_{self.feature}": _wire_str(getattr(capabilities, self.feature, None)),
+            "declared": declared,
+            "served": served,
+            **({"collection_error": collection_error} if collection_error and not passed else {}),
+        }
+        if served and not declared:
+            # Use the common renderer only for this field-level failure. Keep
+            # collection outcomes nested and passing results free of evidence.
+            assert suggested_fix is not None  # noqa: S101 — authored by this branch above
+            return catalog_result(
+                rule_name=self.rule_name,
+                severity=self.severity,
+                passed=False,
+                message=message,
+                details=details,
+                suggested_fix=suggested_fix,
+                issues=[
+                    field_issue(
+                        "server",
+                        None,
+                        f"/capabilities/{self.feature}",
+                        "missing_capability_declaration",
+                        "a declaration matching the served catalog",
+                    )
+                ],
+            )
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={
-                f"capability_{self.feature}": _wire_str(getattr(capabilities, self.feature, None)),
-                "declared": declared,
-                "served": served,
-                **(
-                    {
-                        "issues": [
-                            field_issue(
-                                "server",
-                                None,
-                                f"/capabilities/{self.feature}",
-                                "missing_capability_declaration",
-                                "a declaration matching the served catalog",
-                            )
-                        ],
-                        "issues_total": 1,
-                        "issues_omitted": 0,
-                    }
-                    if served and not declared
-                    else {}
-                ),
-                **({"collection_error": collection_error} if collection_error and not passed else {}),
-            },
+            details=details,
             suggested_fix=suggested_fix,
         )
 
@@ -304,6 +309,7 @@ class CapabilityToolsListChangedRule(CapabilityListChangedRule):
             RuleResult with the check outcome
 
         """
+        missing_feature = not getattr(capabilities, "tools", None)
         if not hasattr(capabilities, "tools") or not capabilities.tools:
             passed = False
             message = "❌ Tools is not present in capabilities"
@@ -321,18 +327,25 @@ class CapabilityToolsListChangedRule(CapabilityListChangedRule):
             message=message,
             details={"capability_tools": _wire_str(getattr(capabilities, "tools", None))},
             suggested_fix=(
-                "If the tools catalog can change, implement the applicable list-change notifications, "
-                "then declare capabilities.tools.listChanged=true. A static catalog may intentionally "
-                "omit this optional feature."
+                "If this server intentionally offers no tools, this advisory is not applicable. "
+                "Otherwise verify that the capability metadata was collected correctly, then audit again."
+                if missing_feature
+                else (
+                    "If the tools catalog can change, implement the applicable list-change notifications, "
+                    "then declare capabilities.tools.listChanged=true. A static catalog may intentionally "
+                    "omit this optional feature."
+                )
             ),
             recommendation=True,
             issues=[
                 field_issue(
                     "server",
                     None,
-                    "/capabilities/tools/listChanged",
-                    "list_changed_not_declared",
-                    "true when list-change notifications are implemented",
+                    "/capabilities/tools" if missing_feature else "/capabilities/tools/listChanged",
+                    "missing_capability" if missing_feature else "list_changed_not_declared",
+                    "collected metadata for an offered capability"
+                    if missing_feature
+                    else "true when list-change notifications are implemented",
                 )
             ],
         )
@@ -384,6 +397,7 @@ class CapabilityPromptsListChangedRule(CapabilityListChangedRule):
             RuleResult with the check outcome
 
         """
+        missing_feature = not getattr(capabilities, "prompts", None)
         if not hasattr(capabilities, "prompts") or not capabilities.prompts:
             passed = False
             message = "❌ Prompts is not present in capabilities"
@@ -401,18 +415,25 @@ class CapabilityPromptsListChangedRule(CapabilityListChangedRule):
             message=message,
             details={"capability_prompts": _wire_str(getattr(capabilities, "prompts", None))},
             suggested_fix=(
-                "If the prompts catalog can change, implement the applicable list-change "
-                "notifications, then declare capabilities.prompts.listChanged=true. A static catalog "
-                "may intentionally omit this optional feature."
+                "If this server intentionally offers no prompts, this advisory is not applicable. "
+                "Otherwise verify that the capability metadata was collected correctly, then audit again."
+                if missing_feature
+                else (
+                    "If the prompts catalog can change, implement the applicable list-change "
+                    "notifications, then declare capabilities.prompts.listChanged=true. A static catalog "
+                    "may intentionally omit this optional feature."
+                )
             ),
             recommendation=True,
             issues=[
                 field_issue(
                     "server",
                     None,
-                    "/capabilities/prompts/listChanged",
-                    "list_changed_not_declared",
-                    "true when list-change notifications are implemented",
+                    "/capabilities/prompts" if missing_feature else "/capabilities/prompts/listChanged",
+                    "missing_capability" if missing_feature else "list_changed_not_declared",
+                    "collected metadata for an offered capability"
+                    if missing_feature
+                    else "true when list-change notifications are implemented",
                 )
             ],
         )
@@ -464,6 +485,7 @@ class CapabilityResourcesListChangedRule(CapabilityListChangedRule):
             RuleResult with the check outcome
 
         """
+        missing_feature = not getattr(capabilities, "resources", None)
         if not hasattr(capabilities, "resources") or not capabilities.resources:
             passed = False
             message = "❌ Resources is not present in capabilities"
@@ -481,18 +503,25 @@ class CapabilityResourcesListChangedRule(CapabilityListChangedRule):
             message=message,
             details={"capability_resources": _wire_str(getattr(capabilities, "resources", None))},
             suggested_fix=(
-                "If the resources catalog can change, implement the applicable list-change "
-                "notifications, then declare capabilities.resources.listChanged=true. A static "
-                "catalog may intentionally omit this optional feature."
+                "If this server intentionally offers no resources, this advisory is not applicable. "
+                "Otherwise verify that the capability metadata was collected correctly, then audit again."
+                if missing_feature
+                else (
+                    "If the resources catalog can change, implement the applicable list-change "
+                    "notifications, then declare capabilities.resources.listChanged=true. A static "
+                    "catalog may intentionally omit this optional feature."
+                )
             ),
             recommendation=True,
             issues=[
                 field_issue(
                     "server",
                     None,
-                    "/capabilities/resources/listChanged",
-                    "list_changed_not_declared",
-                    "true when list-change notifications are implemented",
+                    "/capabilities/resources" if missing_feature else "/capabilities/resources/listChanged",
+                    "missing_capability" if missing_feature else "list_changed_not_declared",
+                    "collected metadata for an offered capability"
+                    if missing_feature
+                    else "true when list-change notifications are implemented",
                 )
             ],
         )
