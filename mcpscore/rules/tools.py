@@ -15,7 +15,8 @@ from .base import (
     requires_fields,
     requires_tools,
 )
-from .icon_validation import find_invalid_icons
+from .catalog_diagnostics import catalog_result, field_issue, fields, pointer_token
+from .icon_validation import find_invalid_icons, icon_issues
 from .registry import register_rule
 
 
@@ -61,6 +62,10 @@ class ToolsBaseRule(BaseRule):
                 passed=False,
                 message="❌ Tools object is not available",
                 details={"tools": None},
+                suggested_fix=(
+                    "Check catalog collection and the tools/list response before changing tool "
+                    "definitions. Retry the audit once the catalog is available."
+                ),
             )
         assert tools or self.judge_empty_catalog  # noqa: S101 — skip_reason gates empty quality catalogs
         return self._check_tools(tools)
@@ -94,7 +99,7 @@ class ToolsAtLeastOneRule(ToolsBaseRule):
 
     @property
     def rule_name(self) -> str:
-        return "Tools - At least one tool must exist"
+        return "Tools - At least one tool is recommended for tool-serving designs"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -127,12 +132,21 @@ class ToolsAtLeastOneRule(ToolsBaseRule):
 
         message = "✅ MCP Server provides at least one tool" if passed else "❌ MCP Server does not provide any tools"
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"tools_count": len(tools)},
+            suggested_fix=(
+                "If this server is intended to expose tools, register them and check tools/list. "
+                "Resources-only or prompts-only designs do not need invented tools; review whether "
+                "this quality check applies."
+            ),
+            issues=[
+                field_issue("catalog", None, "/tools", "empty_catalog", "at least one tool for a tools-serving design")
+            ],
+            recommendation=True,
         )
 
 
@@ -169,17 +183,23 @@ class ToolsNamePresentRule(ToolsBaseRule):
         passed = tools_with_empty_names == 0
 
         message = (
-            "✅ All Tools have a Name property specified"
+            "✅ All tools have a non-empty name"
             if passed
             else f"❌ Number of tools with empty names: {tools_with_empty_names}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"tools_with_empty_names": tools_with_empty_names},
+            suggested_fix=(
+                "Set name to a non-empty identifier on each reported tool. Use the catalog index to "
+                "locate unnamed entries."
+            ),
+            issues=fields(tools, "tool", "/name", "empty_name", "a non-empty identifier", lambda tool: tool.name == ""),
+            recommendation=False,
         )
 
 
@@ -193,7 +213,7 @@ class ToolsNamesUniqueRule(ToolsBaseRule):
 
     @property
     def rule_name(self) -> str:
-        return "Tools - All tool names must be unique"
+        return "Tools - All tool names should be unique"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -224,15 +244,29 @@ class ToolsNamesUniqueRule(ToolsBaseRule):
 
         passed = len(duplicates) == 0
         message = (
-            "✅ All Tools have unique names" if passed else f"❌ Duplicate tool names found: {', '.join(duplicates)}"
+            "✅ All tools have unique names"
+            if passed
+            else f"❌ Number of distinct duplicated tool names: {len(duplicates)}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"duplicate_names": duplicates, "name_counts": dict(name_counts)},
+            suggested_fix=(
+                "Give each tool a distinct name and update clients or documentation that reference renamed tools."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/name",
+                "duplicate_name",
+                "a name unique within the tool catalog",
+                lambda tool: name_counts[tool.name] > 1,
+            ),
+            recommendation=False,
         )
 
 
@@ -246,7 +280,7 @@ class ToolsNamesValidFormatRule(ToolsBaseRule):
 
     @property
     def rule_name(self) -> str:
-        return "Tools - All tool names must follow the format"
+        return "Tools - All tool names should follow the recommended format"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -272,17 +306,30 @@ class ToolsNamesValidFormatRule(ToolsBaseRule):
         passed = tools_with_invalid_names == 0
 
         message = (
-            "✅ All Tools have a valid Name property"
+            "✅ All tools have names matching the checked format"
             if passed
             else f"❌ Number of tools with invalid names: {tools_with_invalid_names}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"tools_with_invalid_names": tools_with_invalid_names},
+            suggested_fix=(
+                "Use 1-128 ASCII letters, digits, underscores, hyphens or dots in each tool name; for "
+                "example, search_customers. Update references to renamed tools."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/name",
+                "invalid_name_format",
+                "1-128 ASCII letters, digits, underscores, hyphens or dots",
+                lambda tool: not re.match(r"^[A-Za-z0-9_.-]{1,128}$", tool.name),
+            ),
+            recommendation=False,
         )
 
 
@@ -329,12 +376,22 @@ class ToolsTitlePresentRule(ToolsBaseRule):
             else f"❌ Number of tools without a display title: {len(tools_without_title)}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"tools_without_title": tools_without_title},
+            suggested_fix="Add a short human-readable title to each reported tool for display in clients.",
+            issues=fields(
+                tools,
+                "tool",
+                "/title",
+                "missing_title",
+                "a nonblank display title",
+                lambda tool: not (tool.title and tool.title.strip()),
+            ),
+            recommendation=True,
         )
 
 
@@ -348,7 +405,7 @@ class ToolsDescriptionPresentRule(ToolsBaseRule):
 
     @property
     def rule_name(self) -> str:
-        return "Tools - All tools must have a Description"
+        return "Tools - All tools should have a description"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -373,17 +430,30 @@ class ToolsDescriptionPresentRule(ToolsBaseRule):
         passed = len(tools_with_empty_descriptions) == 0
 
         message = (
-            "✅ All Tools have a Description property specified"
+            "✅ All tools have a nonblank description"
             if passed
             else f"❌ Number of tools with missing or empty descriptions: {len(tools_with_empty_descriptions)}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"tools_with_empty_descriptions": tools_with_empty_descriptions},
+            suggested_fix=(
+                "Describe what each reported tool does, when to use it and its important limits in "
+                "the description field."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/description",
+                "missing_description",
+                "a nonblank description",
+                lambda tool: not (tool.description and tool.description.strip()),
+            ),
+            recommendation=True,
         )
 
 
@@ -470,13 +540,14 @@ def _mcp_header_annotations(schema: dict[str, Any]) -> list[dict[str, Any]]:
     """Collect every x-mcp-header annotation and its static reachability."""
     annotations: list[dict[str, Any]] = []
 
-    def walk(node: Any, path: str, *, reachable: bool, properties_allowed: bool) -> None:
+    def walk(node: Any, path: str, pointer: str, *, reachable: bool, properties_allowed: bool) -> None:
         if isinstance(node, dict):
             if "x-mcp-header" in node:
                 annotations.append(
                     {
                         "header": node["x-mcp-header"],
                         "path": path,
+                        "_pointer": pointer,
                         "type": node.get("type"),
                         "reachable": reachable,
                     }
@@ -489,23 +560,32 @@ def _mcp_header_annotations(schema: dict[str, Any]) -> list[dict[str, Any]]:
                         walk(
                             property_schema,
                             property_path,
+                            f"{pointer}/properties/{pointer_token(property_name)}",
                             reachable=properties_allowed,
                             properties_allowed=properties_allowed,
                         )
                 elif isinstance(value, (dict, list)):
-                    walk(value, f"{path}.{key}", reachable=False, properties_allowed=False)
+                    walk(
+                        value,
+                        f"{path}.{key}",
+                        f"{pointer}/{pointer_token(key)}",
+                        reachable=False,
+                        properties_allowed=False,
+                    )
         elif isinstance(node, list):
             for index, item in enumerate(node):
-                walk(item, f"{path}[{index}]", reachable=False, properties_allowed=False)
+                walk(item, f"{path}[{index}]", f"{pointer}/{index}", reachable=False, properties_allowed=False)
 
-    walk(schema, "$", reachable=False, properties_allowed=True)
+    walk(schema, "$", "/inputSchema", reachable=False, properties_allowed=True)
     return annotations
 
 
 def _tool_mcp_header_annotations(tools: list[Tool]) -> list[dict[str, Any]]:
     """Collect x-mcp-header annotations with their tool names."""
     return [
-        {"tool": tool.name, **annotation} for tool in tools for annotation in _mcp_header_annotations(tool.input_schema)
+        {"tool": tool.name, "_entity_index": index, **annotation}
+        for index, tool in enumerate(tools)
+        for annotation in _mcp_header_annotations(tool.input_schema)
     ]
 
 
@@ -556,16 +636,17 @@ def _sensitive_category(value: str, source: str) -> str | None:
     return None
 
 
-def _sensitive_mcp_header_parameters(tool: Tool) -> list[dict[str, str]]:
+def _sensitive_mcp_header_parameters(tool: Tool) -> list[dict[str, Any]]:
     """Find annotated parameters whose declared metadata strongly implies sensitive data."""
-    failures: list[dict[str, str]] = []
+    failures: list[dict[str, Any]] = []
 
-    def walk(schema: dict[str, Any], path: str) -> None:
+    def walk(schema: dict[str, Any], path: str, pointer: str) -> None:
         properties = schema.get("properties")
         if not isinstance(properties, dict):
             return
         for parameter_name, property_schema in properties.items():
             property_path = f"{path}.properties.{parameter_name}"
+            property_pointer = f"{pointer}/properties/{pointer_token(parameter_name)}"
             if not isinstance(property_schema, dict):
                 continue
             if "x-mcp-header" in property_schema:
@@ -589,14 +670,15 @@ def _sensitive_mcp_header_parameters(tool: Tool) -> list[dict[str, str]]:
                         {
                             "tool": tool.name,
                             "path": property_path,
+                            "_pointer": property_pointer,
                             "header": str(property_schema.get("x-mcp-header")),
                             "matched_on": source,
                             "sensitive_category": category,
                         }
                     )
-            walk(property_schema, property_path)
+            walk(property_schema, property_path, property_pointer)
 
-    walk(tool.input_schema, "$")
+    walk(tool.input_schema, "$", "/inputSchema")
     return failures
 
 
@@ -737,7 +819,7 @@ class ToolsInputSchemaValidRule(ToolsBaseRule):
         passed = len(tools_with_invalid_input_schema) == 0
 
         message = (
-            "✅ All Tools have a valid Input Schema"
+            "✅ All tools have a valid Input Schema"
             if passed
             else f"❌ {len(tools_with_invalid_input_schema)} tool(s) have an invalid input schema."
         )
@@ -800,7 +882,7 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
         passed = len(tools_with_invalid_output_schema) == 0
 
         message = (
-            "✅ All Tools have a valid Output Schema"
+            "✅ All tools have a valid Output Schema"
             if passed
             else f"❌ {len(tools_with_invalid_output_schema)} tool(s) have an invalid output schema."
         )
@@ -860,14 +942,28 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
         message = (
             "✅ All declared output schemas are object-rooted"
             if passed
-            else f"❌ Number of tools with a non-object output schema root: {len(offending)}"
+            else f"❌ Number of distinct tool names with a non-object output schema root: {len(offending)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"tools_with_non_object_root": offending},
+            suggested_fix=(
+                "For the audited revision, wrap structured output in an object and update "
+                "outputSchema and returned structuredContent together. Omit outputSchema only if "
+                "structured output is not part of the contract."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/outputSchema/type",
+                "non_object_root",
+                "object for revisions 2025-06-18 through 2025-11-25",
+                lambda tool: tool.output_schema is not None and tool.output_schema.get("type") != "object",
+            ),
+            recommendation=False,
         )
 
 
@@ -906,6 +1002,12 @@ class ToolsMcpHeadersValidNamesRule(ToolsMcpHeadersBaseRule):
             "invalid_headers",
             "All MCP header names are valid",
             "MCP headers with invalid names",
+            suggested_fix=(
+                "Use a non-empty HTTP field-name token for each x-mcp-header value, such as Region. "
+                "Remove spaces, separators and control characters."
+            ),
+            expected="a non-empty HTTP field-name token",
+            reason="invalid_header_name",
         )
 
 
@@ -945,6 +1047,13 @@ class ToolsMcpHeadersUniqueRule(ToolsMcpHeadersBaseRule):
             "duplicate_headers",
             "All MCP header names are unique",
             "duplicate MCP header annotations",
+            suggested_fix=(
+                "Use distinct x-mcp-header values within each tool, ignoring letter case. If the "
+                "flagged parameters belong to separate tools with the same name, resolve the "
+                "tool-name collision and audit again."
+            ),
+            expected="case-insensitively distinct header names (currently grouped by tool name)",
+            reason="duplicate_header_name",
         )
 
 
@@ -977,6 +1086,14 @@ class ToolsMcpHeadersPrimitiveTypesRule(ToolsMcpHeadersBaseRule):
             "headers_with_invalid_types",
             "All MCP headers annotate supported primitive types",
             "MCP headers on unsupported types",
+            suggested_fix=(
+                "Keep x-mcp-header only on string, integer or boolean parameters. Remove the "
+                "annotation from parameters whose actual type needs a different representation; do "
+                "not change their type just to pass."
+            ),
+            expected="string, integer or boolean",
+            reason="unsupported_header_type",
+            field="type",
         )
 
 
@@ -1007,6 +1124,13 @@ class ToolsMcpHeadersStaticallyReachableRule(ToolsMcpHeadersBaseRule):
             "unreachable_headers",
             "All MCP header parameters are statically reachable",
             "statically unreachable MCP header parameters",
+            suggested_fix=(
+                "Keep x-mcp-header on parameters reached through direct properties chains from "
+                "inputSchema. Remove it from conditional, referenced or array branches, or "
+                "restructure the schema without changing input meaning."
+            ),
+            expected="a parameter reached through direct properties chains",
+            reason="unreachable_header",
         )
 
 
@@ -1028,36 +1152,48 @@ class ToolsMcpHeadersNotSensitiveRule(ToolsMcpHeadersBaseRule):
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
         """Find high-confidence credential and PII terms on annotated inputs."""
-        sensitive_headers = [failure for tool in tools for failure in _sensitive_mcp_header_parameters(tool)]
+        sensitive_headers = [
+            {**failure, "_entity_index": index}
+            for index, tool in enumerate(tools)
+            for failure in _sensitive_mcp_header_parameters(tool)
+        ]
         return _mcp_header_result(
             self,
             sensitive_headers,
             "sensitive_headers",
             "MCP headers avoid visibly sensitive parameters",
-            "MCP headers exposing visibly sensitive parameters",
+            "MCP header annotations with potentially sensitive parameter metadata",
+            suggested_fix=(
+                "Remove x-mcp-header from inputs containing credentials or personal data. Use the "
+                "appropriate authentication mechanism for credentials; renaming a sensitive field "
+                "does not make it safe."
+            ),
+            expected="a parameter without metadata indicating credentials or personal data",
+            reason="potentially_sensitive_header",
         )
 
 
-def _undocumented_input_properties(tool: Tool) -> list[dict[str, str]]:
+def _undocumented_input_properties(tool: Tool) -> list[dict[str, Any]]:
     """Find undocumented properties reachable through direct properties chains."""
-    failures: list[dict[str, str]] = []
+    failures: list[dict[str, Any]] = []
 
     # walk is entered only with dicts: the model validates input_schema, and
     # recursion below descends only into property schemas that are dicts.
-    def walk(schema: dict[str, Any], path: str) -> None:
+    def walk(schema: dict[str, Any], path: str, pointer: str) -> None:
         properties = schema.get("properties")
         if not isinstance(properties, dict):
             return
         for property_name, property_schema in properties.items():
             property_path = f"{path}.properties.{property_name}"
+            property_pointer = f"{pointer}/properties/{pointer_token(property_name)}"
             if not isinstance(property_schema, dict):
                 continue
             description = property_schema.get("description")
             if not isinstance(description, str) or not description.strip():
-                failures.append({"tool": tool.name, "path": property_path})
-            walk(property_schema, property_path)
+                failures.append({"tool": tool.name, "path": property_path, "_pointer": property_pointer})
+            walk(property_schema, property_path, property_pointer)
 
-    walk(tool.input_schema, "$")
+    walk(tool.input_schema, "$", "/inputSchema")
     return failures
 
 
@@ -1082,19 +1218,38 @@ class ToolsInputPropertiesDocumentedRule(ToolsBaseRule):
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
         """Find statically reachable input properties without descriptions."""
-        undocumented_properties = [failure for tool in tools for failure in _undocumented_input_properties(tool)]
+        undocumented_properties: list[dict[str, Any]] = [
+            {**failure, "_entity_index": index}
+            for index, tool in enumerate(tools)
+            for failure in _undocumented_input_properties(tool)
+        ]
         passed = not undocumented_properties
         message = (
             "✅ All statically reachable tool inputs are documented"
             if passed
             else f"❌ Number of undocumented tool input properties: {len(undocumented_properties)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"undocumented_properties": undocumented_properties},
+            details={"undocumented_properties": _legacy_locations(undocumented_properties)},
+            suggested_fix=(
+                "Add a description to each reported input property explaining its purpose, expected "
+                "format and important constraints. This check covers direct properties chains only."
+            ),
+            recommendation=True,
+            issues=(
+                field_issue(
+                    "tool",
+                    failure["_entity_index"],
+                    failure["_pointer"] + "/description",
+                    "missing_property_description",
+                    "a nonblank property description",
+                )
+                for failure in undocumented_properties
+            ),
         )
 
 
@@ -1104,16 +1259,26 @@ def _mcp_header_result(
     details_key: str,
     pass_message: str,
     failure_label: str,
+    *,
+    suggested_fix: str,
+    expected: str,
+    reason: str,
+    field: str = "x-mcp-header",
 ) -> RuleResult:
     """Build a consistent result for an x-mcp-header rule."""
     passed = not failures
     message = f"✅ {pass_message}" if passed else f"❌ Number of {failure_label}: {len(failures)}"
-    return RuleResult(
+    return catalog_result(
         rule_name=rule.rule_name,
         severity=rule.severity,
         passed=passed,
         message=message,
-        details={details_key: failures},
+        details={details_key: _legacy_locations(failures)},
+        suggested_fix=suggested_fix,
+        issues=(
+            field_issue("tool", failure["_entity_index"], failure["_pointer"] + "/" + field, reason, expected)
+            for failure in failures
+        ),
     )
 
 
@@ -1167,17 +1332,30 @@ class ToolsAnnotationsPresentRule(ToolsBaseRule):
         passed = len(tools_without_annotations) == 0
 
         message = (
-            "✅ All Tools declare behavior annotations"
+            "✅ All tools declare behavior annotations"
             if passed
             else f"❌ Number of tools without behavior annotations: {len(tools_without_annotations)}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"tools_without_annotations": tools_without_annotations},
+            suggested_fix=(
+                "Declare behavior annotations that match the tool's actual effects. Set readOnlyHint "
+                "to true only if the tool cannot change state."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/annotations",
+                "missing_behavior_annotation",
+                "at least one behavior annotation reflecting actual effects",
+                lambda tool: not _has_behavior_annotation(tool),
+            ),
+            recommendation=True,
         )
 
 
@@ -1206,12 +1384,18 @@ class ToolsIconsValidRule(ToolsBaseRule):
             if passed
             else f"❌ Number of invalid tool icons: {len(invalid_icons)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"invalid_icons": invalid_icons},
+            suggested_fix=(
+                "Correct each reported icon field: use an absolute src URI (a base64 image for data "
+                "URIs), a valid MIME type when supplied, and sizes such as 48x48 or any."
+            ),
+            issues=icon_issues(tools, "tool"),
+            recommendation=False,
         )
 
 
@@ -1286,10 +1470,31 @@ class ToolsExecutionConsistentRule(BaseRule):
             passed = False
             message = f"❌ Number of tools declaring task execution without a tasks capability: {len(task_tools)}"
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"task_tools": task_tools, "tasks_capability": has_tasks_capability},
+            suggested_fix=(
+                "Implement and declare tasks support for task-augmented tools, or remove their "
+                "task-execution declarations if task execution is not implemented."
+            ),
+            issues=fields(
+                tools or [],
+                "tool",
+                "/execution/taskSupport",
+                "undeclared_task_support",
+                "a matching tasks capability",
+                lambda tool: tool.execution is not None and tool.execution.task_support in ("optional", "required"),
+            ),
+            recommendation=False,
         )
+
+
+def _legacy_locations(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep exact private locations out of the legacy evidence dictionaries."""
+    return [
+        {key: value for key, value in failure.items() if key not in {"_pointer", "_entity_index"}}
+        for failure in failures
+    ]

@@ -157,9 +157,12 @@ older findings without authored guidance; skipped rules remain separate.
 Consumers must tolerate its absence. In JavaScript, count code points with
 `Array.from(text).length`, rather than UTF-16 `text.length`.
 
-The first supported findings are input/output schema validation and capability
-declarations. The CLI prints their hint as `Fix:` on stderr. JSON stdout remains
-one complete report. Other rules retain their existing messages during rollout.
+Supported findings include tool, resource, resource-template, prompt,
+server-metadata and capability rules. The CLI prints their hint as `Fix:` on
+stderr. JSON stdout remains one complete report. Other rule families retain their
+existing messages during rollout. Optional metadata and list-change advice is
+labeled as a quality recommendation in the message; it is not a protocol mandate.
+Scores and applicability are unchanged.
 
 Schema failures retain existing detail keys and add `details.issues`, with a tool
 catalog index, a JSON Pointer field path, a reason and an expected constraint.
@@ -171,6 +174,29 @@ Each tool contributes its first failing predicate; at most 20 issues are include
 `issues_total` and `issues_omitted` describe the evidence limit. Schema and catalog validation paths longer than
 255 Unicode code points are omitted with `path_omitted: true`; stored paths retain their exact JSON Pointer characters, including newlines,
 quotes and backslashes. Only CLI rendering escapes those characters. Indexes still identify the affected tool.
+
+Catalog metadata failures use the same bounded `details.issues` shape. Each issue
+identifies an `entity_kind` and a zero-based `entity_index` in the **collected,
+concatenated catalog**. Paths are relative to that item, using MCP wire field
+names: tool index 2 with `/inputSchema/properties/query/description`, for example.
+Prompt arguments and icons include their own indexes in the path. Server metadata
+paths start at `/serverInfo`, `/instructions` or `/capabilities` and have no
+catalog index. An empty-tools finding uses `/tools` relative to the catalog result.
+
+These new issues omit publisher names, URI values and image data. Indexes still
+identify entries with missing or duplicated names. Existing detail keys are
+retained for compatibility and are not covered by this new evidence bound.
+`issues_total` counts affected fields or occurrences, which can differ from a
+legacy count of distinct names or duplicate identifiers. At most 20 issues are
+included; overlong paths use `path_omitted: true` rather than a truncated pointer.
+Messages identify the first affected field; the complete bounded evidence remains
+in `details`. An optional field with an invalid declared value still needs repair.
+
+The guidance describes the current checks, not additional validation: server
+icons are checked for an `https://` or `data:` prefix only, and a declared
+`listChanged` flag does not prove that notifications work. Header uniqueness still
+groups annotations by tool name; resolve duplicate tool names before treating
+cross-entry collisions as a confirmed error within one tool.
 
 Catalog collection failures are recorded in report `listing_errors`, and in
 `details.collection_error` when a declaration rule fails. Outcomes distinguish

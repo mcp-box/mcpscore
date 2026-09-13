@@ -97,7 +97,7 @@ class TestResourcesUrisUniqueRule:
             )
         )
         assert result.passed is False
-        assert result.details == {"duplicate_uris": ["file:///same"]}
+        assert result.details["duplicate_uris"] == ["file:///same"]
 
     def test_incomplete_listing_skips(self) -> None:
         rule = ResourcesUrisUniqueRule()
@@ -129,7 +129,7 @@ class TestResourcesTitlesPresentRule:
         ]
         result = ResourcesTitlesPresentRule().check(AuditData(resources=resources))
         assert result.passed is False
-        assert result.details == {"resources_without_title": ["file:///missing", "file:///blank"]}
+        assert result.details["resources_without_title"] == ["file:///missing", "file:///blank"]
 
 
 class TestResourcesNamesPresentRule:
@@ -148,7 +148,7 @@ class TestResourcesNamesPresentRule:
             )
         )
         assert result.passed is False
-        assert result.details == {"resources_without_name": ["file:///empty", "file:///blank"]}
+        assert result.details["resources_without_name"] == ["file:///empty", "file:///blank"]
 
 
 class TestResourcesSizesValidRule:
@@ -162,7 +162,7 @@ class TestResourcesSizesValidRule:
     def test_negative_size_fails(self) -> None:
         result = ResourcesSizesValidRule().check(AuditData(resources=[_resource("bad", size=-1)]))
         assert result.passed is False
-        assert result.details == {"resources_with_invalid_size": [{"name": "bad", "size": -1}]}
+        assert result.details["resources_with_invalid_size"] == [{"name": "bad", "size": -1}]
 
 
 class TestResourcesMimeTypesValidRule:
@@ -218,7 +218,7 @@ class TestResourcesAnnotationsValidRule:
             AuditData(resources=[_resource("bad", annotations=Annotations(last_modified="30 July 2026"))])
         )
         assert result.passed is False
-        assert result.details == {"resources_with_invalid_annotations": ["bad"]}
+        assert result.details["resources_with_invalid_annotations"] == ["bad"]
 
     @pytest.mark.parametrize("value", ["", " 2026-07-30T10:15:30Z "])
     def test_blank_or_padded_last_modified_fails(self, value: str) -> None:

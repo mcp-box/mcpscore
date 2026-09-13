@@ -1,10 +1,13 @@
 """Shared validation for MCP catalog icon declarations."""
 
+from collections.abc import Iterable
 import re
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from mcp_types import Icon
+
+from .catalog_diagnostics import field_issue
 
 
 class IconOwner(Protocol):
@@ -33,9 +36,9 @@ _MIME_TYPE_RE = re.compile(
 _SIZE_RE = re.compile(r"^[1-9][0-9]*x[1-9][0-9]*$")
 
 
-def find_invalid_icons(items: list[tuple[str, IconOwner]]) -> list[dict[str, object]]:
+def find_invalid_icons(items: list[tuple[str, IconOwner]]) -> list[dict[str, Any]]:
     """Return compact diagnostics for structurally invalid catalog icons."""
-    invalid: list[dict[str, object]] = []
+    invalid: list[dict[str, Any]] = []
     for owner, item in items:
         for index, icon in enumerate(item.icons or []):
             fields: list[str] = []
@@ -82,3 +85,24 @@ def _is_base64_image_data_uri(value: str) -> bool:
     if match is None or not match.group(2):
         return False
     return len(match.group(2)) % 4 == 0
+
+
+_ICON_EXPECTED = {
+    "src": "an absolute URI; data URIs must contain a base64-encoded image",
+    "mimeType": "a media type with a type and subtype",
+    "sizes": "an array of positive WIDTHxHEIGHT strings, such as 48x48, or any",
+}
+
+
+def icon_issues(items: Iterable[IconOwner], kind: str) -> Iterable[dict[str, Any]]:
+    """Locate invalid icon fields without including source URLs or image data."""
+    for owner_index, item in enumerate(items):
+        for invalid in find_invalid_icons([("", item)]):
+            for field in invalid["invalid_fields"]:
+                yield field_issue(
+                    kind,
+                    owner_index,
+                    f"/icons/{invalid['icon_index']}/{field}",
+                    f"invalid_icon_{field}",
+                    _ICON_EXPECTED[field],
+                )

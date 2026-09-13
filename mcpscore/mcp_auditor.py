@@ -602,9 +602,19 @@ class MCPAuditor:
         if not res.passed and res.suggested_fix:
             logger.info("  Fix: %s", res.suggested_fix)
             for issue in (res.details or {}).get("issues", []):
+                location = {
+                    "tool": "Tool",
+                    "resource": "Resource",
+                    "resource_template": "Resource template",
+                    "prompt": "Prompt",
+                    "server": "Server",
+                    "catalog": "Catalog",
+                }.get(issue.get("entity_kind"), "Catalog item")
+                if issue.get("entity_index") is not None:
+                    location += f" index {issue['entity_index']}"
                 logger.info(
-                    "  Tool index %s · %s · expected %s",
-                    issue.get("entity_index"),
+                    "  %s · %s · expected %s",
+                    location,
                     json.dumps(issue.get("path", "path omitted"))[1:-1],
                     issue.get("expected"),
                 )

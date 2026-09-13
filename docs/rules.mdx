@@ -9,6 +9,11 @@ turn one off or re-rank it in a [`mcpscore.toml`](/configure-rules). It is
 regenerated from the rule registry on every change (`make docs-rules`), so the
 tables below always match the code.
 
+Catalog and server-metadata findings include concise repair guidance and indexed
+field evidence; see the [failure guidance contract](/stability#failure-guidance).
+Optional quality advice is labeled in report messages. A rule's severity is its
+score weight, not a statement that an optional field is required by the protocol.
+
 - **Rule ID** is the stable machine contract used in JSON reports and CI.
 - **Severity** carries its weight in parentheses: the points the rule adds to
   the score when it passes.
@@ -62,11 +67,11 @@ score whether it speaks MCP.
 | Rule ID | Name | Severity | Applies to |
 |---|---|---|---|
 | `capability_tools_present` | Capabilities - Tools Declared Consistently | CRITICAL (5) | all versions |
-| `capability_tools_list_changed` | Capabilities - Tools listChanged Implemented | LOW (1) | all versions |
+| `capability_tools_list_changed` | Capabilities - Tools listChanged Declared | LOW (1) | all versions |
 | `capability_prompts_present` | Capabilities - Prompts Declared Consistently | CRITICAL (5) | all versions |
-| `capability_prompts_list_changed` | Capabilities - Prompts listChanged Implemented | LOW (1) | all versions |
+| `capability_prompts_list_changed` | Capabilities - Prompts listChanged Declared | LOW (1) | all versions |
 | `capability_resources_present` | Capabilities - Resources Declared Consistently | CRITICAL (5) | all versions |
-| `capability_resources_list_changed` | Capabilities - Resources listChanged Implemented | LOW (1) | all versions |
+| `capability_resources_list_changed` | Capabilities - Resources listChanged Declared | LOW (1) | all versions |
 
 ## Security
 
@@ -88,12 +93,12 @@ score whether it speaks MCP.
 
 | Rule ID | Name | Severity | Applies to |
 |---|---|---|---|
-| `tools_at_least_one` | Tools - At least one tool must exist | CRITICAL (5) | all versions |
+| `tools_at_least_one` | Tools - At least one tool is recommended for tool-serving designs | CRITICAL (5) | all versions |
 | `tools_name_present_in_all` | Tools - All tools must have a Name | CRITICAL (5) | all versions |
-| `tools_names_unique` | Tools - All tool names must be unique | CRITICAL (5) | all versions |
-| `tools_names_valid_format` | Tools - All tool names must follow the format | HIGH (3) | all versions |
+| `tools_names_unique` | Tools - All tool names should be unique | CRITICAL (5) | all versions |
+| `tools_names_valid_format` | Tools - All tool names should follow the recommended format | HIGH (3) | all versions |
 | `tools_title_present_in_all` | Tools - All tools should have a display title | LOW (1) | 2025-06-18 and later |
-| `tools_description_present_in_all` | Tools - All tools must have a Description | HIGH (3) | all versions |
+| `tools_description_present_in_all` | Tools - All tools should have a description | HIGH (3) | all versions |
 | `tools_input_schema_valid` | Tools - All tools must have a valid input schema | HIGH (3) | all versions |
 | `tools_output_schema_valid` | Tools - All tools must have a valid output schema | HIGH (3) | all versions |
 | `tools_annotations_present` | Tools - All tools should declare behavior annotations | MEDIUM (2) | all versions |

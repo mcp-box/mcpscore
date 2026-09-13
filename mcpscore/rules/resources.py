@@ -14,8 +14,9 @@ from .base import (
     RuleSeverity,
     requires_fields,
 )
+from .catalog_diagnostics import catalog_result, fields
 from .catalog_validation import is_iso_8601, is_valid_media_type
-from .icon_validation import find_invalid_icons
+from .icon_validation import find_invalid_icons, icon_issues
 from .registry import register_rule
 
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
@@ -103,12 +104,25 @@ class ResourcesUrisValidRule(ResourcesBaseRule):
             if passed
             else f"❌ Number of resources with invalid URIs: {len(invalid_resource_uris)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"invalid_resource_uris": invalid_resource_uris},
+            suggested_fix=(
+                "Set uri to a valid absolute URI with a scheme, such as file:///reports/latest.json, "
+                "that identifies a resource your server serves."
+            ),
+            issues=fields(
+                resources,
+                "resource",
+                "/uri",
+                "invalid_absolute_uri",
+                "an absolute URI with valid URI syntax",
+                lambda resource: not _is_valid_absolute_uri(resource.uri),
+            ),
+            recommendation=False,
         )
 
 
@@ -151,12 +165,24 @@ class ResourcesNamesPresentRule(ResourcesBaseRule):
             if passed
             else f"❌ Number of resources without a name: {len(resources_without_name)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"resources_without_name": resources_without_name},
+            suggested_fix=(
+                "Set a nonblank name on each reported item. Use the catalog index to locate entries without names."
+            ),
+            issues=fields(
+                resources,
+                "resource",
+                "/name",
+                "blank_name",
+                "a nonblank name",
+                lambda resource: not resource.name.strip(),
+            ),
+            recommendation=False,
         )
 
 
@@ -189,12 +215,25 @@ class ResourcesSizesValidRule(ResourcesBaseRule):
             if passed
             else f"❌ Number of resources with invalid sizes: {len(resources_with_invalid_size)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"resources_with_invalid_size": resources_with_invalid_size},
+            suggested_fix=(
+                "Set size to the resource's non-negative size in bytes, or omit this optional field "
+                "if the size is unknown."
+            ),
+            issues=fields(
+                resources,
+                "resource",
+                "/size",
+                "negative_size",
+                "a non-negative size in bytes",
+                lambda resource: resource.size is not None and resource.size < 0,
+            ),
+            recommendation=False,
         )
 
 
@@ -227,12 +266,25 @@ class ResourcesMimeTypesValidRule(ResourcesBaseRule):
             if passed
             else f"❌ Number of resources with invalid MIME types: {len(resources_with_invalid_mime_type)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"resources_with_invalid_mime_type": resources_with_invalid_mime_type},
+            suggested_fix=(
+                "Set mimeType to the content's actual media type, such as application/json or "
+                "text/plain, or omit this optional field if it is unknown."
+            ),
+            issues=fields(
+                resources,
+                "resource",
+                "/mimeType",
+                "invalid_media_type",
+                "a media type with a type and subtype",
+                lambda resource: resource.mime_type is not None and not is_valid_media_type(resource.mime_type),
+            ),
+            recommendation=False,
         )
 
 
@@ -263,16 +315,34 @@ class ResourcesAnnotationsValidRule(ResourcesBaseRule):
         ]
         passed = not resources_with_invalid_annotations
         message = (
-            "✅ All declared resource annotations are valid"
+            "✅ All declared resource lastModified values pass the timestamp check"
             if passed
-            else f"❌ Number of resources with invalid annotations: {len(resources_with_invalid_annotations)}"
+            else f"❌ Resources with invalid lastModified annotations: {len(resources_with_invalid_annotations)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"resources_with_invalid_annotations": resources_with_invalid_annotations},
+            suggested_fix=(
+                "Set annotations.lastModified to a valid ISO 8601 timestamp, such as "
+                "2026-09-12T10:00:00Z, or omit this optional field if the modification time is "
+                "unknown."
+            ),
+            issues=fields(
+                resources,
+                "resource",
+                "/annotations/lastModified",
+                "invalid_timestamp",
+                "an ISO 8601 timestamp",
+                lambda resource: (
+                    resource.annotations is not None
+                    and resource.annotations.last_modified is not None
+                    and not is_iso_8601(resource.annotations.last_modified)
+                ),
+            ),
+            recommendation=False,
         )
 
 
@@ -314,12 +384,24 @@ class ResourcesDescriptionPresentRule(ResourcesBaseRule):
             else f"❌ Number of resources without a description: {len(resources_without_description)}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"resources_without_description": resources_without_description},
+            suggested_fix=(
+                "Describe the content, purpose and intended use of each reported item in its description field."
+            ),
+            issues=fields(
+                resources,
+                "resource",
+                "/description",
+                "missing_description",
+                "a nonblank description",
+                lambda resource: not (resource.description and resource.description.strip()),
+            ),
+            recommendation=True,
         )
 
 
@@ -355,12 +437,25 @@ class ResourcesUrisUniqueRule(ResourcesBaseRule):
             if passed
             else f"❌ Number of duplicate resource URIs: {len(duplicate_uris)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"duplicate_uris": duplicate_uris},
+            suggested_fix=(
+                "Return each resource URI once in the complete catalog. Merge duplicate entries or "
+                "assign distinct URIs to distinct resources."
+            ),
+            issues=fields(
+                resources,
+                "resource",
+                "/uri",
+                "duplicate_uri",
+                "a URI unique within the resource catalog",
+                lambda resource: counts[resource.uri] > 1,
+            ),
+            recommendation=False,
         )
 
 
@@ -396,12 +491,22 @@ class ResourcesTitlesPresentRule(ResourcesBaseRule):
             if passed
             else f"❌ Number of resources without a display title: {len(resources_without_title)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"resources_without_title": resources_without_title},
+            suggested_fix="Add a short human-readable title to each reported item for display in clients.",
+            issues=fields(
+                resources,
+                "resource",
+                "/title",
+                "missing_title",
+                "a nonblank title",
+                lambda resource: not (resource.title and resource.title.strip()),
+            ),
+            recommendation=True,
         )
 
 
@@ -430,10 +535,16 @@ class ResourcesIconsValidRule(ResourcesBaseRule):
             if passed
             else f"❌ Number of invalid resource icons: {len(invalid_icons)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"invalid_icons": invalid_icons},
+            suggested_fix=(
+                "Correct each reported icon field: use an absolute src URI (a base64 image for data "
+                "URIs), a valid MIME type when supplied, and sizes such as 48x48 or any."
+            ),
+            issues=icon_issues(resources, "resource"),
+            recommendation=False,
         )

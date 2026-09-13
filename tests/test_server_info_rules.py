@@ -67,7 +67,7 @@ def test_server_icons_present_rule(implementation_full, implementation_missing):
     # No icons at all fails.
     no_icons = rule.check(AuditData(server_info=implementation_missing))
     assert not no_icons.passed
-    assert "no icons" in no_icons.message
+    assert "icons is absent or empty" in no_icons.message
 
     # A plain-http src is not a valid icon source.
     invalid = replace(implementation_full, icons=[Icon(src="http://server.example/icon.png")])
