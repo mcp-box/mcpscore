@@ -1,5 +1,7 @@
 from abc import abstractmethod
 from collections import Counter
+from collections.abc import Iterable
+from typing import Any, Literal
 
 from mcp_types import Prompt
 
@@ -12,7 +14,8 @@ from .base import (
     RuleSeverity,
     requires_fields,
 )
-from .icon_validation import find_invalid_icons
+from .catalog_diagnostics import catalog_result, field_issue, fields
+from .icon_validation import find_invalid_icons, icon_issues
 from .registry import register_rule
 
 
@@ -105,12 +108,18 @@ class PromptsArgumentNamesUniqueRule(PromptsBaseRule):
             if passed
             else f"❌ Number of duplicate prompt arguments: {len(duplicate_arguments)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"duplicate_arguments": duplicate_arguments},
+            suggested_fix=(
+                "Give each argument within a prompt a distinct name, then update the prompt "
+                "implementation and prompts/get callers to use those names."
+            ),
+            issues=prompt_argument_issues(prompts, "duplicate"),
+            recommendation=False,
         )
 
 
@@ -141,12 +150,18 @@ class PromptsArgumentNamesPresentRule(PromptsBaseRule):
             if passed
             else f"❌ Number of prompts with unnamed arguments: {len(prompts_with_unnamed_arguments)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"prompts_with_unnamed_arguments": prompts_with_unnamed_arguments},
+            suggested_fix=(
+                "Set a nonblank name on each reported prompt argument so callers can address it in "
+                "prompts/get arguments."
+            ),
+            issues=prompt_argument_issues(prompts, "name"),
+            recommendation=False,
         )
 
 
@@ -188,12 +203,24 @@ class PromptsDescriptionPresentRule(PromptsBaseRule):
             else f"❌ Number of prompts without a description: {len(prompts_without_description)}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"prompts_without_description": prompts_without_description},
+            suggested_fix=(
+                "Describe the content, purpose and intended use of each reported item in its description field."
+            ),
+            issues=fields(
+                prompts,
+                "prompt",
+                "/description",
+                "missing_description",
+                "a nonblank description",
+                lambda prompt: not (prompt.description and prompt.description.strip()),
+            ),
+            recommendation=True,
         )
 
 
@@ -242,12 +269,18 @@ class PromptsArgumentsDocumentedRule(PromptsBaseRule):
             else f"❌ Number of undocumented prompt arguments: {len(undocumented_arguments)}"
         )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"undocumented_arguments": undocumented_arguments},
+            suggested_fix=(
+                "Add a description to each reported prompt argument explaining its purpose, expected "
+                "format and important constraints."
+            ),
+            issues=prompt_argument_issues(prompts, "description"),
+            recommendation=True,
         )
 
 
@@ -283,12 +316,24 @@ class PromptsNamesUniqueRule(PromptsBaseRule):
             if passed
             else f"❌ Number of duplicate prompt names: {len(duplicate_names)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"duplicate_names": duplicate_names},
+            suggested_fix=(
+                "Give each prompt a distinct name and update prompts/get callers that reference renamed prompts."
+            ),
+            issues=fields(
+                prompts,
+                "prompt",
+                "/name",
+                "duplicate_name",
+                "a name unique within the prompt catalog",
+                lambda prompt: counts[prompt.name] > 1,
+            ),
+            recommendation=False,
         )
 
 
@@ -322,12 +367,22 @@ class PromptsTitlesPresentRule(PromptsBaseRule):
             if passed
             else f"❌ Number of prompts without a display title: {len(prompts_without_title)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"prompts_without_title": prompts_without_title},
+            suggested_fix="Add a short human-readable title to each reported item for display in clients.",
+            issues=fields(
+                prompts,
+                "prompt",
+                "/title",
+                "missing_title",
+                "a nonblank title",
+                lambda prompt: not (prompt.title and prompt.title.strip()),
+            ),
+            recommendation=True,
         )
 
 
@@ -356,10 +411,41 @@ class PromptsIconsValidRule(PromptsBaseRule):
             if passed
             else f"❌ Number of invalid prompt icons: {len(invalid_icons)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"invalid_icons": invalid_icons},
+            suggested_fix=(
+                "Correct each reported icon field: use an absolute src URI (a base64 image for data "
+                "URIs), a valid MIME type when supplied, and sizes such as 48x48 or any."
+            ),
+            issues=icon_issues(prompts, "prompt"),
+            recommendation=False,
         )
+
+
+def prompt_argument_issues(
+    prompts: list[Prompt], check: Literal["duplicate", "name", "description"]
+) -> Iterable[dict[str, Any]]:
+    """Locate argument failures by prompt and argument index, including collisions."""
+    for index, prompt in enumerate(prompts):
+        arguments = prompt.arguments or []
+        counts = Counter(argument.name for argument in arguments)
+        for argument_index, argument in enumerate(arguments):
+            if check == "duplicate":
+                invalid = counts[argument.name] > 1
+                field, reason, expected = "name", "duplicate_argument_name", "a name unique within this prompt"
+            elif check == "name":
+                invalid = not argument.name.strip()
+                field, reason, expected = "name", "blank_argument_name", "a nonblank argument name"
+            else:
+                invalid = not (argument.description and argument.description.strip())
+                field, reason, expected = (
+                    "description",
+                    "missing_argument_description",
+                    "a nonblank argument description",
+                )
+            if invalid:
+                yield field_issue("prompt", index, f"/arguments/{argument_index}/{field}", reason, expected)

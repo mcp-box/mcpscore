@@ -13,8 +13,9 @@ from .base import (
     RuleSeverity,
     requires_fields,
 )
+from .catalog_diagnostics import catalog_result, fields
 from .catalog_validation import is_iso_8601, is_valid_media_type
-from .icon_validation import find_invalid_icons
+from .icon_validation import find_invalid_icons, icon_issues
 from .registry import register_rule
 
 _PCT_ENCODED_RE = re.compile(r"%[0-9A-Fa-f]{2}")
@@ -152,7 +153,7 @@ class ResourceTemplatesUriTemplatesValidRule(ResourceTemplatesBaseRule):
             if not is_valid_uri_template(template.uri_template)
         ]
         passed = not invalid
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -162,6 +163,20 @@ class ResourceTemplatesUriTemplatesValidRule(ResourceTemplatesBaseRule):
                 else f"❌ Number of invalid resource URI templates: {len(invalid)}"
             ),
             details={"invalid_uri_templates": invalid},
+            suggested_fix=(
+                "Correct uriTemplate syntax, including balanced braces and valid variable "
+                "expressions; for example, file:///reports/{id}. Keep the template aligned with "
+                "resources the server can serve."
+            ),
+            issues=fields(
+                templates,
+                "resource_template",
+                "/uriTemplate",
+                "invalid_uri_template",
+                "a non-empty RFC 6570 URI template",
+                lambda template: not is_valid_uri_template(template.uri_template),
+            ),
+            recommendation=False,
         )
 
 
@@ -195,7 +210,7 @@ class ResourceTemplatesUniqueRule(ResourceTemplatesBaseRule):
         counts = Counter(template.uri_template for template in templates)
         duplicates = sorted(value for value, count in counts.items() if count > 1)
         passed = not duplicates
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -205,6 +220,19 @@ class ResourceTemplatesUniqueRule(ResourceTemplatesBaseRule):
                 else f"❌ Number of duplicate resource URI templates: {len(duplicates)}"
             ),
             details={"duplicate_uri_templates": duplicates},
+            suggested_fix=(
+                "Return each uriTemplate once in the complete catalog. Merge duplicate definitions or "
+                "use distinct templates for distinct resource patterns."
+            ),
+            issues=fields(
+                templates,
+                "resource_template",
+                "/uriTemplate",
+                "duplicate_uri_template",
+                "a unique URI template identifier",
+                lambda template: counts[template.uri_template] > 1,
+            ),
+            recommendation=False,
         )
 
 
@@ -227,7 +255,7 @@ class ResourceTemplatesNamesPresentRule(ResourceTemplatesBaseRule):
     def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
         unnamed = [template.uri_template for template in templates if not template.name.strip()]
         passed = not unnamed
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -237,6 +265,18 @@ class ResourceTemplatesNamesPresentRule(ResourceTemplatesBaseRule):
                 else f"❌ Number of resource templates without a name: {len(unnamed)}"
             ),
             details={"templates_without_name": unnamed},
+            suggested_fix=(
+                "Set a nonblank name on each reported item. Use the catalog index to locate entries without names."
+            ),
+            issues=fields(
+                templates,
+                "resource_template",
+                "/name",
+                "blank_name",
+                "a nonblank name",
+                lambda template: not template.name.strip(),
+            ),
+            recommendation=False,
         )
 
 
@@ -265,12 +305,18 @@ class ResourceTemplatesIconsValidRule(ResourceTemplatesBaseRule):
             if passed
             else f"❌ Number of invalid resource-template icons: {len(invalid_icons)}"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"invalid_icons": invalid_icons},
+            suggested_fix=(
+                "Correct each reported icon field: use an absolute src URI (a base64 image for data "
+                "URIs), a valid MIME type when supplied, and sizes such as 48x48 or any."
+            ),
+            issues=icon_issues(templates, "resource_template"),
+            recommendation=False,
         )
 
 
@@ -297,7 +343,7 @@ class ResourceTemplatesMimeTypesValidRule(ResourceTemplatesBaseRule):
             if template.mime_type is not None and not is_valid_media_type(template.mime_type)
         ]
         passed = not invalid
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -307,6 +353,19 @@ class ResourceTemplatesMimeTypesValidRule(ResourceTemplatesBaseRule):
                 else f"❌ Number of resource templates with invalid MIME types: {len(invalid)}"
             ),
             details={"templates_with_invalid_mime_type": invalid},
+            suggested_fix=(
+                "Set mimeType to the content's actual media type, such as application/json or "
+                "text/plain, or omit this optional field if it is unknown."
+            ),
+            issues=fields(
+                templates,
+                "resource_template",
+                "/mimeType",
+                "invalid_media_type",
+                "a media type with a type and subtype",
+                lambda template: template.mime_type is not None and not is_valid_media_type(template.mime_type),
+            ),
+            recommendation=False,
         )
 
 
@@ -335,16 +394,34 @@ class ResourceTemplatesAnnotationsValidRule(ResourceTemplatesBaseRule):
             and not is_iso_8601(template.annotations.last_modified)
         ]
         passed = not invalid
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=(
-                "✅ All declared resource-template annotations are valid"
+                "✅ All declared resource-template lastModified values pass the timestamp check"
                 if passed
-                else f"❌ Number of resource templates with invalid annotations: {len(invalid)}"
+                else f"❌ Number of resource templates with invalid lastModified annotations: {len(invalid)}"
             ),
             details={"templates_with_invalid_annotations": invalid},
+            suggested_fix=(
+                "Set annotations.lastModified to a valid ISO 8601 timestamp, such as "
+                "2026-09-12T10:00:00Z, or omit this optional field if the modification time is "
+                "unknown."
+            ),
+            issues=fields(
+                templates,
+                "resource_template",
+                "/annotations/lastModified",
+                "invalid_timestamp",
+                "an ISO 8601 timestamp",
+                lambda template: (
+                    template.annotations is not None
+                    and template.annotations.last_modified is not None
+                    and not is_iso_8601(template.annotations.last_modified)
+                ),
+            ),
+            recommendation=False,
         )
 
 
@@ -371,7 +448,7 @@ class ResourceTemplatesDescriptionPresentRule(ResourceTemplatesBaseRule):
             if not (template.description and template.description.strip())
         ]
         passed = not missing
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -381,6 +458,18 @@ class ResourceTemplatesDescriptionPresentRule(ResourceTemplatesBaseRule):
                 else f"❌ Number of resource templates without a description: {len(missing)}"
             ),
             details={"templates_without_description": missing},
+            suggested_fix=(
+                "Describe the content, purpose and intended use of each reported item in its description field."
+            ),
+            issues=fields(
+                templates,
+                "resource_template",
+                "/description",
+                "missing_description",
+                "a nonblank description",
+                lambda template: not (template.description and template.description.strip()),
+            ),
+            recommendation=True,
         )
 
 
@@ -408,7 +497,7 @@ class ResourceTemplatesTitlesPresentRule(ResourceTemplatesBaseRule):
     def _check_templates(self, templates: list[ResourceTemplate]) -> RuleResult:
         missing = [template.uri_template for template in templates if not (template.title and template.title.strip())]
         passed = not missing
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -418,4 +507,14 @@ class ResourceTemplatesTitlesPresentRule(ResourceTemplatesBaseRule):
                 else f"❌ Number of resource templates without a display title: {len(missing)}"
             ),
             details={"templates_without_title": missing},
+            suggested_fix="Add a short human-readable title to each reported item for display in clients.",
+            issues=fields(
+                templates,
+                "resource_template",
+                "/title",
+                "missing_title",
+                "a nonblank title",
+                lambda template: not (template.title and template.title.strip()),
+            ),
+            recommendation=True,
         )

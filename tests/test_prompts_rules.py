@@ -72,7 +72,7 @@ class TestPromptsNamesUniqueRule:
     def test_duplicate_name_fails_once(self) -> None:
         result = PromptsNamesUniqueRule().check(AuditData(prompts=[_prompt("same"), _prompt("same"), _prompt("same")]))
         assert result.passed is False
-        assert result.details == {"duplicate_names": ["same"]}
+        assert result.details["duplicate_names"] == ["same"]
 
     def test_incomplete_listing_skips(self) -> None:
         rule = PromptsNamesUniqueRule()
@@ -101,7 +101,7 @@ class TestPromptsTitlesPresentRule:
         prompts = [_prompt("missing"), Prompt(name="blank", title="   ")]
         result = PromptsTitlesPresentRule().check(AuditData(prompts=prompts))
         assert result.passed is False
-        assert result.details == {"prompts_without_title": ["missing", "blank"]}
+        assert result.details["prompts_without_title"] == ["missing", "blank"]
 
 
 class TestPromptsArgumentNamesUniqueRule:
@@ -129,7 +129,7 @@ class TestPromptsArgumentNamesUniqueRule:
             )
         )
         assert result.passed is False
-        assert result.details == {"duplicate_arguments": ["review.code"]}
+        assert result.details["duplicate_arguments"] == ["review.code"]
 
 
 class TestPromptsArgumentNamesPresentRule:
@@ -157,7 +157,7 @@ class TestPromptsArgumentNamesPresentRule:
             )
         )
         assert result.passed is False
-        assert result.details == {"prompts_with_unnamed_arguments": ["bad"]}
+        assert result.details["prompts_with_unnamed_arguments"] == ["bad"]
 
 
 class TestPromptsArgumentsDocumentedRule:

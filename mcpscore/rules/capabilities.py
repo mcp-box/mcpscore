@@ -28,6 +28,7 @@ from .base import (
     RuleSeverity,
     requires_capabilities,
 )
+from .catalog_diagnostics import catalog_result, field_issue
 from .registry import register_rule
 
 
@@ -73,6 +74,10 @@ class CapabilityBaseRule(BaseRule):
                 passed=False,
                 message="❌ Capabilities object is not available",
                 details={"capabilities": None},
+                suggested_fix=(
+                    "Check the lifecycle response and connection in server logs, then retry the audit. "
+                    "Capability metadata was unavailable, so support could not be assessed."
+                ),
             )
 
         return self._check_capabilities(capabilities)
@@ -149,7 +154,7 @@ class CapabilityDeclarationRule(BaseRule):
         elif not declared and not served:
             passed = True
             message = (
-                f"✅ Server offers no {self.feature} and declares none — "
+                f"✅ No {self.feature} catalog was collected and no capability was declared — "
                 f"the {self.feature} capability is only required of servers that support it"
             )
         elif served and not declared:
@@ -189,17 +194,39 @@ class CapabilityDeclarationRule(BaseRule):
                     f"retry. The audit could not determine a more specific cause."
                 )
 
+        details = {
+            f"capability_{self.feature}": _wire_str(getattr(capabilities, self.feature, None)),
+            "declared": declared,
+            "served": served,
+            **({"collection_error": collection_error} if collection_error and not passed else {}),
+        }
+        if served and not declared:
+            # Use the common renderer only for this field-level failure. Keep
+            # collection outcomes nested and passing results free of evidence.
+            assert suggested_fix is not None  # noqa: S101 — authored by this branch above
+            return catalog_result(
+                rule_name=self.rule_name,
+                severity=self.severity,
+                passed=False,
+                message=message,
+                details=details,
+                suggested_fix=suggested_fix,
+                issues=[
+                    field_issue(
+                        "server",
+                        None,
+                        f"/capabilities/{self.feature}",
+                        "missing_capability_declaration",
+                        "a declaration matching the served catalog",
+                    )
+                ],
+            )
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={
-                f"capability_{self.feature}": _wire_str(getattr(capabilities, self.feature, None)),
-                "declared": declared,
-                "served": served,
-                **({"collection_error": collection_error} if collection_error and not passed else {}),
-            },
+            details=details,
             suggested_fix=suggested_fix,
         )
 
@@ -270,7 +297,7 @@ class CapabilityToolsListChangedRule(CapabilityListChangedRule):
 
     @property
     def rule_name(self) -> str:
-        return "Capabilities - Tools listChanged Implemented"
+        return "Capabilities - Tools listChanged Declared"
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
         """Advisory check: verify that capabilities.tools declares listChanged.
@@ -282,22 +309,45 @@ class CapabilityToolsListChangedRule(CapabilityListChangedRule):
             RuleResult with the check outcome
 
         """
+        missing_feature = not getattr(capabilities, "tools", None)
         if not hasattr(capabilities, "tools") or not capabilities.tools:
             passed = False
             message = "❌ Tools is not present in capabilities"
         elif not capabilities.tools.list_changed:
             passed = False
-            message = "❌ listChanged is not supported by Tools"
+            message = "❌ capabilities.tools.listChanged is not declared as true"
         else:
             passed = True
-            message = f"✅ Tools support listChanged: '{_wire_str(capabilities.tools)}'"
+            message = "✅ capabilities.tools.listChanged is declared as true (notifications not tested)."
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"capability_tools": _wire_str(getattr(capabilities, "tools", None))},
+            suggested_fix=(
+                "If this server intentionally offers no tools, this advisory is not applicable. "
+                "Otherwise verify that the capability metadata was collected correctly, then audit again."
+                if missing_feature
+                else (
+                    "If the tools catalog can change, implement the applicable list-change notifications, "
+                    "then declare capabilities.tools.listChanged=true. A static catalog may intentionally "
+                    "omit this optional feature."
+                )
+            ),
+            recommendation=not missing_feature,
+            issues=[
+                field_issue(
+                    "server",
+                    None,
+                    "/capabilities/tools" if missing_feature else "/capabilities/tools/listChanged",
+                    "missing_capability" if missing_feature else "list_changed_not_declared",
+                    "collected metadata for an offered capability"
+                    if missing_feature
+                    else "true when list-change notifications are implemented",
+                )
+            ],
         )
 
 
@@ -335,7 +385,7 @@ class CapabilityPromptsListChangedRule(CapabilityListChangedRule):
 
     @property
     def rule_name(self) -> str:
-        return "Capabilities - Prompts listChanged Implemented"
+        return "Capabilities - Prompts listChanged Declared"
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
         """Advisory check: verify that capabilities.prompts declares listChanged.
@@ -347,22 +397,45 @@ class CapabilityPromptsListChangedRule(CapabilityListChangedRule):
             RuleResult with the check outcome
 
         """
+        missing_feature = not getattr(capabilities, "prompts", None)
         if not hasattr(capabilities, "prompts") or not capabilities.prompts:
             passed = False
             message = "❌ Prompts is not present in capabilities"
         elif not capabilities.prompts.list_changed:
             passed = False
-            message = "❌ listChanged is not supported by Prompts"
+            message = "❌ capabilities.prompts.listChanged is not declared as true"
         else:
             passed = True
-            message = f"✅ Prompts support listChanged: '{_wire_str(capabilities.prompts)}'"
+            message = "✅ capabilities.prompts.listChanged is declared as true (notifications not tested)."
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"capability_prompts": _wire_str(getattr(capabilities, "prompts", None))},
+            suggested_fix=(
+                "If this server intentionally offers no prompts, this advisory is not applicable. "
+                "Otherwise verify that the capability metadata was collected correctly, then audit again."
+                if missing_feature
+                else (
+                    "If the prompts catalog can change, implement the applicable list-change "
+                    "notifications, then declare capabilities.prompts.listChanged=true. A static catalog "
+                    "may intentionally omit this optional feature."
+                )
+            ),
+            recommendation=not missing_feature,
+            issues=[
+                field_issue(
+                    "server",
+                    None,
+                    "/capabilities/prompts" if missing_feature else "/capabilities/prompts/listChanged",
+                    "missing_capability" if missing_feature else "list_changed_not_declared",
+                    "collected metadata for an offered capability"
+                    if missing_feature
+                    else "true when list-change notifications are implemented",
+                )
+            ],
         )
 
 
@@ -400,7 +473,7 @@ class CapabilityResourcesListChangedRule(CapabilityListChangedRule):
 
     @property
     def rule_name(self) -> str:
-        return "Capabilities - Resources listChanged Implemented"
+        return "Capabilities - Resources listChanged Declared"
 
     def _check_capabilities(self, capabilities: ServerCapabilities) -> RuleResult:
         """Advisory check: verify that capabilities.resources declares listChanged.
@@ -412,22 +485,45 @@ class CapabilityResourcesListChangedRule(CapabilityListChangedRule):
             RuleResult with the check outcome
 
         """
+        missing_feature = not getattr(capabilities, "resources", None)
         if not hasattr(capabilities, "resources") or not capabilities.resources:
             passed = False
             message = "❌ Resources is not present in capabilities"
         elif not capabilities.resources.list_changed:
             passed = False
-            message = "❌ listChanged is not supported by Resources"
+            message = "❌ capabilities.resources.listChanged is not declared as true"
         else:
             passed = True
-            message = f"✅ Resources support listChanged: '{_wire_str(capabilities.resources)}'"
+            message = "✅ capabilities.resources.listChanged is declared as true (notifications not tested)."
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"capability_resources": _wire_str(getattr(capabilities, "resources", None))},
+            suggested_fix=(
+                "If this server intentionally offers no resources, this advisory is not applicable. "
+                "Otherwise verify that the capability metadata was collected correctly, then audit again."
+                if missing_feature
+                else (
+                    "If the resources catalog can change, implement the applicable list-change "
+                    "notifications, then declare capabilities.resources.listChanged=true. A static "
+                    "catalog may intentionally omit this optional feature."
+                )
+            ),
+            recommendation=not missing_feature,
+            issues=[
+                field_issue(
+                    "server",
+                    None,
+                    "/capabilities/resources" if missing_feature else "/capabilities/resources/listChanged",
+                    "missing_capability" if missing_feature else "list_changed_not_declared",
+                    "collected metadata for an offered capability"
+                    if missing_feature
+                    else "true when list-change notifications are implemented",
+                )
+            ],
         )
 
 

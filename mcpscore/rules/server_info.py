@@ -2,7 +2,10 @@ from abc import abstractmethod
 
 from mcp_types import Implementation
 
+from mcpscore.diagnostics import quoted_preview
+
 from .base import BaseRule, RuleResult, RuleSeverity, requires_fields, requires_server_info
+from .catalog_diagnostics import catalog_result, field_issue
 from .registry import register_rule
 
 
@@ -36,6 +39,10 @@ class ServerInfoBaseRule(BaseRule):
                 passed=False,
                 message="❌ Server info is not available",
                 details={"server_info": None},
+                suggested_fix=(
+                    "Check the lifecycle response and connection in server logs, then retry the audit. "
+                    "Server metadata was unavailable, so individual fields could not be assessed."
+                ),
             )
 
         return self._check_server_info(server_info)
@@ -89,14 +96,20 @@ class ServerNamePresentRule(ServerInfoBaseRule):
             message = "❌ Server name is not present in server info"
         else:
             passed = True
-            message = f"✅ Server name is present: '{server_info.name}'"
+            message = f"✅ Server name is present: {quoted_preview(server_info.name)}."
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"server_name": getattr(server_info, "name", None)},
+            suggested_fix=(
+                "Set serverInfo.name to a non-empty identifier in the server metadata returned by the "
+                "applicable lifecycle."
+            ),
+            issues=[field_issue("server", None, "/serverInfo/name", "missing_metadata", "a non-empty identifier")],
+            recommendation=False,
         )
 
 
@@ -131,14 +144,17 @@ class ServerTitlePresentRule(ServerInfoBaseRule):
             message = "❌ Server title is not present in server info"
         else:
             passed = True
-            message = f"✅ Server title is present: '{server_info.title}'"
+            message = f"✅ Server title is present: {quoted_preview(server_info.title)} (presence checked only)."
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"server_title": getattr(server_info, "title", None)},
+            suggested_fix="Add a human-readable serverInfo.title so clients can display a recognizable server name.",
+            issues=[field_issue("server", None, "/serverInfo/title", "missing_metadata", "a display title")],
+            recommendation=True,
         )
 
 
@@ -173,14 +189,24 @@ class ServerVersionPresentRule(ServerInfoBaseRule):
             message = "❌ Server version is not present in server info"
         else:
             passed = True
-            message = f"✅ Server version is present: '{server_info.version}'"
+            message = f"✅ Server version is present: {quoted_preview(server_info.version)} (format not checked)."
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"server_version": getattr(server_info, "version", None)},
+            suggested_fix=(
+                "Set serverInfo.version to a non-empty implementation version in server metadata. "
+                "This check does not require semantic versioning."
+            ),
+            issues=[
+                field_issue(
+                    "server", None, "/serverInfo/version", "missing_metadata", "a non-empty implementation version"
+                )
+            ],
+            recommendation=False,
         )
 
 
@@ -224,12 +250,17 @@ class ServerInstructionsPresentRule(BaseRule):
             if passed
             else "❌ Server does not provide instructions (optional but recommended)"
         )
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"has_instructions": passed},
+            suggested_fix=(
+                "Add instructions describing when to use this server, important limitations and the intended workflow."
+            ),
+            issues=[field_issue("server", None, "/instructions", "missing_metadata", "nonblank usage instructions")],
+            recommendation=True,
         )
 
 
@@ -267,17 +298,24 @@ class ServerWebsiteUrlPresentRule(ServerInfoBaseRule):
         website_url = getattr(server_info, "website_url", None)
         if website_url:
             passed = True
-            message = f"✅ Server websiteUrl is present: '{website_url}'"
+            message = "✅ serverInfo.websiteUrl is present (URL not fetched or validated)."
         else:
             passed = False
             message = "❌ Server websiteUrl is not present in server info"
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"website_url": website_url},
+            suggested_fix="Add serverInfo.websiteUrl pointing to the server's documentation or project homepage.",
+            issues=[
+                field_issue(
+                    "server", None, "/serverInfo/websiteUrl", "missing_metadata", "a project or documentation URL"
+                )
+            ],
+            recommendation=True,
         )
 
 
@@ -320,18 +358,47 @@ class ServerIconsPresentRule(ServerInfoBaseRule):
         ]
         if not icons:
             passed = False
-            message = "❌ Server declares no icons in server info"
+            message = "❌ serverInfo.icons is absent or empty"
         elif invalid:
             passed = False
-            message = f"❌ Number of icons without a valid https/data src: {len(invalid)}"
+            message = f"❌ Number of server icons whose src lacks an https:// or data: prefix: {len(invalid)}"
         else:
             passed = True
-            message = f"✅ Server declares {len(icons)} icon(s) with valid sources"
+            message = (
+                f"✅ Server declares {len(icons)} icon(s) with an https:// or data: src prefix (content not checked)."
+            )
 
-        return RuleResult(
+        return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"icon_count": len(icons), "invalid_srcs": invalid},
+            suggested_fix=(
+                (
+                    "Consider adding a serverInfo.icons entry for recognition in clients, using an HTTPS "
+                    "image URL or a base64 image data URI."
+                )
+                if not icons
+                else (
+                    "Set each reported serverInfo.icons src to an HTTPS image URL or a base64 image data "
+                    "URI. Verify the image separately; this check only tests the URI prefix."
+                )
+            ),
+            recommendation=not icons,
+            issues=(
+                [field_issue("server", None, "/serverInfo/icons", "missing_icons", "an optional display icon")]
+                if not icons
+                else [
+                    field_issue(
+                        "server",
+                        None,
+                        f"/serverInfo/icons/{index}/src",
+                        "unsupported_icon_prefix",
+                        "an https:// or data: prefix",
+                    )
+                    for index, icon in enumerate(icons)
+                    if not (isinstance(icon.src, str) and icon.src.startswith(("https://", "data:")))
+                ]
+            ),
         )

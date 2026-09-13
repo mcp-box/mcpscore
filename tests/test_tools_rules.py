@@ -971,13 +971,11 @@ class TestToolsInputPropertiesDocumentedRule:
         )
         result = ToolsInputPropertiesDocumentedRule().check(AuditData(tools=[tool]))
         assert result.passed is False
-        assert result.details == {
-            "undocumented_properties": [
-                {"tool": "search", "path": "$.properties.query"},
-                {"tool": "search", "path": "$.properties.options"},
-                {"tool": "search", "path": "$.properties.options.properties.limit"},
-            ]
-        }
+        assert result.details["undocumented_properties"] == [
+            {"tool": "search", "path": "$.properties.query"},
+            {"tool": "search", "path": "$.properties.options"},
+            {"tool": "search", "path": "$.properties.options.properties.limit"},
+        ]
 
     def test_unresolved_schema_branches_are_not_judged(self) -> None:
         tool = Tool(

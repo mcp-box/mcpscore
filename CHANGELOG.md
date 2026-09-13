@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve printable Unicode in identity and duplicate-name previews, counting
+  their 60-character limit in source code points while still escaping controls.
+- Restore quoted server name, version and title in passing messages, and show up
+  to three duplicate tool names in collision messages. Previews escape control
+  characters, visibly truncate long values and retain full legacy detail values.
+- Use readable entity labels in both finding messages and CLI evidence. Omit the
+  optional-recommendation label from the CRITICAL empty-tools finding while
+  retaining its applicability guidance and existing score weight.
+- Capability advisories identify the missing capability when called without it,
+  rather than suggesting an optional listChanged declaration. Served-but-undeclared
+  capability findings include their field location in the human-readable message.
+
+### Added
+
+- Failure-only repair guidance across tool, resource, resource-template, prompt,
+  server-metadata and capability rules. Indexed field evidence identifies unnamed
+  and duplicate catalog entries, prompt arguments and individual icon fields.
+- Bounded catalog issue lists with exact JSON Pointer locations and expected
+  constraints, without adding raw URI values, image payloads or schema values.
+
+### Changed
+
+- Optional metadata and list-change advice is explicitly labeled as a quality
+  recommendation. Declaration checks describe declared support rather than claiming
+  that behavior was tested; server icon messages describe their prefix-only check.
+- Tool-name collision messages are bounded, and field paths are escaped in message
+  text while remaining exact in structured evidence. Existing verdicts, severities,
+  score weights, applicability and legacy detail keys are preserved.
+
 ## [1.15.0] - 2026-09-13
 
 Failure guidance release: failed findings now carry a repair hint and bounded

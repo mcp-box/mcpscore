@@ -72,9 +72,9 @@ def test_uri_template_rule_reports_invalid_templates() -> None:
         )
     )
     assert not result.passed
-    assert result.details == {
-        "invalid_uri_templates": [{"name": "broken", "uri_template": "https://example.com/{bad-name}"}]
-    }
+    assert result.details["invalid_uri_templates"] == [
+        {"name": "broken", "uri_template": "https://example.com/{bad-name}"}
+    ]
 
 
 def test_unique_rule_reports_duplicate_identifiers() -> None:
@@ -83,7 +83,7 @@ def test_unique_rule_reports_duplicate_identifiers() -> None:
         AuditData(resource_templates=[_template("one", duplicate), _template("two", duplicate)])
     )
     assert not result.passed
-    assert result.details == {"duplicate_uri_templates": [duplicate]}
+    assert result.details["duplicate_uri_templates"] == [duplicate]
 
 
 def test_names_rule_rejects_blank_names() -> None:
@@ -91,7 +91,7 @@ def test_names_rule_rejects_blank_names() -> None:
         AuditData(resource_templates=[_template("users", "users/{id}"), _template("  ", "files/{id}")])
     )
     assert not result.passed
-    assert result.details == {"templates_without_name": ["files/{id}"]}
+    assert result.details["templates_without_name"] == ["files/{id}"]
 
 
 def test_mime_types_rule_accepts_absent_and_valid_values() -> None:
@@ -112,12 +112,10 @@ def test_mime_types_rule_reports_invalid_values() -> None:
     ]
     result = ResourceTemplatesMimeTypesValidRule().check(AuditData(resource_templates=templates))
     assert not result.passed
-    assert result.details == {
-        "templates_with_invalid_mime_type": [
-            {"name": "missing-subtype", "mime_type": "text"},
-            {"name": "blank", "mime_type": ""},
-        ]
-    }
+    assert result.details["templates_with_invalid_mime_type"] == [
+        {"name": "missing-subtype", "mime_type": "text"},
+        {"name": "blank", "mime_type": ""},
+    ]
 
 
 def test_annotations_rule_accepts_absent_and_iso_8601_values() -> None:
@@ -135,7 +133,7 @@ def test_annotations_rule_reports_invalid_last_modified() -> None:
     template = _template("bad", "bad/{id}", annotations=Annotations(last_modified="3 August 2026"))
     result = ResourceTemplatesAnnotationsValidRule().check(AuditData(resource_templates=[template]))
     assert not result.passed
-    assert result.details == {"templates_with_invalid_annotations": ["bad/{id}"]}
+    assert result.details["templates_with_invalid_annotations"] == ["bad/{id}"]
 
 
 def test_description_rule_reports_missing_and_blank_descriptions() -> None:
@@ -146,7 +144,7 @@ def test_description_rule_reports_missing_and_blank_descriptions() -> None:
     ]
     result = ResourceTemplatesDescriptionPresentRule().check(AuditData(resource_templates=templates))
     assert not result.passed
-    assert result.details == {"templates_without_description": ["missing/{id}", "blank/{id}"]}
+    assert result.details["templates_without_description"] == ["missing/{id}", "blank/{id}"]
 
 
 def test_titles_rule_is_scoped_to_revisions_that_define_title() -> None:
@@ -175,7 +173,7 @@ def test_titles_rule_reports_missing_and_blank_titles() -> None:
     ]
     result = ResourceTemplatesTitlesPresentRule().check(AuditData(resource_templates=templates))
     assert not result.passed
-    assert result.details == {"templates_without_title": ["missing/{id}", "blank/{id}"]}
+    assert result.details["templates_without_title"] == ["missing/{id}", "blank/{id}"]
 
 
 def test_template_rules_skip_when_capability_has_no_templates() -> None:

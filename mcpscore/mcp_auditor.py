@@ -15,7 +15,7 @@ from mcp import StdioServerParameters
 from pydantic import ValidationError
 
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
-from .diagnostics import validation_diagnostics
+from .diagnostics import entity_label, validation_diagnostics
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
 from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
@@ -602,9 +602,12 @@ class MCPAuditor:
         if not res.passed and res.suggested_fix:
             logger.info("  Fix: %s", res.suggested_fix)
             for issue in (res.details or {}).get("issues", []):
+                location = entity_label(issue.get("entity_kind"))
+                if issue.get("entity_index") is not None:
+                    location += f" index {issue['entity_index']}"
                 logger.info(
-                    "  Tool index %s · %s · expected %s",
-                    issue.get("entity_index"),
+                    "  %s · %s · expected %s",
+                    location,
                     json.dumps(issue.get("path", "path omitted"))[1:-1],
                     issue.get("expected"),
                 )

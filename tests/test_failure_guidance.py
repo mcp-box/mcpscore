@@ -205,7 +205,7 @@ async def test_auditor_captures_prints_and_detaches_collection_diagnostics(caplo
 
 
 @pytest.mark.parametrize("mode", ["schema", "long_path", "pass", "no_hint"])
-def test_auditor_logs_guidance_only_for_authored_failures(mode, caplog):
+def test_auditor_logs_guidance_only_for_authored_failures(mode, caplog, monkeypatch):
     from mcpscore.mcp_auditor import MCPAuditor
 
     auditor = MCPAuditor()
@@ -214,6 +214,13 @@ def test_auditor_logs_guidance_only_for_authored_failures(mode, caplog):
 
         auditor.rules = [ToolsNamePresentRule()]
         auditor.audit_data.tools = [Tool(name="", input_schema={"type": "object"})]
+        # Model an older or third-party result explicitly: built-in tool-name
+        # failures now have authored guidance and must no longer stand in for it.
+        monkeypatch.setattr(
+            auditor.rules[0],
+            "check",
+            lambda _: RuleResult("Legacy finding", RuleSeverity.CRITICAL, passed=False, message="Missing name."),
+        )
     else:
         auditor.rules = [ToolsInputSchemaValidRule()]
         schema = (

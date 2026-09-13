@@ -26,6 +26,11 @@ turn one off or re-rank it in a [`mcpscore.toml`](/configure-rules). It is
 regenerated from the rule registry on every change (`make docs-rules`), so the
 tables below always match the code.
 
+Catalog and server-metadata findings include concise repair guidance and indexed
+field evidence; see the [failure guidance contract](/stability#failure-guidance).
+Optional quality advice is labeled in report messages. A rule's severity is its
+score weight, not a statement that an optional field is required by the protocol.
+
 - **Rule ID** is the stable machine contract used in JSON reports and CI.
 - **Severity** carries its weight in parentheses: the points the rule adds to
   the score when it passes.

@@ -143,7 +143,7 @@ def test_capabilities_feature_rules_declared_but_disabled(capabilities_full):
     for rule in feature_rules:
         result = rule.check(AuditData(capabilities=caps))
         assert result.passed is False
-        assert "not supported" in result.message
+        assert "not declared as true" in result.message
 
 
 class TestListingNeverAttempted:
