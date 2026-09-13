@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve printable Unicode in identity and duplicate-name previews, counting
+  their 60-character limit in source code points while still escaping controls.
 - Restore quoted server name, version and title in passing messages, and show up
   to three duplicate tool names in collision messages. Previews escape control
   characters, visibly truncate long values and retain full legacy detail values.

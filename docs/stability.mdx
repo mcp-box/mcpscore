@@ -187,8 +187,10 @@ These new issues omit publisher names, URI values and image data. Indexes still
 identify entries with missing or duplicated names. Existing detail keys are
 retained for compatibility and are not covered by this new evidence bound.
 Human-readable messages can show server identity values on passes and up to three
-duplicate tool names on failures. Each quoted preview is limited to 60 escaped
-display characters, with an explicit truncation marker; the full values remain in
+duplicate tool names on failures. Each quoted preview includes at most 60 source
+Unicode code points, with an explicit truncation marker. Printable Unicode stays
+readable; quotes, backslashes and nonprinting characters are escaped, so the rendered
+preview can be longer than 60 characters. The full values remain in
 legacy details. This is a display bound, not secret redaction. Website URL values
 are not echoed in passing messages.
 `issues_total` counts affected fields or occurrences, which can differ from a

@@ -483,7 +483,8 @@ def test_identity_preview_bounds_escaped_text_without_broken_sequences(value: st
     quoted = preview.removesuffix(" [truncated]")
     decoded = json.loads(quoted)
     assert value.startswith(decoded)
-    assert len(quoted) <= 62
+    assert len(decoded) <= 60
+    assert decoded == value[:60]
     assert "\n" not in preview
     assert "\x1b" not in preview
     assert preview.endswith(" [truncated]") is (decoded != value)
@@ -504,3 +505,37 @@ def test_unknown_entity_kind_has_a_safe_display_label() -> None:
 
     assert entity_label(None) == "Catalog item"
     assert entity_label("unrecognized") == "Catalog item"
+
+
+@pytest.mark.parametrize("name", ["工具", "🔧😀", "工具" * 30, "🔧" * 60])
+def test_unicode_identity_and_duplicate_names_remain_readable(name: str) -> None:
+    info = Implementation(name=name, title=name, version="1")
+    for rule_id in ["server_name_present", "server_title_present"]:
+        result = RULES[rule_id].check(AuditData(server_info=info))
+        assert result.passed
+        assert f'"{name}"' in result.message
+        assert "[truncated]" not in result.message
+    duplicate = RULES["tools_names_unique"].check(AuditData(tools=[tool(name=name), tool(name=name)]))
+    assert not duplicate.passed
+    assert f'"{name}"' in duplicate.message
+    assert "[truncated]" not in duplicate.message
+    assert duplicate.details["duplicate_names"] == [name]
+
+
+@pytest.mark.parametrize("value", ["工" * 61, "🔧" * 61])
+def test_unicode_preview_truncates_after_sixty_code_points(value: str) -> None:
+    from mcpscore.diagnostics import quoted_preview
+
+    assert quoted_preview(value) == f'"{value[:60]}" [truncated]'
+
+
+@pytest.mark.parametrize("character", ["\x00", "\x1b", "\x7f", "\x85", "\u2028", "\u2029", "\u202e"])
+def test_unicode_preview_keeps_nonprinting_characters_escaped(character: str) -> None:
+    from mcpscore.diagnostics import quoted_preview
+
+    value = "工具" + character + '"\\🔧'
+    preview = quoted_preview(value)
+    assert character not in preview
+    assert "工具" in preview
+    assert "🔧" in preview
+    assert json.loads(preview) == value

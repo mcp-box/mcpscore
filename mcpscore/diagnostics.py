@@ -50,17 +50,16 @@ def entity_label(kind: str | None) -> str:
 
 
 def quoted_preview(value: str) -> str:
-    """Quote at most 60 escaped display characters without splitting an escape.
+    """Quote at most 60 source code points, preserving printable Unicode.
 
     Keep the full original value in existing details. This is a display bound,
     not redaction: only identity fields intended for humans should use it.
     """
     parts: list[str] = []
-    length = 0
-    for character in value:
-        escaped = json.dumps(character, ensure_ascii=True)[1:-1]
-        if length + len(escaped) > 60:
-            return '"' + "".join(parts) + '" [truncated]'
+    for character in value[:60]:
+        # JSON handles quotes, backslashes and ASCII controls. Force escapes
+        # for other nonprinting characters too (C1 controls, line separators,
+        # bidi controls and surrogates), without obscuring CJK text or emoji.
+        escaped = json.dumps(character, ensure_ascii=not character.isprintable())[1:-1]
         parts.append(escaped)
-        length += len(escaped)
-    return '"' + "".join(parts) + '"'
+    return '"' + "".join(parts) + '"' + (" [truncated]" if len(value) > 60 else "")
