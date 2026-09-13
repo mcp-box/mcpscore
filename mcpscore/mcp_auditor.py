@@ -1,5 +1,6 @@
 import asyncio
 from copy import deepcopy
+import json
 import logging
 import ssl
 from typing import TYPE_CHECKING
@@ -430,6 +431,23 @@ class MCPAuditor:
                             break
                     else:
                         self.audit_data.tools = parsed_tools
+                else:
+                    # The probe outcome remains unsupported. Retain only the
+                    # field's shape, never the malformed catalog's raw value.
+                    missing = "tools" not in stateless.payload
+                    self.audit_data.listing_errors["tools"] = {
+                        "outcome": "invalid_response",
+                        "page_index": 0,
+                        "issues": [
+                            {
+                                "path": "/tools",
+                                "reason": "missing" if missing else "list_type",
+                                "expected": "a required array" if missing else "an array",
+                            }
+                        ],
+                        "issues_total": 1,
+                        "issues_omitted": 0,
+                    }
 
     @staticmethod
     def _parse_payload_model(model: type, value: object):
@@ -587,12 +605,16 @@ class MCPAuditor:
                 logger.info(
                     "  Tool index %s · %s · expected %s",
                     issue.get("entity_index"),
-                    issue.get("path", "path omitted"),
+                    json.dumps(issue.get("path", "path omitted"))[1:-1],
                     issue.get("expected"),
                 )
 
             for issue in (res.details or {}).get("collection_error", {}).get("issues", []):
-                logger.info("  Response %s · expected %s", issue.get("path", "path omitted"), issue.get("expected"))
+                logger.info(
+                    "  Response %s · expected %s",
+                    json.dumps(issue.get("path", "path omitted"))[1:-1],
+                    issue.get("expected"),
+                )
 
     def _apply_rerank(self, res: RuleResult) -> None:
         """Give a result its configured severity, recording the rule's own in ``details``.

@@ -51,13 +51,13 @@ def test_schema_locations_disambiguate_duplicate_tools_without_copying_values(ou
     assert "SECRET" not in json.dumps(result.to_dict())
 
 
-def test_schema_evidence_is_bounded_and_control_characters_escaped():
+def test_schema_evidence_is_bounded_and_preserves_pointer_characters():
     tools = [Tool(name="", input_schema={"type": "object", "properties": {"x\n": {"type": "bad"}}})] * 25
     result = ToolsInputSchemaValidRule().check(AuditData(tools=tools))
     assert len(result.details["issues"]) == 20
     assert result.details["issues_total"] == 25
     assert result.details["issues_omitted"] == 5
-    assert "\n" not in result.details["issues"][0]["path"]
+    assert "\n" in result.details["issues"][0]["path"]
     long = Tool(name="", input_schema={"type": "object", "properties": {"x" * 300: {"type": "bad"}}})
     assert ToolsInputSchemaValidRule().check(AuditData(tools=[long])).details["issues"][0]["path_omitted"]
 
@@ -304,5 +304,95 @@ def test_shared_validation_evidence_limits_and_escapes_locations():
     assert evidence["issues_total"] == 25
     assert evidence["issues_omitted"] == 5
     assert len(evidence["issues"]) == 20
-    assert evidence["issues"][0]["path"] == "/a~1b~0c\\n/0"
+    assert evidence["issues"][0]["path"] == "/a~1b~0c\n/0"
     assert "SECRET" not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize("kind", ["schema", "catalog"])
+@pytest.mark.parametrize("key", ["line\nbreak", 'quote"and\\backslash', "slash/~tilde"])
+def test_report_paths_resolve_after_json_round_trip_and_cli_is_escaped(kind, key, caplog):
+    from mcpscore.diagnostics import validation_diagnostics
+    from mcpscore.mcp_auditor import MCPAuditor
+
+    if kind == "schema":
+        document = {"inputSchema": {"type": "object", "properties": {key: {"type": "bad"}}}}
+        result = ToolsInputSchemaValidRule().check(
+            AuditData(tools=[Tool(name="tool", input_schema=document["inputSchema"])])
+        )
+        path = json.loads(json.dumps(result.to_dict()))["details"]["issues"][0]["path"]
+    else:
+        document = {key: "bad"}
+        error = ValidationError.from_exception_data(
+            "Catalog", [{"type": "string_type", "loc": (key,), "input": ["SECRET"]}]
+        )
+        evidence = validation_diagnostics(error)
+        result = CapabilityToolsPresentRule().check(
+            AuditData(capabilities=ServerCapabilities(tools=ToolsCapability()), listing_errors={"tools": evidence})
+        )
+        path = json.loads(json.dumps(result.to_dict()))["details"]["collection_error"]["issues"][0]["path"]
+    # Resolve the pointer against the original document, not a display-escaped copy.
+    resolved = document
+    for segment in path.split("/")[1:]:
+        resolved = resolved[segment.replace("~1", "/").replace("~0", "~")]
+    assert resolved == "bad"
+    with caplog.at_level("INFO", logger="mcpscore"):
+        MCPAuditor._log_guidance(result)
+    assert json.dumps(path)[1:-1] in caplog.text
+    if "\n" in key:
+        assert key not in caplog.text
+
+
+def test_root_validation_pointer_addresses_the_document():
+    from mcpscore.diagnostics import validation_diagnostics
+
+    error = ValidationError.from_exception_data("Catalog", [{"type": "dict_type", "loc": (), "input": ["SECRET"]}])
+    assert validation_diagnostics(error)["issues"][0]["path"] == ""
+
+
+def test_nested_result_and_readiness_details_are_detached_on_export():
+    from mcpscore.mcp_auditor import MCPAuditor
+
+    auditor = MCPAuditor()
+    error = {"outcome": "invalid_response", "issues": [{"path": "/tools/0/name"}]}
+    auditor.audit_data.listing_errors = {"tools": error}
+    result = CapabilityToolsPresentRule().check(
+        AuditData(capabilities=ServerCapabilities(tools=ToolsCapability()), listing_errors={"tools": error})
+    )
+    auditor.results = [result]
+    auditor.readiness_results = [result]
+    first = auditor.get_audit_report()
+    first["results"][0]["details"]["collection_error"]["issues"][0]["path"] = "changed"
+    first["readiness"]["results"][0]["details"]["collection_error"]["issues"].clear()
+    second = auditor.get_audit_report()
+    assert second["results"][0]["details"]["collection_error"]["issues"][0]["path"] == "/tools/0/name"
+    assert second["readiness"]["results"][0]["details"]["collection_error"]["issues"][0]["path"] == "/tools/0/name"
+    assert error["issues"] == [{"path": "/tools/0/name"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{}, {"tools": "SECRET"}, {"tools": None}])
+async def test_modern_malformed_catalog_shape_reaches_diagnostics_without_changing_outcome(payload):
+    import httpx2
+
+    from mcpscore.mcp_auditor import MCPAuditor
+    from mcpscore.probes import PROBE_STATELESS_LIST, ProbeOutcome, _HttpTarget, _probe_stateless_list
+
+    def handler(request):
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": payload})
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        probe = await _probe_stateless_list(_HttpTarget(client, "https://example.com/mcp"))
+    assert probe.outcome is ProbeOutcome.UNSUPPORTED
+    assert "SECRET" not in json.dumps(probe.to_dict())
+    auditor = MCPAuditor()
+    auditor.rules = [CapabilityToolsPresentRule()]
+    auditor.audit_data.capabilities = ServerCapabilities(tools=ToolsCapability())
+    auditor.audit_data.probes = {PROBE_STATELESS_LIST: probe}
+    auditor._populate_from_probe_payloads()
+    auditor._run_all_rules()
+    report = auditor.get_audit_report()
+    assert not report["results"][0]["passed"]
+    issue = report["listing_errors"]["tools"]["issues"][0]
+    assert issue["path"] == "/tools"
+    assert issue["reason"] == ("missing" if "tools" not in payload else "list_type")
+    assert "SECRET" not in json.dumps(report)

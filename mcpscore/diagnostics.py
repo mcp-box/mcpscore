@@ -1,6 +1,5 @@
 """Build bounded validation diagnostics without copying server response values."""
 
-import json
 from typing import Any
 
 from pydantic import ValidationError
@@ -10,10 +9,8 @@ def validation_diagnostics(error: ValidationError, *, prefix: tuple[str | int, .
     """Preserve validation locations and types, omitting inputs and overlong paths."""
     issues: list[dict[str, Any]] = []
     for item in error.errors(include_input=False, include_context=False, include_url=False)[:20]:
-        path = "/" + "/".join(
-            json.dumps(str(part), ensure_ascii=False)[1:-1].replace("~", "~0").replace("/", "~1")
-            for part in (*prefix, *item["loc"])
-        )
+        parts = (*prefix, *item["loc"])
+        path = "".join("/" + str(part).replace("~", "~0").replace("/", "~1") for part in parts)
         issue: dict[str, Any] = {
             "reason": item["type"],
             "expected": {

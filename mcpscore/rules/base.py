@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import IntEnum
 from functools import wraps
@@ -84,7 +85,7 @@ class RuleResult:
             "severity_value": int(self.severity),
             "passed": self.passed,
             "message": self.message,
-            "details": self.details,
+            "details": deepcopy(self.details),
             **({"suggested_fix": self.suggested_fix} if not self.passed and self.suggested_fix is not None else {}),
         }
 

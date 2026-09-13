@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stored diagnostic paths are resolvable JSON Pointers; only terminal rendering
+  escapes control characters. Serialized rule details are detached, including
+  nested collection errors and readiness results. Modern results with missing or
+  non-array tools now retain sanitized shape diagnostics without changing probe outcomes.
+
 - Modern-only catalog validation now uses the same sanitized diagnostics as
   session-based listings. Overlong validation paths are explicitly omitted
   instead of truncated, and exported listing errors do not share mutable state

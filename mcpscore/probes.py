@@ -675,7 +675,9 @@ async def _probe_stateless_list(target: _ProbeTarget) -> ProbeResult:
         details["ttl_ms"] = result.get("ttlMs")
         details["cache_scope"] = result.get("cacheScope")
         return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, details, payload=result)
-    return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, details)
+    # Keep malformed result objects for sanitized catalog diagnostics. Payloads
+    # are excluded from probe serialization; the observed outcome is unchanged.
+    return ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, details, payload=result)
 
 
 async def _probe_malformed_meta(target: _ProbeTarget) -> ProbeResult:

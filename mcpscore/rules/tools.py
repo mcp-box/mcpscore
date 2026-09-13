@@ -1,6 +1,5 @@
 from abc import abstractmethod
 from collections import Counter
-import json
 import re
 from typing import Any, ClassVar, cast
 
@@ -695,11 +694,11 @@ def _schema_issues(tools: list[Tool], *, output: bool = False) -> dict[str, Any]
         total += 1
         if len(issues) < 20:
             path, reason, expected = problem
-            # JSON quoting escapes terminal control characters in property names.
-            safe_path = json.dumps("/" + field_name + path, ensure_ascii=False)[1:-1]
+            # Store a resolvable pointer; terminal escaping belongs to the renderer.
+            pointer = "/" + field_name + path
             issue = {"entity_kind": "tool", "entity_index": index, "reason": reason, "expected": expected}
-            if len(safe_path) <= 255:
-                issue["path"] = safe_path
+            if len(pointer) <= 255:
+                issue["path"] = pointer
             else:
                 issue["path_omitted"] = True
             issues.append(issue)

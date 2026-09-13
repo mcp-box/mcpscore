@@ -169,14 +169,16 @@ checked only when present. Arbitrary schema values are not copied into issues.
 
 Each tool contributes its first failing predicate; at most 20 issues are included.
 `issues_total` and `issues_omitted` describe the evidence limit. Schema and catalog validation paths longer than
-255 escaped characters are omitted with `path_omitted: true`; control characters
-are JSON-escaped for terminal display. Indexes still identify the affected tool.
+255 Unicode code points are omitted with `path_omitted: true`; stored paths retain their exact JSON Pointer characters, including newlines,
+quotes and backslashes. Only CLI rendering escapes those characters. Indexes still identify the affected tool.
 
 Catalog collection failures are recorded in report `listing_errors`, and in
 `details.collection_error` when a declaration rule fails. Outcomes distinguish
 `invalid_response`, `timeout`, `rpc_error` and an unspecified `collection_error`.
 Validation locations and expected types are retained without raw response values
-or exception messages. These diagnostics do not change verdicts or score weights.
+or exception messages. Modern result objects with a missing or non-array `tools` field also receive
+sanitized field-shape diagnostics, while the probe outcome remains unsupported.
+These diagnostics do not change verdicts or score weights.
 
 Requirement strength is not inferred from severity or the presence of a hint.
 Use the rule's source basis and applicability; a repair hint is advice for that
