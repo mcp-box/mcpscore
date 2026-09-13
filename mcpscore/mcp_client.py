@@ -33,7 +33,9 @@ from mcp_types import (
     ResourceTemplate,
     Tool,
 )
+from pydantic import ValidationError
 
+from .diagnostics import validation_diagnostics
 from .enums import ConnectionErrorReason, MCPTransportType
 from .probes import (
     CLIENT_NAME,
@@ -321,6 +323,7 @@ class MCPClient:
         self.headers: dict[str, str] | None = headers or None
         self._init_result: InitializeResult | None = None
         self.incomplete_listings: set[str] = set()
+        self.listing_errors: dict[str, dict[str, Any]] = {}
 
         # Transport metadata (populated after connection)
         self.transport_type: MCPTransportType | None = None
@@ -1090,6 +1093,7 @@ class MCPClient:
         seen_cursors: set[str] = set()
         cursor: str | None = None
         self.incomplete_listings.discard(listing_name)
+        self.listing_errors.pop(listing_name, None)
         deadline = time.monotonic() + LISTING_TIMEOUT_S
 
         for page_number in range(MAX_LISTING_PAGES):
@@ -1103,15 +1107,18 @@ class MCPClient:
                     fetch_page() if page_number == 0 else fetch_page(params=PaginatedRequestParams(cursor=cursor)),
                     timeout=remaining,
                 )
-            except Exception as exc:
-                # One handler, three diagnoses. Timeouts are a server that
-                # stopped answering, not a protocol fault, and must not read as
-                # a crash — the SDK's own request timeout arrives as
-                # MCPError(-32001) and is the *common* stall, so leaving it in
-                # the generic branch made the ordinary case the noisiest line in
-                # the log. Everything else keeps the original traceback.
+            except Exception as exc:  # noqa: BLE001 — SDK failures become collection evidence
+                # Preserve the original collection/verdict behavior while
+                # reporting safe, distinct diagnostics. Raw exception messages
+                # and tracebacks can repeat secrets from server responses.
                 self.incomplete_listings.add(listing_name)
-                if isinstance(exc, TimeoutError):
+                error: dict[str, Any] = {"outcome": "collection_error", "page_index": page_number}
+                self.listing_errors[listing_name] = error
+                if isinstance(exc, ValidationError):
+                    error.update(validation_diagnostics(exc))
+                    logger.warning("Invalid %s catalog response; see collection diagnostics", listing_name)
+                elif isinstance(exc, TimeoutError):
+                    error["outcome"] = "timeout"
                     # Our clamp: the server kept answering, but the total budget
                     # for this listing ran out.
                     logger.warning(
@@ -1121,6 +1128,7 @@ class MCPClient:
                         page_number,
                     )
                 elif isinstance(exc, MCPError) and exc.code == REQUEST_TIMEOUT:
+                    error["outcome"] = "timeout"
                     # The session deadline: this server went silent on one request.
                     logger.warning(
                         "Stopped listing %s: server did not answer within %.0fs (%d page(s) collected)",
@@ -1129,7 +1137,9 @@ class MCPClient:
                         page_number,
                     )
                 else:
-                    logger.exception("Failed to list %s from the MCP server", listing_name)
+                    if isinstance(exc, MCPError):
+                        error.update(outcome="rpc_error", error_code=exc.code)
+                    logger.warning("Could not collect %s catalog; see collection diagnostics", listing_name)
                 # None means the listing yielded nothing at all; once any page
                 # succeeded the collected items — even zero of them — are
                 # partial evidence and must not degrade to "unavailable".

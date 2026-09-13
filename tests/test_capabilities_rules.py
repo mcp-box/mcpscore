@@ -83,7 +83,7 @@ def test_declared_but_listing_does_not_answer_fails(capabilities_full):
     for rule_cls, feature in DECLARATION_RULES:
         result = rule_cls().check(_audit_data(capabilities_full, feature, None))
         assert not result.passed, feature
-        assert "did not answer" in result.message
+        assert "No usable" in result.message
 
 
 def test_declared_and_served_empty_passes(capabilities_full):
@@ -181,7 +181,7 @@ class TestListingNeverAttempted:
         assert rule.skip_reason(data) is None
         result = rule.check(data)
         assert not result.passed
-        assert "did not answer" in result.message
+        assert "No usable" in result.message
 
     def test_default_audit_data_attempts_nothing(self):
         """The default is 'not attempted', so no rule can fail on absent data."""

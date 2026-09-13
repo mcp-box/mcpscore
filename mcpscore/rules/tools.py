@@ -622,77 +622,87 @@ def is_valid_schema(schema: dict[str, Any] | None) -> bool:
         bool: True if a schema is valid, False otherwise
 
     """
-    if schema is None:
-        return False
-
-    # Combinators and references are valid top-level schema forms
-    if any(key in schema for key in ("anyOf", "oneOf", "allOf", "$ref")):
-        return True
-
-    if schema.get("type") != "object":
-        return False
-
-    properties = schema.get("properties", {})
-    if not isinstance(properties, dict):
-        return False
-
-    required = schema.get("required", [])
-    if not isinstance(required, list):
-        return False
-
-    if "title" in schema and not isinstance(schema["title"], str):
-        return False
-
-    # Every required property must be defined in properties
-    for prop_name in required:
-        if prop_name not in properties:
-            return False
-
-    for prop_def in properties.values():
-        if not isinstance(prop_def, dict):
-            return False
-
-        # "type" is optional (enum/anyOf/$ref properties are valid), but a
-        # plain-string type must be a real JSON Schema type
-        prop_type = prop_def.get("type")
-        if isinstance(prop_type, str) and prop_type not in _VALID_JSON_TYPES:
-            return False
-
-    return True
+    return _schema_problem(schema) is None
 
 
 def is_valid_output_schema(schema: dict[str, Any] | None) -> bool:
-    """Validate an ``outputSchema`` without requiring an object root.
+    """Validate output schemas without imposing a revision-specific root type.
 
-    From 2026-07-28 an output schema "can be any valid JSON Schema 2020-12",
-    so unlike ``is_valid_schema`` (input schemas keep their object-root
-    requirement in every revision) this accepts any root:
+    The 2026-07-28 revision permits non-object output schema roots. Earlier
+    revisions' object-root restriction is checked separately by the scoped
+    tools_output_schema_root_object rule, avoiding duplicate penalties here.
+    Preserve the existing structural predicate until its separate correctness review.
+    """
+    return _schema_problem(schema, output=True) is None
 
-    - combinators/references are valid top-level forms;
-    - an object-rooted schema gets the full object shape checks;
-    - any other root is accepted when its plain-string ``type`` (if present)
-      is a real JSON Schema type.
 
-    Whether a non-object root is *allowed on the negotiated revision* is a
-    separate, version-scoped question — ``tools_output_schema_root_object``
-    judges that for 2025-06-18..2025-11-25, so the two rules never
-    double-penalize one condition.
+def _pointer(value: str) -> str:
+    return value.replace("~", "~0").replace("/", "~1")
 
-    Args:
-        schema: The schema dictionary to validate
 
-    Returns:
-        bool: True if a schema is valid, False otherwise
+def _schema_problem(schema: dict[str, Any] | None, *, output: bool = False) -> tuple[str, str, str] | None:
+    """Explain the first failing legacy predicate without broadening validation.
 
+    This is deliberately not a new JSON Schema validator. Combinator shortcuts
+    and required/properties behavior remain unchanged pending a separate review.
+    No schema values are copied into diagnostic output.
     """
     if schema is None:
-        return False
+        return "", "missing_schema", "a JSON Schema object"
     if any(key in schema for key in ("anyOf", "oneOf", "allOf", "$ref")):
-        return True
-    if schema.get("type") == "object":
-        return is_valid_schema(schema)
-    root_type = schema.get("type")
-    return not isinstance(root_type, str) or root_type in _VALID_JSON_TYPES
+        return None
+    if output and schema.get("type") != "object":
+        root_type = schema.get("type")
+        if isinstance(root_type, str) and root_type not in _VALID_JSON_TYPES:
+            return "/type", "invalid_type", "string, number, integer, boolean, array, object, or null"
+        return None
+    if schema.get("type") != "object":
+        return "/type", "object_root_expected", "object"
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return "/properties", "invalid_properties", "an object mapping property names to schemas"
+    required = schema.get("required", [])
+    if not isinstance(required, list):
+        return "/required", "invalid_required", "an array of property names"
+    if "title" in schema and not isinstance(schema["title"], str):
+        return "/title", "invalid_title", "a string"
+    for index, name in enumerate(required):
+        if name not in properties:
+            return f"/required/{index}", "undeclared_required_property", "a property declared in properties"
+    for name, definition in properties.items():
+        path = f"/properties/{_pointer(name)}"
+        if not isinstance(definition, dict):
+            return path, "invalid_property_schema", "a schema object"
+        value = definition.get("type")
+        if isinstance(value, str) and value not in _VALID_JSON_TYPES:
+            return path + "/type", "invalid_type", "string, number, integer, boolean, array, object, or null"
+    return None
+
+
+def _schema_issues(tools: list[Tool], *, output: bool = False) -> dict[str, Any]:
+    """Collect bounded indexed locations without copying arbitrary schema values."""
+    issues: list[dict[str, Any]] = []
+    total = 0
+    field_name = "outputSchema" if output else "inputSchema"
+    for index, tool in enumerate(tools):
+        schema = tool.output_schema if output else tool.input_schema
+        if output and schema is None:
+            continue
+        problem = _schema_problem(schema, output=output)
+        if problem is None:
+            continue
+        total += 1
+        if len(issues) < 20:
+            path, reason, expected = problem
+            # Store a resolvable pointer; terminal escaping belongs to the renderer.
+            pointer = "/" + field_name + path
+            issue = {"entity_kind": "tool", "entity_index": index, "reason": reason, "expected": expected}
+            if len(pointer) <= 255:
+                issue["path"] = pointer
+            else:
+                issue["path_omitted"] = True
+            issues.append(issue)
+    return {"issues": issues, "issues_total": total, "issues_omitted": total - len(issues)}
 
 
 @register_rule
@@ -729,14 +739,23 @@ class ToolsInputSchemaValidRule(ToolsBaseRule):
         message = (
             "✅ All Tools have a valid Input Schema"
             if passed
-            else f"❌ Number of tools with invalid Input Schema: {len(tools_with_invalid_input_schema)}"
+            else f"❌ {len(tools_with_invalid_input_schema)} tool(s) have an invalid input schema."
         )
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"tools_with_invalid_input_schema": tools_with_invalid_input_schema},
+            details={
+                "tools_with_invalid_input_schema": tools_with_invalid_input_schema,
+                **(_schema_issues(tools, output=False) if not passed else {}),
+            },
+            suggested_fix=(
+                "Correct each listed inputSchema path to match its expected constraint. "
+                "For an invalid type, use string, number, integer, boolean, array, object, or null."
+            )
+            if not passed
+            else None,
         )
 
 
@@ -783,14 +802,23 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
         message = (
             "✅ All Tools have a valid Output Schema"
             if passed
-            else f"❌ Number of tools with invalid Output Schema: {len(tools_with_invalid_output_schema)}"
+            else f"❌ {len(tools_with_invalid_output_schema)} tool(s) have an invalid output schema."
         )
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"tools_with_invalid_output_schema": tools_with_invalid_output_schema},
+            details={
+                "tools_with_invalid_output_schema": tools_with_invalid_output_schema,
+                **(_schema_issues(tools, output=True) if not passed else {}),
+            },
+            suggested_fix=(
+                "Correct each listed outputSchema path to match its expected constraint. "
+                "For an invalid type, use string, number, integer, boolean, array, object, or null."
+            )
+            if not passed
+            else None,
         )
 
 

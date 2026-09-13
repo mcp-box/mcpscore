@@ -153,12 +153,12 @@ class TestMCPClientSessionOperations:
     async def test_list_tools_exception(self, mock_connected_client, caplog):
         """Test list_tools handles exceptions properly."""
         # Simulate exception during list_tools
-        mock_connected_client.session.list_tools.side_effect = RuntimeError("Failed to list tools")
+        mock_connected_client.session.list_tools.side_effect = RuntimeError("Could not collect tools catalog")
 
         result = await mock_connected_client.list_tools()
 
         assert result is None
-        assert "Failed to list tools from the MCP server" in caplog.text
+        assert "Could not collect tools catalog" in caplog.text
 
     async def test_list_tools_success(self, mock_connected_client):
         """Test successful list_tools."""
@@ -190,7 +190,7 @@ class TestMCPClientSessionOperations:
         result = await mock_connected_client.list_resources()
 
         assert result is None
-        assert "Failed to list resources from the MCP server" in caplog.text
+        assert "Could not collect resources catalog" in caplog.text
 
     async def test_list_resources_success(self, mock_connected_client):
         """Test successful list_resources."""
@@ -222,7 +222,7 @@ class TestMCPClientSessionOperations:
         result = await mock_connected_client.list_prompts()
 
         assert result is None
-        assert "Failed to list prompts from the MCP server" in caplog.text
+        assert "Could not collect prompts catalog" in caplog.text
 
     async def test_list_prompts_success(self, mock_connected_client):
         """Test successful list_prompts."""
@@ -499,7 +499,7 @@ class TestMCPClientSessionOperations:
 
         assert result is None
         assert mock_connected_client.incomplete_listings == {"tools"}
-        assert "Failed to list tools" in caplog.text
+        assert "Could not collect tools catalog" in caplog.text
 
     async def test_page_budget_stops_unbounded_prompt_listing(self, mock_connected_client, monkeypatch, caplog):
         """A server that always advances its cursor is still bounded."""

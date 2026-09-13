@@ -37,10 +37,11 @@ type change bumps `schema_version`.
 | `partial` | bool | Only the observable surface of an auth-gated server was scored |
 | `partial_reason` | string or null | Why the audit was partial |
 | `incomplete_listings` | array | Catalogs whose paginated listing could not be fully collected |
+| `listing_errors` | object | Sanitized errors keyed by catalog name; values carry `outcome`, `page_index`, optional `error_code`, and optional bounded `issues`, `issues_total`, `issues_omitted` |
 | `server_info` | object or null | `name` and `version` the server reported. `null` when identity was never observed |
 | `package` | object or null | Always present. `null` for a server audit, an object for a package audit. See below |
 | `summary` | object | `total`, `passed`, `failed`, `skipped`, and `by_severity` counts |
-| `results[]` | array | One entry per rule that ran: `rule_id`, `rule_name`, `severity`, `severity_value`, `passed`, `message`, `details` |
+| `results[]` | array | One entry per rule that ran: `rule_id`, `rule_name`, `severity`, `severity_value`, `passed`, `message`, `details`, and optional failure-only `suggested_fix` (absent on passes and older findings) |
 | `skipped_rules[]` | array | One entry per rule that did not run: `rule_id`, `rule_name`, `reason`, `group_name` |
 | `spec` | object | `negotiated_version`, `latest_version`, `readiness_target`, `era` |
 | `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus `assessed`, `skipped`, `total` coverage counts |
@@ -147,6 +148,41 @@ scoring frame will revisit this once the ruleset settles.
 mcpscore follows [SemVer](https://semver.org/). Breaking anything in the
 Stable section needs a major version. Rule additions and score movement are
 minor-version territory. Pre-releases (`bN`) can change anything.
+
+## Failure guidance
+
+A failed rule may include `suggested_fix`: a nonblank plain-text repair hint of
+at most 255 Unicode code points. The field is omitted on passing results and on
+older findings without authored guidance; skipped rules remain separate.
+Consumers must tolerate its absence. In JavaScript, count code points with
+`Array.from(text).length`, rather than UTF-16 `text.length`.
+
+The first supported findings are input/output schema validation and capability
+declarations. The CLI prints their hint as `Fix:` on stderr. JSON stdout remains
+one complete report. Other rules retain their existing messages during rollout.
+
+Schema failures retain existing detail keys and add `details.issues`, with a tool
+catalog index, a JSON Pointer field path, a reason and an expected constraint.
+These diagnostics explain the existing validator; they do not broaden it into
+complete JSON Schema conformance checking. A tool's optional output schema is
+checked only when present. Arbitrary schema values are not copied into issues.
+
+Each tool contributes its first failing predicate; at most 20 issues are included.
+`issues_total` and `issues_omitted` describe the evidence limit. Schema and catalog validation paths longer than
+255 Unicode code points are omitted with `path_omitted: true`; stored paths retain their exact JSON Pointer characters, including newlines,
+quotes and backslashes. Only CLI rendering escapes those characters. Indexes still identify the affected tool.
+
+Catalog collection failures are recorded in report `listing_errors`, and in
+`details.collection_error` when a declaration rule fails. Outcomes distinguish
+`invalid_response`, `timeout`, `rpc_error` and an unspecified `collection_error`.
+Validation locations and expected types are retained without raw response values
+or exception messages. Modern result objects with a missing or non-array `tools` field also receive
+sanitized field-shape diagnostics, while the probe outcome remains unsupported.
+These diagnostics do not change verdicts or score weights.
+
+Requirement strength is not inferred from severity or the presence of a hint.
+Use the rule's source basis and applicability; a repair hint is advice for that
+finding, not a claim that every scored recommendation is mandatory.
 
 ## What's next
 

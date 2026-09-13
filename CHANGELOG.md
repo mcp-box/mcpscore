@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Failure-only `suggested_fix` repair hints (up to 255 Unicode code points) for
+  tool schema and capability-declaration findings, shown in CLI and JSON reports.
+- Bounded, indexed schema diagnostics with field paths and expected constraints;
+  catalog collection diagnostics distinguish invalid responses, timeouts and RPC errors.
+
+### Fixed
+
+- Stored diagnostic paths are resolvable JSON Pointers; only terminal rendering
+  escapes control characters. Serialized rule details are detached, including
+  nested collection errors and readiness results. Modern results with missing or
+  non-array tools now retain sanitized shape diagnostics without changing probe outcomes.
+
+- Modern-only catalog validation now uses the same sanitized diagnostics as
+  session-based listings. Overlong validation paths are explicitly omitted
+  instead of truncated, and exported listing errors do not share mutable state
+  with the auditor. Passing declaration checks keep partial-listing errors at
+  report level rather than attaching failure diagnostics.
+
+### Changed
+
+- Invalid catalog responses no longer produce a default SDK traceback or claim
+  that the server did not answer. Diagnostics omit raw validation inputs.
+  Rule verdicts, applicability, severity and scores are unchanged.
+
 ## [1.14.2] - 2026-09-12
 
 npm wrapper release: no change to the CLI or the engine.
