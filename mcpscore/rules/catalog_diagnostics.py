@@ -4,6 +4,8 @@ from collections.abc import Callable, Iterable
 import json
 from typing import Any, TypeVar
 
+from mcpscore.diagnostics import entity_label
+
 from .base import RuleResult, RuleSeverity
 
 T = TypeVar("T")
@@ -57,7 +59,7 @@ def catalog_result(
             message += " This is an optional quality recommendation."
         if bounded:
             first = bounded[0]
-            location = first["entity_kind"]
+            location = entity_label(first.get("entity_kind")).lower()
             if "entity_index" in first:
                 location += f" at index {first['entity_index']}"
             if "path" in first:

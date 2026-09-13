@@ -389,6 +389,7 @@ def test_absent_feature_advisory_does_not_prescribe_list_changed(feature: str) -
     assert result.details["issues"][0]["reason"] == "missing_capability"
     assert "listChanged" not in result.suggested_fix
     assert "not applicable" in result.suggested_fix
+    assert "optional quality recommendation" not in result.message
 
 
 @pytest.mark.parametrize("feature", ["tools", "resources", "prompts"])
@@ -427,4 +428,79 @@ def test_list_changed_judges_only_its_own_feature(feature: str, enabled: bool) -
     assert result.passed is enabled
     assert "is not present" not in result.message
     if not enabled:
+        assert "optional quality recommendation" in result.message
         assert result.details["issues"][0]["reason"] == "list_changed_not_declared"
+
+
+def test_empty_tools_does_not_call_critical_finding_optional() -> None:
+    from mcpscore.rules.base import RuleSeverity
+
+    result = RULES["tools_at_least_one"].check(AuditData(tools=[]))
+    assert not result.passed
+    assert result.severity == RuleSeverity.CRITICAL
+    assert "optional quality recommendation" not in result.message
+    assert "review whether" in result.suggested_fix
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "field", "value"),
+    [
+        ("server_name_present", "name", "DeepWiki"),
+        ("server_version_present", "version", "1.2.3"),
+        ("server_title_present", "title", "DeepWiki Server"),
+    ],
+)
+def test_server_identity_passes_show_values(rule_id: str, field: str, value: str) -> None:
+    info = Implementation(**{"name": "server", "version": "1", field: value})
+    result = RULES[rule_id].check(AuditData(server_info=info))
+    assert result.passed
+    assert json.dumps(value) in result.message
+
+
+def test_duplicate_summary_names_three_collisions_and_counts_the_rest() -> None:
+    names = ["alpha", "beta", "gamma", "delta"]
+    result = RULES["tools_names_unique"].check(AuditData(tools=[tool(name=name) for name in names for _ in range(2)]))
+    for name in names[:3]:
+        assert json.dumps(name) in result.message
+    assert "delta" not in result.message
+    assert "1 more" in result.message
+    assert result.details["duplicate_names"] == names
+
+
+def test_resource_template_message_uses_readable_entity_label() -> None:
+    result = RULES["resource_templates_names_present"].check(
+        AuditData(resource_templates=[ResourceTemplate(name="", uri_template="file:///{id}")])
+    )
+    assert "resource template at index 0" in result.message
+    assert "resource_template" not in result.message
+
+
+@pytest.mark.parametrize("value", ["", "x" * 60, "x" * 61, '\n\x1b[31m"\\\t' * 20, "🔧" * 20])
+def test_identity_preview_bounds_escaped_text_without_broken_sequences(value: str) -> None:
+    from mcpscore.diagnostics import quoted_preview
+
+    preview = quoted_preview(value)
+    quoted = preview.removesuffix(" [truncated]")
+    decoded = json.loads(quoted)
+    assert value.startswith(decoded)
+    assert len(quoted) <= 62
+    assert "\n" not in preview
+    assert "\x1b" not in preview
+    assert preview.endswith(" [truncated]") is (decoded != value)
+
+
+def test_identity_pass_preserves_raw_details_but_escapes_terminal_text() -> None:
+    value = 'server\n\x1b[31m"\\'
+    result = RULES["server_name_present"].check(AuditData(server_info=Implementation(name=value, version="1")))
+    assert result.passed
+    assert result.details["server_name"] == value
+    assert json.dumps(value) in result.message
+    assert "\n" not in result.message
+    assert "\x1b" not in result.message
+
+
+def test_unknown_entity_kind_has_a_safe_display_label() -> None:
+    from mcpscore.diagnostics import entity_label
+
+    assert entity_label(None) == "Catalog item"
+    assert entity_label("unrecognized") == "Catalog item"

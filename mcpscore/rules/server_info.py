@@ -2,6 +2,8 @@ from abc import abstractmethod
 
 from mcp_types import Implementation
 
+from mcpscore.diagnostics import quoted_preview
+
 from .base import BaseRule, RuleResult, RuleSeverity, requires_fields, requires_server_info
 from .catalog_diagnostics import catalog_result, field_issue
 from .registry import register_rule
@@ -94,7 +96,7 @@ class ServerNamePresentRule(ServerInfoBaseRule):
             message = "❌ Server name is not present in server info"
         else:
             passed = True
-            message = "✅ serverInfo.name is present."
+            message = f"✅ Server name is present: {quoted_preview(server_info.name)}."
 
         return catalog_result(
             rule_name=self.rule_name,
@@ -142,7 +144,7 @@ class ServerTitlePresentRule(ServerInfoBaseRule):
             message = "❌ Server title is not present in server info"
         else:
             passed = True
-            message = "✅ serverInfo.title is present (presence checked only)."
+            message = f"✅ Server title is present: {quoted_preview(server_info.title)} (presence checked only)."
 
         return catalog_result(
             rule_name=self.rule_name,
@@ -187,7 +189,7 @@ class ServerVersionPresentRule(ServerInfoBaseRule):
             message = "❌ Server version is not present in server info"
         else:
             passed = True
-            message = "✅ serverInfo.version is present (format not checked)."
+            message = f"✅ Server version is present: {quoted_preview(server_info.version)} (format not checked)."
 
         return catalog_result(
             rule_name=self.rule_name,

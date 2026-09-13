@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restore quoted server name, version and title in passing messages, and show up
+  to three duplicate tool names in collision messages. Previews escape control
+  characters, visibly truncate long values and retain full legacy detail values.
+- Use readable entity labels in both finding messages and CLI evidence. Omit the
+  optional-recommendation label from the CRITICAL empty-tools finding while
+  retaining its applicability guidance and existing score weight.
 - Capability advisories identify the missing capability when called without it,
   rather than suggesting an optional listChanged declaration. Served-but-undeclared
   capability findings include their field location in the human-readable message.

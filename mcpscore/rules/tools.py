@@ -5,6 +5,8 @@ from typing import Any, ClassVar, cast
 
 from mcp_types import Tool
 
+from mcpscore.diagnostics import quoted_preview
+
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
     SKIP_REASON_NOT_APPLICABLE,
@@ -146,7 +148,7 @@ class ToolsAtLeastOneRule(ToolsBaseRule):
             issues=[
                 field_issue("catalog", None, "/tools", "empty_catalog", "at least one tool for a tools-serving design")
             ],
-            recommendation=True,
+            recommendation=False,
         )
 
 
@@ -246,7 +248,11 @@ class ToolsNamesUniqueRule(ToolsBaseRule):
         message = (
             "✅ All tools have unique names"
             if passed
-            else f"❌ Number of distinct duplicated tool names: {len(duplicates)}"
+            else (
+                f"❌ Duplicate tool names ({len(duplicates)} distinct): "
+                + ", ".join(quoted_preview(name) for name in duplicates[:3])
+                + (f"; {len(duplicates) - 3} more" if len(duplicates) > 3 else "")
+            )
         )
 
         return catalog_result(

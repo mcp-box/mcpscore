@@ -1,5 +1,6 @@
-"""Build bounded validation diagnostics without copying server response values."""
+"""Build bounded validation evidence and escaped human-readable previews."""
 
+import json
 from typing import Any
 
 from pydantic import ValidationError
@@ -31,3 +32,35 @@ def validation_diagnostics(error: ValidationError, *, prefix: tuple[str | int, .
         "issues_total": error.error_count(),
         "issues_omitted": max(0, error.error_count() - 20),
     }
+
+
+_ENTITY_LABELS = {
+    "tool": "Tool",
+    "resource": "Resource",
+    "resource_template": "Resource template",
+    "prompt": "Prompt",
+    "server": "Server",
+    "catalog": "Catalog",
+}
+
+
+def entity_label(kind: str | None) -> str:
+    """Return a human-readable label shared by messages and CLI evidence."""
+    return _ENTITY_LABELS.get(kind, "Catalog item") if kind is not None else "Catalog item"
+
+
+def quoted_preview(value: str) -> str:
+    """Quote at most 60 escaped display characters without splitting an escape.
+
+    Keep the full original value in existing details. This is a display bound,
+    not redaction: only identity fields intended for humans should use it.
+    """
+    parts: list[str] = []
+    length = 0
+    for character in value:
+        escaped = json.dumps(character, ensure_ascii=True)[1:-1]
+        if length + len(escaped) > 60:
+            return '"' + "".join(parts) + '" [truncated]'
+        parts.append(escaped)
+        length += len(escaped)
+    return '"' + "".join(parts) + '"'

@@ -336,7 +336,7 @@ class CapabilityToolsListChangedRule(CapabilityListChangedRule):
                     "omit this optional feature."
                 )
             ),
-            recommendation=True,
+            recommendation=not missing_feature,
             issues=[
                 field_issue(
                     "server",
@@ -424,7 +424,7 @@ class CapabilityPromptsListChangedRule(CapabilityListChangedRule):
                     "may intentionally omit this optional feature."
                 )
             ),
-            recommendation=True,
+            recommendation=not missing_feature,
             issues=[
                 field_issue(
                     "server",
@@ -512,7 +512,7 @@ class CapabilityResourcesListChangedRule(CapabilityListChangedRule):
                     "catalog may intentionally omit this optional feature."
                 )
             ),
-            recommendation=True,
+            recommendation=not missing_feature,
             issues=[
                 field_issue(
                     "server",
