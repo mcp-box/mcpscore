@@ -59,7 +59,7 @@ from mcpscore.rules.readiness import (
 )
 from mcpscore.spec import Era
 
-from .conftest import FakeLoggingCaps, FakeServerCapabilities
+from .conftest import FakeLoggingCaps, FakeResourcesCaps, FakeServerCapabilities, FakeToolsCaps
 
 
 def modern_probes(**overrides: ProbeResult) -> dict[str, ProbeResult]:
@@ -238,6 +238,43 @@ class TestDetailProbeRules:
         result = UnsupportedVersionErrorReadinessRule().check(AuditData(probes=probes))
         assert not result.passed
         assert "data block is missing or malformed" in result.message
+
+    def test_error_code_migration_skips_servers_without_resources_capability(self):
+        probes = modern_probes(
+            probe_missing_resource=ProbeResult(
+                PROBE_MISSING_RESOURCE,
+                ProbeOutcome.UNSUPPORTED,
+                {"error_code": -32601, "legacy_code_emitted": False},
+            )
+        )
+        data = AuditData(probes=probes, capabilities=FakeServerCapabilities(tools=FakeToolsCaps()))
+        assert ErrorCodeMigrationReadinessRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_error_code_migration_still_judges_declared_resources(self):
+        probes = modern_probes(
+            probe_missing_resource=ProbeResult(
+                PROBE_MISSING_RESOURCE,
+                ProbeOutcome.UNSUPPORTED,
+                {"error_code": -32601, "legacy_code_emitted": False},
+            )
+        )
+        data = AuditData(probes=probes, capabilities=FakeServerCapabilities(resources=FakeResourcesCaps()))
+        assert ErrorCodeMigrationReadinessRule().skip_reason(data) is None
+        result = ErrorCodeMigrationReadinessRule().check(data)
+        assert not result.passed
+        assert "-32601" in result.message
+
+    def test_error_code_migration_judges_when_capabilities_are_unknown(self):
+        probes = modern_probes(
+            probe_missing_resource=ProbeResult(
+                PROBE_MISSING_RESOURCE,
+                ProbeOutcome.SUPPORTED,
+                {"error_code": -32602, "legacy_code_emitted": False},
+            )
+        )
+        data = AuditData(probes=probes, capabilities=None)
+        assert ErrorCodeMigrationReadinessRule().skip_reason(data) is None
+        assert ErrorCodeMigrationReadinessRule().check(data).passed
 
     def test_error_code_migration_flags_legacy_code(self):
         probes = modern_probes(
@@ -762,7 +799,8 @@ class TestSepCitations:
 
         data = AuditData(
             probes=modern_probes(),
-            capabilities=FakeServerCapabilities(logging=FakeLoggingCaps(enabled=True)),
+            # Declares resources so the error-code-migration rule is judged, not skipped.
+            capabilities=FakeServerCapabilities(logging=FakeLoggingCaps(enabled=True), resources=FakeResourcesCaps()),
             tools=[_tool(name="ok")],
         )
         seen = {}

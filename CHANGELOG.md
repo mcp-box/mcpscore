@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`readiness_2026_error_code_migration` no longer penalizes servers without
+  a `resources` capability.** The -32602 requirement for a missing resource
+  (SEP-2164) applies to servers that support resources; a server that declares
+  none correctly answers `resources/read` with -32601 (Method not found) and
+  was losing 2 points for it. The rule now skips as not applicable on such
+  servers (`max_score` drops by 2), and still judges servers that declare
+  resources. Reported by a user; confirmed on six corpus servers.
 - Preserve printable Unicode in identity and duplicate-name previews, counting
   their 60-character limit in source code points while still escaping controls.
 - Restore quoted server name, version and title in passing messages, and show up

@@ -620,11 +620,26 @@ class UnsupportedVersionErrorReadinessRule(ProbeBackedReadinessRule):
 
 @register_rule
 class ErrorCodeMigrationReadinessRule(ProbeBackedReadinessRule):
-    """Missing resources yield -32602, not the legacy -32002 (SEP-2164)."""
+    """Missing resources yield -32602, not the legacy -32002 (SEP-2164).
+
+    Applies only to servers that declare the ``resources`` capability: the
+    -32602 requirement sits under "servers that support resources", and a
+    server without the capability correctly answers ``resources/read`` with
+    -32601 (Method not found).
+    """
 
     rule_id = "readiness_2026_error_code_migration"
     rule_order = 7
     probe_id = PROBE_MISSING_RESOURCE
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the server declares no resources capability."""
+        if reason := super().skip_reason(audit_data):
+            return reason
+        capabilities = audit_data.capabilities
+        if capabilities is not None and getattr(capabilities, "resources", None) is None:
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
 
     @property
     def rule_name(self) -> str:
