@@ -27,7 +27,6 @@ from .base import (
     RuleResult,
     RuleSeverity,
     requires_capabilities,
-    requires_fields,
 )
 from .registry import register_rule
 
@@ -199,7 +198,7 @@ class CapabilityDeclarationRule(BaseRule):
                 f"capability_{self.feature}": _wire_str(getattr(capabilities, self.feature, None)),
                 "declared": declared,
                 "served": served,
-                **({"collection_error": collection_error} if collection_error else {}),
+                **({"collection_error": collection_error} if collection_error and not passed else {}),
             },
             suggested_fix=suggested_fix,
         )
@@ -219,12 +218,9 @@ class CapabilityToolsPresentRule(CapabilityDeclarationRule):
     def rule_name(self) -> str:
         return "Capabilities - Tools Declared Consistently"
 
-    @requires_fields("capabilities", "tools", "listing_errors")
-    def check(  # type: ignore[override]
-        self, capabilities: ServerCapabilities | None, items: list | None, listing_errors: dict | None = None
-    ) -> RuleResult:
-        """Compare the declared tools capability against the served tools."""
-        return self._evaluate(capabilities, items, listing_errors)
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Compare the declared tools capability against the collected catalog."""
+        return self._evaluate(audit_data.capabilities, audit_data.tools, audit_data.listing_errors)
 
 
 class CapabilityListChangedRule(CapabilityBaseRule):
@@ -319,12 +315,9 @@ class CapabilityPromptsPresentRule(CapabilityDeclarationRule):
     def rule_name(self) -> str:
         return "Capabilities - Prompts Declared Consistently"
 
-    @requires_fields("capabilities", "prompts", "listing_errors")
-    def check(  # type: ignore[override]
-        self, capabilities: ServerCapabilities | None, items: list | None, listing_errors: dict | None = None
-    ) -> RuleResult:
-        """Compare the declared prompts capability against the served prompts."""
-        return self._evaluate(capabilities, items, listing_errors)
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Compare the declared prompts capability against the collected catalog."""
+        return self._evaluate(audit_data.capabilities, audit_data.prompts, audit_data.listing_errors)
 
 
 @register_rule
@@ -387,12 +380,9 @@ class CapabilityResourcesPresentRule(CapabilityDeclarationRule):
     def rule_name(self) -> str:
         return "Capabilities - Resources Declared Consistently"
 
-    @requires_fields("capabilities", "resources", "listing_errors")
-    def check(  # type: ignore[override]
-        self, capabilities: ServerCapabilities | None, items: list | None, listing_errors: dict | None = None
-    ) -> RuleResult:
-        """Compare the declared resources capability against the served resources."""
-        return self._evaluate(capabilities, items, listing_errors)
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Compare the declared resources capability against the collected catalog."""
+        return self._evaluate(audit_data.capabilities, audit_data.resources, audit_data.listing_errors)
 
 
 @register_rule

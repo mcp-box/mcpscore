@@ -627,7 +627,13 @@ def is_valid_schema(schema: dict[str, Any] | None) -> bool:
 
 
 def is_valid_output_schema(schema: dict[str, Any] | None) -> bool:
-    """Validate output schemas with the existing revision-independent predicate."""
+    """Validate output schemas without imposing a revision-specific root type.
+
+    The 2026-07-28 revision permits non-object output schema roots. Earlier
+    revisions' object-root restriction is checked separately by the scoped
+    tools_output_schema_root_object rule, avoiding duplicate penalties here.
+    Preserve the existing structural predicate until its separate correctness review.
+    """
     return _schema_problem(schema, output=True) is None
 
 

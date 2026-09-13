@@ -170,11 +170,11 @@ class AuditData:
     # attempted instead of reading silence as failure.
     listings_attempted: frozenset[str] = frozenset()
 
-    # Listings for which the client returned only partial evidence because
-    # pagination failed, repeated a cursor, or exceeded its safety bound.
     listing_errors: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Bounded, sanitized collection errors, keyed by listing name."""
 
+    # Listings for which the client returned only partial evidence because
+    # pagination failed, repeated a cursor, or exceeded its safety bound.
     incomplete_listings: frozenset[str] = frozenset()
 
 

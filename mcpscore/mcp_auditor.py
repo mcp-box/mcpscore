@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import logging
 import ssl
 from typing import TYPE_CHECKING
@@ -13,6 +14,7 @@ from mcp import StdioServerParameters
 from pydantic import ValidationError
 
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
+from .diagnostics import validation_diagnostics
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
 from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
@@ -413,10 +415,21 @@ class MCPAuditor:
             if stateless.payload is not None:
                 raw_tools = stateless.payload.get("tools")
                 if isinstance(raw_tools, list):
-                    try:
-                        self.audit_data.tools = [Tool.model_validate(tool) for tool in raw_tools]
-                    except ValidationError as e:
-                        logger.info("Could not parse tools from the stateless probe payload: %s", e)
+                    # Retain the all-or-nothing catalog semantics while keeping
+                    # the failing item's catalog index in sanitized diagnostics.
+                    parsed_tools = []
+                    for index, raw_tool in enumerate(raw_tools):
+                        try:
+                            parsed_tools.append(Tool.model_validate(raw_tool))
+                        except ValidationError as error:
+                            self.audit_data.listing_errors["tools"] = {
+                                "page_index": 0,
+                                **validation_diagnostics(error, prefix=("tools", index)),
+                            }
+                            logger.info("Invalid tools catalog response from the stateless probe")
+                            break
+                    else:
+                        self.audit_data.tools = parsed_tools
 
     @staticmethod
     def _parse_payload_model(model: type, value: object):
@@ -425,8 +438,8 @@ class MCPAuditor:
             return None
         try:
             return model.model_validate(value)
-        except ValidationError as e:
-            logger.info("Could not parse %s from probe payload: %s", model.__name__, e)
+        except ValidationError:
+            logger.info("Could not parse %s from probe payload: invalid response", model.__name__)
             return None
 
     def _skipped_for_partial(self, rule: BaseRule) -> bool:
@@ -785,7 +798,7 @@ class MCPAuditor:
         """
         errors = getattr(self.mcp_client, "listing_errors", {})
         if isinstance(errors, dict) and listing in errors:
-            self.audit_data.listing_errors[listing] = errors[listing]
+            self.audit_data.listing_errors[listing] = deepcopy(errors[listing])
         if listing in getattr(self.mcp_client, "incomplete_listings", frozenset()):
             self.audit_data.incomplete_listings |= {listing}
 
@@ -879,6 +892,7 @@ class MCPAuditor:
               (see RuleResult.to_dict)
             - skipped_rules: Rules considered but not executed (with reason),
               e.g. rules outside the server's spec-version range
+            - listing_errors: Detached, sanitized collection diagnostics keyed by listing name.
             - incomplete_listings: Listings (tools/resources/prompts) whose
               pagination did not complete, so completeness-dependent rules
               were skipped
@@ -908,7 +922,7 @@ class MCPAuditor:
             # page bound): their items were judged, but completeness-dependent
             # rules were skipped as insufficient-data.
             "incomplete_listings": sorted(self.audit_data.incomplete_listings),
-            "listing_errors": self.audit_data.listing_errors,
+            "listing_errors": deepcopy(self.audit_data.listing_errors),
             # Keep this deliberately narrower than the SDK's Implementation
             # model. Reports need stable server identity for baselines; copying
             # the whole model would silently grow the public schema and could

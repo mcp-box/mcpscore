@@ -2,7 +2,6 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-import json
 import logging
 import shlex
 import sys
@@ -36,6 +35,7 @@ from mcp_types import (
 )
 from pydantic import ValidationError
 
+from .diagnostics import validation_diagnostics
 from .enums import ConnectionErrorReason, MCPTransportType
 from .probes import (
     CLIENT_NAME,
@@ -1115,28 +1115,7 @@ class MCPClient:
                 error: dict[str, Any] = {"outcome": "collection_error", "page_index": page_number}
                 self.listing_errors[listing_name] = error
                 if isinstance(exc, ValidationError):
-                    error["outcome"] = "invalid_response"
-                    # Never copy Pydantic input, context, messages or URLs: they
-                    # may contain secrets from the server's response.
-                    error["issues_total"] = exc.error_count()
-                    error["issues_omitted"] = max(0, exc.error_count() - 20)
-                    error["issues"] = [
-                        {
-                            "reason": item["type"],
-                            "expected": {
-                                "list_type": "an array",
-                                "string_type": "a string",
-                                "dict_type": "an object",
-                                "missing": "a required field",
-                            }.get(item["type"], "the declared catalog field type"),
-                            "path": "/"
-                            + "/".join(
-                                json.dumps(str(part), ensure_ascii=False)[1:-1].replace("~", "~0").replace("/", "~1")
-                                for part in item["loc"]
-                            )[:255],
-                        }
-                        for item in exc.errors(include_input=False, include_context=False, include_url=False)[:20]
-                    ]
+                    error.update(validation_diagnostics(exc))
                     logger.warning("Invalid %s catalog response; see collection diagnostics", listing_name)
                 elif isinstance(exc, TimeoutError):
                     error["outcome"] = "timeout"

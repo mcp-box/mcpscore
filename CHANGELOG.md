@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bounded, indexed schema diagnostics with field paths and expected constraints;
   catalog collection diagnostics distinguish invalid responses, timeouts and RPC errors.
 
+### Fixed
+
+- Modern-only catalog validation now uses the same sanitized diagnostics as
+  session-based listings. Overlong validation paths are explicitly omitted
+  instead of truncated, and exported listing errors do not share mutable state
+  with the auditor. Passing declaration checks keep partial-listing errors at
+  report level rather than attaching failure diagnostics.
+
 ### Changed
 
 - Invalid catalog responses no longer produce a default SDK traceback or claim

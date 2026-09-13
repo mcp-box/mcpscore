@@ -152,3 +152,157 @@ async def test_collection_causes_remain_distinct(exc, outcome, caplog):
     assert not result.passed
     assert result.suggested_fix
     assert "secret" not in json.dumps(result.to_dict()) + caplog.text
+
+
+@pytest.mark.parametrize("length", [255, 256])
+@pytest.mark.asyncio
+async def test_collection_pointer_boundary_omits_instead_of_truncating(length):
+    error = ValidationError.from_exception_data(
+        "Catalog", [{"type": "string_type", "loc": ("x" * (length - 1),), "input": ["SECRET"]}]
+    )
+    client = MCPClient()
+    client.session = MagicMock()
+    client.session.list_tools = AsyncMock(side_effect=error)
+    await client.list_tools()
+    issue = client.listing_errors["tools"]["issues"][0]
+    if length == 255:
+        assert issue["path"] == "/" + "x" * 254
+    else:
+        assert "path" not in issue
+        assert issue["path_omitted"] is True
+
+
+@pytest.mark.asyncio
+async def test_auditor_captures_prints_and_detaches_collection_diagnostics(caplog):
+    from mcpscore.mcp_auditor import MCPAuditor
+
+    error = {
+        "outcome": "invalid_response",
+        "page_index": 0,
+        "issues": [{"path": "/tools/0/name", "expected": "a string"}],
+    }
+    client = MCPClient()
+    client.session = MagicMock()
+    client.listing_errors["tools"] = error
+    client.incomplete_listings.add("tools")
+    client.list_tools = AsyncMock(return_value=None)
+    auditor = MCPAuditor()
+    auditor.mcp_client = client
+    auditor.rules = [CapabilityToolsPresentRule()]
+    auditor.audit_data.capabilities = ServerCapabilities(tools=ToolsCapability())
+    await auditor._collect_tools()
+    # Captured diagnostics must not change with a reused client's later state.
+    error["issues"][0]["expected"] = "changed by client"
+    with caplog.at_level("INFO", logger="mcpscore"):
+        auditor._run_all_rules()
+    assert "Fix:" in caplog.text
+    assert "Response /tools/0/name · expected a string" in caplog.text
+    report = auditor.get_audit_report()
+    assert report["listing_errors"]["tools"]["outcome"] == "invalid_response"
+    assert report["incomplete_listings"] == ["tools"]
+    report["listing_errors"]["tools"]["issues"][0]["expected"] = "changed by caller"
+    assert auditor.get_audit_report()["listing_errors"]["tools"]["issues"][0]["expected"] == "a string"
+
+
+@pytest.mark.parametrize("mode", ["schema", "long_path", "pass", "no_hint"])
+def test_auditor_logs_guidance_only_for_authored_failures(mode, caplog):
+    from mcpscore.mcp_auditor import MCPAuditor
+
+    auditor = MCPAuditor()
+    if mode == "no_hint":
+        from mcpscore.rules.tools import ToolsNamePresentRule
+
+        auditor.rules = [ToolsNamePresentRule()]
+        auditor.audit_data.tools = [Tool(name="", input_schema={"type": "object"})]
+    else:
+        auditor.rules = [ToolsInputSchemaValidRule()]
+        schema = (
+            {"type": "object"}
+            if mode == "pass"
+            else {"type": "object", "properties": {"x" * 300 if mode == "long_path" else "email": {"type": "bad"}}}
+        )
+        auditor.audit_data.tools = [Tool(name="test", input_schema=schema)]
+    with caplog.at_level("INFO", logger="mcpscore"):
+        auditor._run_all_rules()
+    if mode in ("pass", "no_hint"):
+        assert "Fix:" not in caplog.text
+    else:
+        assert "Fix:" in caplog.text
+        assert "Tool index 0" in caplog.text
+        assert ("path omitted" if mode == "long_path" else "/inputSchema/properties/email/type") in caplog.text
+
+
+def test_modern_catalog_validation_is_sanitized_and_indexed(caplog):
+    from mcpscore.mcp_auditor import MCPAuditor
+    from mcpscore.probes import PROBE_STATELESS_LIST, ProbeOutcome, ProbeResult
+
+    auditor = MCPAuditor()
+    auditor.rules = [CapabilityToolsPresentRule()]
+    auditor.audit_data.capabilities = ServerCapabilities(tools=ToolsCapability())
+    auditor.audit_data.probes = {
+        PROBE_STATELESS_LIST: ProbeResult(
+            PROBE_STATELESS_LIST,
+            ProbeOutcome.SUPPORTED,
+            payload={
+                "tools": [
+                    {"name": "valid", "inputSchema": {"type": "object"}},
+                    {"name": ["SECRET"], "inputSchema": {"type": "object"}},
+                ]
+            },
+        )
+    }
+    with caplog.at_level("INFO", logger="mcpscore"):
+        auditor._populate_from_probe_payloads()
+        auditor._run_all_rules()
+    assert auditor.audit_data.tools is None  # no partial catalog from an invalid page
+    report = auditor.get_audit_report()
+    assert report["listing_errors"]["tools"]["issues"][0]["path"] == "/tools/1/name"
+    assert not report["results"][0]["passed"]
+    assert "invalid catalog response" in report["results"][0]["message"]
+    assert "SECRET" not in caplog.text + json.dumps(report)
+
+
+def test_passing_declaration_keeps_partial_provenance_out_of_result():
+    data = AuditData(
+        capabilities=ServerCapabilities(tools=ToolsCapability()),
+        tools=[],
+        listing_errors={"tools": {"outcome": "timeout", "page_index": 1}},
+    )
+    result = CapabilityToolsPresentRule().check(data)
+    assert result.passed
+    assert "collection_error" not in result.details
+    assert result.suggested_fix is None
+
+
+def test_modern_discovery_validation_does_not_log_raw_values(caplog):
+    from mcpscore.mcp_auditor import MCPAuditor
+    from mcpscore.probes import PROBE_DISCOVER, ProbeOutcome, ProbeResult
+
+    auditor = MCPAuditor()
+    auditor.audit_data.probes = {
+        PROBE_DISCOVER: ProbeResult(
+            PROBE_DISCOVER,
+            ProbeOutcome.SUPPORTED,
+            payload={"serverInfo": {"name": ["SECRET"], "version": "1"}, "capabilities": {"tools": "SECRET"}},
+        )
+    }
+    with caplog.at_level("INFO", logger="mcpscore"):
+        auditor._populate_from_probe_payloads()
+    assert auditor.audit_data.server_info is None
+    assert auditor.audit_data.capabilities is None
+    assert "invalid response" in caplog.text
+    assert "SECRET" not in caplog.text
+
+
+def test_shared_validation_evidence_limits_and_escapes_locations():
+    from mcpscore.diagnostics import validation_diagnostics
+
+    error = ValidationError.from_exception_data(
+        "Catalog", [{"type": "string_type", "loc": ("a/b~c\n", i), "input": ["SECRET"]} for i in range(25)]
+    )
+    evidence = validation_diagnostics(error)
+    assert evidence["issues_total"] == 25
+    assert evidence["issues_omitted"] == 5
+    assert len(evidence["issues"]) == 20
+    assert evidence["issues"][0]["path"] == "/a~1b~0c\\n/0"
+    assert "SECRET" not in json.dumps(evidence)
