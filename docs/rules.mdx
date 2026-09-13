@@ -9,8 +9,8 @@ turn one off or re-rank it in a [`mcpscore.toml`](/configure-rules). It is
 regenerated from the rule registry on every change (`make docs-rules`), so the
 tables below always match the code.
 
-Catalog and server-metadata findings include concise repair guidance and indexed
-field evidence; see the [failure guidance contract](/stability#failure-guidance).
+Catalog, server-metadata, protocol and probe findings include concise repair
+guidance and field or response evidence; see the [failure guidance contract](/stability#failure-guidance).
 Optional quality advice is labeled in report messages. A rule's severity is its
 score weight, not a statement that an optional field is required by the protocol.
 
@@ -87,7 +87,7 @@ score whether it speaks MCP.
 | `auth_metadata_https` | Auth - Resource Metadata Uses HTTPS | MEDIUM (2) | 2025-06-18 and later |
 | `auth_scopes_advertised` | Auth - Scopes Advertised | LOW (1) | 2025-06-18 and later |
 | `auth_server_metadata_present` | Auth - Authorization Server Metadata Present | HIGH (3) | 2025-06-18 and later |
-| `auth_server_metadata_pkce` | Auth - Authorization Server Enforces PKCE (S256) | HIGH (3) | 2025-06-18 and later |
+| `auth_server_metadata_pkce` | Auth - Authorization Server Advertises PKCE (S256) | HIGH (3) | 2025-06-18 and later |
 
 ## Tools
 

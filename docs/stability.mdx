@@ -158,8 +158,9 @@ Consumers must tolerate its absence. In JavaScript, count code points with
 `Array.from(text).length`, rather than UTF-16 `text.length`.
 
 Supported findings include tool, resource, resource-template, prompt,
-server-metadata and capability rules. The CLI prints their hint as `Fix:` on
-stderr. JSON stdout remains one complete report. Other rule families retain their
+server-metadata, capability, protocol, transport, auth/security, pagination,
+catalog-stability and readiness rules. The CLI prints their hint as `Fix:` on
+stderr. JSON stdout remains one complete report. Package rules retain their
 existing messages during rollout. Optional metadata and list-change advice is
 labeled as a quality recommendation in the message; it is not a protocol mandate.
 Scores and applicability are unchanged.
@@ -216,6 +217,47 @@ These diagnostics do not change verdicts or score weights.
 Requirement strength is not inferred from severity or the presence of a hint.
 Use the rule's source basis and applicability; a repair hint is advice for that
 finding, not a claim that every scored recommendation is mandatory.
+
+### Protocol and probe evidence
+
+Failed protocol/probe checks retain their observations and can add
+`details.expected` for the particular fields checked. Missing error codes are
+reported as **not observed**, rather than invented from an HTTP status.
+`details.context` records the audit protocol version, independently observed
+legacy session version and transport when that context is available. Existing
+`target_version`, `spec` and `basis` fields retain the rule's revision and source.
+Unavailable probes still skip; a hint cannot turn missing evidence into failure.
+
+Readiness result-field issues use `entity_kind: "response"`, the originating
+`probe_id`, and paths relative to the JSON-RPC **result**. `missing_or_null`
+means the collected observation cannot distinguish omission from explicit null;
+`invalid_value` means a value was observed but failed the existing predicate.
+Tool-schema issues use catalog indexes and paths relative to each tool, with the
+same 20-issue and 255-code-point path bounds as catalog findings. A network
+reference finding identifies the containing schema; it does not prove a fetch.
+
+Rule and probe evidence copies mask `response_session_id` and `www_authenticate`
+values as `[redacted]` (absence stays null). URL values in those copies omit
+userinfo, queries and fragments; specification links keep their section anchors.
+Raw error text is omitted. These protections do not mutate observations used
+for scoring, and are not a general secret detector: do not place credentials in
+server names, URL paths or arbitrary metadata, or assume an entire report is
+safe to publish without review.
+
+Passing PKCE findings establish **advertised S256 support**, not an executed
+authorization flow. Error-hygiene passes mean no configured patterns were found
+in the sampled response, and catalog-stability passes compare two connections
+with the same authorization. Modern-protocol hints preserve valid legacy paths;
+readiness promotion into the main score is unchanged.
+
+Some existing predicates have narrower discovery coverage than the specifications.
+The challenge-origin finding describes mcpscore's current comparison; it does not
+instruct relocating valid metadata. The dated MCP specification permits
+[challenge or well-known discovery](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements),
+and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3)
+requires resource identity validation. Likewise, issuer metadata failures describe
+the locations attempted, rather than proving no valid document exists. These
+limitations require separate correctness changes, not different repair wording.
 
 ## What's next
 

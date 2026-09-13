@@ -38,7 +38,7 @@ class TestStreamableHTTPTransportRule:
 
         assert result.passed is False
         assert "deprecated" in result.message
-        assert "Migrate to Streamable HTTP" in result.message
+        assert "Expose a Streamable HTTP" in result.suggested_fix
 
     def test_stdio_transport_not_applicable(self, rule):
         """Test that the remote transport check is not applicable for stdio."""

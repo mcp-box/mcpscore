@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Add failure-only repair hints to all 45 protocol, transport, security/auth,
+  pagination, catalog-stability and readiness checks. Report observed error
+  codes separately from expectations and retain transport/version context.
+- Bound readiness schema field evidence, distinguish invalid result metadata
+  from missing values, and scope security and stability messages to sampled
+  observations. PKCE wording now describes advertised support, not enforcement.
+- Mask session IDs and authentication challenges in rule/probe report copies;
+  omit credential-bearing URL components and raw exception text in those copies.
+  Original probe observations remain available to rule predicates. Guidance
+  changes do not alter verdicts, applicability, severity or scoring.
+
 ## [1.16.0] - 2026-09-13
 
 Repair guidance reaches every catalog and server-metadata rule, and one

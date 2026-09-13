@@ -53,6 +53,7 @@ from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
 
 from mcpscore.redirects import send_within_origin
+from mcpscore.report_evidence import report_evidence
 from mcpscore.spec import DRAFT, LATEST, Era
 from mcpscore.tls import async_client
 
@@ -270,7 +271,7 @@ class ProbeResult:
 
     def to_dict(self) -> dict:
         """Serialize this result for machine-readable reports."""
-        return {"probe_id": self.probe_id, "outcome": self.outcome.value, "details": self.details}
+        return {"probe_id": self.probe_id, "outcome": self.outcome.value, "details": report_evidence(self.details)}
 
 
 @dataclass(frozen=True)

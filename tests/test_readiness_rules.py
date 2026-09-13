@@ -454,7 +454,7 @@ class TestResponseContentTypeRule:
         )
         result = ResponseContentTypeRule().check(AuditData(probes=probes))
         assert not result.passed
-        assert "text/plain" in result.message
+        assert result.details["observed"][PROBE_STATELESS_LIST] == "text/plain"
 
     def test_fail_when_successful_response_omits_content_type(self):
         probes = modern_probes(probe_stateless_list=ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {}))
@@ -659,7 +659,8 @@ class TestLegacyLeakageRules:
         )
         result = NoSessionIdReadinessRule().check(AuditData(probes=probes))
         assert not result.passed
-        assert "leaky-session-1" in result.message
+        assert "leaky-session-1" not in result.message
+        assert result.details["response_session_id"] == "[redacted]"
 
     def test_fail_when_session_id_request_rejected(self):
         probes = modern_probes(

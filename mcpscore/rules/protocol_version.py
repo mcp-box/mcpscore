@@ -1,6 +1,7 @@
 from abc import abstractmethod
 from typing import ClassVar
 
+from mcpscore.diagnostics import quoted_preview
 from mcpscore.probes import GATEWAY_PROBE_IDS, PROBE_DISCOVER, ProbeOutcome, ProbeResult, has_modern_support
 from mcpscore.spec import LATEST, allowed_versions, compare, deprecated_versions
 
@@ -13,6 +14,7 @@ from .base import (
     RuleSeverity,
     requires_protocol_version,
 )
+from .probe_diagnostics import diagnostic_result
 from .registry import register_rule
 
 
@@ -57,12 +59,17 @@ class ProtocolVersionBaseRule(BaseRule):
 
         """
         if not protocol_version:
-            return RuleResult(
+            return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
                 message="❌ Protocol version is not available",
                 details={"protocol_version": None},
+                suggested_fix=(
+                    "Retry the audit after checking initialization and discovery responses. Return the "
+                    "protocol version actually implemented; do not invent a version when negotiation "
+                    "failed."
+                ),
             )
 
         return self._check_protocol_version(protocol_version)
@@ -115,17 +122,24 @@ class AllowedVersionRule(ProtocolVersionBaseRule):
         passed = protocol_version in allowed
 
         message = (
-            f"✅ Protocol version '{protocol_version}' is one of the allowed versions"
+            f"✅ Protocol version {quoted_preview(protocol_version)} is one of the allowed versions"
             if passed
-            else f"❌ Protocol version '{protocol_version}' is not in the allowed versions list"
+            else f"❌ Protocol version {quoted_preview(protocol_version)} is not in the allowed versions list"
         )
 
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"version": protocol_version, "allowed_versions": allowed},
+            suggested_fix=(
+                "Return a protocol revision implemented by the server and recognized in "
+                "allowed_versions. If it is a newly published revision, update mcpscore before "
+                "changing the server."
+            )
+            if not passed
+            else None,
         )
 
 
@@ -184,12 +198,18 @@ class LatestVersionRule(BaseRule):
         """Judge the newest revision the server was observed to speak."""
         protocol_version = audit_data.protocol_version
         if not protocol_version:
-            return RuleResult(
+            return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
                 message="❌ Protocol version is not available",
                 details={"protocol_version": None},
+                suggested_fix=(
+                    "Retry the audit after checking initialization and discovery responses. Return the "
+                    "protocol version actually implemented; do not invent a version when negotiation "
+                    "failed."
+                ),
+                audit_data=audit_data,
             )
 
         modern = has_modern_support(audit_data.probes)
@@ -198,23 +218,21 @@ class LatestVersionRule(BaseRule):
         passed: bool = negotiated_is_latest or modern
 
         if protocol_version == LATEST.version:
-            message = f"✅ Protocol version '{protocol_version}' is the latest version"
+            message = f"✅ Protocol version {quoted_preview(protocol_version)} is the latest version"
         elif negotiated_is_latest:
-            message = (
-                f"✅ Protocol version '{protocol_version}' is newer than the latest final version '{LATEST.version}'"
-            )
+            message = f"✅ Protocol version {quoted_preview(protocol_version)} is newer than final {LATEST.version}"
         elif modern:
             message = (
                 f"✅ Server supports the latest protocol version '{LATEST.version}' via the stateless "
-                f"lifecycle (the handshake negotiated '{protocol_version}', the newest revision it can carry)"
+                f"lifecycle (the handshake negotiated {quoted_preview(protocol_version)}, on its legacy path)"
             )
         else:
             message = (
-                f"❌ Not using the latest protocol version: negotiated '{protocol_version}', "
+                f"❌ Not using the latest protocol version: negotiated {quoted_preview(protocol_version)}, "
                 f"latest is '{LATEST.version}', and no stateless-lifecycle support was observed"
             )
 
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -224,6 +242,14 @@ class LatestVersionRule(BaseRule):
                 "latest_version": LATEST.version,
                 "modern_lifecycle_support": modern,
             },
+            suggested_fix=(
+                "Implement the latest revision and its per-request lifecycle, then re-audit. Keep the "
+                "legacy initialization path for supported older clients; changing only the version "
+                "string is insufficient."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
         )
 
 
@@ -306,17 +332,13 @@ class SupportedVersionsIncludeNegotiatedRule(BaseRule):
 
         if passed:
             message = (
-                f"✅ server/discover's supportedVersions {supported} includes the legacy "
-                f"handshake's negotiated version '{negotiated}'"
+                f"✅ server/discover's supportedVersions includes the legacy "
+                f"handshake's negotiated version {quoted_preview(negotiated)}"
             )
         else:
-            message = (
-                f"❌ server/discover omits '{negotiated}', which the server still serves via the "
-                f"legacy initialize handshake — add it to supportedVersions {supported}, or disable "
-                f"the legacy lifecycle if it was meant to be retired"
-            )
+            message = f"❌ server/discover.supportedVersions omits legacy version {quoted_preview(negotiated)}"
 
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -325,6 +347,14 @@ class SupportedVersionsIncludeNegotiatedRule(BaseRule):
                 "session_protocol_version": negotiated,
                 "supported_versions": supported,
             },
+            suggested_fix=(
+                "Include the observed legacy revision in server/discover.supportedVersions while it "
+                "remains supported. Keep valid legacy clients working; this is a discovery-consistency"
+                " recommendation."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
         )
 
 
@@ -359,14 +389,21 @@ class DeprecatedVersionRule(ProtocolVersionBaseRule):
         """
         passed: bool = protocol_version not in self.deprecated_versions
         if passed:
-            message: str = f"✅ Protocol version '{protocol_version}' is not deprecated"
+            message: str = f"✅ Protocol version {quoted_preview(protocol_version)} is not deprecated"
         else:
-            message: str = f"❌ Protocol version '{protocol_version}' is deprecated"
+            message: str = f"❌ Protocol version {quoted_preview(protocol_version)} is deprecated"
 
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
             details={"version": protocol_version, "deprecated_versions": list(self.deprecated_versions)},
+            suggested_fix=(
+                "Upgrade the server implementation to a supported protocol revision and negotiate that"
+                " revision with compatible clients. Retain older client support only where "
+                "deliberately required."
+            )
+            if not passed
+            else None,
         )

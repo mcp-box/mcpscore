@@ -12,6 +12,7 @@ from .base import (
     RuleSeverity,
     requires_fields,
 )
+from .probe_diagnostics import diagnostic_result
 from .registry import register_rule
 
 
@@ -66,32 +67,41 @@ class TLSEnabledRule(BaseRule):
 
         # Check if URL uses HTTPS
         if not url.startswith("https://"):
-            return RuleResult(
+            return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
-                message="❌ Server does not use HTTPS. All MCP servers should use encrypted connections.",
+                message="❌ The audited remote endpoint does not use HTTPS",
                 details={"url": url, "scheme": "http"},
+                suggested_fix="Serve the remote MCP endpoint over HTTPS with a trusted certificate and TLS 1.2 or 1.3.",
             )
 
         # Check if TLS was verified
         if tls_verified is False:
-            return RuleResult(
+            return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
-                message="❌ TLS certificate verification failed. This is a critical security issue.",
+                message="❌ TLS certificate verification failed for the audited endpoint",
                 details={"url": url},
+                suggested_fix=(
+                    "Repair the TLS certificate chain, hostname and expiry at the server or proxy. "
+                    "Re-audit with verification enabled; do not bypass certificate validation."
+                ),
             )
 
         # Check TLS version (should be 1.2 or higher)
         if tls_version and tls_version not in ["TLSv1.2", "TLSv1.3"]:
-            return RuleResult(
+            return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
                 message=f"⚠️ Outdated TLS version: {tls_version}. Should use TLS 1.2 or 1.3.",
                 details={"url": url, "tls_version": tls_version},
+                suggested_fix=(
+                    "Enable TLS 1.2 or 1.3 at the MCP endpoint or TLS-terminating proxy, then re-audit the"
+                    " negotiated connection."
+                ),
             )
 
         # All checks passed
@@ -99,12 +109,13 @@ class TLSEnabledRule(BaseRule):
         if tls_version:
             message += f" ({tls_version})"
 
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=True,
             message=message,
             details={"url": url, "tls_version": tls_version},
+            suggested_fix=None,
         )
 
 
@@ -162,7 +173,7 @@ class MalformedRequestHandlingRule(BaseRule):
         """Require the exact JSON-RPC parse-error shape, independent of HTTP status."""
         probe = (audit_data.probes or {})[PROBE_MALFORMED_JSON]
         passed = probe.outcome is ProbeOutcome.SUPPORTED
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
@@ -178,6 +189,21 @@ class MalformedRequestHandlingRule(BaseRule):
                 "response_id_absent_or_null": probe.details.get("response_id_absent_or_null"),
                 "control_http_status": probe.details.get("control_http_status"),
             },
+            suggested_fix=(
+                (
+                    "Return id: null for an unparsable JSON request; this check also accepts an absent "
+                    "id. Do not echo an unrelated request identifier."
+                )
+                if probe.details.get("error_code") == -32700
+                else (
+                    "Catch JSON parsing failures and return JSON-RPC -32700 with id: null. This check also"
+                    " accepts an absent id and imposes no HTTP status requirement."
+                )
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
+            expected={"error_code": -32700, "response_id_absent_or_null": True},
         )
 
 
@@ -346,18 +372,26 @@ class ErrorDataLeakRule(BaseRule):
 
         if leaks_found:
             leak_types = ", ".join(dict.fromkeys(leak["type"] for leak in leaks_found))
-            return RuleResult(
+            return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
-                message=f"❌ Error messages leak sensitive data: {leak_types}",
+                message=f"❌ The sampled error response contains potential sensitive-data findings: {leak_types}",
                 details={"leaks": leaks_found},
+                suggested_fix=(
+                    "Remove stack traces, internal paths and secrets from client errors; keep diagnostic "
+                    "context in access-controlled logs. If a finding is a real exposed credential, revoke "
+                    "or rotate it."
+                ),
+                audit_data=audit_data,
             )
 
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=True,
-            message="✅ Error messages do not appear to leak sensitive data",
+            message="✅ No sensitive-data patterns were detected in the sampled error response",
             details={"error_response_length": len(error_response)},
+            suggested_fix=None,
+            audit_data=audit_data,
         )
