@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-09-13
+
+Repair guidance reaches every catalog and server-metadata rule, and one
+readiness rule stops penalizing servers that serve no resources. Scores move
+only through `max_score` on resource-less servers; every other verdict, severity
+and weight is unchanged.
+
 ### Fixed
 
 - **`readiness_2026_error_code_migration` no longer penalizes servers without
@@ -1597,7 +1604,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.15.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.16.0...HEAD
+[1.16.0]: https://github.com/mcp-box/mcpscore/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/mcp-box/mcpscore/compare/v1.14.2...v1.15.0
 [1.14.2]: https://github.com/mcp-box/mcpscore/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/mcp-box/mcpscore/compare/v1.14.0...v1.14.1
