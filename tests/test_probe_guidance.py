@@ -185,23 +185,26 @@ def test_redaction_covers_rule_and_probe_reports_without_mutation():
     assert "Stop adding" in result.suggested_fix
 
 
-def test_safe_evidence_keeps_spec_anchors_and_removes_credentials():
+def test_safe_evidence_keeps_public_values_and_masks_credentials():
     raw = {
         "spec": "https://example.com/spec#section",
-        "nested": {"url": "https://user:Password123@example.com/mcp?token=Token123#Secret"},
+        "nested": {"url": "HTTPS://user:Password123@example.com/mcp?scope=read&token=Token123#section"},
         "urls_tried": ["https://example.com/mcp?secret=Token123"],
-        "www_authenticate": 'Bearer error_description="Token123"',
+        "www_authenticate": 'Bearer resource_metadata="https://example.com/meta?tenant=acme&api_key=Token123"',
         "response_session_id": None,
-        "error": "Token123",
-        "auth_server_metadata_error": "Token123",
+        "error": "connection refused",
+        "auth_server_metadata_error": "certificate verify failed",
         "bad_url": "https://[invalid",
         "count": 2,
     }
     result = report_evidence(raw)
     assert result["spec"] == raw["spec"]
-    assert result["nested"]["url"] == "https://example.com/mcp"
+    assert result["nested"]["url"] == "HTTPS://example.com/mcp?scope=read&token=[redacted]#section"
     assert result["response_session_id"] is None
-    assert result["bad_url"] == "[invalid URL omitted]"
+    assert result["bad_url"] == raw["bad_url"]
+    assert result["error"] == "connection refused"
+    assert result["auth_server_metadata_error"] == "certificate verify failed"
+    assert "tenant=acme" in result["www_authenticate"]
     assert result["count"] == 2
     assert "Token123" not in json.dumps(result)
     assert "Password123" not in json.dumps(result)
@@ -216,7 +219,7 @@ def test_expected_error_preserves_transport_context(transport):
         data.probes[rule.probe_id].details.pop("http_status")
     result = rule.check(data)
     assert result.details["expected"]["error_code"] == -32601
-    assert result.details["context"]["transport_type"] == transport
+    assert "context" not in result.details
     assert ("HTTP" in result.suggested_fix) is (transport is MCPTransportType.STREAMABLE_HTTP)
     assert "Observed JSON-RPC error code: -32603" in result.message
 
@@ -251,7 +254,7 @@ def test_expected_error_preserves_transport_context(transport):
             "auth_challenge_references_metadata",
             PROBE_UNAUTHENTICATED,
             {"www_authenticate": 'Bearer resource_metadata="https://other.example/metadata"'},
-            "before relocating",
+            "alternative discovery",
         ),
     ],
 )
@@ -320,7 +323,9 @@ def test_schema_evidence_is_indexed_bounded_and_does_not_echo_values():
     assert len(result.details["issues"]) == 20
     assert result.details["issues"][1]["entity_index"] == 1
     assert result.details["issues"][0]["path"].startswith("/inputSchema/type")
-    assert "SensitiveValue123" not in json.dumps(result.to_dict())
+    assert "SensitiveValue123" not in json.dumps(result.details["issues"])
+    assert "SensitiveValue123" in result.message
+    assert "affect 25 tool(s)" in result.message
     assert 'tool at index 0 "/inputSchema/type"' in result.message
 
 
@@ -341,18 +346,21 @@ def test_observed_error_does_not_echo_invalid_values(code, diagnosis):
     data = data_for(rule.rule_id, failure=True)
     data.probes[rule.probe_id].details["error_code"] = code
     result = rule.check(data)
-    assert f"Observed JSON-RPC error code: {diagnosis}" in result.message
+    if code is None:
+        assert "JSON-RPC error code:" not in result.message
+    else:
+        assert f"Observed JSON-RPC error code: {diagnosis}" in result.message
     assert "Secret123" not in result.message
 
 
-def test_challenge_value_is_not_echoed_on_a_pass():
+def test_public_challenge_is_retained_on_a_pass():
     rule = RULES["auth_www_authenticate"]
     data = data_for(rule.rule_id, failure=False)
     data.probes[PROBE_UNAUTHENTICATED].details["www_authenticate"] = 'Bearer error_description="Secret123"'
     result = rule.check(data)
     assert result.passed
-    assert "Secret123" not in json.dumps(result.to_dict())
-    assert "Secret123" not in json.dumps(data.probes[PROBE_UNAUTHENTICATED].to_dict())
+    assert "Secret123" in json.dumps(result.to_dict())
+    assert "Secret123" in json.dumps(data.probes[PROBE_UNAUTHENTICATED].to_dict())
 
 
 def test_schema_path_is_omitted_without_truncation_when_too_long():
@@ -377,3 +385,143 @@ def test_403_hint_does_not_tell_users_to_weaken_permission_checks():
     assert "403" in result.message
     assert "do not change valid permission-denied responses" in result.suggested_fix
     assert len(result.suggested_fix) <= 255
+
+
+@pytest.mark.parametrize("scheme", ["https", "HTTPS", "hTtPs", "HTTP"])
+def test_embedded_url_credentials_are_masked_without_losing_error_reason(scheme):
+    raw = (
+        f"certificate verify failed for {scheme}://user:Secret123@example.com/mcp"
+        "?tenant=A%20B&%61ccess_token=Token123&scope=read&scope=write#section"
+    )
+    masked = report_evidence({"exception": "SSLError", "reason": raw})
+    assert "certificate verify failed" in masked["reason"]
+    assert "tenant=A%20B" in masked["reason"]
+    assert "scope=read&scope=write#section" in masked["reason"]
+    assert "Secret123" not in masked["reason"]
+    assert "Token123" not in masked["reason"]
+    assert "%61ccess_token=[redacted]" in masked["reason"]
+
+
+@pytest.mark.parametrize("rule_id", ["auth_protected_resource_metadata", "auth_server_metadata_present"])
+def test_auth_failures_identify_the_public_resource_or_issuer(rule_id):
+    result = RULES[rule_id].check(data_for(rule_id, failure=True))
+    assert '"https://' in result.message
+    assert ("other.example" if rule_id == "auth_protected_resource_metadata" else "auth.example.com") in result.message
+
+
+def test_invalid_content_type_is_visible_with_unicode_and_escaped_controls():
+    rule = RULES["readiness_2026_response_content_type"]
+    data = data_for(rule.rule_id, failure=False)
+    data.probes[PROBE_DISCOVER].details["content_type"] = 'text/工具🔎\n"bad"'
+    result = rule.check(data)
+    assert 'text/工具🔎\\n\\"bad\\"' in result.message
+    assert "\n" not in result.message
+
+
+def test_duplicate_tools_count_once_each_when_both_schemas_fail():
+    rule = RULES["readiness_2026_tool_schema_dialect"]
+    data = data_for(rule.rule_id, failure=False)
+    data.tools = [Tool(name="same", input_schema={"type": "first-bad"}, output_schema={"type": "second-bad"})] * 2
+    result = rule.check(data)
+    assert "affect 2 tool(s)" in result.message
+    assert result.details["issues_total"] == 4
+    assert "first-bad" in result.message
+
+
+@pytest.mark.parametrize("kind", ["page", "unexpected_response", None])
+def test_cursor_diagnosis_requires_positive_page_evidence(kind):
+    rule = RULES["pagination_tools_invalid_cursor"]
+    data = data_for(rule.rule_id, failure=True)
+    data.probes[rule.probe_id].details.clear()
+    if kind:
+        data.probes[rule.probe_id].details["response_kind"] = kind
+    result = rule.check(data)
+    assert ("returned a page" in result.message) is (kind == "page")
+    assert "not observed" not in result.message
+    assert "Observed" not in result.message
+
+
+def test_stdio_never_describes_an_http_status_even_if_stale_evidence_contains_one():
+    rule = RULES["readiness_2026_server_discover"]
+    data = data_for(rule.rule_id, failure=True)
+    data.transport_type = MCPTransportType.STDIO
+    result = rule.check(data)
+    assert "HTTP" not in result.message
+    assert "context" not in result.details
+
+
+def test_version_context_is_reported_once_and_sanitized():
+    from mcpscore.mcp_auditor import MCPAuditor
+
+    auditor = MCPAuditor()
+    auditor.audit_data = data_for("protocol_version_allowed", failure=True)
+    auditor.audit_data.protocol_version = "HTTPS://user:Secret123@example.com/?token=Token123"
+    auditor.audit_data.session_protocol_version = auditor.audit_data.protocol_version
+    result = RULES["protocol_version_allowed"].check(auditor.audit_data)
+    auditor.results = [result]
+    report = auditor.get_audit_report()
+    assert report["spec"]["session_protocol_version"] == "HTTPS://example.com/?token=[redacted]"
+    assert "Secret123" not in json.dumps(report)
+    assert "Token123" not in json.dumps(report)
+    assert "context" not in result.details
+
+
+@pytest.mark.parametrize("scheme", ["postgres", "PostgreSQL", "ftp", "wss", "custom+v1"])
+def test_resource_uri_credentials_are_masked(scheme):
+    raw = f"{scheme}://user:Secret123@host/db?password=Token123&database=public#table"
+    masked = report_evidence({"only_first": [raw]})
+    assert masked["only_first"] == [f"{scheme}://host/db?password=[redacted]&database=public#table"]
+
+
+def test_late_added_evidence_and_human_message_are_masked():
+    from mcpscore.rules.base import RuleSeverity
+    from mcpscore.rules.probe_diagnostics import diagnostic_result
+
+    value = "postgres://user:Secret123@host/db?token=Token123"
+    issues = [{"entity_kind": "response", "path": "/value", "reason": "invalid", "expected": value}]
+    result = diagnostic_result(
+        rule_name="test",
+        severity=RuleSeverity.LOW,
+        passed=False,
+        message=f"❌ Unexpected endpoint {value}",
+        details={},
+        expected={"url": value},
+        issues=issues,
+        suggested_fix="Check the endpoint.",
+    )
+    wire = json.dumps(result.to_dict())
+    assert "Secret123" not in wire
+    assert "Token123" not in wire
+    assert "[redacted]" in wire
+    assert issues[0]["expected"] == value
+
+
+@pytest.mark.parametrize(
+    "rule_id",
+    ["readiness_2026_server_discover", "readiness_2026_supported_versions", "readiness_2026_unsupported_version_error"],
+)
+def test_version_list_messages_scrub_credentials_and_bound_values(rule_id):
+    rule = RULES[rule_id]
+    data = data_for(rule_id, failure=False)
+    key = "supported" if rule_id == "readiness_2026_unsupported_version_error" else "supported_versions"
+    data.probes[rule.probe_id].details[key] = ["HTTPS://user:Secret123@host/path?token=Token123", "工具🔎" * 50]
+    result = rule.check(data)
+    assert result.passed
+    assert "Secret123" not in json.dumps(result.to_dict())
+    assert "Token123" not in json.dumps(result.to_dict())
+    assert "[truncated]" in result.message
+    assert len(result.message) < 250
+
+
+def test_auth_repairs_match_the_independent_checks():
+    challenge = RULES["auth_www_authenticate"].check(data_for("auth_www_authenticate", failure=True))
+    assert "WWW-Authenticate" in challenge.suggested_fix
+    assert "resource_metadata" not in challenge.suggested_fix
+    metadata = RULES["auth_challenge_references_metadata"].check(
+        data_for("auth_challenge_references_metadata", failure=True)
+    )
+    assert "Add a quoted resource_metadata URL" in metadata.suggested_fix
+    assert "review applicability" not in metadata.suggested_fix
+    pkce = RULES["auth_server_metadata_pkce"].check(data_for("auth_server_metadata_pkce", failure=True))
+    assert "implement S256 before advertising" in pkce.suggested_fix
+    assert "does not verify runtime enforcement" in pkce.suggested_fix

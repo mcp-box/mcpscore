@@ -1,5 +1,10 @@
 """Assess readiness for MCP 2026-07-28.
 
+Legacy clients establish context with initialize and a negotiated session version.
+Modern requests carry context in _meta without an initialization handshake. A
+dual-era server may support both paths; a legacy handshake alone does not tell us
+whether it also supports the modern lifecycle. Gateway probes provide that evidence.
+
 The auditor scores readiness on its own axis. In full audits of modern or
 dual-era servers it also contributes to the main score. For legacy servers
 and partial audits it remains informative; guidance does not change promotion.
@@ -46,6 +51,7 @@ from mcpscore.probes import (
     ProbeOutcome,
     has_modern_support,
 )
+from mcpscore.report_evidence import evidence_preview
 from mcpscore.spec import DRAFT, LATEST
 
 from .base import (
@@ -173,7 +179,7 @@ class ServerDiscoverReadinessRule(ProbeBackedReadinessRule):
         passed = probe.outcome is ProbeOutcome.SUPPORTED
         if passed:
             message = (
-                f"✅ Server answers server/discover (supported versions: {probe.details.get('supported_versions')})"
+                f"✅ server/discover supported versions: {evidence_preview(probe.details.get('supported_versions'))}"
             )
         else:
             message = f"❌ The server/discover probe did not produce a usable DiscoverResult for {READINESS_TARGET}"
@@ -233,7 +239,7 @@ class SupportedVersionsReadinessRule(ProbeBackedReadinessRule):
         non_strings = [v for v in versions if not isinstance(v, str)]
         passed = bool(versions) and not non_strings
         if passed:
-            message = f"✅ server/discover names {len(versions)} supported protocol version(s): {versions}"
+            message = f"✅ server/discover names {len(versions)} supported version(s): {evidence_preview(versions)}"
         elif raw_versions is None:
             message = "❌ supportedVersions is absent; expected a non-empty array of version strings"
         elif not isinstance(raw_versions, list):
@@ -644,7 +650,7 @@ class ResponseContentTypeRule(ReadinessBaseRule):
         # A missing header renders as `None`, which reads as a bug in the report
         # rather than a finding about the server. Name the absence instead.
         observed = ", ".join(
-            f"{pid}: {'invalid Content-Type' if value else 'no Content-Type header'}"
+            f"{pid}: {evidence_preview(value) if value is not None else 'no Content-Type header'}"
             for pid, value in sorted(invalid.items())
         )
         message = (
@@ -698,9 +704,7 @@ class UnsupportedVersionErrorReadinessRule(ProbeBackedReadinessRule):
         probe = self._probe(audit_data)
         passed = probe.outcome is ProbeOutcome.SUPPORTED
         if passed:
-            message = (
-                f"✅ Unknown protocol versions are rejected with -32022 (supported: {probe.details.get('supported')})"
-            )
+            message = f"✅ Unknown version: -32022; supported: {evidence_preview(probe.details.get('supported'))}"
         elif probe.details.get("data_well_formed") is False:
             message = (
                 "❌ -32022 is emitted but its data block is missing or malformed — the error must "
@@ -975,13 +979,14 @@ class ToolSchemaDialectReadinessRule(ReadinessBaseRule):
             try:
                 Draft202012Validator.check_schema(schema)
             except SchemaError as error:
-                problems.append("invalid under JSON Schema 2020-12")
+                problems.append(f"invalid under JSON Schema 2020-12: {evidence_preview(error.message)}")
                 location = path + "".join("/" + pointer_token(str(part)) for part in error.absolute_path)
                 issues.append(field_issue("tool", index, location, "invalid_schema", "valid JSON Schema 2020-12"))
         return problems, issues
 
     def check(self, audit_data: AuditData) -> RuleResult:
         offending: dict[str, list[str]] = {}
+        first_problem = ""
         issues: list[dict[str, Any]] = []
         for index, tool in enumerate(audit_data.tools or []):
             problems: list[str] = []
@@ -992,6 +997,8 @@ class ToolSchemaDialectReadinessRule(ReadinessBaseRule):
                     problems.extend(schema_problems)
                     issues.extend(schema_issues)
             if problems:
+                if not first_problem:
+                    first_problem = problems[0]
                 offending[getattr(tool, "name", "<unnamed>")] = problems
 
         passed = not offending
@@ -1001,7 +1008,11 @@ class ToolSchemaDialectReadinessRule(ReadinessBaseRule):
                 " (other declared dialects not validated)"
             )
         else:
-            message = f"❌ Schema validation or network-reference findings affect {len(offending)} tool(s)"
+            affected_count = len({issue["entity_index"] for issue in issues})
+            message = (
+                f"❌ Schema validation or network-reference findings affect {affected_count} tool(s). "
+                f"First finding: {first_problem}"
+            )
         return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,

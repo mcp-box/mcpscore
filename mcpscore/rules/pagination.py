@@ -79,10 +79,13 @@ class InvalidCursorRule(BaseRule):
             message=(
                 f"✅ {self.surface_label} rejects invalid pagination cursors with JSON-RPC -32602"
                 if passed
-                else f"❌ {self.surface_label} does not reject invalid pagination cursors with JSON-RPC -32602"
+                else f"❌ {self.surface_label} returned a page for an invalid cursor instead of JSON-RPC -32602"
+                if probe.details.get("response_kind") == "page"
+                else f"❌ {self.surface_label} did not return the expected JSON-RPC -32602 for an invalid cursor"
             ),
             details={
                 "spec": pagination_spec(audit_data.protocol_version),
+                **({"response_kind": probe.details["response_kind"]} if "response_kind" in probe.details else {}),
                 "error_code": probe.details.get("error_code"),
                 "http_status": probe.details.get("http_status"),
             },

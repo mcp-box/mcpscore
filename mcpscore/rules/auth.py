@@ -20,6 +20,8 @@ import re
 from typing import ClassVar
 from urllib.parse import urlsplit
 
+from mcpscore.report_evidence import evidence_preview
+
 from ..probes import AUTH_GATED_STATUSES, PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED, ProbeOutcome, ProbeResult
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -129,8 +131,8 @@ class AuthWwwAuthenticateRule(AuthPostureBaseRule):
                 "Provide an appropriate challenge when authentication is needed; do not change "
                 "valid permission-denied responses to 401 just to pass this check."
                 if status == 403
-                else "Return a non-empty WWW-Authenticate challenge on HTTP 401. For header-based MCP "
-                "discovery, include a quoted resource_metadata URL pointing to the actual metadata."
+                else "Return a non-empty WWW-Authenticate challenge on HTTP 401 using the appropriate "
+                "authentication scheme. Check that a reverse proxy does not remove the header."
             )
             if not passed
             else None,
@@ -189,9 +191,12 @@ class AuthProtectedResourceMetadataRule(AuthPostureBaseRule):
         matches = audit_data.url is not None and _normalized(resource) == _normalized(audit_data.url)
         details["resource_matches"] = matches
         message = (
-            "✅ Observed protected resource metadata identifies this MCP endpoint"
+            f"✅ Protected resource metadata identifies {evidence_preview(resource)}"
             if matches
-            else "❌ Protected resource metadata resource does not match the audited MCP endpoint"
+            else (
+                f"❌ Metadata resource {evidence_preview(resource)} does not match "
+                f"endpoint {evidence_preview(audit_data.url)}"
+            )
         )
         return diagnostic_result(
             rule_name=self.rule_name,
@@ -390,10 +395,10 @@ class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
             message = f"❌ The HTTP {status} challenge has no resource_metadata parameter for discovering the metadata"
         elif audit_data.url is not None and _origin(referenced) != _origin(audit_data.url):
             passed = False
-            message = "❌ The challenge resource_metadata URL fails mcpscore's same-origin comparison"
+            message = f"❌ Challenge resource_metadata {evidence_preview(referenced)} is not on this server's origin"
         else:
             passed = True
-            message = f"✅ The HTTP {status} challenge references metadata accepted by the origin comparison"
+            message = f"✅ HTTP {status} challenge references same-origin metadata {evidence_preview(referenced)}"
         return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
@@ -402,14 +407,14 @@ class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
             details={"basis": "RFC 9728 §5.1 (resource_metadata parameter)", "resource_metadata": referenced},
             suggested_fix=(
                 (
-                    "Add a quoted resource_metadata URL to WWW-Authenticate, or review applicability if "
-                    "well-known discovery already meets the target revision."
+                    "Add a quoted resource_metadata URL pointing to your protected-resource metadata "
+                    "in WWW-Authenticate to satisfy this check."
                 )
                 if referenced is None
                 else (
-                    "Validate the referenced metadata and its resource identity under RFC 9728 section "
-                    "3.3. Review this same-origin finding before relocating valid metadata; the current "
-                    "comparison is stricter than section 5.1."
+                    "Verify that the challenge URL points to your intended metadata and its resource "
+                    "value identifies this endpoint. Consult the rule documentation for alternative "
+                    "discovery setups."
                 )
             )
             if not passed
@@ -572,11 +577,14 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
         has_endpoints = details.get("auth_server_has_endpoints") is True
         passed = present and has_endpoints
         if not present:
-            message = "❌ No usable discovery metadata was observed for the selected authorization server"
+            message = f"❌ No usable discovery metadata was observed for issuer {evidence_preview(issuer)}"
         elif not has_endpoints:
-            message = "❌ Authorization server metadata lacks string authorization_endpoint or token_endpoint fields"
+            message = (
+                f"❌ Issuer {evidence_preview(issuer)} metadata lacks string "
+                "authorization_endpoint or token_endpoint fields"
+            )
         else:
-            message = "✅ Observed authorization server metadata includes string authorization and token endpoints"
+            message = f"✅ Issuer {evidence_preview(issuer)} metadata includes string authorization and token endpoints"
         return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
@@ -662,8 +670,8 @@ class AuthServerPkceRule(AuthMetadataBaseRule):
                 "issuer": details.get("auth_server_issuer"),
             },
             suggested_fix=(
-                "Implement and enforce PKCE S256 at the authorization server, then include S256 in "
-                "code_challenge_methods_supported. Advertising it alone does not prove enforcement."
+                "If S256 is supported, include it in code_challenge_methods_supported. Otherwise "
+                "implement S256 before advertising it. This check does not verify runtime enforcement."
             )
             if not passed
             else None,

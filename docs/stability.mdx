@@ -221,10 +221,13 @@ finding, not a claim that every scored recommendation is mandatory.
 ### Protocol and probe evidence
 
 Failed protocol/probe checks retain their observations and can add
-`details.expected` for the particular fields checked. Missing error codes are
-reported as **not observed**, rather than invented from an HTTP status.
-`details.context` records the audit protocol version, independently observed
-legacy session version and transport when that context is available. Existing
+`details.expected` for the particular fields checked. Human messages include
+observed error codes/statuses only when present; stdio messages omit HTTP status.
+Cursor probes distinguish a returned page from an unexpected response, rather
+than inferring success from an absent error code. Audit context is recorded once:
+`transport` at report level and `spec.negotiated_version` and
+`spec.session_protocol_version` in the specification block. The latter is null
+unless a legacy session was established. Existing
 `target_version`, `spec` and `basis` fields retain the rule's revision and source.
 Unavailable probes still skip; a hint cannot turn missing evidence into failure.
 
@@ -236,13 +239,26 @@ Tool-schema issues use catalog indexes and paths relative to each tool, with the
 same 20-issue and 255-code-point path bounds as catalog findings. A network
 reference finding identifies the containing schema; it does not prove a fetch.
 
-Rule and probe evidence copies mask `response_session_id` and `www_authenticate`
-values as `[redacted]` (absence stays null). URL values in those copies omit
-userinfo, queries and fragments; specification links keep their section anchors.
-Raw error text is omitted. These protections do not mutate observations used
-for scoring, and are not a general secret detector: do not place credentials in
-server names, URL paths or arbitrary metadata, or assume an entire report is
-safe to publish without review.
+Rule and probe evidence copies mask `response_session_id` as `[redacted]`
+(absence stays null), remove URL userinfo, and mask known credential query keys:
+`access_token`, `refresh_token`, `id_token`, `token`, `api_key`, `apikey`,
+`client_secret`, `password`, `secret`, `authorization` and `code`. Key matching
+is case-insensitive after URL decoding and treats hyphens like underscores.
+All scheme:// URLs (including postgres and HTTP) are matched case-insensitively,
+including URLs embedded in challenge
+headers and exception text. Public query parameters, spelling, order, fragments,
+WWW-Authenticate challenges and diagnostic exception reasons remain available.
+
+Human messages restore bounded quoted previews of resource/issuer identifiers,
+version lists, Content-Type values and schema-validator reasons. They use the
+same 60-code-point preview and control-character escaping described above, after
+credential masking. Indexed schema issues still omit raw values, and affected
+tools are counted by catalog index even when their names collide.
+
+These protections do not mutate observations used for scoring and are not a
+general secret detector. Arbitrary error text and public metadata can contain
+sensitive information outside these specific patterns; review a report before
+publishing it.
 
 Passing PKCE findings establish **advertised S256 support**, not an executed
 authorization flow. Error-hygiene passes mean no configured patterns were found

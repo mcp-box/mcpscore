@@ -226,7 +226,7 @@ class TestChallengeReferencesMetadata:
         unauth = _unauth(www_authenticate='Bearer resource_metadata="https://evil.example/.well-known/x"')
         result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
         assert result.passed is False
-        assert "same-origin comparison" in result.message
+        assert "not on this server's origin" in result.message
 
     def test_passes_on_same_origin_different_path(self):
         # Root PRM form in the header while the probe discovered the path-aware
@@ -268,7 +268,7 @@ class TestChallengeReferencesMetadata:
         unauth = _unauth(www_authenticate="Bearer resource_metadata=https://evil.example/.well-known/x")
         result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
         assert result.passed is False
-        assert "same-origin comparison" in result.message
+        assert "not on this server's origin" in result.message
 
     def test_param_name_is_matched_case_insensitively(self):
         """RFC 7235 §2.1: auth-param names are case-insensitive."""

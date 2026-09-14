@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from mcpscore.diagnostics import entity_label
+from mcpscore.enums import MCPTransportType
 from mcpscore.report_evidence import report_evidence
 
 from .base import AuditData, RuleResult, RuleSeverity
@@ -23,7 +24,7 @@ def diagnostic_result(
     issues: Iterable[dict[str, Any]] = (),
 ) -> RuleResult:
     """Attach failure-only repairs and safe, explicitly observed response context."""
-    evidence = report_evidence(details)
+    evidence = details.copy()
     message = message.rstrip().rstrip(".") + "."
     if not passed:
         if expected is not None:
@@ -47,24 +48,19 @@ def diagnostic_result(
             message += f" First affected field: {location}."
         observed = []
         for key, label in (("error_code", "JSON-RPC error code"), ("http_status", "HTTP status")):
-            if key in details:
-                value = details[key]
-                # Never print a server-controlled malformed error-code value.
-                display = str(value) if type(value) is int else "not observed" if value is None else "invalid type"
+            if key == "http_status" and audit_data is not None and audit_data.transport_type is MCPTransportType.STDIO:
+                continue
+            value = details.get(key)
+            if value is not None:
+                display = str(value) if type(value) is int else "invalid type"
                 observed.append(f"{label}: {display}")
         if observed:
             message += " Observed " + "; ".join(observed) + "."
-        if audit_data is not None:
-            evidence["context"] = {
-                "protocol_version": audit_data.protocol_version,
-                "session_protocol_version": audit_data.session_protocol_version,
-                "transport_type": audit_data.transport_type,
-            }
     return RuleResult(
         rule_name=rule_name,
         severity=severity,
         passed=passed,
-        message=message,
-        details=evidence,
+        message=report_evidence(message),
+        details=report_evidence(evidence),
         suggested_fix=None if passed else suggested_fix,
     )

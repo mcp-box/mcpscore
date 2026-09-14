@@ -901,6 +901,18 @@ async def _probe_invalid_cursor(
         _request_headers(target_version, method),
     )
     details = _base_details(response)
+    item_key = {
+        "tools/list": "tools",
+        "resources/list": "resources",
+        "resources/templates/list": "resourceTemplates",
+        "prompts/list": "prompts",
+    }[method]
+    if response.error is not None:
+        details["response_kind"] = "error"
+    elif response.result is not None and isinstance(response.result.get(item_key), list):
+        details["response_kind"] = "page"
+    else:
+        details["response_kind"] = "unexpected_response"
     if response.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "request is access-controlled; cursor validation not observable"
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)

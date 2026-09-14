@@ -1,8 +1,8 @@
 from abc import abstractmethod
 from typing import ClassVar
 
-from mcpscore.diagnostics import quoted_preview
 from mcpscore.probes import GATEWAY_PROBE_IDS, PROBE_DISCOVER, ProbeOutcome, ProbeResult, has_modern_support
+from mcpscore.report_evidence import evidence_preview
 from mcpscore.spec import LATEST, allowed_versions, compare, deprecated_versions
 
 from .base import (
@@ -122,9 +122,9 @@ class AllowedVersionRule(ProtocolVersionBaseRule):
         passed = protocol_version in allowed
 
         message = (
-            f"✅ Protocol version {quoted_preview(protocol_version)} is one of the allowed versions"
+            f"✅ Protocol version {evidence_preview(protocol_version)} is one of the allowed versions"
             if passed
-            else f"❌ Protocol version {quoted_preview(protocol_version)} is not in the allowed versions list"
+            else f"❌ Protocol version {evidence_preview(protocol_version)} is not in the allowed versions list"
         )
 
         return diagnostic_result(
@@ -218,17 +218,17 @@ class LatestVersionRule(BaseRule):
         passed: bool = negotiated_is_latest or modern
 
         if protocol_version == LATEST.version:
-            message = f"✅ Protocol version {quoted_preview(protocol_version)} is the latest version"
+            message = f"✅ Protocol version {evidence_preview(protocol_version)} is the latest version"
         elif negotiated_is_latest:
-            message = f"✅ Protocol version {quoted_preview(protocol_version)} is newer than final {LATEST.version}"
+            message = f"✅ Protocol version {evidence_preview(protocol_version)} is newer than final {LATEST.version}"
         elif modern:
             message = (
                 f"✅ Server supports the latest protocol version '{LATEST.version}' via the stateless "
-                f"lifecycle (the handshake negotiated {quoted_preview(protocol_version)}, on its legacy path)"
+                f"lifecycle (the handshake negotiated {evidence_preview(protocol_version)}, on its legacy path)"
             )
         else:
             message = (
-                f"❌ Not using the latest protocol version: negotiated {quoted_preview(protocol_version)}, "
+                f"❌ Not using the latest protocol version: negotiated {evidence_preview(protocol_version)}, "
                 f"latest is '{LATEST.version}', and no stateless-lifecycle support was observed"
             )
 
@@ -332,11 +332,14 @@ class SupportedVersionsIncludeNegotiatedRule(BaseRule):
 
         if passed:
             message = (
-                f"✅ server/discover's supportedVersions includes the legacy "
-                f"handshake's negotiated version {quoted_preview(negotiated)}"
+                f"✅ server/discover's supportedVersions {evidence_preview(supported)} includes the legacy "
+                f"handshake's negotiated version {evidence_preview(negotiated)}"
             )
         else:
-            message = f"❌ server/discover.supportedVersions omits legacy version {quoted_preview(negotiated)}"
+            message = (
+                f"❌ server/discover.supportedVersions {evidence_preview(supported)} omits "
+                f"legacy version {evidence_preview(negotiated)}"
+            )
 
         return diagnostic_result(
             rule_name=self.rule_name,
@@ -389,9 +392,9 @@ class DeprecatedVersionRule(ProtocolVersionBaseRule):
         """
         passed: bool = protocol_version not in self.deprecated_versions
         if passed:
-            message: str = f"✅ Protocol version {quoted_preview(protocol_version)} is not deprecated"
+            message: str = f"✅ Protocol version {evidence_preview(protocol_version)} is not deprecated"
         else:
-            message: str = f"❌ Protocol version {quoted_preview(protocol_version)} is deprecated"
+            message: str = f"❌ Protocol version {evidence_preview(protocol_version)} is deprecated"
 
         return diagnostic_result(
             rule_name=self.rule_name,

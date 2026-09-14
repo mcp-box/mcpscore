@@ -33,6 +33,7 @@ from .probes import (
     run_all_probes,
     run_stdio_probes,
 )
+from .report_evidence import report_evidence
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
 from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, rule_sort_key
 from .rules.packaging import PACKAGING_GROUP
@@ -969,7 +970,8 @@ class MCPAuditor:
             "results": [res.to_dict() for res in self.results],
             "skipped_rules": [s.to_dict() for s in self.skipped_rules],
             "spec": {
-                "negotiated_version": self.audit_data.protocol_version,
+                "negotiated_version": report_evidence(self.audit_data.protocol_version),
+                "session_protocol_version": report_evidence(self.audit_data.session_protocol_version),
                 "latest_version": LATEST.version,
                 "readiness_target": (DRAFT or LATEST).version,
                 "era": self.era.value if self.era is not None else None,
