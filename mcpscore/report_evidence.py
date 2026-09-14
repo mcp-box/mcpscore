@@ -49,7 +49,24 @@ def report_evidence(value: Any, *, key: str = "") -> Any:
     if key == "response_session_id":
         return None if value is None else "[redacted]"
     if isinstance(value, dict):
-        return {k: report_evidence(v, key=k) for k, v in value.items()}
+        # Reserve literal names first, so masking cannot overwrite an existing key.
+        # Sort source names so parallel summary maps receive the same aliases even
+        # if their insertion orders differ. Never include original secrets in aliases.
+        names = {k: _URL.sub(_mask_url, k) if isinstance(k, str) else k for k in value}
+        reserved = set(names.values())
+        used = {k for k, masked in names.items() if k == masked}
+        for original in sorted(k for k, masked in names.items() if k != masked):
+            masked = names[original]
+            candidate = masked
+            suffix = 2
+            if candidate in used:
+                candidate = f"{masked} [masked name {suffix}]"
+                while candidate in used or candidate in reserved:
+                    suffix += 1
+                    candidate = f"{masked} [masked name {suffix}]"
+            names[original] = candidate
+            used.add(candidate)
+        return {names[k]: report_evidence(v, key=k) for k, v in value.items()}
     if isinstance(value, list):
         return [report_evidence(item, key=key) for item in value]
     if isinstance(value, str):

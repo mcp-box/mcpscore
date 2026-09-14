@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from missing values, and scope security and stability messages to sampled
   observations. PKCE wording now describes advertised support, not enforcement.
 - Mask session IDs, URL userinfo and known credential query keys in report copies,
-  including mixed-case URLs embedded in text. Preserve public authentication
+  including dictionary keys with collision-safe aliases and mixed-case URLs
+  embedded in text. Preserve public authentication
   challenges, ordinary URL parameters and exception reasons for debugging.
 - Restore bounded value/validator previews in human messages; keep schema summary
   labels value-free. Preserve every affected tool index and merge summary labels

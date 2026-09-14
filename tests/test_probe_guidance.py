@@ -560,3 +560,72 @@ def test_network_ref_and_schema_error_keep_preview_out_of_summary():
         "invalid under JSON Schema 2020-12",
     ]
     assert result.details["offending_tool_indexes"] == {"test": [0]}
+
+
+def test_masked_dictionary_names_preserve_collisions_and_literal_aliases():
+    first = "https://user:Password123@host/?token=Token123"
+    second = "https://user:Password456@host/?token=Token456"
+    masked = "https://host/?token=[redacted]"
+    raw = {first: 1, second: 2, masked: 3, f"{masked} [masked name 2]": 4}
+    original = deepcopy(raw)
+    result = report_evidence(raw)
+    assert len(result) == len(raw)
+    assert sorted(result.values()) == [1, 2, 3, 4]
+    assert result[masked] == 3
+    assert result[f"{masked} [masked name 2]"] == 4
+    assert result[f"{masked} [masked name 3]"] == 1
+    assert result[f"{masked} [masked name 4]"] == 2
+    assert result == report_evidence(dict(reversed(list(raw.items()))))
+    assert result == report_evidence(result)
+    assert raw == original
+    assert "Password" not in json.dumps(result)
+    assert "Token" not in json.dumps(result)
+
+
+def test_schema_summary_masks_names_without_losing_tools():
+    rule = RULES["readiness_2026_tool_schema_dialect"]
+    data = data_for(rule.rule_id, failure=False)
+    names = ["https://user:Password123@host/?token=Token123", "https://host/?token=Token456"]
+    data.tools = [Tool(name=name, input_schema={"type": "bad"}) for name in names]
+    result = rule.check(data)
+    wire = json.dumps(result.to_dict())
+    assert "Password123" not in wire
+    assert "Token123" not in wire
+    assert "Token456" not in wire
+    assert len(result.details["offending_tools"]) == 2
+    assert result.details["offending_tools"].keys() == result.details["offending_tool_indexes"].keys()
+    assert sorted(result.details["offending_tool_indexes"].values()) == [[0], [1]]
+    assert [tool.name for tool in data.tools] == names
+
+
+@pytest.mark.parametrize("response_kind", ["page", "unexpected_response", "error"])
+def test_cursor_repair_matches_observed_response(response_kind):
+    rule = RULES["pagination_tools_invalid_cursor"]
+    data = data_for(rule.rule_id, failure=True)
+    data.probes[rule.probe_id].details["response_kind"] = response_kind
+    result = rule.check(data)
+    assert not result.passed
+    assert "-32602" in result.suggested_fix
+    assert "first page" not in result.suggested_fix
+    assert ("returning a page" in result.suggested_fix) == (response_kind == "page")
+
+
+def test_version_repairs_preserve_alternative_paths():
+    latest = RULES["protocol_version_latest"].check(data_for("protocol_version_latest", failure=True))
+    assert "or expose modern" in latest.suggested_fix
+    assert "changing only the version string is insufficient" in latest.suggested_fix
+    rule_id = "protocol_version_supported_versions_include_negotiated"
+    discovery = RULES[rule_id].check(data_for(rule_id, failure=True))
+    assert "or disable the legacy lifecycle if intentionally retired" in discovery.suggested_fix
+    assert "older clients you still support" in discovery.suggested_fix
+
+
+def test_missing_issuer_metadata_repair_is_actionable():
+    rule = RULES["auth_server_metadata_present"]
+    data = data_for(rule.rule_id, failure=True)
+    data.probes[PROBE_AUTH_METADATA].details["auth_server_metadata_present"] = False
+    result = rule.check(data)
+    assert not result.passed
+    assert "discovery URLs" in result.suggested_fix
+    assert "RFC 8414 or OpenID Connect" in result.suggested_fix
+    assert "applicability review" not in result.suggested_fix

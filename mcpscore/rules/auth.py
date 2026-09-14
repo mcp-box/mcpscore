@@ -599,10 +599,7 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
             suggested_fix=(
                 ("Check DNS, TLS and network access to the selected issuer; no discovery location was reachable.")
                 if details.get("auth_server_metadata_error") is not None
-                else (
-                    "Check the issuer discovery URLs and serve RFC 8414 or OpenID Connect JSON metadata. "
-                    "Path-based issuer discovery may need a mcpscore applicability review."
-                )
+                else ("Check the issuer discovery URLs and serve RFC 8414 or OpenID Connect JSON metadata.")
                 if not present
                 else (
                     "Include string authorization_endpoint and token_endpoint URLs for the actual OAuth "

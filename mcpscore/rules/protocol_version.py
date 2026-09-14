@@ -243,8 +243,8 @@ class LatestVersionRule(BaseRule):
                 "modern_lifecycle_support": modern,
             },
             suggested_fix=(
-                "Implement the latest revision and its per-request lifecycle, then re-audit. Keep the "
-                "legacy initialization path for supported older clients; changing only the version "
+                "Implement the latest revision on the negotiated path or expose modern per-request "
+                "lifecycle support. Preserve supported older clients; changing only the version "
                 "string is insufficient."
             )
             if not passed
@@ -352,8 +352,8 @@ class SupportedVersionsIncludeNegotiatedRule(BaseRule):
             },
             suggested_fix=(
                 "Include the observed legacy revision in server/discover.supportedVersions while it "
-                "remains supported. Keep valid legacy clients working; this is a discovery-consistency"
-                " recommendation."
+                "remains supported, or disable the legacy lifecycle if intentionally retired. "
+                "Preserve access for older clients you still support."
             )
             if not passed
             else None,

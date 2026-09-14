@@ -91,7 +91,9 @@ class InvalidCursorRule(BaseRule):
             },
             suggested_fix=(
                 "Validate pagination cursors before listing. Return JSON-RPC -32602 (Invalid params) "
-                "for an invalid cursor instead of silently restarting at the first page."
+                "for an invalid cursor instead of returning a page."
+                if probe.details.get("response_kind") == "page"
+                else "Validate pagination cursors and return JSON-RPC -32602 (Invalid params) for an invalid cursor."
             )
             if not passed
             else None,

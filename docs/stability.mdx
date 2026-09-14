@@ -43,7 +43,7 @@ type change bumps `schema_version`.
 | `summary` | object | `total`, `passed`, `failed`, `skipped`, and `by_severity` counts |
 | `results[]` | array | One entry per rule that ran: `rule_id`, `rule_name`, `severity`, `severity_value`, `passed`, `message`, `details`, and optional failure-only `suggested_fix` (absent on passes and older findings) |
 | `skipped_rules[]` | array | One entry per rule that did not run: `rule_id`, `rule_name`, `reason`, `group_name` |
-| `spec` | object | `negotiated_version`, `latest_version`, `readiness_target`, `era` |
+| `spec` | object | `negotiated_version`, `session_protocol_version`, `latest_version`, `readiness_target`, `era` |
 | `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus `assessed`, `skipped`, `total` coverage counts |
 | `smoke` | object | Present only when the run used `--smoke`. See below |
 | `config` | object | Present only when a per-project configuration was applied. See below |
@@ -245,9 +245,13 @@ Rule and probe evidence copies mask `response_session_id` as `[redacted]`
 `client_secret`, `password`, `secret`, `authorization` and `code`. Key matching
 is case-insensitive after URL decoding and treats hyphens like underscores.
 All scheme:// URLs (including postgres and HTTP) are matched case-insensitively,
-including URLs embedded in challenge
+including dictionary keys and URLs embedded in challenge
 headers and exception text. Public query parameters, spelling, order, fragments,
 WWW-Authenticate challenges and diagnostic exception reasons remain available.
+If masked dictionary keys collide, retain every entry using deterministic
+` [masked name N]` suffixes. Literal keys are reserved before allocating aliases;
+summary maps with the same source names use the same aliases. These aliases are
+report labels, not original tool names; use catalog indexes to identify tools.
 
 Human messages restore bounded quoted previews of resource/issuer identifiers,
 version lists, Content-Type values and schema-validator reasons. They use the
