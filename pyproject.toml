@@ -27,7 +27,7 @@ packages = ["mcpscore"]
 
 [project]
 name = "mcpscore"
-version = "1.16.0"
+version = "1.17.0"
 description = "Audit an MCP server and get a scored, actionable quality report in seconds."
 authors = [{ name = "Alex Akimov"}]
 license = "MIT"

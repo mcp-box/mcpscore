@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-09-14
+
+Repair hints now cover every rule family, smoke mode shows what each tool
+returned, and report evidence masks credentials narrowly instead of hiding
+public values. No verdict, severity or score changes.
+
 ### Added
 
 - **Smoke mode says what came back.** Every smoke check prints a line, passes
@@ -1639,7 +1645,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.16.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.17.0...HEAD
+[1.17.0]: https://github.com/mcp-box/mcpscore/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/mcp-box/mcpscore/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/mcp-box/mcpscore/compare/v1.14.2...v1.15.0
 [1.14.2]: https://github.com/mcp-box/mcpscore/compare/v1.14.1...v1.14.2
