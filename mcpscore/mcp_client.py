@@ -393,12 +393,9 @@ class MCPClient:
                 )
                 return (False, None)
 
-            # A refused redirect on the POST does not skip the SSE fallback:
-            # redirect behaviour can differ by method (a legacy endpoint may
-            # redirect POST /mcp elsewhere while serving SSE on GET /mcp), so
-            # the fallback's GET is sent and classified by the same policy on
-            # its own. If it is redirected too, or fails for less, the
-            # ranking below keeps the redirect diagnosis.
+            # A refused redirect on the POST does not skip the SSE fallback: redirect
+            # behaviour can differ by method, so the GET is sent and classified on its own.
+            # The ranking below keeps the redirect diagnosis if the GET is redirected too.
 
             # Fall back to SSE
             logger.info("Streamable HTTP failed, trying SSE...")
@@ -788,19 +785,10 @@ class MCPClient:
         except Exception as e:
             status, refused = self._observed_status(e)
             if status is None:
-                # Some SDK failure shapes (e.g. a bare MCPError for a 401
-                # whose body parses as an error response, or the MCPError it
-                # raises for a redirect it refused to follow) carry no HTTP
-                # status anywhere in the exception chain. Recover it with a
-                # single request so an auth gate classifies as UNAUTHORIZED
-                # and a redirect as REDIRECTED instead of UNKNOWN. Only a
-                # recovered 401/403 or refused redirect is trusted: the
-                # recovery is a *different* request, so any other status (a
-                # 200 from an HTTP-fine but MCP-broken endpoint, say) must
-                # not relabel the original failure. Recovery follows the
-                # hops the SDK follows, so the redirect it stops on is the
-                # one the SDK refused (or, for a loop, the one past its
-                # budget), not a trailing-slash hop the SDK went through.
+                # Some SDK failures (a bare MCPError for a 401, a refused redirect) carry no HTTP
+                # status. Recover it with one extra request so the gate or redirect classifies
+                # correctly. Only a recovered 401/403 or refused redirect is trusted, since the
+                # recovery is a different request; it follows the same hops the SDK followed.
                 recovered = await self._recover_http_response(server_url)
                 if recovered is not None:
                     if recovered.status_code in (401, 403):

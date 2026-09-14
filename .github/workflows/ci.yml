@@ -9,13 +9,9 @@ on:
     branches: [main]
 
 concurrency:
-  # Keyed by event, then head repo, then branch.
-  #   event_name: a push run and its pull_request run must NOT share a group.
-  #     They report onto the same PR, so cancelling one renders as a FAILED
-  #     check and blocks merge even though CI passed.
-  #   head repo: without it a fork PR whose head branch is named `main` (or two
-  #     forks sharing a branch name) collides with an unrelated run.
-  #   branch: consecutive pushes to one branch still supersede each other.
+  # Group by event, head repo and branch: a push run and a pull_request run of the
+  # same commit must not cancel each other (a cancelled run shows as a failed check),
+  # and a fork branch named like ours must not collide with ours.
   group: >-
     ${{ github.workflow }}-${{ github.event_name }}-${{
     github.event.pull_request.head.repo.full_name || github.repository }}-${{

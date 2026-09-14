@@ -406,12 +406,9 @@ class MCPAuditor:
 
         stateless = probes.get(PROBE_STATELESS_LIST)
         if stateless is not None:
-            # The probe *is* the tools listing on this path (resources and
-            # prompts are never listed, so their rules stay unjudgeable). The
-            # attempt is recorded on the server's answer, not on a usable one:
-            # a server that declares tools and then does not answer tools/list
-            # must fail the consistency rule, not skip it. ERROR/NOT_APPLICABLE
-            # mean we could not observe — those still skip.
+            # On this path the probe is the tools listing (resources and prompts are never
+            # listed). Record the attempt on the server's answer, not on a usable one: a
+            # server that declares tools and does not answer tools/list must fail, not skip.
             if stateless.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
                 self.audit_data.listings_attempted |= {"tools"}
             if stateless.payload is not None:
@@ -513,12 +510,9 @@ class MCPAuditor:
         A separator line is logged before the first readiness rule so the two
         sections are visually distinct in the streamed output.
         """
-        # Readiness promotion (the documented migration in methodology.mdx):
-        # a server that negotiates the modern lifecycle gets its readiness
-        # rules counted in the MAIN score. Legacy-only servers keep readiness
-        # informative — guidance, not punishment. Partial audits are never
-        # promoted: their score is already not comparable to a full audit's,
-        # and folding a second axis in would make it less interpretable.
+        # Readiness promotion (methodology.mdx): a server on the modern lifecycle has its
+        # readiness rules counted in the main score; legacy-only servers keep them
+        # informative. Partial audits are never promoted.
         self.readiness_promoted = self.era in (Era.MODERN, Era.DUAL) and not self.audit_data.partial
 
         readiness_header_emitted = False

@@ -28,10 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Publish the tag's wrapper, never whatever `main` happens to hold.
-          # A dispatch defaults to the ref it was started from, so without this
-          # a recovery run would push main's npm/ to the registry under the
-          # release's version — and npm publishes are immutable.
+          # Publish the tag's wrapper, never main's: a dispatch defaults to the ref it
+          # started from, and npm publishes are immutable.
           ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
       # No dependency caching is enabled (the `cache:` input is omitted), so
@@ -43,27 +41,14 @@ jobs:
           # from must not drift between an approved change and the actual run.
           node-version: "22.23.2"
           registry-url: "https://registry.npmjs.org"
-      # Node 22 bundles npm 10.x, but OIDC Trusted Publishing needs npm >=
-      # 11.5.1. Without it, npm authenticates with setup-node's placeholder
-      # token and the registry rejects the publish with E404. Exact-pinned
-      # official npm package — deterministic, no lockfile to install from.
+      # OIDC Trusted Publishing needs npm >= 11.5.1; Node 22 bundles 10.x. Exact pin
+      # of the official npm package, no lockfile needed.
       - name: Upgrade npm for Trusted Publishing
         run: npm install -g npm@11.18.0  # zizmor: ignore[adhoc-packages]
-      # The wrapper is a launcher, not a Node implementation: it runs
-      # `mcpscore==<pythonVersion>` through uvx/pipx. Publishing before that
-      # version is resolvable on PyPI ships a package that cannot run — and npm
-      # publishes are immutable. Both workflows fire on the same release event
-      # with no ordering between them, so wait here rather than assume.
-      # A PEP 440 pre-release (1.6.0b1) is not valid npm semver and ships
-      # PyPI-only. The `if:` above lets a manual dispatch through
-      # unconditionally so a failed release can be recovered, so the check has
-      # to live here.
-      #
-      # It validates the TAG, not npm/package.json: `_run_preflight` in
-      # scripts/release.py deliberately skips npm version sync for
-      # pre-releases, so on a pre-release tag the manifest still carries the
-      # PREVIOUS stable version and would pass a manifest check while the run
-      # republishes the wrong version.
+      # The wrapper only launches `mcpscore==<pythonVersion>` through uvx/pipx, so the
+      # Python release must be resolvable before this publishes (both workflows fire on
+      # the same release event, unordered). Validate the tag, not package.json: a
+      # pre-release tag ships PyPI-only and the manifest still carries the previous stable.
       - name: Reject pre-release tags
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
@@ -79,25 +64,17 @@ jobs:
             echo "::error::npm/package.json is ${manifest} but the tag is ${version} — refusing to publish a mismatched wrapper"
             exit 1
           fi
-          # `pythonVersion` is the field that decides behaviour: the wrapper
-          # runs `mcpscore==<pythonVersion>`, so a stale pin publishes a new npm
-          # version that launches an OLD CLI — immutably. It also makes the
-          # PyPI wait below meaningless, since it would resolve instantly
-          # against the already-published old version. `check_npm_version_sync`
-          # in scripts/release.py enforces the same pair at preflight; this
-          # repeats it for releases not created through that script.
+          # `pythonVersion` decides which CLI the wrapper runs; a stale pin would publish a
+          # new npm version that launches an old CLI, immutably. scripts/release.py checks
+          # the same pair at preflight; this covers releases not cut through it.
           pinned="$(node -p 'require("./npm/package.json").mcpscore.pythonVersion')"
           if [ "$pinned" != "$version" ]; then
             echo "::error::npm wrapper pins mcpscore==${pinned} but the tag is ${version} — it would launch the wrong CLI"
             exit 1
           fi
           echo "tag ${RELEASE_TAG}, manifest ${manifest} and python pin ${pinned} all agree"
-      # Reuses scripts/release.py rather than reimplementing the poll. That
-      # function exists because `/pypi/<pkg>/<version>/json` goes green BEFORE
-      # the simple index, and the simple index is what uv and pip resolve
-      # against — waiting on the metadata endpoint is what made 1.1.1 report a
-      # published release that could not be installed. A second copy here would
-      # be free to drift back into that bug.
+      # Reuses the poll from scripts/release.py: the simple index, which uv and pip
+      # resolve against, goes green after the JSON metadata endpoint does.
       - name: Wait for the pinned version on the PyPI simple index
         run: |
           set -euo pipefail

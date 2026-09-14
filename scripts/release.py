@@ -322,13 +322,9 @@ def wait_for_publish(version: str) -> None:
     # npm requires the scope slash URL-encoded (%2F) — canonical registry form.
     npm_path = NPM_PACKAGE.replace("/", "%2F")
     wait_for_registry("npm", f"https://registry.npmjs.org/{npm_path}/{version}", "publish-npm.yml")
-    # --refresh-package: uv caches the PyPI index, so a version published
-    # seconds ago is invisible to a machine that resolved this package before —
-    # the smoke test fails with "your requirements are unsatisfiable" for a
-    # release that is in fact live. Refreshing one package is enough; --no-cache
-    # also works but re-downloads every dependency.
-    # `npx` delegates to `uvx mcpscore==<pin>` (npm/bin/mcpscore.js) and so hits
-    # the same index cache — run the uvx line first to refresh it.
+    # --refresh-package: uv caches the index, so a version published seconds ago is
+    # invisible without it and the smoke test fails for a live release. npx delegates
+    # to uvx and hits the same cache, so run the uvx line first.
     print(
         f"\nSmoke test:\n"
         f"  uvx --refresh-package mcpscore mcpscore=={version} https://mcp.deepwiki.com/mcp\n"

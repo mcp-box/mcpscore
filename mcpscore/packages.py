@@ -453,13 +453,9 @@ async def _fetch(coordinate: PackageCoordinate, client: httpx2.AsyncClient) -> P
         error=f"metadata larger than {MAX_METADATA_BYTES} bytes",
     )
 
-    # A bare Request, NOT client.build_request: build_request merges the
-    # client's default headers and cookies, and client.send re-applies the
-    # client's `auth`. Popping Authorization off a built request therefore does
-    # not make it credential-free — a caller's Basic auth came back on send().
-    # Constructing the request from nothing and passing auth=None is what
-    # actually guarantees that a credential meant for the audited MCP server
-    # never reaches a package registry. A test pins all three channels.
+    # A bare Request with auth=None: build_request and send re-apply the client's
+    # default headers, cookies and auth, so popping Authorization off a built request
+    # is not credential-free. A test pins all three channels.
     request = httpx2.Request(
         "GET",
         url,

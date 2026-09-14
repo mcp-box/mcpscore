@@ -1,11 +1,8 @@
 name: Canary
 
-# Daily run against the newest resolvable dependencies, so upstream breakage
-# (MCP SDK, httpx, pydantic, ...) is caught before users hit it. A second lane
-# tracks the mcp 2.x betas ahead of the 2026-07-28 spec-final SDK release; it
-# is advisory (continue-on-error) until mcpscore targets SDK v2. A third lane
-# runs the latest zizmor (CI pins it) so new workflow audits surface here
-# instead of failing unrelated PRs.
+# Daily lanes against the newest resolvable dependencies, the mcp 2.x pre-releases
+# (advisory), and the latest zizmor, so upstream breakage and new workflow audits
+# surface here instead of on unrelated PRs.
 on:
   schedule:
     - cron: "0 5 * * *"
