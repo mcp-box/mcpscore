@@ -77,4 +77,4 @@
 A comment says what a reader needs to not break the line, in one to four
 lines. Incident history, dates, measurements, "verified by", "before this fix",
 reviewer exchanges and version numbers of tools go here or into the project
-decision records, never into the public source or config files. 
+decision records, never into the public source or config files.
