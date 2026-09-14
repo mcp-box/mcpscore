@@ -966,26 +966,34 @@ class ToolSchemaDialectReadinessRule(ReadinessBaseRule):
         return SKIP_REASON_INSUFFICIENT_DATA if audit_data.tools is None else None
 
     @staticmethod
-    def _schema_problems(schema: dict[str, Any], index: int, path: str) -> tuple[list[str], list[dict[str, Any]]]:
+    def _schema_problems(
+        schema: dict[str, Any], index: int, path: str
+    ) -> tuple[list[str], list[dict[str, Any]], str | None]:
+        """Separate value-free labels and locations from the human-only preview."""
         declared = schema.get("$schema")
         problems: list[str] = []
         issues: list[dict[str, Any]] = []
+        preview: str | None = None
         network_refs: list[str] = []
         _find_network_refs(schema, network_refs)
         problems.extend("network $ref requires resolution review" for _ in network_refs)
         if network_refs:
+            preview = problems[0]
             issues.append(field_issue("tool", index, path, "network_reference", "no automatic network dereferencing"))
         if declared is None or declared == _JSON_SCHEMA_2020_12:
             try:
                 Draft202012Validator.check_schema(schema)
             except SchemaError as error:
-                problems.append(f"invalid under JSON Schema 2020-12: {evidence_preview(error.message)}")
+                problems.append("invalid under JSON Schema 2020-12")
+                if preview is None:
+                    preview = f"invalid under JSON Schema 2020-12: {evidence_preview(error.message)}"
                 location = path + "".join("/" + pointer_token(str(part)) for part in error.absolute_path)
                 issues.append(field_issue("tool", index, location, "invalid_schema", "valid JSON Schema 2020-12"))
-        return problems, issues
+        return problems, issues, preview
 
     def check(self, audit_data: AuditData) -> RuleResult:
         offending: dict[str, list[str]] = {}
+        offending_indexes: dict[str, list[int]] = {}
         first_problem = ""
         issues: list[dict[str, Any]] = []
         for index, tool in enumerate(audit_data.tools or []):
@@ -993,13 +1001,18 @@ class ToolSchemaDialectReadinessRule(ReadinessBaseRule):
             for attribute, path in (("input_schema", "/inputSchema"), ("output_schema", "/outputSchema")):
                 schema = getattr(tool, attribute, None)
                 if isinstance(schema, dict):
-                    schema_problems, schema_issues = self._schema_problems(schema, index, path)
+                    schema_problems, schema_issues, preview = self._schema_problems(schema, index, path)
+                    if not first_problem and preview is not None:
+                        first_problem = preview
                     problems.extend(schema_problems)
                     issues.extend(schema_issues)
             if problems:
-                if not first_problem:
-                    first_problem = problems[0]
-                offending[getattr(tool, "name", "<unnamed>")] = problems
+                name = getattr(tool, "name", "<unnamed>")
+                # Keep the legacy name-keyed shape, unioning labels rather than
+                # overwriting collisions. Indexes preserve every affected owner.
+                labels = offending.setdefault(name, [])
+                labels.extend(problem for problem in dict.fromkeys(problems) if problem not in labels)
+                offending_indexes.setdefault(name, []).append(index)
 
         passed = not offending
         if passed:
@@ -1022,6 +1035,7 @@ class ToolSchemaDialectReadinessRule(ReadinessBaseRule):
                 "sep": "SEP-2106",
                 "target_version": READINESS_TARGET,
                 "offending_tools": offending,
+                "offending_tool_indexes": offending_indexes,
             },
             suggested_fix=(
                 "Fix schemas under their declared or default dialect. For network $ref findings, "

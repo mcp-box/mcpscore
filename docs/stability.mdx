@@ -253,7 +253,12 @@ Human messages restore bounded quoted previews of resource/issuer identifiers,
 version lists, Content-Type values and schema-validator reasons. They use the
 same 60-code-point preview and control-character escaping described above, after
 credential masking. Indexed schema issues still omit raw values, and affected
-tools are counted by catalog index even when their names collide.
+tools are counted by catalog index even when their names collide. For readiness
+schema failures, `offending_tools` retains its legacy name-keyed shape with a
+union of short, value-free problem labels. `offending_tool_indexes` maps each
+name to all affected catalog indexes, including duplicate names; unlike bounded
+`issues`, this summary index mapping is complete. Validator previews appear only
+in the human message, not in these structured summaries.
 
 These protections do not mutate observations used for scoring and are not a
 general secret detector. Arbitrary error text and public metadata can contain

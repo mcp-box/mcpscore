@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mask session IDs, URL userinfo and known credential query keys in report copies,
   including mixed-case URLs embedded in text. Preserve public authentication
   challenges, ordinary URL parameters and exception reasons for debugging.
-- Restore bounded value/validator previews; count affected tools by catalog index
-  even when names collide. Omit unobserved status clauses, identify returned cursor
+- Restore bounded value/validator previews in human messages; keep schema summary
+  labels value-free. Preserve every affected tool index and merge summary labels
+  when names collide. Omit unobserved status clauses, identify returned cursor
   pages explicitly, and record version context once per report.
   Original probe observations remain available to rule predicates. Guidance
   changes do not alter verdicts, applicability, severity or scoring.

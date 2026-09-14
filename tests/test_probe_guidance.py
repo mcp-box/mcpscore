@@ -525,3 +525,38 @@ def test_auth_repairs_match_the_independent_checks():
     pkce = RULES["auth_server_metadata_pkce"].check(data_for("auth_server_metadata_pkce", failure=True))
     assert "implement S256 before advertising" in pkce.suggested_fix
     assert "does not verify runtime enforcement" in pkce.suggested_fix
+
+
+def test_duplicate_schema_names_retain_labels_and_every_affected_index():
+    rule = RULES["readiness_2026_tool_schema_dialect"]
+    data = data_for(rule.rule_id, failure=False)
+    data.tools = [
+        Tool(name="same", input_schema={"type": "PublisherSchemaValue123"}),
+        Tool(name="valid", input_schema={"type": "object"}),
+        Tool(name="same", input_schema={"$ref": "https://example.com/schema"}),
+        Tool(name="same", input_schema={"type": "bad"}, output_schema={"type": "bad"}),
+    ]
+    result = rule.check(data)
+    assert not result.passed
+    assert "affect 3 tool(s)" in result.message
+    assert "PublisherSchemaValue123" in result.message
+    assert "PublisherSchemaValue123" not in json.dumps(result.details)
+    assert result.details["offending_tools"] == {
+        "same": ["invalid under JSON Schema 2020-12", "network $ref requires resolution review"],
+    }
+    assert result.details["offending_tool_indexes"] == {"same": [0, 2, 3]}
+    assert [issue["entity_index"] for issue in result.details["issues"]] == [0, 2, 3, 3]
+
+
+def test_network_ref_and_schema_error_keep_preview_out_of_summary():
+    rule = RULES["readiness_2026_tool_schema_dialect"]
+    data = data_for(rule.rule_id, failure=False)
+    data.tools = [Tool(name="test", input_schema={"$ref": "https://example.com/schema", "type": "PublisherValue123"})]
+    result = rule.check(data)
+    assert "First finding: network $ref requires resolution review" in result.message
+    assert "PublisherValue123" not in json.dumps(result.details)
+    assert result.details["offending_tools"]["test"] == [
+        "network $ref requires resolution review",
+        "invalid under JSON Schema 2020-12",
+    ]
+    assert result.details["offending_tool_indexes"] == {"test": [0]}
