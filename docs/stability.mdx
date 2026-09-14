@@ -195,9 +195,11 @@ identify entries with missing or duplicated names. Existing detail keys are
 retained for compatibility and are not covered by this new evidence bound.
 Human-readable messages can show server identity values on passes and up to three
 duplicate tool names on failures. Each quoted preview includes at most 60 source
-Unicode code points, with an explicit truncation marker. Printable Unicode stays
-readable; quotes, backslashes and nonprinting characters are escaped, so the rendered
-preview can be longer than 60 characters. The full values remain in
+Unicode code points, with an explicit truncation marker; a value that is a single
+URL keeps up to 200, and a list renders item by item (at most 10 items, then a
+count). Printable Unicode stays readable; quotes, backslashes and nonprinting
+characters are escaped, so the rendered preview can be longer than the bound.
+The full values remain in
 legacy details. This is a display bound, not secret redaction. Website URL values
 are not echoed in passing messages.
 `issues_total` counts affected fields or occurrences, which can differ from a
@@ -261,7 +263,7 @@ report labels, not original tool names; use catalog indexes to identify tools.
 
 Human messages restore bounded quoted previews of resource/issuer identifiers,
 version lists, Content-Type values and schema-validator reasons. They use the
-same 60-code-point preview and control-character escaping described above, after
+same bounded preview and control-character escaping described above, after
 credential masking. Indexed schema issues still omit raw values, and affected
 tools are counted by catalog index even when their names collide. For readiness
 schema failures, `offending_tools` retains its legacy name-keyed shape with a

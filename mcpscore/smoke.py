@@ -450,7 +450,7 @@ async def _check_structured_content(session: ClientSession, tool: Tool, skip_rea
             f"tools/call answered JSON-RPC error {exc.code} — the schema could not be exercised "
             "(the server may have rejected the synthesized arguments)",
             error_code=exc.code,
-            called=True,
+            called=exc.code not in (REQUEST_TIMEOUT, CONNECTION_CLOSED),
         )
     except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
         return result(SmokeVerdict.SKIP, f"tools/call raised {type(exc).__name__} — the schema could not be exercised")
@@ -530,10 +530,13 @@ async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reas
         )
     except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
         return result(SmokeVerdict.FAIL, f"tools/call with schema-invalid arguments crashed: {type(exc).__name__}")
-    if isinstance(call_result, CallToolResult) and call_result.is_error:
-        return result(SmokeVerdict.PASS, "rejected with an isError tool result")
     if not isinstance(call_result, CallToolResult):
         return result(SmokeVerdict.FAIL, "accepted schema-invalid arguments (requested further input, not a rejection)")
+    # For a tool without an outputSchema this is the only call that returns a
+    # result, so it is the only place its output can be shown.
+    observed["response"] = _response_summary(call_result)
+    if call_result.is_error:
+        return result(SmokeVerdict.PASS, "rejected with an isError tool result")
     return result(SmokeVerdict.FAIL, "accepted schema-invalid arguments (returned a success result)")
 
 
