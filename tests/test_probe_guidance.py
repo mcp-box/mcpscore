@@ -629,3 +629,19 @@ def test_missing_issuer_metadata_repair_is_actionable():
     assert "discovery URLs" in result.suggested_fix
     assert "RFC 8414 or OpenID Connect" in result.suggested_fix
     assert "applicability review" not in result.suggested_fix
+
+
+def test_evidence_preview_keeps_discovery_urls_whole_and_renders_lists_item_by_item():
+    from mcpscore.report_evidence import URL_PREVIEW_LIMIT, evidence_preview
+
+    url = "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp"
+    assert len(url) > 60
+    assert evidence_preview(url) == f'"{url}"'
+    assert evidence_preview("https://h/" + "x" * URL_PREVIEW_LIMIT).endswith(" [truncated]")
+    # Credentials are still masked before the longer URL bound applies.
+    assert evidence_preview("https://user:pw@h/path?token=abc") == '"https://h/path?token=[redacted]"'
+    # A URL embedded in prose keeps the ordinary 60-character bound.
+    assert evidence_preview("see " + url).endswith(" [truncated]")
+    assert evidence_preview(["2026-07-28", "2025-11-25"]) == '"2026-07-28", "2025-11-25"'
+    assert evidence_preview([]) == "(none)"
+    assert evidence_preview([str(n) for n in range(12)]).endswith('"9", … 2 more')

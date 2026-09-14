@@ -31,15 +31,29 @@ mcpscore path/to/your/server.py --smoke --call-all
 ```text
 Running smoke checks — invoking tools/call, as requested with --smoke...
 
-Audit finished. Final score: 131/155
+Audit finished. Final score: 66/96
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
 
-Smoke checks (tools/call): 0 passed, 1 failed, 2 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
-  skip smoke_structured_content [add]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
-  skip smoke_invalid_arguments [add]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
-  FAIL smoke_unknown_tool: reported a tool execution error (isError) for a nonexistent tool — the spec's unknown-tool example is a protocol error, and an isError result claims the tool exists and ran
-Gate failed — --smoke: 1 smoke check(s) failed
+Smoke checks (tools/call): 4 passed, 2 failed, 3 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
+  Tools called: 3 of 4 (a tool counts as called once the server answered a tools/call for it)
+  pass smoke_structured_content [honest]: structuredContent conforms to the declared outputSchema
+       returned 1 content block(s) [text]; structuredContent present; first text "{\"result\": \"ok\"}"
+  FAIL smoke_structured_content [dishonest]: declared outputSchema is not honored: Invalid structured content returned by tool dishonest: 'result' is a required property
+  skip smoke_structured_content [sloppy]: no outputSchema declared — the tool was not called for this check; declare an outputSchema to have its result verified
+  skip smoke_structured_content [writer]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
+  pass smoke_invalid_arguments [honest]: rejected with JSON-RPC error -32602
+  pass smoke_invalid_arguments [dishonest]: rejected with JSON-RPC error -32602
+  FAIL smoke_invalid_arguments [sloppy]: accepted schema-invalid arguments (returned a success result)
+  skip smoke_invalid_arguments [writer]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
+  pass smoke_unknown_tool: rejected with JSON-RPC error -32602
+Gate failed — --smoke: 2 smoke check(s) failed
 ```
+
+Every check prints a line, passes included. A tool that answered gets a
+`returned` line saying what came back: content block count and types, whether
+`structuredContent` was present, `isError`, and the first 80 characters of the
+first text block. `Tools called: 3 of 4` counts tools the server answered at
+least once; the fourth was never invoked because it lacks `readOnlyHint: true`.
 
 One run answers three questions: *does it connect and speak MCP well?* (the
 audit and its score), *are the tools honestly described?* (schema checks),
@@ -124,6 +138,7 @@ never counted in `score`/`max_score`:
   "reason": null,
   "call_all": false,
   "summary": { "passed": 4, "failed": 2, "skipped": 3 },
+  "coverage": { "tools_called": 3, "tools_total": 4 },
   "checks": [
     {
       "check_id": "smoke_structured_content",

@@ -2202,6 +2202,51 @@ class TestSmokeCliFlow:
         assert "FAIL smoke_unknown_tool: server-level failure" in caplog.text
         assert "only readOnlyHint: true tools called" in caplog.text
 
+    def test_log_smoke_outcome_shows_passes_coverage_and_what_came_back(self, caplog: LogCaptureFixture) -> None:
+        from mcpscore.cli import log_smoke_outcome
+
+        smoke = SmokeReport(
+            executed=True,
+            checks=[
+                SmokeCheckResult(
+                    "smoke_structured_content",
+                    SmokeVerdict.PASS,
+                    "structuredContent conforms to the declared outputSchema",
+                    "reader",
+                    {
+                        "called": True,
+                        "response": {
+                            "content_blocks": 2,
+                            "content_types": ["image", "text"],
+                            "structured_content": True,
+                            "is_error": False,
+                            "first_text": '"hello"',
+                        },
+                    },
+                ),
+                SmokeCheckResult("smoke_invalid_arguments", SmokeVerdict.PASS, "rejected", "reader", {"called": True}),
+                _smoke_check(SmokeVerdict.SKIP, tool_name="writer"),
+            ],
+        )
+
+        with caplog.at_level(logging.INFO):
+            log_smoke_outcome(smoke)
+
+        assert "Tools called: 1 of 2" in caplog.text
+        assert "pass smoke_structured_content [reader]: structuredContent conforms" in caplog.text
+        assert 'returned 2 content block(s) [image, text]; structuredContent present; first text "hello"' in caplog.text
+        # A check without a response summary gets no "returned" line.
+        assert caplog.text.count("returned ") == 1
+
+    def test_describe_smoke_response_covers_error_and_empty_results(self) -> None:
+        from mcpscore.cli import describe_smoke_response
+
+        assert describe_smoke_response({}) == "0 content block(s) [none]"
+        assert (
+            describe_smoke_response({"content_blocks": 1, "content_types": ["text"], "is_error": True})
+            == "1 content block(s) [text]; isError: true"
+        )
+
     def test_log_smoke_outcome_call_all_variant(self, caplog: LogCaptureFixture) -> None:
         from mcpscore.cli import log_smoke_outcome
 

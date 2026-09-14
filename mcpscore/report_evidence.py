@@ -74,6 +74,25 @@ def report_evidence(value: Any, *, key: str = "") -> Any:
     return value
 
 
+URL_PREVIEW_LIMIT = 200
+"""Well-known discovery URLs routinely exceed 60 characters; a cut URL is useless."""
+
+LIST_PREVIEW_ITEMS = 10
+
+
 def evidence_preview(value: Any) -> str:
-    """Quote a bounded human preview after applying targeted credential masking."""
-    return quoted_preview(str(report_evidence(value)))
+    """Quote a bounded human preview after applying targeted credential masking.
+
+    Lists render item by item (``"a", "b"``) instead of as Python syntax, with
+    at most ``LIST_PREVIEW_ITEMS`` shown. A value that is a single URL keeps up
+    to ``URL_PREVIEW_LIMIT`` characters so discovery locations stay readable.
+    """
+    if isinstance(value, (list, tuple)):
+        shown = [evidence_preview(item) for item in value[:LIST_PREVIEW_ITEMS]]
+        if not shown:
+            return "(none)"
+        more = len(value) - len(shown)
+        return ", ".join(shown) + (f", … {more} more" if more > 0 else "")
+    text = str(report_evidence(value))
+    limit = URL_PREVIEW_LIMIT if _URL.fullmatch(text) else 60
+    return quoted_preview(text, limit)

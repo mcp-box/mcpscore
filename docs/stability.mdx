@@ -67,7 +67,13 @@ For a package audit `transport` and `spec.negotiated_version` are both `null`.
 
 ### Smoke results
 
-`smoke` is absent unless the run used [`--smoke`](/smoke-mode). Consumers
+`smoke` is absent unless the run used [`--smoke`](/smoke-mode). It carries
+`summary` (pass/fail/skip counts), `coverage` (`tools_called`: distinct tools
+the server answered at least one `tools/call` for; `tools_total`: distinct
+tools the checks looked at), and `checks`. A check whose call completed sets
+`details.called: true`; a check that received a result also carries a bounded
+`details.response` (`content_blocks`, `content_types`, `structured_content`,
+`is_error`, and `first_text` capped at 80 code points). Consumers
 must not require it. Smoke results are never counted in `score` or
 `max_score`, and a smoke failure is reported through exit code `4`, not
 through the report's score fields.

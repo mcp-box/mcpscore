@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Smoke mode says what came back.** Every smoke check prints a line, passes
+  included; a tool that answered gets a `returned` line (content block count and
+  types, `structuredContent` presence, `isError`, the first 80 characters of the
+  first text block); and a `Tools called: N of M` line counts the tools the
+  server answered. The JSON `smoke` section gains `coverage` and, per check,
+  `details.called` and a bounded `details.response`. Reported by a user whose
+  agent read a run of skips as "the tool produces no output". The skip for a
+  tool without an `outputSchema` now says the tool was not called for that
+  check.
+
 ### Changed
+
+- Human-message previews keep discovery URLs whole (up to 200 characters instead
+  of 60) and render version lists item by item (`"2026-07-28", "2025-11-25"`)
+  instead of as Python syntax.
 
 - Add failure-only repair hints to all 45 protocol, transport, security/auth,
   pagination, catalog-stability and readiness checks. Report observed error

@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 from mcp.shared.exceptions import MCPError
 from mcp_types import CONNECTION_CLOSED, INTERNAL_ERROR as ERROR_INTERNAL, REQUEST_TIMEOUT, CallToolResult
 
+from .diagnostics import quoted_preview
 from .probes import ERROR_INVALID_PARAMS
 
 if TYPE_CHECKING:
@@ -166,6 +167,22 @@ class SmokeReport:
         """Number of checks that could not be exercised."""
         return self._count(SmokeVerdict.SKIP)
 
+    @property
+    def tools_total(self) -> int:
+        """Number of distinct tools the checks looked at."""
+        return len({check.tool_name for check in self.checks if check.tool_name is not None})
+
+    @property
+    def tools_called(self) -> int:
+        """Number of distinct tools that answered at least one ``tools/call``.
+
+        Counts an answer of any kind — a result, an isError result, or a
+        JSON-RPC error — so the reader can tell "the tool was never invoked"
+        (skipped under the safety default) apart from "the tool was invoked
+        and this is what it did". Timeouts and transport crashes do not count.
+        """
+        return len({check.tool_name for check in self.checks if check.tool_name and check.details.get("called")})
+
     def to_dict(self) -> dict:
         """Serialize the smoke section for the machine-readable report."""
         return {
@@ -173,6 +190,7 @@ class SmokeReport:
             "reason": self.reason,
             "call_all": self.call_all,
             "summary": {"passed": self.passed, "failed": self.failed, "skipped": self.skipped},
+            "coverage": {"tools_called": self.tools_called, "tools_total": self.tools_total},
             "checks": [check.to_dict() for check in self.checks],
         }
 
@@ -348,6 +366,29 @@ def synthesize_invalid_arguments(input_schema: object) -> dict[str, Any] | None:
     return None
 
 
+def _response_summary(call_result: CallToolResult) -> dict[str, Any]:
+    """Describe what a tool call returned, bounded, so a reader can see the tool answered.
+
+    Content block count and types, whether ``structuredContent`` was present,
+    ``isError``, and a short preview of the first text block. The preview is
+    for the server's own operator (smoke mode only runs against servers you
+    operate) and is capped at 80 code points; the full payload is never stored.
+    """
+    blocks = list(call_result.content or [])
+    summary: dict[str, Any] = {
+        "content_blocks": len(blocks),
+        "content_types": sorted({str(getattr(block, "type", "unknown")) for block in blocks}),
+        "structured_content": call_result.structured_content is not None,
+        "is_error": bool(call_result.is_error),
+    }
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if getattr(block, "type", None) == "text" and isinstance(text, str):
+            summary["first_text"] = quoted_preview(text, 80)
+            break
+    return summary
+
+
 def _tool_skip_reason(tool: Tool, *, call_all: bool) -> str | None:
     """Why this tool is not callable, or None when it is.
 
@@ -367,9 +408,13 @@ def _tool_skip_reason(tool: Tool, *, call_all: bool) -> str | None:
 async def _check_structured_content(session: ClientSession, tool: Tool, skip_reason: str | None) -> SmokeCheckResult:
     """Verify a tool honors its declared ``outputSchema`` when actually called."""
     details = {"basis": BASIS_OUTPUT_SCHEMA}
+    # `called` is set once the server answered the tools/call at all (result
+    # or JSON-RPC error); `response` describes a result. Both feed the CLI's
+    # "returned" line and the coverage count.
+    observed: dict[str, Any] = {}
 
     def result(verdict: SmokeVerdict, message: str, **extra: Any) -> SmokeCheckResult:
-        return SmokeCheckResult(CHECK_STRUCTURED_CONTENT, verdict, message, tool.name, {**details, **extra})
+        return SmokeCheckResult(CHECK_STRUCTURED_CONTENT, verdict, message, tool.name, {**details, **observed, **extra})
 
     if skip_reason is not None:
         return result(SmokeVerdict.SKIP, skip_reason)
@@ -377,7 +422,11 @@ async def _check_structured_content(session: ClientSession, tool: Tool, skip_rea
     # anything conforms to, but the spec still requires structuredContent to
     # be PRESENT for it — the check must run.
     if tool.output_schema is None:
-        return result(SmokeVerdict.SKIP, "no outputSchema declared — nothing to verify against")
+        return result(
+            SmokeVerdict.SKIP,
+            "no outputSchema declared — the tool was not called for this check; declare an outputSchema "
+            "to have its result verified",
+        )
     try:
         # The SDK validates a successful result's structuredContent against
         # the declared outputSchema and raises RuntimeError on a violation —
@@ -394,18 +443,21 @@ async def _check_structured_content(session: ClientSession, tool: Tool, skip_rea
         # its first line carries the diagnosis and the rest is noise in a
         # log line or a JSON report field.
         first_line = str(exc).partition("\n")[0]
-        return result(SmokeVerdict.FAIL, f"declared outputSchema is not honored: {first_line}")
+        return result(SmokeVerdict.FAIL, f"declared outputSchema is not honored: {first_line}", called=True)
     except MCPError as exc:
         return result(
             SmokeVerdict.SKIP,
             f"tools/call answered JSON-RPC error {exc.code} — the schema could not be exercised "
             "(the server may have rejected the synthesized arguments)",
             error_code=exc.code,
+            called=True,
         )
     except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
         return result(SmokeVerdict.SKIP, f"tools/call raised {type(exc).__name__} — the schema could not be exercised")
+    observed["called"] = True
     if not isinstance(call_result, CallToolResult):
         return result(SmokeVerdict.SKIP, "tool requested interactive input — not judgeable in an unattended run")
+    observed["response"] = _response_summary(call_result)
     if call_result.is_error:
         return result(
             SmokeVerdict.SKIP,
@@ -418,9 +470,10 @@ async def _check_structured_content(session: ClientSession, tool: Tool, skip_rea
 async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reason: str | None) -> SmokeCheckResult:
     """Verify a tool rejects deliberately schema-invalid arguments."""
     details = {"basis": BASIS_ERROR_HANDLING}
+    observed: dict[str, Any] = {}
 
     def result(verdict: SmokeVerdict, message: str, **extra: Any) -> SmokeCheckResult:
-        return SmokeCheckResult(CHECK_INVALID_ARGUMENTS, verdict, message, tool.name, {**details, **extra})
+        return SmokeCheckResult(CHECK_INVALID_ARGUMENTS, verdict, message, tool.name, {**details, **observed, **extra})
 
     if skip_reason is not None:
         return result(SmokeVerdict.SKIP, skip_reason)
@@ -441,7 +494,9 @@ async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reas
             allow_input_required=True,
             allow_claimed=True,
         )
+        observed["called"] = True
     except MCPError as exc:
+        observed["called"] = exc.code not in (REQUEST_TIMEOUT, CONNECTION_CLOSED)
         if exc.code == REQUEST_TIMEOUT:
             return result(
                 SmokeVerdict.FAIL,
@@ -470,7 +525,9 @@ async def _check_invalid_arguments(session: ClientSession, tool: Tool, skip_reas
     except RuntimeError:
         # The SDK's output-schema validation fired, meaning the server
         # produced a (broken) success result for schema-invalid input.
-        return result(SmokeVerdict.FAIL, "accepted schema-invalid arguments (returned a result, not a rejection)")
+        return result(
+            SmokeVerdict.FAIL, "accepted schema-invalid arguments (returned a result, not a rejection)", called=True
+        )
     except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
         return result(SmokeVerdict.FAIL, f"tools/call with schema-invalid arguments crashed: {type(exc).__name__}")
     if isinstance(call_result, CallToolResult) and call_result.is_error:

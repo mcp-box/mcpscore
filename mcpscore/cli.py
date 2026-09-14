@@ -735,12 +735,41 @@ def log_smoke_outcome(smoke: SmokeReport) -> None:
         smoke.skipped,
         "every tool called (--call-all)" if smoke.call_all else "only readOnlyHint: true tools called (see --call-all)",
     )
+    logger.info(
+        "  Tools called: %d of %d (a tool counts as called once the server answered a tools/call for it)",
+        smoke.tools_called,
+        smoke.tools_total,
+    )
     for check in smoke.checks:
         subject = f" [{check.tool_name}]" if check.tool_name else ""
         if check.verdict is SmokeVerdict.FAIL:
             logger.error("  FAIL %s%s: %s", check.check_id, subject, check.message)
         elif check.verdict is SmokeVerdict.SKIP:
             logger.info("  skip %s%s: %s", check.check_id, subject, check.message)
+        else:
+            logger.info("  pass %s%s: %s", check.check_id, subject, check.message)
+        response = check.details.get("response")
+        if isinstance(response, dict):
+            logger.info("       returned %s", describe_smoke_response(response))
+
+
+def describe_smoke_response(response: dict) -> str:
+    """One line saying what a tools/call returned, from the bounded ``response`` summary.
+
+    This is the line that tells a reader (human or agent) that the tool did
+    answer, and roughly with what — the absence of any such line used to read
+    as "the tool produces no output".
+    """
+    blocks = response.get("content_blocks", 0)
+    types = ", ".join(response.get("content_types") or []) or "none"
+    parts = [f"{blocks} content block(s) [{types}]"]
+    if response.get("structured_content"):
+        parts.append("structuredContent present")
+    if response.get("is_error"):
+        parts.append("isError: true")
+    if response.get("first_text"):
+        parts.append(f"first text {response['first_text']}")
+    return "; ".join(parts)
 
 
 async def run_smoke_phase(args: argparse.Namespace, client: MCPClient, auditor: MCPAuditor) -> SmokeReport:

@@ -648,3 +648,81 @@ class TestRunSmokeChecks:
         assert payload["executed"] is False
         assert payload["reason"] == "no session"
         assert payload["checks"] == []
+
+
+class TestWhatCameBack:
+    """A reader must be able to see that a tool was called and what it returned."""
+
+    async def test_pass_records_a_bounded_response_summary(self) -> None:
+        from mcp_types import TextContent
+
+        tools = [read_only_tool("alpha", output_schema=OUTPUT_SCHEMA)]
+        session = FakeSession(
+            {
+                "alpha": CallToolResult(
+                    content=[TextContent(type="text", text="x" * 200)],
+                    structured_content={"result": "ok"},
+                )
+            },
+            default=MCPError(code=ERROR_INVALID_PARAMS, message="Unknown tool"),
+        )
+        report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+        check = report.checks[0]
+        assert check.check_id == CHECK_STRUCTURED_CONTENT
+        assert check.verdict is SmokeVerdict.PASS
+        assert check.details["called"] is True
+        response = check.details["response"]
+        assert response["content_blocks"] == 1
+        assert response["content_types"] == ["text"]
+        assert response["structured_content"] is True
+        assert response["is_error"] is False
+        assert response["first_text"] == '"' + "x" * 80 + '" [truncated]'
+
+    async def test_error_result_skip_still_shows_what_came_back(self) -> None:
+        from mcp_types import TextContent
+
+        tools = [read_only_tool("alpha", output_schema=OUTPUT_SCHEMA)]
+        session = FakeSession(
+            {"alpha": CallToolResult(content=[TextContent(type="text", text="upstream down")], is_error=True)},
+        )
+        report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+        check = report.checks[0]
+        assert check.verdict is SmokeVerdict.SKIP
+        assert check.details["called"] is True
+        assert check.details["response"]["is_error"] is True
+        assert check.details["response"]["first_text"] == '"upstream down"'
+
+    async def test_no_output_schema_skip_says_the_tool_was_not_called(self) -> None:
+        tools = [read_only_tool("alpha")]
+        session = FakeSession()
+        report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+        check = report.checks[0]
+        assert check.verdict is SmokeVerdict.SKIP
+        assert "the tool was not called for this check" in check.message
+        assert "called" not in check.details
+        assert "response" not in check.details
+
+    async def test_coverage_counts_tools_the_server_answered(self) -> None:
+        # alpha: no outputSchema, but the invalid-arguments call is answered → called.
+        # beta: skipped under the safety default (never called).
+        # gamma: read-only, times out on every call → not called.
+        tools = [
+            read_only_tool("alpha", input_schema={"type": "object", "properties": {"q": {"type": "string"}}}),
+            Tool(name="beta", input_schema={"type": "object"}, annotations=ToolAnnotations(read_only_hint=False)),
+            read_only_tool("gamma", input_schema={"type": "object", "properties": {"q": {"type": "string"}}}),
+        ]
+        session = FakeSession(
+            {
+                "alpha": MCPError(code=ERROR_INVALID_PARAMS, message="bad"),
+                "gamma": MCPError(code=REQUEST_TIMEOUT, message="timeout"),
+            },
+            default=MCPError(code=ERROR_INVALID_PARAMS, message="Unknown tool"),
+        )
+        report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+        assert report.tools_total == 3
+        assert report.tools_called == 1
+        assert report.to_dict()["coverage"] == {"tools_called": 1, "tools_total": 3}
+        assert [name for name, _ in session.calls] == ["alpha", "gamma", UNKNOWN_TOOL_NAME]
+
+    def test_coverage_of_an_empty_report_is_zero(self) -> None:
+        assert SmokeReport(executed=True).to_dict()["coverage"] == {"tools_called": 0, "tools_total": 0}
