@@ -44,6 +44,7 @@ Smoke checks (tools/call): 4 passed, 2 failed, 3 skipped — only readOnlyHint: 
   pass smoke_invalid_arguments [honest]: rejected with JSON-RPC error -32602
   pass smoke_invalid_arguments [dishonest]: rejected with JSON-RPC error -32602
   FAIL smoke_invalid_arguments [sloppy]: accepted schema-invalid arguments (returned a success result)
+       returned 1 content block(s) [text]; first text "{}"
   skip smoke_invalid_arguments [writer]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
   pass smoke_unknown_tool: rejected with JSON-RPC error -32602
 Gate failed — --smoke: 2 smoke check(s) failed
@@ -52,8 +53,9 @@ Gate failed — --smoke: 2 smoke check(s) failed
 Every check prints a line, passes included. A tool that answered gets a
 `returned` line saying what came back: content block count and types, whether
 `structuredContent` was present, `isError`, and the first 80 characters of the
-first text block. `Tools called: 3 of 4` counts tools the server answered at
-least once; the fourth was never invoked because it lacks `readOnlyHint: true`.
+first text block, whichever check made the call. `Tools called: 3 of 4` counts
+tools the server answered at least once (a timeout or a dropped connection is
+not an answer); the fourth was never invoked because it lacks `readOnlyHint: true`.
 
 One run answers three questions: *does it connect and speak MCP well?* (the
 audit and its score), *are the tools honestly described?* (schema checks),

@@ -724,5 +724,37 @@ class TestWhatCameBack:
         assert report.to_dict()["coverage"] == {"tools_called": 1, "tools_total": 3}
         assert [name for name, _ in session.calls] == ["alpha", "gamma", UNKNOWN_TOOL_NAME]
 
+    async def test_timeouts_and_dead_transports_are_not_answers(self) -> None:
+        tools = [read_only_tool("alpha", output_schema=OUTPUT_SCHEMA)]
+        for code in (REQUEST_TIMEOUT, ERROR_CONNECTION_CLOSED):
+            session = FakeSession({"alpha": MCPError(code=code, message="gone")})
+            report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+            check = report.checks[0]
+            assert check.check_id == CHECK_STRUCTURED_CONTENT
+            assert check.details["called"] is False
+            assert check.verdict is SmokeVerdict.SKIP
+            # The message must not claim the server answered.
+            assert "answered" not in check.message
+            assert ("did not answer" if code == REQUEST_TIMEOUT else "connection closed") in check.message
+            assert report.tools_called == 0, code
+
+    async def test_invalid_arguments_call_shows_what_came_back(self) -> None:
+        from mcp_types import TextContent
+
+        # No outputSchema: the invalid-arguments call is the only one that can
+        # return this tool's output, so its result must not disappear.
+        tools = [read_only_tool("alpha", input_schema={"type": "object", "properties": {"q": {"type": "string"}}})]
+        for is_error, verdict in ((True, SmokeVerdict.PASS), (False, SmokeVerdict.FAIL)):
+            session = FakeSession(
+                {"alpha": CallToolResult(content=[TextContent(type="text", text="answered")], is_error=is_error)}
+            )
+            report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
+            check = next(c for c in report.checks if c.check_id == CHECK_INVALID_ARGUMENTS)
+            assert check.verdict is verdict
+            assert check.details["called"] is True
+            assert check.details["response"]["is_error"] is is_error
+            assert check.details["response"]["first_text"] == '"answered"'
+        assert report.tools_called == 1
+
     def test_coverage_of_an_empty_report_is_zero(self) -> None:
         assert SmokeReport(executed=True).to_dict()["coverage"] == {"tools_called": 0, "tools_total": 0}
