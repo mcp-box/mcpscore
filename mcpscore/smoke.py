@@ -445,13 +445,18 @@ async def _check_structured_content(session: ClientSession, tool: Tool, skip_rea
         first_line = str(exc).partition("\n")[0]
         return result(SmokeVerdict.FAIL, f"declared outputSchema is not honored: {first_line}", called=True)
     except MCPError as exc:
-        return result(
-            SmokeVerdict.SKIP,
+        answered = exc.code not in (REQUEST_TIMEOUT, CONNECTION_CLOSED)
+        message = (
             f"tools/call answered JSON-RPC error {exc.code} — the schema could not be exercised "
-            "(the server may have rejected the synthesized arguments)",
-            error_code=exc.code,
-            called=exc.code not in (REQUEST_TIMEOUT, CONNECTION_CLOSED),
+            "(the server may have rejected the synthesized arguments)"
+            if answered
+            else (
+                f"tools/call did not answer within {SMOKE_CALL_TIMEOUT_S:.0f}s — the schema could not be exercised"
+                if exc.code == REQUEST_TIMEOUT
+                else "connection closed during tools/call — the schema could not be exercised"
+            )
         )
+        return result(SmokeVerdict.SKIP, message, error_code=exc.code, called=answered)
     except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
         return result(SmokeVerdict.SKIP, f"tools/call raised {type(exc).__name__} — the schema could not be exercised")
     observed["called"] = True

@@ -729,8 +729,13 @@ class TestWhatCameBack:
         for code in (REQUEST_TIMEOUT, ERROR_CONNECTION_CLOSED):
             session = FakeSession({"alpha": MCPError(code=code, message="gone")})
             report = await run_smoke_checks(session, tools, call_all=False, catalog_complete=True)  # type: ignore[arg-type]
-            assert report.checks[0].check_id == CHECK_STRUCTURED_CONTENT
-            assert report.checks[0].details["called"] is False
+            check = report.checks[0]
+            assert check.check_id == CHECK_STRUCTURED_CONTENT
+            assert check.details["called"] is False
+            assert check.verdict is SmokeVerdict.SKIP
+            # The message must not claim the server answered.
+            assert "answered" not in check.message
+            assert ("did not answer" if code == REQUEST_TIMEOUT else "connection closed") in check.message
             assert report.tools_called == 0, code
 
     async def test_invalid_arguments_call_shows_what_came_back(self) -> None:
