@@ -175,7 +175,7 @@ class TestProtectedResourceMetadata:
         data = _data(_unauth(), _metadata(outcome=ProbeOutcome.UNSUPPORTED))
         result = AuthProtectedResourceMetadataRule().check(data)
         assert result.passed is False
-        assert "No RFC 9728" in result.message
+        assert "No usable RFC 9728" in result.message
 
     def test_mismatched_resource_fails(self):
         data = _data(_unauth(), _metadata(resource="https://other.example/mcp"))

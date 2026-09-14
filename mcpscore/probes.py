@@ -53,6 +53,7 @@ from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
 
 from mcpscore.redirects import send_within_origin
+from mcpscore.report_evidence import report_evidence
 from mcpscore.spec import DRAFT, LATEST, Era
 from mcpscore.tls import async_client
 
@@ -270,7 +271,7 @@ class ProbeResult:
 
     def to_dict(self) -> dict:
         """Serialize this result for machine-readable reports."""
-        return {"probe_id": self.probe_id, "outcome": self.outcome.value, "details": self.details}
+        return {"probe_id": self.probe_id, "outcome": self.outcome.value, "details": report_evidence(self.details)}
 
 
 @dataclass(frozen=True)
@@ -900,6 +901,18 @@ async def _probe_invalid_cursor(
         _request_headers(target_version, method),
     )
     details = _base_details(response)
+    item_key = {
+        "tools/list": "tools",
+        "resources/list": "resources",
+        "resources/templates/list": "resourceTemplates",
+        "prompts/list": "prompts",
+    }[method]
+    if response.error is not None:
+        details["response_kind"] = "error"
+    elif response.result is not None and isinstance(response.result.get(item_key), list):
+        details["response_kind"] = "page"
+    else:
+        details["response_kind"] = "unexpected_response"
     if response.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "request is access-controlled; cursor validation not observable"
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)

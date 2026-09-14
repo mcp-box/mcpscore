@@ -43,7 +43,7 @@ type change bumps `schema_version`.
 | `summary` | object | `total`, `passed`, `failed`, `skipped`, and `by_severity` counts |
 | `results[]` | array | One entry per rule that ran: `rule_id`, `rule_name`, `severity`, `severity_value`, `passed`, `message`, `details`, and optional failure-only `suggested_fix` (absent on passes and older findings) |
 | `skipped_rules[]` | array | One entry per rule that did not run: `rule_id`, `rule_name`, `reason`, `group_name` |
-| `spec` | object | `negotiated_version`, `latest_version`, `readiness_target`, `era` |
+| `spec` | object | `negotiated_version`, `session_protocol_version`, `latest_version`, `readiness_target`, `era` |
 | `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus `assessed`, `skipped`, `total` coverage counts |
 | `smoke` | object | Present only when the run used `--smoke`. See below |
 | `config` | object | Present only when a per-project configuration was applied. See below |
@@ -158,8 +158,9 @@ Consumers must tolerate its absence. In JavaScript, count code points with
 `Array.from(text).length`, rather than UTF-16 `text.length`.
 
 Supported findings include tool, resource, resource-template, prompt,
-server-metadata and capability rules. The CLI prints their hint as `Fix:` on
-stderr. JSON stdout remains one complete report. Other rule families retain their
+server-metadata, capability, protocol, transport, auth/security, pagination,
+catalog-stability and readiness rules. The CLI prints their hint as `Fix:` on
+stderr. JSON stdout remains one complete report. Package rules retain their
 existing messages during rollout. Optional metadata and list-change advice is
 labeled as a quality recommendation in the message; it is not a protocol mandate.
 Scores and applicability are unchanged.
@@ -216,6 +217,72 @@ These diagnostics do not change verdicts or score weights.
 Requirement strength is not inferred from severity or the presence of a hint.
 Use the rule's source basis and applicability; a repair hint is advice for that
 finding, not a claim that every scored recommendation is mandatory.
+
+### Protocol and probe evidence
+
+Failed protocol/probe checks retain their observations and can add
+`details.expected` for the particular fields checked. Human messages include
+observed error codes/statuses only when present; stdio messages omit HTTP status.
+Cursor probes distinguish a returned page from an unexpected response, rather
+than inferring success from an absent error code. Audit context is recorded once:
+`transport` at report level and `spec.negotiated_version` and
+`spec.session_protocol_version` in the specification block. The latter is null
+unless a legacy session was established. Existing
+`target_version`, `spec` and `basis` fields retain the rule's revision and source.
+Unavailable probes still skip; a hint cannot turn missing evidence into failure.
+
+Readiness result-field issues use `entity_kind: "response"`, the originating
+`probe_id`, and paths relative to the JSON-RPC **result**. `missing_or_null`
+means the collected observation cannot distinguish omission from explicit null;
+`invalid_value` means a value was observed but failed the existing predicate.
+Tool-schema issues use catalog indexes and paths relative to each tool, with the
+same 20-issue and 255-code-point path bounds as catalog findings. A network
+reference finding identifies the containing schema; it does not prove a fetch.
+
+Rule and probe evidence copies mask `response_session_id` as `[redacted]`
+(absence stays null), remove URL userinfo, and mask known credential query keys:
+`access_token`, `refresh_token`, `id_token`, `token`, `api_key`, `apikey`,
+`client_secret`, `password`, `secret`, `authorization` and `code`. Key matching
+is case-insensitive after URL decoding and treats hyphens like underscores.
+All scheme:// URLs (including postgres and HTTP) are matched case-insensitively,
+including dictionary keys and URLs embedded in challenge
+headers and exception text. Public query parameters, spelling, order, fragments,
+WWW-Authenticate challenges and diagnostic exception reasons remain available.
+If masked dictionary keys collide, retain every entry using deterministic
+` [masked name N]` suffixes. Literal keys are reserved before allocating aliases;
+summary maps with the same source names use the same aliases. These aliases are
+report labels, not original tool names; use catalog indexes to identify tools.
+
+Human messages restore bounded quoted previews of resource/issuer identifiers,
+version lists, Content-Type values and schema-validator reasons. They use the
+same 60-code-point preview and control-character escaping described above, after
+credential masking. Indexed schema issues still omit raw values, and affected
+tools are counted by catalog index even when their names collide. For readiness
+schema failures, `offending_tools` retains its legacy name-keyed shape with a
+union of short, value-free problem labels. `offending_tool_indexes` maps each
+name to all affected catalog indexes, including duplicate names; unlike bounded
+`issues`, this summary index mapping is complete. Validator previews appear only
+in the human message, not in these structured summaries.
+
+These protections do not mutate observations used for scoring and are not a
+general secret detector. Arbitrary error text and public metadata can contain
+sensitive information outside these specific patterns; review a report before
+publishing it.
+
+Passing PKCE findings establish **advertised S256 support**, not an executed
+authorization flow. Error-hygiene passes mean no configured patterns were found
+in the sampled response, and catalog-stability passes compare two connections
+with the same authorization. Modern-protocol hints preserve valid legacy paths;
+readiness promotion into the main score is unchanged.
+
+Some existing predicates have narrower discovery coverage than the specifications.
+The challenge-origin finding describes mcpscore's current comparison; it does not
+instruct relocating valid metadata. The dated MCP specification permits
+[challenge or well-known discovery](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements),
+and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3)
+requires resource identity validation. Likewise, issuer metadata failures describe
+the locations attempted, rather than proving no valid document exists. These
+limitations require separate correctness changes, not different repair wording.
 
 ## What's next
 

@@ -8,6 +8,7 @@ from .base import (
     RuleSeverity,
     requires_fields,
 )
+from .probe_diagnostics import diagnostic_result
 from .registry import register_rule
 
 
@@ -65,31 +66,34 @@ class StreamableHTTPTransportRule(BaseRule):
         assert url is not None  # noqa: S101 — skip_reason guarantees a remote URL
 
         if transport_type == MCPTransportType.STREAMABLE_HTTP:
-            return RuleResult(
+            return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=True,
                 message="✅ Server uses the Streamable HTTP transport (current MCP standard)",
                 details={"transport_type": transport_type, "url": url},
+                suggested_fix=None,
             )
 
         if transport_type == MCPTransportType.SSE:
-            return RuleResult(
+            return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
-                message=(
-                    "❌ Server only supports the deprecated SSE transport. "
-                    "Migrate to Streamable HTTP (MCP spec 2025-03-26+)."
-                ),
+                message=("❌ The audited endpoint was reached over deprecated HTTP+SSE transport"),
                 details={"transport_type": transport_type, "url": url},
+                suggested_fix=(
+                    "Expose a Streamable HTTP MCP endpoint and audit its URL. Keep a separate legacy "
+                    "HTTP+SSE endpoint if older clients still require it."
+                ),
             )
 
         # Unknown transport type
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=False,
             message=f"[INFO] Unknown transport type: {transport_type}",
             details={"transport_type": transport_type, "url": url},
+            suggested_fix="Verify the URL and selected transport, then re-audit the Streamable HTTP MCP endpoint.",
         )

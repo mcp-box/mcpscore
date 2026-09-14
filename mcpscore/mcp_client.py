@@ -1074,7 +1074,7 @@ class MCPClient:
                 return ProbeResult(probe_id, outcome, {"error_code": exc.code})
             except Exception as exc:  # noqa: BLE001 — probes never abort an audit
                 return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(exc).__name__})
-            return ProbeResult(probe_id, ProbeOutcome.UNSUPPORTED, {"error_code": None})
+            return ProbeResult(probe_id, ProbeOutcome.UNSUPPORTED, {"error_code": None, "response_kind": "page"})
 
         results = await asyncio.gather(*(observe(name, probe_id) for name, probe_id in probe_ids.items()))
         return {result.probe_id: result for result in results}

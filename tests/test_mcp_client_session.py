@@ -96,6 +96,7 @@ class TestMCPClientSessionOperations:
         )
 
         assert results[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.UNSUPPORTED
+        assert results[PROBE_TOOLS_INVALID_CURSOR].details["response_kind"] == "page"
         assert results[PROBE_RESOURCES_INVALID_CURSOR].outcome is ProbeOutcome.UNSUPPORTED
         assert results[PROBE_RESOURCES_INVALID_CURSOR].details["error_code"] == INTERNAL_ERROR
         assert results[PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR].outcome is ProbeOutcome.ERROR

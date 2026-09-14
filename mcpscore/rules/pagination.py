@@ -19,6 +19,7 @@ from .base import (
     RuleResult,
     RuleSeverity,
 )
+from .probe_diagnostics import diagnostic_result
 from .registry import register_rule
 
 PAGINATION_SPEC = "https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/pagination#error-handling"
@@ -71,20 +72,33 @@ class InvalidCursorRule(BaseRule):
         """Report whether the server returned JSON-RPC Invalid params."""
         probe = (audit_data.probes or {})[self.probe_id]
         passed = probe.outcome is ProbeOutcome.SUPPORTED
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=(
                 f"✅ {self.surface_label} rejects invalid pagination cursors with JSON-RPC -32602"
                 if passed
-                else f"❌ {self.surface_label} does not reject invalid pagination cursors with JSON-RPC -32602"
+                else f"❌ {self.surface_label} returned a page for an invalid cursor instead of JSON-RPC -32602"
+                if probe.details.get("response_kind") == "page"
+                else f"❌ {self.surface_label} did not return the expected JSON-RPC -32602 for an invalid cursor"
             ),
             details={
                 "spec": pagination_spec(audit_data.protocol_version),
+                **({"response_kind": probe.details["response_kind"]} if "response_kind" in probe.details else {}),
                 "error_code": probe.details.get("error_code"),
                 "http_status": probe.details.get("http_status"),
             },
+            suggested_fix=(
+                "Validate pagination cursors before listing. Return JSON-RPC -32602 (Invalid params) "
+                "for an invalid cursor instead of returning a page."
+                if probe.details.get("response_kind") == "page"
+                else "Validate pagination cursors and return JSON-RPC -32602 (Invalid params) for an invalid cursor."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
+            expected={"error_code": -32602},
         )
 
 
@@ -182,12 +196,12 @@ class PaginationCacheScopeConsistentRule(BaseRule):
         probe = (audit_data.probes or {})[PROBE_PAGINATION_CACHE_SCOPE]
         passed = probe.outcome is ProbeOutcome.SUPPORTED
         inconsistent = probe.details.get("inconsistent_surfaces", [])
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=(
-                "✅ Every paginated list keeps one cacheScope across all pages"
+                "✅ Each observed paginated list kept one cacheScope across the pages inspected"
                 if passed
                 else "❌ Paginated lists change or omit cacheScope across pages: " + ", ".join(inconsistent)
             ),
@@ -196,4 +210,12 @@ class PaginationCacheScopeConsistentRule(BaseRule):
                 "inconsistent_surfaces": inconsistent,
                 "surfaces": probe.details.get("surfaces", {}),
             },
+            suggested_fix=(
+                "Return the same cacheScope on every page of each list traversal. Use private for "
+                "authorization-dependent data; do not make private results public just to equalize "
+                "scopes."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
         )

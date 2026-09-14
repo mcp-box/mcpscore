@@ -17,6 +17,7 @@ from .base import (
     RuleResult,
     RuleSeverity,
 )
+from .probe_diagnostics import diagnostic_result
 from .registry import register_rule
 
 
@@ -46,19 +47,27 @@ class CatalogConnectionIndependentRule(BaseRule):
         """Report whether two independent connections returned one identity set."""
         probe = (audit_data.probes or {})[self.probe_id]
         passed = probe.outcome is ProbeOutcome.SUPPORTED
-        return RuleResult(
+        return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=(
-                f"✅ {self.surface_label} is independent of the client connection"
+                f"✅ {self.surface_label} matched on two observed connections with the same authorization"
                 if passed
-                else f"❌ {self.surface_label} varies across client connections"
+                else f"❌ {self.surface_label} differed on two connections with the same authorization"
             ),
             details={
                 **probe.details,
                 "spec": self.spec_url,
             },
+            suggested_fix=(
+                "Compare catalog generation across workers and connections using the same "
+                "authorization. Remove connection-specific filtering or nondeterminism while "
+                "preserving legitimate per-user access restrictions."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
         )
 
 

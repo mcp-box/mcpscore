@@ -41,6 +41,7 @@ _ENTITY_LABELS = {
     "prompt": "Prompt",
     "server": "Server",
     "catalog": "Catalog",
+    "response": "Response",
 }
 
 

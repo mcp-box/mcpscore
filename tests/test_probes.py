@@ -395,12 +395,16 @@ async def test_new_http_validation_probes_do_not_follow_redirects():
     assert redirected_hosts == []
 
 
-async def test_invalid_cursor_probes_reject_servers_that_accept_fabricated_cursors():
+@pytest.mark.parametrize("returns_page", [True, False])
+async def test_invalid_cursor_probes_reject_servers_that_accept_fabricated_cursors(returns_page):
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content) if request.method == "POST" else {}
         cursor = body.get("params", {}).get("cursor")
         if isinstance(cursor, str) and cursor.startswith(INVALID_CURSOR_PREFIX):
-            return _rpc_result(body.get("id"), {"resultType": "complete"})
+            result = {"resultType": "complete"}
+            if returns_page:
+                result.update(tools=[], resources=[], resourceTemplates=[], prompts=[])
+            return _rpc_result(body.get("id"), result)
         return _modern_server_handler(request)
 
     results = await _run(handler)
@@ -413,6 +417,7 @@ async def test_invalid_cursor_probes_reject_servers_that_accept_fabricated_curso
     ):
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED
         assert "error_code" not in results[probe_id].details
+        assert results[probe_id].details["response_kind"] == ("page" if returns_page else "unexpected_response")
 
 
 async def test_resource_template_cursor_probe_skips_an_unimplemented_optional_surface():

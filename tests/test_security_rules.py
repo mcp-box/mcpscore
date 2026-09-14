@@ -39,7 +39,7 @@ class TestTLSEnabledRule:
         result = rule.check(audit_data)
 
         assert result.passed is True
-        assert result.message == "✅ Server uses HTTPS with valid TLS"
+        assert result.message == "✅ Server uses HTTPS with valid TLS."
 
     def test_http_without_tls_fails(self, rule):
         """Test that HTTP without TLS fails."""
@@ -202,7 +202,7 @@ class TestErrorDataLeakRule:
 
         assert result.passed is True
         assert "✅" in result.message
-        assert "do not appear to leak" in result.message
+        assert "No sensitive-data patterns were detected" in result.message
 
     def test_file_path_leak_fails(self, rule):
         """A file path in the error body fails."""
@@ -231,7 +231,7 @@ class TestErrorDataLeakRule:
         assert "password" in result.message.lower()
         # The leaked value must never appear in our own (shareable) report.
         assert "hunter2Xy9" not in str(result.details)
-        assert result.message == "❌ Error messages leak sensitive data: password"
+        assert result.message == "❌ The sampled error response contains potential sensitive-data findings: password."
 
     def test_bearer_token_leak_fails(self, rule):
         """A real Bearer token value in the error body fails."""

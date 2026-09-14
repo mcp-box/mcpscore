@@ -153,7 +153,7 @@ class TestLatestVersionRuleJudgesEvidence:
         result = LatestVersionRule().check(AuditData(protocol_version=None))
 
         assert result.passed is False
-        assert result.details == {"protocol_version": None}
+        assert result.details["protocol_version"] is None
 
     def test_unrelated_probe_does_not_make_the_gateway_observable(self):
         """An HTTP/auth observation cannot prove absence of modern support."""
