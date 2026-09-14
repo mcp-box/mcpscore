@@ -527,19 +527,5 @@ class CapabilityResourcesListChangedRule(CapabilityListChangedRule):
         )
 
 
-# Retired in 1.1.0 — `capability_resources_subscribe` (HIGH) and
-# `capability_logging_present` (MEDIUM). Both scored the *absence* of a
-# capability the spec section they cited calls optional:
-#
-#   "Both `subscribe` and `listChanged` are optional — servers can support
-#    neither, either, or both." (2025-11-25 Resources §Capabilities)
-#
-# and the 2026-07-28 revision goes further: SEP-2575 removes
-# `resources/subscribe`/`unsubscribe` in favour of `subscriptions/listen`, and
-# SEP-2577 deprecates Logging with the guidance that new implementations should
-# not adopt it. `capability_logging_present` also directly contradicted
-# `readiness_2026_deprecated_features`, which fails a server for *declaring*
-# `logging` — with readiness promoted into the main score for modern/dual-era
-# servers, no server could pass both.
-#
-# Their rule_ids are retired, never reused (rule_id is a public contract).
+# `capability_resources_subscribe` and `capability_logging_present` were retired
+# in 1.1.0; the reasons live in `retired.py`, which also generates the docs table.

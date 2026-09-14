@@ -1668,12 +1668,9 @@ def _malformed_json_result(
 
     payload = response.payload
     error = response.error
-    # A missing `id` counts the same as an explicit `null`: on a parse error
-    # the id is genuinely unknowable (the request never parsed), and no client
-    # correlates a parse error by id anyway, so `null` vs absent carries no
-    # observable difference. `payload.get("id")` is None for both, and a real
-    # value (e.g. 0) is excluded. Calibrated against the registry 2026-08-22:
-    # 7/250 healthy servers returned a correct -32700 with the id omitted.
+    # A missing `id` counts the same as an explicit `null`: on a parse error the id
+    # is unknowable and no client correlates a parse error by id. A real value
+    # (e.g. 0) is still excluded.
     id_absent_or_null = isinstance(payload, dict) and payload.get("id") is None
     correct = (
         isinstance(payload, dict)
@@ -1686,12 +1683,9 @@ def _malformed_json_result(
     )
     details["response_id_absent_or_null"] = id_absent_or_null
     if not correct and unobservable_reason is not None and not isinstance(payload, dict):
-        # The payload is absent/unparsable and the read was bounded — a
-        # truncated prefix (the untruncated body might have been a valid
-        # -32700) or an undecoded content-encoded body. Cannot fail the server
-        # for a verdict we could not observe. (A real -32700 envelope parses
-        # well within the cap, so this only fires on pathological bodies; for
-        # a truncated body the leak scan still sees the bounded prefix.)
+        # Absent or unparsable payload after a bounded read (a truncated prefix or an
+        # undecoded content-encoded body): a verdict we could not observe cannot fail
+        # the server. The leak scan still sees the bounded prefix.
         details["reason"] = (
             "response was content-encoded; not decoded to bound memory, parse verdict not observable"
             if unobservable_reason == "encoded"
@@ -1942,13 +1936,10 @@ async def run_stdio_probes(
 
     results: list[ProbeResult] = []
     try:
-        # Use the SDK transport rather than managing asyncio subprocesses
-        # directly. This preserves its cross-platform executable resolution,
-        # safe environment allowlist, process-tree termination, pipe draining,
-        # and cancellation shielding. Diagnostics from the sibling process are
-        # suppressed so they cannot interleave with the audit's own output.
-        # The SDK annotates errlog as TextIO but forwards it to the subprocess
-        # API, where DEVNULL is the native cross-platform sentinel.
+        # Use the SDK transport, not raw asyncio subprocesses: it owns executable
+        # resolution, the environment allowlist, process-tree termination and pipe
+        # draining. errlog is annotated TextIO but reaches the subprocess API, where
+        # DEVNULL is the portable sentinel.
         errlog: TextIO = cast("Any", DEVNULL)
         async with stdio_client(params, errlog=errlog) as (read_stream, write_stream):
             target = _StdioTarget(read_stream, write_stream)

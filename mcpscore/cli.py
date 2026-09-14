@@ -661,13 +661,9 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
 
     logger.info("")
     if report["partial"]:
-        # Main axis only, both sides. `results` holds main-axis results while
-        # `skipped_rules` holds every skip including readiness ones, so
-        # len(results) + len(skipped_rules) counts readiness skips in the
-        # denominator without counting the readiness checks that ran in the
-        # numerator — a ratio belonging to neither axis. The summary already
-        # separates them, and the score being qualified here is the main-axis
-        # score; readiness reports its own totals on its own line below.
+        # Main axis only, on both sides: `skipped_rules` also holds readiness skips,
+        # which would inflate the denominator of a main-axis ratio. Readiness reports
+        # its own totals on its own line below.
         scored = report["summary"]["total"]
         considered = scored + report["summary"]["skipped"]
         logger.info("⚠️  Partial audit (%s).", report["partial_reason"])
@@ -942,13 +938,9 @@ async def async_main() -> None:
         if not success:
             http_url = target if isinstance(target, str) and target.startswith(("http://", "https://")) else None
             failure = client.last_connection_error
-            # A missing executable, denied launch, or timed-out handshake is
-            # not evidence of a modern-only server. Retrying those commands is
-            # both misleading and potentially side-effectful. UNKNOWN remains
-            # eligible because a modern server is expected to reject the
-            # removed legacy initialize method. NOT_MCP comes from a cancelled
-            # transport whose process did not speak MCP, so it is not useful
-            # evidence for retrying either.
+            # Only outcomes that could mean "modern-only server" are worth a retry.
+            # A missing executable, a denied launch or a timed-out handshake is not,
+            # and retrying those is misleading and possibly side-effectful.
             stdio_fallback_allowed = failure is None or failure.reason is ConnectionErrorReason.UNKNOWN
             modern_target = http_url
             if modern_target is None and stdio_fallback_allowed:
@@ -975,12 +967,9 @@ async def async_main() -> None:
                     ConnectionErrorReason.UNAUTHORIZED,
                     ConnectionErrorReason.FORBIDDEN,
                 )
-                # A gated server does not always *fail* with 401: when it serves
-                # no legacy endpoint the handshake dies on something else (405
-                # on the SSE fallback is the common shape) and only the probes
-                # see the challenge. Trust that observation too, or ~29% of
-                # gated servers report as unreachable while we hold their
-                # WWW-Authenticate and RFC 9728 metadata.
+                # A gated server does not always fail with 401: without a legacy endpoint the
+                # handshake dies elsewhere (405 on the SSE fallback is common) and only the
+                # probes see the challenge. Trust that observation too.
                 probed_status = observed_auth_status(auditor.last_probes)
                 if session_gated or probed_status is not None:
                     # Report the status of the *gate*, not of whatever ended the
@@ -994,19 +983,10 @@ async def async_main() -> None:
                         )
                     else:
                         status = probed_status or 401
-                    # Key off the same predicate as the report's authenticated
-                    # flag: only an Authorization credential counts — a 401
-                    # with only tracing/custom headers is a missing credential,
-                    # not a rejected one.
-                    #
-                    # "Rejected" additionally requires that the *session* was
-                    # the thing refused. The probe that reports a gate runs
-                    # `anonymous=True` — it strips the Authorization header —
-                    # so its 401 says the endpoint is gated and nothing at all
-                    # about the caller's token. When the session died of
-                    # something else (405 on the SSE fallback), the credential
-                    # was never exercised, and telling the user it was rejected
-                    # sends them to re-issue a token that is probably fine.
+                    # Same predicate as the report's `authenticated` flag: only an Authorization
+                    # credential counts. "Rejected" also requires that the session itself was
+                    # refused; the gate probe runs anonymously, so its 401 says nothing about the
+                    # caller's token, and a session that died elsewhere never exercised it.
                     credentials_rejected = session_gated and has_authorization_credential(headers)
                     if credentials_rejected:
                         logger.info(

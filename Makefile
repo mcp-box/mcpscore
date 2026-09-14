@@ -12,19 +12,14 @@ format: ## Auto-format code
 
 .PHONY: precommit
 precommit: ## Run the pinned pre-commit hooks — the same gate CI's lint job runs
-# SKIP mirrors .github/workflows/ci.yml exactly. Without it this target is not
-# the CI mirror it claims to be: `no-commit-to-branch` fails every run on main,
-# and `typecheck` would run pyright twice (the `typecheck` target already does).
-# The hook stays active for real commits — this skips it for the check only.
+# SKIP mirrors ci.yml: no-commit-to-branch would fail on main and typecheck runs
+# pyright on its own. The hooks stay active for real commits.
 	SKIP=no-commit-to-branch,typecheck uv run pre-commit run --all-files
 
 .PHONY: lint
 lint: precommit ## Lint code (no auto-fix): CI's hooks, then the working tree
-# `precommit` runs the hooks CI runs, at the pinned versions, over files git
-# TRACKS. The ruff calls below re-check the working tree, so an untracked file
-# is linted too. Both are needed: CI once failed on a `# noqa` that a newer,
-# unpinned local ruff had auto-removed, and CI once passed a file ruff had
-# never read because git did not track it.
+# The hooks check files git tracks; the ruff calls below also cover untracked
+# files in the working tree. Both are needed; see AGENTS.md.
 	uv run ruff check
 	uv run ruff format --check
 

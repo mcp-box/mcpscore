@@ -1,23 +1,13 @@
 name: Publish
 
-# Triggered by publishing a GitHub Release (not a raw tag push), so the
-# `pypi` environment's protection rules gate the deploy.
-#
-# workflow_dispatch is the recovery path: a GitHub Actions outage (or any
-# transient failure) can leave a published Release whose PyPI upload never
-# ran, and the release event cannot be re-fired without deleting or
-# draft-cycling a release that is already public. Dispatching re-runs the
-# same jobs for an existing tag. The `pypi` environment still gates it, so
-# its protection rules and Trusted Publishing are unchanged.
+# Triggered by a published GitHub Release so the `pypi` environment's protection
+# rules gate the deploy. workflow_dispatch is the recovery path for a release
+# whose upload never ran:
 #
 #   gh workflow run publish.yml -f tag=v1.2.3
 #
-# Run it from the DEFAULT BRANCH and name the tag as an input — do not pass
-# `--ref <tag>`. GitHub reads the workflow definition from the dispatched
-# ref, so older tags (cut before this trigger existed) have no
-# workflow_dispatch and are rejected outright. The checkout below uses the
-# `tag` input, so building from the default branch still ships the tag's
-# source.
+# Run it from the default branch and pass the tag as an input, not as --ref:
+# older tags have no workflow_dispatch trigger. The checkout below uses the input.
 on:
   release:
     types: [published]
@@ -38,10 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Always build from the tag itself. On a release event this is what
-          # the default checkout would pick anyway; on a dispatch it stops a
-          # run started from the wrong ref (or with no --ref at all) from
-          # building `main` and uploading it under the tag's version.
+          # Always build from the tag itself, so a dispatch started from the wrong ref
+          # cannot upload main under the tag's version.
           ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1

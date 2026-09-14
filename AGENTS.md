@@ -71,3 +71,10 @@
 - **Zero-behavior-change refactors need a live invariant**: re-audit the same live server
   (`uv run mcpscore https://mcp.deepwiki.com/mcp`) before and after; the score must be
   identical.
+
+## Comments: what, not history
+
+A comment says what a reader needs to not break the line, in one to four
+lines. Incident history, dates, measurements, "verified by", "before this fix",
+reviewer exchanges and version numbers of tools go here or into the project
+decision records, never into the public source or config files.

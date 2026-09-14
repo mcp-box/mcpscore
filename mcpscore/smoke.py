@@ -579,12 +579,9 @@ async def _check_unknown_tool(session: ClientSession, unknown_name: str) -> Smok
             allow_claimed=True,
         )
     except MCPError as exc:
-        # The spec's unknown-tool example is -32602, but the code is
-        # exemplary, not mandated — any JSON-RPC error the server sends is a
-        # rejection. The failures are the non-rejections: a hang, a dead
-        # transport (the SDK surfaces it as CONNECTION_CLOSED), and an
-        # internal error (the server tried to execute the name and broke —
-        # the "500" this check exists to catch).
+        # The spec's -32602 for an unknown tool is an example, not a mandate: any
+        # JSON-RPC error is a rejection. The failures are the non-rejections: a hang, a
+        # dead transport (CONNECTION_CLOSED) and an internal error.
         if exc.code == REQUEST_TIMEOUT:
             return result(
                 SmokeVerdict.FAIL,

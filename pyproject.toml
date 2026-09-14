@@ -1,24 +1,13 @@
-# Bounded, not floating. PEP 517 builds in an isolated environment that the
-# lockfile does not constrain, so an unbounded requirement means two builds of
-# the same tag can use different backend versions — the artifact is not
-# reproducible from the source it claims to come from. The upper bound is the
-# major: a backend major is where output-affecting changes land.
+# Bounded to the major: PEP 517 builds ignore uv.lock, so an unbounded backend
+# would let the same tag build differently over time.
 [build-system]
 requires = ["hatchling>=1.32.0,<2"]
 build-backend = "hatchling.build"
 
-# The sdist must be usable by downstream distributors (Debian, conda-forge,
-# nixpkgs) who build from it and run the shipped suite. Two rules follow:
-#
-#  1. Anchor every file pattern. Unanchored "README.md" also matched
-#     npm/README.md, shipping a lone file from a subtree the sdist otherwise
-#     omits.
-#  2. Ship no test that cannot be collected from the archive. The two excluded
-#     files exercise scripts/ — our release tooling, not this package — so they
-#     are maintainer-only, and including scripts/ just to satisfy them would
-#     ship release machinery to end users. Verified by building the sdist and
-#     running pytest inside it; before this, collection failed outright with
-#     ModuleNotFoundError for `generate_rules_doc` and `release`.
+# The sdist is what downstream distributors (Debian, conda-forge, nixpkgs) build
+# and test from. Patterns are anchored on purpose: an unanchored "README.md" also
+# matched npm/README.md. Tests that import scripts/ are excluded because that is
+# release tooling, not part of the package.
 [tool.hatch.build.targets.sdist]
 include = [
     "/mcpscore",
@@ -99,17 +88,11 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    # uv.lock is the pin. The pre-commit hook is a local hook that runs this
-    # same ruff from the venv, so the hook, `make lint`, and CI cannot
-    # disagree (the 0.14.8-vs-0.15.20 `# noqa` incident came from the hook
-    # carrying its own copy of the version), and a Dependabot lock bump is the
-    # whole update.
+    # uv.lock is the pin. The pre-commit hook runs this same ruff from the venv, so
+    # the hook, `make lint` and CI cannot disagree.
     "ruff>=0.16.5,<0.17",
-    # `make all` runs the hooks through pre-commit, so a clean `uv sync
-    # --all-groups` must provide it — undeclared, it resolved from whatever
-    # happened to be on PATH, and a fresh clone failed with
-    # "Failed to spawn: pre-commit". Exact for the same reason as ruff above:
-    # the gate has to be reproducible, not "whatever the machine has".
+    # Declared so a clean `uv sync --all-groups` provides the pre-commit that
+    # `make all` runs; exact for the same reason as ruff.
     "pre-commit==4.6.2",
     # Lets jsonschema check `format: uri-reference` in the SARIF tests; without
     # it the format checker is present and silently skips URI formats.

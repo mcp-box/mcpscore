@@ -503,14 +503,9 @@ class OriginValidationRule(ProbeBackedReadinessRule):
 
     @property
     def severity(self) -> RuleSeverity:
-        # HIGH, not CRITICAL — a single level covering two populations.
-        # For a locally-bound or plain-http:// target (both are auditable) this
-        # is the *direct* DNS-rebinding mitigation, which argues for CRITICAL.
-        # For the remote HTTPS servers that dominate the measured population it
-        # is defence in depth, and 96% of modern-capable registry servers fail
-        # it — at CRITICAL that becomes a constant subtracted from every modern
-        # score rather than a signal separating servers. HIGH is the compromise;
-        # revisit if local targets ever become a meaningful share of audits.
+        # HIGH, not CRITICAL: for local or plain-http targets this is the direct
+        # DNS-rebinding mitigation, for the remote HTTPS majority it is defence in depth.
+        # The measured population behind the trade-off is in AGENTS.md.
         return RuleSeverity.HIGH
 
     def check(self, audit_data: AuditData) -> RuleResult:

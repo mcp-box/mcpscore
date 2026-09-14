@@ -1,14 +1,9 @@
 name: Publish docs
 
-# docs.mcpscore.dev must describe the RELEASED engine, not main: main's docs
-# can document rules no released version emits (they merge ahead of the
-# release train). This workflow keeps a `docs-live` branch fast-forwarded to
-# the docs of the latest release tag; the Mintlify GitHub App is configured
-# (in the Mintlify dashboard) to deploy from `docs-live` instead of main.
-#
-# Runs on every published release (the same trigger as the PyPI/npm publish
-# workflows) and on demand with an explicit tag. Pre-releases are skipped:
-# their docs go live with the stable release that follows.
+# docs.mcpscore.dev describes the released engine, not main. This workflow keeps
+# the `docs-live` branch (what the Mintlify app deploys) pointed at the docs of the
+# latest stable release: on every published release, or on demand with a tag.
+# Pre-releases are skipped; their docs go live with the next stable release.
 on:
   release:
     types: [published]
@@ -21,10 +16,8 @@ on:
 
 permissions: {}
 
-# One publisher at a time: without this, two releases in quick succession can
-# race and the older run's force-push can finish last, moving docs-live
-# backward. cancel-in-progress stays false — a running publish finishes, the
-# queued one then re-checks what "latest" is.
+# One publisher at a time, and a running publish finishes: two releases in quick
+# succession must not move docs-live backward.
 concurrency:
   group: docs-live-publish
   cancel-in-progress: false
@@ -50,10 +43,8 @@ jobs:
             exit 1
           }
       - name: Refuse anything but the latest stable release
-        # docs-live promises "the docs of the latest stable release" — a
-        # dispatch of an older (but valid) tag, or a stale queued release run,
-        # must not move it backward. releases/latest excludes pre-releases and
-        # drafts, so equality with it is exactly that promise.
+        # Only the latest stable release may move docs-live; releases/latest excludes
+        # pre-releases and drafts, so equality with it is exactly that check.
         run: |
           LATEST="$(gh api "repos/$REPO/releases/latest" --jq .tag_name)"
           [[ "$DOCS_TAG" == "$LATEST" ]] || {

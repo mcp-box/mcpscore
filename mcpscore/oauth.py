@@ -240,12 +240,9 @@ async def obtain_token_interactively(
         # provider retries the request with the token.
         try:
             async with async_client(auth=provider, timeout=30.0, transport=transport) as client:
-                # A well-formed JSON-RPC request: servers that validate the
-                # body before their auth middleware still answer 401 with the
-                # WWW-Authenticate challenge discovery needs (an empty {} can
-                # draw a 400 with no challenge from such servers). Redirects
-                # are followed only within the server's origin, the policy the
-                # SDK provider applies to its own requests (mcp 2.2.0).
+                # A well-formed JSON-RPC body: servers that validate before their auth middleware
+                # answer 401 with the challenge, where an empty {} can draw a 400 without one.
+                # Redirects are followed only within the origin, as the SDK provider does.
                 request = client.build_request(
                     "POST",
                     server_url,
