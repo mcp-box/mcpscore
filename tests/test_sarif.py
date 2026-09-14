@@ -502,3 +502,30 @@ class TestRuleCatalog:
         assert rule["id"] == "custom_rule_from_elsewhere"
         assert rule["properties"]["category"] == "default"
         assert rule["fullDescription"] == {"text": "Custom Rule From Elsewhere"}
+
+
+@pytest.mark.parametrize("readiness", [False, True])
+def test_repair_guidance_reaches_sarif_without_details_or_credentials(readiness):
+    finding = _result("tools_names_unique", details={"private": "PayloadSecret"})
+    finding["suggested_fix"] = "Inspect https://user:Password123@host/path?token=Token123#secret and rename 工具."
+    report = _report(results=[] if readiness else [finding])
+    report["readiness"] = {"results": [finding] if readiness else [], "counted_in_main": False}
+    run = build_sarif(report)["runs"][0]
+    result = run["results"][0]
+    assert "Suggested fix: Inspect https://host/path" in result["message"]["text"]
+    assert "工具" in result["message"]["text"]
+    assert "fixes" not in result
+    wire = json.dumps(run)
+    for secret in ("Password123", "Token123", "PayloadSecret"):
+        assert secret not in wire
+    if readiness:
+        assert result["level"] == "note"
+    Draft7Validator(json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))).validate(build_sarif(report))
+
+
+@pytest.mark.parametrize("hint", [None, "", "  ", 42])
+def test_sarif_old_or_empty_guidance_keeps_original_message(hint):
+    finding = _result("tools_names_unique")
+    finding["suggested_fix"] = hint
+    result = build_sarif(_report(results=[finding], readiness={}))["runs"][0]["results"][0]
+    assert result["message"]["text"] == finding["message"]

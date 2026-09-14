@@ -230,3 +230,62 @@ class TestAuditPackage:
 
         assert auditor.audit_data.package is None
         assert not [r for r in auditor._rules_for_target() if r.group_name == PACKAGING_GROUP]
+
+
+@pytest.mark.parametrize("coordinate", ["npm:@scope/server@2.0.0", "pypi:server==2.0.0"])
+def test_every_package_failure_has_bounded_registry_specific_guidance(coordinate):
+    package = _metadata(coordinate=PackageCoordinate.parse(coordinate))
+    changes = {
+        "package_resolves": {"outcome": PackageOutcome.NOT_FOUND},
+        "package_version_resolves": {"outcome": PackageOutcome.VERSION_NOT_FOUND},
+        "package_not_withdrawn": {"yanked": True},
+        "package_repository_declared": {"repository_url": None},
+        "package_license_declared": {"license": None},
+        "package_description_present": {"description": None},
+    }
+    from dataclasses import replace
+
+    for rule in _packaging_rules():
+        passing = rule.check(AuditData(package=package))
+        assert passing.passed
+        assert "suggested_fix" not in passing.to_dict()
+        failing = rule.check(AuditData(package=replace(package, **changes[rule.rule_id])))
+        assert not failing.passed
+        assert failing.suggested_fix
+        assert 0 < len(failing.suggested_fix) <= 255
+        assert failing.to_dict()["suggested_fix"] == failing.suggested_fix
+        if rule.rule_id in {"package_repository_declared", "package_license_declared", "package_description_present"}:
+            assert ("package.json" if coordinate.startswith("npm:") else "pyproject.toml") in failing.suggested_fix
+            assert "Consumer:" in failing.suggested_fix
+
+
+@pytest.mark.parametrize(("coordinate", "noun"), [("npm:server", "deprecated"), ("pypi:server", "yanked")])
+def test_withdrawal_notice_is_preserved_masked_and_bounded(coordinate, noun):
+    import json
+
+    rule = next(r for r in _packaging_rules() if r.rule_id == "package_not_withdrawn")
+    reason = "See https://user:Secret123@host/?token=Token123 for 工具🔎 " + "x" * 100
+    package = _metadata(
+        coordinate=PackageCoordinate.parse(coordinate), yanked=True, details={"withdrawal_reason": reason}
+    )
+    result = rule.check(AuditData(package=package))
+    wire = json.dumps(result.to_dict())
+    assert noun in result.message
+    assert "Publisher notice:" in result.message
+    assert "[truncated]" in result.message
+    assert "工具🔎" in result.message
+    assert "Secret123" not in wire
+    assert "Token123" not in wire
+    assert package.details["withdrawal_reason"] == reason
+
+
+def test_package_identity_and_metadata_previews_escape_controls():
+    rule = next(r for r in _packaging_rules() if r.rule_id == "package_description_present")
+    description = "工具🔎\n\x1b[31m" + "x" * 100
+    result = rule.check(AuditData(package=_metadata(description=description)))
+    assert result.passed
+    assert "工具🔎" in result.message
+    assert "\n" not in result.message
+    assert "\x1b" not in result.message
+    assert "[truncated]" in result.message
+    assert result.details["description"] == description

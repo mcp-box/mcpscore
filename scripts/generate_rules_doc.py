@@ -26,7 +26,7 @@ turn one off or re-rank it in a [`mcpscore.toml`](/configure-rules). It is
 regenerated from the rule registry on every change (`make docs-rules`), so the
 tables below always match the code.
 
-Catalog, server-metadata, protocol and probe findings include concise repair
+Catalog, server-metadata, protocol, probe and package findings include concise repair
 guidance and field or response evidence; see the [failure guidance contract](/stability#failure-guidance).
 Optional quality advice is labeled in report messages. A rule's severity is its
 score weight, not a statement that an optional field is required by the protocol.
@@ -66,6 +66,35 @@ audit says how well a server is *published*; run the server with `--stdio` to
 score whether it speaks MCP.
 
 """
+
+
+PACKAGE_GUIDANCE = {
+    "package_resolves": (
+        "Check the registry and identifier, including npm scope. For example, correct "
+        "npm:scope/server to npm:@scope/server when that is the published name."
+    ),
+    "package_version_resolves": (
+        "Correct a missing version pin to an existing supported release. A missing version does not "
+        "mean the package itself is absent."
+    ),
+    "package_not_withdrawn": (
+        "Read the publisher notice before choosing a replacement. npm deprecation warns installers; "
+        "PyPI yanking changes release selection. Neither means the release was deleted."
+    ),
+    "package_repository_declared": (
+        "Publish a repository URL in npm package.json repository or Python [project.urls]. A "
+        "missing metadata link does not prove that source code is unavailable."
+    ),
+    "package_license_declared": (
+        "Declare the actual license in package.json license or pyproject.toml project.license using "
+        "supported build tooling. For example, use MIT only if the project is actually MIT "
+        "licensed. This rule does not decide legal permissions."
+    ),
+    "package_description_present": (
+        "Publish a concise summary in package.json description or pyproject.toml "
+        "project.description, for example: Read-only search of the team's documentation."
+    ),
+}
 
 
 def _applies_to(rule: BaseRule) -> str:
@@ -127,6 +156,18 @@ def generate() -> str:
             for rule in rules
         )
         lines.append("\n")
+        if group_name == PACKAGING_GROUP:
+            lines.extend(
+                f"### `{rule.rule_id}` repair example\n\n{PACKAGE_GUIDANCE[rule.rule_id]}\n\n" for rule in rules
+            )
+            lines.append(
+                "Publishers change registry metadata; consumers choose coordinates or ask the publisher to correct it. "
+                "These are packaging recommendations, not MCP wire-protocol requirements.\n\n"
+                "Sources: [npm package metadata](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/), "
+                "[npm deprecation](https://docs.npmjs.com/cli/v11/commands/npm-deprecate/), "
+                "[Python project metadata](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/), "
+                "[Python file yanking](https://packaging.python.org/en/latest/specifications/file-yanking/).\n\n"
+            )
     lines.extend(_retired_table())
     # Single trailing newline at EOF (keeps the end-of-file-fixer hook happy).
     return "".join(lines).rstrip("\n") + "\n"

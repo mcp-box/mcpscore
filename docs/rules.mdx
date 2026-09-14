@@ -9,7 +9,7 @@ turn one off or re-rank it in a [`mcpscore.toml`](/configure-rules). It is
 regenerated from the rule registry on every change (`make docs-rules`), so the
 tables below always match the code.
 
-Catalog, server-metadata, protocol and probe findings include concise repair
+Catalog, server-metadata, protocol, probe and package findings include concise repair
 guidance and field or response evidence; see the [failure guidance contract](/stability#failure-guidance).
 Optional quality advice is labeled in report messages. A rule's severity is its
 score weight, not a statement that an optional field is required by the protocol.
@@ -41,6 +41,34 @@ score whether it speaks MCP.
 | `package_repository_declared` | Package - Source repository declared | MEDIUM (2) | all versions |
 | `package_license_declared` | Package - License declared | MEDIUM (2) | all versions |
 | `package_description_present` | Package - Description present | LOW (1) | all versions |
+
+### `package_resolves` repair example
+
+Check the registry and identifier, including npm scope. For example, correct npm:scope/server to npm:@scope/server when that is the published name.
+
+### `package_version_resolves` repair example
+
+Correct a missing version pin to an existing supported release. A missing version does not mean the package itself is absent.
+
+### `package_not_withdrawn` repair example
+
+Read the publisher notice before choosing a replacement. npm deprecation warns installers; PyPI yanking changes release selection. Neither means the release was deleted.
+
+### `package_repository_declared` repair example
+
+Publish a repository URL in npm package.json repository or Python [project.urls]. A missing metadata link does not prove that source code is unavailable.
+
+### `package_license_declared` repair example
+
+Declare the actual license in package.json license or pyproject.toml project.license using supported build tooling. For example, use MIT only if the project is actually MIT licensed. This rule does not decide legal permissions.
+
+### `package_description_present` repair example
+
+Publish a concise summary in package.json description or pyproject.toml project.description, for example: Read-only search of the team's documentation.
+
+Publishers change registry metadata; consumers choose coordinates or ask the publisher to correct it. These are packaging recommendations, not MCP wire-protocol requirements.
+
+Sources: [npm package metadata](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/), [npm deprecation](https://docs.npmjs.com/cli/v11/commands/npm-deprecate/), [Python project metadata](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/), [Python file yanking](https://packaging.python.org/en/latest/specifications/file-yanking/).
 
 ## Protocol Version
 

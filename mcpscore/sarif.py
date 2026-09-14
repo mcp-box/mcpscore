@@ -231,6 +231,10 @@ def _result_entry(res: dict, rule_index: int, shown: str, *, is_readiness: bool,
     severity = res["severity"]
     informative = is_readiness and not counted_in_main
     level = "note" if informative else LEVEL_BY_SEVERITY.get(severity, "warning")
+    message = scrub_urls(res["message"])
+    hint = res.get("suggested_fix")
+    if isinstance(hint, str) and hint.strip():
+        message += "\nSuggested fix: " + scrub_urls(hint.strip())
     # No `details`: several rules record the audited URL there verbatim, and
     # the message plus the rule's basis already say what failed. The --json
     # report keeps the details.
@@ -238,7 +242,7 @@ def _result_entry(res: dict, rule_index: int, shown: str, *, is_readiness: bool,
         "ruleId": res["rule_id"],
         "ruleIndex": rule_index,
         "level": level,
-        "message": {"text": scrub_urls(res["message"])},
+        "message": {"text": message},
         "locations": [
             {
                 "physicalLocation": {

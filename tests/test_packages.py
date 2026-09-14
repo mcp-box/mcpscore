@@ -212,6 +212,7 @@ class TestNpmMetadata:
             meta = await fetch_package_metadata(PackageCoordinate.parse("npm:@scope/server"), client)
 
         assert meta.yanked is True
+        assert meta.details["withdrawal_reason"] == "use @scope/server-next"
 
     async def test_scoped_name_is_percent_encoded_in_the_request(self):
         seen: list[str] = []
@@ -340,11 +341,12 @@ class TestPyPiMetadata:
         assert meta.published_at == datetime(2026, 8, 13, 20, 14, 58, 123404, tzinfo=UTC)
 
     async def test_yanked_release_is_withdrawn(self):
-        document = {**PYPI_DOCUMENT, "info": {**PYPI_DOCUMENT["info"], "yanked": True}}
+        document = {**PYPI_DOCUMENT, "info": {**PYPI_DOCUMENT["info"], "yanked": True, "yanked_reason": "broken wheel"}}
         async with _client(_json_handler(document)) as client:
             meta = await fetch_package_metadata(PackageCoordinate.parse("pypi:example-server"), client)
 
         assert meta.yanked is True
+        assert meta.details["withdrawal_reason"] == "broken wheel"
 
     async def test_404_on_a_versioned_request_means_the_version_is_missing(self):
         async with _client(_json_handler(None, status=404)) as client:
