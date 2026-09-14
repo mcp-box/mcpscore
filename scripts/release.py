@@ -323,8 +323,9 @@ def wait_for_publish(version: str) -> None:
     npm_path = NPM_PACKAGE.replace("/", "%2F")
     wait_for_registry("npm", f"https://registry.npmjs.org/{npm_path}/{version}", "publish-npm.yml")
     # --refresh-package: uv caches the index, so a version published seconds ago is
-    # invisible without it and the smoke test fails for a live release. npx delegates
-    # to uvx and hits the same cache, so run the uvx line first.
+    # invisible without it and the smoke test fails for a live release. When uvx is
+    # installed, npx delegates to it and hits the same cache, so run the uvx line
+    # first; the pipx fallback in npm/bin/mcpscore.js has no such cache.
     print(
         f"\nSmoke test:\n"
         f"  uvx --refresh-package mcpscore mcpscore=={version} https://mcp.deepwiki.com/mcp\n"

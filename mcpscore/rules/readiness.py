@@ -505,7 +505,7 @@ class OriginValidationRule(ProbeBackedReadinessRule):
     def severity(self) -> RuleSeverity:
         # HIGH, not CRITICAL: for local or plain-http targets this is the direct
         # DNS-rebinding mitigation, for the remote HTTPS majority it is defence in depth.
-        # The measured population behind the trade-off is recorded in the project notes.
+        # The measured population behind the trade-off is in AGENTS.md.
         return RuleSeverity.HIGH
 
     def check(self, audit_data: AuditData) -> RuleResult:
