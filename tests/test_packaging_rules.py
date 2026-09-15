@@ -257,6 +257,8 @@ def test_every_package_failure_has_bounded_registry_specific_guidance(coordinate
         if rule.rule_id in {"package_repository_declared", "package_license_declared", "package_description_present"}:
             assert ("package.json" if coordinate.startswith("npm:") else "pyproject.toml") in failing.suggested_fix
             assert "Consumer:" in failing.suggested_fix
+        if rule.rule_id == "package_license_declared":
+            assert "this check only reads metadata" in failing.suggested_fix
 
 
 @pytest.mark.parametrize(("coordinate", "noun"), [("npm:server", "deprecated"), ("pypi:server", "yanked")])

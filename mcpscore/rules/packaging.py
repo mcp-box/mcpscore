@@ -330,7 +330,8 @@ class PackageLicenseDeclaredRule(PackagingBaseRule):
                     if package.coordinate.registry is PackageRegistry.NPM
                     else "Publisher: declare the intended license in pyproject.toml project.license "
                     "using supported build tooling, "
-                    "then publish a new release. Consumer: review the actual license terms before use."
+                    "then publish a new release. Consumer: review the actual license terms before use; "
+                    "this check only reads metadata."
                 ),
                 details=details,
             )

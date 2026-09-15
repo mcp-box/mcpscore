@@ -523,3 +523,18 @@ class TestFetchFailuresAreData:
         meta = await fetch_package_metadata(PackageCoordinate.parse("npm:server"))
 
         assert meta.outcome is PackageOutcome.OK
+
+
+@pytest.mark.parametrize("notice", [None, "", "  ", 123])
+@pytest.mark.parametrize("registry", ["npm", "pypi"])
+def test_empty_withdrawal_notice_does_not_populate_details(registry, notice):
+    from mcpscore.packages import _npm_metadata, _pypi_metadata
+
+    if registry == "npm":
+        document = {**NPM_PACKUMENT, "versions": {"2.0.0": {"deprecated": notice}}}
+        metadata = _npm_metadata(PackageCoordinate.parse("npm:@scope/server@2.0.0"), document)
+    else:
+        document = {**PYPI_DOCUMENT, "info": {**PYPI_DOCUMENT["info"], "yanked": True, "yanked_reason": notice}}
+        metadata = _pypi_metadata(PackageCoordinate.parse("pypi:server"), document)
+    assert metadata.yanked
+    assert metadata.details == {}

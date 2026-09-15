@@ -74,7 +74,7 @@ PACKAGE_GUIDANCE = {
         "npm:scope/server to npm:@scope/server when that is the published name."
     ),
     "package_version_resolves": (
-        "Correct a missing version pin to an existing supported release. A missing version does not "
+        "Correct an unresolvable version pin to an existing supported release. A missing version does not "
         "mean the package itself is absent."
     ),
     "package_not_withdrawn": (

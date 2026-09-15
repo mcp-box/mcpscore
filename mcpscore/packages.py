@@ -333,7 +333,7 @@ def _npm_metadata(coordinate: PackageCoordinate, document: dict[str, Any]) -> Pa
         # npm deprecation stamps a warning on the version entry; it does not
         # remove the release. Preserve the existing presence-based predicate.
         yanked="deprecated" in entry,
-        details={"withdrawal_reason": _clean_text(entry.get("deprecated"))},
+        details={"withdrawal_reason": notice} if (notice := _clean_text(entry.get("deprecated"))) else {},
         available_versions=available,
     )
 
@@ -375,7 +375,7 @@ def _pypi_metadata(coordinate: PackageCoordinate, document: dict[str, Any]) -> P
         homepage_url=_first_url(info.get("home_page"), project_urls.get("Homepage"), info.get("project_url")),
         published_at=published,
         yanked=info.get("yanked") is True,
-        details={"withdrawal_reason": _clean_text(info.get("yanked_reason"))},
+        details={"withdrawal_reason": notice} if (notice := _clean_text(info.get("yanked_reason"))) else {},
         available_versions=available,
     )
 
