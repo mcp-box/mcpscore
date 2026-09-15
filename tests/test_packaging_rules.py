@@ -266,7 +266,7 @@ def test_withdrawal_notice_is_preserved_masked_and_bounded(coordinate, noun):
     import json
 
     rule = next(r for r in _packaging_rules() if r.rule_id == "package_not_withdrawn")
-    reason = "See https://user:Secret123@host/?token=Token123 for 工具🔎 " + "x" * 100
+    reason = "See https://user:Secret123@host/?token=Token123 for 工具🔎 " + "x" * 300
     package = _metadata(
         coordinate=PackageCoordinate.parse(coordinate), yanked=True, details={"withdrawal_reason": reason}
     )
@@ -291,3 +291,39 @@ def test_package_identity_and_metadata_previews_escape_controls():
     assert "\x1b" not in result.message
     assert "[truncated]" in result.message
     assert result.details["description"] == description
+
+
+@pytest.mark.parametrize("coordinate", ["npm:server", "pypi:server"])
+def test_notice_preview_keeps_replacement_url_and_masks_before_truncating(coordinate):
+    rule = next(r for r in _packaging_rules() if r.rule_id == "package_not_withdrawn")
+    prefix = "This package is deprecated. Use the remote MCP server at "
+    notice = prefix + "https://user:Secret123@replacement.example/mcp?token=Token123"
+    package = _metadata(
+        coordinate=PackageCoordinate.parse(coordinate), yanked=True, details={"withdrawal_reason": notice}
+    )
+    result = rule.check(AuditData(package=package))
+    assert "https://replacement.example/mcp?token=[redacted]" in result.message
+    assert "[truncated]" not in result.message
+    assert "Secret123" not in result.message
+    assert "Token123" not in result.message
+    package.details["withdrawal_reason"] = "工具🔎" * 100
+    result = rule.check(AuditData(package=package))
+    expected = '"' + ("工具🔎" * 100)[:200] + '" [truncated]'
+    assert expected in result.message
+
+
+@pytest.mark.parametrize("coordinate", ["npm:server", "pypi:server"])
+def test_missing_package_guidance_uses_registry_terms(coordinate):
+    rule = next(r for r in _packaging_rules() if r.rule_id == "package_resolves")
+    result = rule.check(
+        AuditData(
+            package=_metadata(
+                coordinate=PackageCoordinate.parse(coordinate),
+                outcome=PackageOutcome.NOT_FOUND,
+            )
+        )
+    )
+    assert result.suggested_fix
+    assert len(result.suggested_fix) <= 255
+    assert ("scope" in result.suggested_fix) == coordinate.startswith("npm:")
+    assert ("npm" if coordinate.startswith("npm:") else "PyPI") in result.suggested_fix

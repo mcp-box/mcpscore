@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from mcpscore.diagnostics import quoted_preview
 from mcpscore.packages import PackageMetadata, PackageOutcome, PackageRegistry
 from mcpscore.report_evidence import evidence_preview, report_evidence
 
@@ -138,8 +139,12 @@ class PackageResolvesRule(PackagingBaseRule):
             return self._result(
                 passed=False,
                 message=f"❌ Package {evidence_preview(package.coordinate.identifier)} was not found on {registry}",
-                suggested_fix="Check the registry and package identifier, including its scope, for typos. "
-                "If you maintain this package and it is unpublished, publish it through your normal release process.",
+                suggested_fix=(
+                    "Check the npm registry and package identifier, including its scope, for typos. "
+                    if package.coordinate.registry is PackageRegistry.NPM
+                    else "Check the PyPI project name for typos and confirm it exists on the public PyPI registry. "
+                )
+                + "If you maintain this package and it is unpublished, publish it through your normal release process.",
                 details=details,
             )
         return self._result(
@@ -244,7 +249,7 @@ class PackageNotWithdrawnRule(PackagingBaseRule):
             return self._result(
                 passed=False,
                 message=f"❌ Release {evidence_preview(package.resolved_version)} is {noun}"
-                + (f". Publisher notice: {evidence_preview(notice)}" if notice else ""),
+                + (f". Publisher notice: {quoted_preview(str(report_evidence(notice)), 200)}" if notice else ""),
                 suggested_fix=f"Review the publisher's {('yanking' if noun == 'yanked' else 'deprecation')} notice "
                 "and choose a supported replacement release. If you maintain the package, resolve the cause "
                 "before removing the warning.",

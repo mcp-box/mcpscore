@@ -308,7 +308,10 @@ limitations require separate correctness changes, not different repair wording.
 
 Package hints distinguish publisher metadata changes from consumer choices.
 npm deprecation and PyPI yanking retain their registry-specific names and
-publisher notices when available (`details.withdrawal_reason`). Existing
+publisher notices when available (`details.withdrawal_reason`). Human notice
+previews allow 200 Unicode code points so replacement URLs in prose remain
+useful; masking and control-character escaping happen before display. Longer
+notices are visibly truncated, with the full masked notice retained in details. Existing
 `yanked` detail values and verdicts remain unchanged. Public values use bounded
 quoted previews; URL credentials are masked in result messages and details.
 A missing license declaration or repository URL describes metadata, not legal
