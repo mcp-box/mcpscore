@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from mcpscore.diagnostics import quoted_preview
 from mcpscore.packages import PackageMetadata, PackageOutcome, PackageRegistry
+from mcpscore.report_evidence import evidence_preview, report_evidence
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -82,13 +84,14 @@ class PackagingBaseRule(BaseRule):
         """
         ...
 
-    def _result(self, *, passed: bool, message: str, details: dict) -> RuleResult:
+    def _result(self, *, passed: bool, message: str, details: dict, suggested_fix: str | None = None) -> RuleResult:
         return RuleResult(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
-            message=message,
-            details=details,
+            message=report_evidence(message.rstrip(".") + "."),
+            details=report_evidence(details),
+            suggested_fix=suggested_fix if not passed else None,
         )
 
 
@@ -135,12 +138,18 @@ class PackageResolvesRule(PackagingBaseRule):
         if package.outcome is PackageOutcome.NOT_FOUND:
             return self._result(
                 passed=False,
-                message=f"❌ No package '{package.coordinate.identifier}' published on {registry}",
+                message=f"❌ Package {evidence_preview(package.coordinate.identifier)} was not found on {registry}",
+                suggested_fix=(
+                    "Check the npm registry and package identifier, including its scope, for typos. "
+                    if package.coordinate.registry is PackageRegistry.NPM
+                    else "Check the PyPI project name for typos and confirm it exists on the public PyPI registry. "
+                )
+                + "If you maintain this package and it is unpublished, publish it through your normal release process.",
                 details=details,
             )
         return self._result(
             passed=True,
-            message=f"✅ Package '{package.coordinate.identifier}' is published on {registry}",
+            message=f"✅ Package {evidence_preview(package.coordinate.identifier)} is published on {registry}",
             details=details,
         )
 
@@ -180,6 +189,8 @@ class PackageVersionResolvesRule(PackagingBaseRule):
     def _check_package(self, package: PackageMetadata) -> RuleResult:
         requested = package.coordinate.version
         details = {
+            "registry": package.coordinate.registry.value,
+            "identifier": package.coordinate.identifier,
             "requested_version": requested,
             "resolved_version": package.resolved_version,
             "available_versions": len(package.available_versions),
@@ -187,18 +198,21 @@ class PackageVersionResolvesRule(PackagingBaseRule):
         if package.outcome is PackageOutcome.VERSION_NOT_FOUND:
             return self._result(
                 passed=False,
-                message=f"❌ Version '{requested}' is not published for this package",
+                message=f"❌ Version {evidence_preview(requested)} was not found for "
+                f"{evidence_preview(package.coordinate.identifier)} on {package.coordinate.registry.value}",
+                suggested_fix="Choose an existing supported release or correct the pinned version. "
+                "If you maintain the MCP registry entry, point it to the intended published release.",
                 details=details,
             )
         if requested is None:
             return self._result(
                 passed=True,
-                message=f"✅ No version pinned; the registry's latest is '{package.resolved_version}'",
+                message=f"✅ No version pinned; the registry's latest is {evidence_preview(package.resolved_version)}",
                 details=details,
             )
         return self._result(
             passed=True,
-            message=f"✅ Version '{requested}' is published",
+            message=f"✅ Version {evidence_preview(requested)} is published",
             details=details,
         )
 
@@ -223,17 +237,27 @@ class PackageNotWithdrawnRule(PackagingBaseRule):
         return RuleSeverity.HIGH
 
     def _check_package(self, package: PackageMetadata) -> RuleResult:
-        details = {"yanked": package.yanked, "resolved_version": package.resolved_version}
+        noun = "yanked" if package.coordinate.registry is PackageRegistry.PYPI else "deprecated"
+        notice = package.details.get("withdrawal_reason")
+        details = {
+            "yanked": package.yanked,
+            "resolved_version": package.resolved_version,
+            "registry": package.coordinate.registry.value,
+            **({"withdrawal_reason": notice} if notice else {}),
+        }
         if package.yanked:
-            noun = "yanked" if package.coordinate.registry is PackageRegistry.PYPI else "deprecated"
             return self._result(
                 passed=False,
-                message=f"❌ Release '{package.resolved_version}' is {noun} — the publisher withdrew it",
+                message=f"❌ Release {evidence_preview(package.resolved_version)} is {noun}"
+                + (f". Publisher notice: {quoted_preview(str(report_evidence(notice)), 200)}" if notice else ""),
+                suggested_fix=f"Review the publisher's {('yanking' if noun == 'yanked' else 'deprecation')} notice "
+                "and choose a supported replacement release. If you maintain the package, resolve the cause "
+                "before removing the warning.",
                 details=details,
             )
         return self._result(
             passed=True,
-            message=f"✅ Release '{package.resolved_version}' is not withdrawn",
+            message=f"✅ Release {evidence_preview(package.resolved_version)} is not {noun}",
             details=details,
         )
 
@@ -262,12 +286,20 @@ class PackageRepositoryDeclaredRule(PackagingBaseRule):
         if not package.repository_url:
             return self._result(
                 passed=False,
-                message="❌ No source repository declared — users cannot review what this server runs",
+                message="❌ Package metadata has no source repository URL",
+                suggested_fix=(
+                    "Publisher: add the source URL to package.json repository and publish a new release. "
+                    "Consumer: check the project documentation for its source before installing."
+                    if package.coordinate.registry is PackageRegistry.NPM
+                    else "Publisher: add a Repository URL under [project.urls] in pyproject.toml "
+                    "and publish a new release. "
+                    "Consumer: check the project documentation for its source before installing."
+                ),
                 details=details,
             )
         return self._result(
             passed=True,
-            message=f"✅ Source repository declared: {package.repository_url}",
+            message=f"✅ Source repository declared: {evidence_preview(package.repository_url)}",
             details=details,
         )
 
@@ -278,8 +310,8 @@ class PackageLicenseDeclaredRule(PackagingBaseRule):
 
     rule_id = "package_license_declared"
     basis = (
-        "npm package.json §license and PEP 639 §License-Expression — an undeclared license leaves "
-        "consumers without permission to use the server"
+        "npm package.json §license and PEP 639 §License-Expression — license metadata helps "
+        "consumers find the applicable terms; this check does not determine legal permissions"
     )
     rule_order = 5
 
@@ -296,12 +328,21 @@ class PackageLicenseDeclaredRule(PackagingBaseRule):
         if not package.license:
             return self._result(
                 passed=False,
-                message="❌ No license declared",
+                message="❌ Package metadata has no license declaration",
+                suggested_fix=(
+                    "Publisher: declare the intended license in package.json license and publish a new release. "
+                    "Consumer: review the actual license terms before use; this check only reads metadata."
+                    if package.coordinate.registry is PackageRegistry.NPM
+                    else "Publisher: declare the intended license in pyproject.toml project.license "
+                    "using supported build tooling, "
+                    "then publish a new release. Consumer: review the actual license terms before use; "
+                    "this check only reads metadata."
+                ),
                 details=details,
             )
         return self._result(
             passed=True,
-            message=f"✅ License declared: {package.license}",
+            message=f"✅ License declared: {evidence_preview(package.license)}",
             details=details,
         )
 
@@ -330,17 +371,19 @@ class PackageDescriptionPresentRule(PackagingBaseRule):
         if not package.description:
             return self._result(
                 passed=False,
-                message="❌ No description published for this package",
+                message="❌ Package metadata has no description",
+                suggested_fix=(
+                    "Publisher: add a concise description of the server's purpose to package.json description "
+                    "and publish a new release. Consumer: consult the README for its purpose."
+                    if package.coordinate.registry is PackageRegistry.NPM
+                    else "Publisher: add a concise description of the server's purpose to "
+                    "pyproject.toml project.description "
+                    "and publish a new release. Consumer: consult the README for its purpose."
+                ),
                 details=details,
             )
         return self._result(
             passed=True,
-            message=f"✅ Description present: '{_truncate(package.description)}'",
+            message=f"✅ Description present: {evidence_preview(package.description)}",
             details=details,
         )
-
-
-def _truncate(text: str, limit: int = 80) -> str:
-    """Shorten publisher-supplied text for a one-line message."""
-    collapsed = " ".join(text.split())
-    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Failure-only repair guidance for all six package checks, with npm/PyPI field
+  names, publisher versus consumer actions, bounded evidence, and publisher
+  deprecation or yanking notices. Existing verdicts and scores are unchanged.
+- Sanitized repair hints in SARIF finding messages, including informative
+  readiness findings, without source-edit suggestions or raw details.
+- Generated package-rule repair examples and registry documentation links.
+
 ## [1.17.0] - 2026-09-14
 
 Repair hints now cover every rule family, smoke mode shows what each tool

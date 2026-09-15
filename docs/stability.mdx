@@ -165,9 +165,10 @@ Consumers must tolerate its absence. In JavaScript, count code points with
 
 Supported findings include tool, resource, resource-template, prompt,
 server-metadata, capability, protocol, transport, auth/security, pagination,
-catalog-stability and readiness rules. The CLI prints their hint as `Fix:` on
-stderr. JSON stdout remains one complete report. Package rules retain their
-existing messages during rollout. Optional metadata and list-change advice is
+catalog-stability, readiness and package rules. The CLI prints their hint as `Fix:` on
+stderr. JSON stdout remains one complete report. SARIF appends sanitized repair
+advice to the finding message, using its stricter URL privacy policy; it does
+not invent source edits. Older findings still export without a repair hint. Optional metadata and list-change advice is
 labeled as a quality recommendation in the message; it is not a protocol mandate.
 Scores and applicability are unchanged.
 
@@ -302,3 +303,17 @@ limitations require separate correctness changes, not different repair wording.
     Why the score is ruleset-dependent, and what that means for your CI gate
   </Card>
 </CardGroup>
+
+### Package evidence
+
+Package hints distinguish publisher metadata changes from consumer choices.
+npm deprecation and PyPI yanking retain their registry-specific names and
+publisher notices when available (`details.withdrawal_reason`). Human notice
+previews allow 200 Unicode code points so replacement URLs in prose remain
+useful; masking and control-character escaping happen before display. Longer
+notices are visibly truncated, with the full masked notice retained in details. Existing
+`yanked` detail values and verdicts remain unchanged. Public values use bounded
+quoted previews; URL credentials are masked in result messages and details.
+A missing license declaration or repository URL describes metadata, not legal
+permissions or whether the source exists elsewhere. Package audits never run
+the package and cannot confirm its MCP behavior.

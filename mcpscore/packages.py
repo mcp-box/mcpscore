@@ -210,7 +210,7 @@ class PackageMetadata:
     published_at: datetime | None = None
     """Publication time of the resolved version, when the registry reports one."""
     yanked: bool = False
-    """PyPI only: the release was withdrawn but is still resolvable."""
+    """The release is yanked on PyPI or marked deprecated on npm."""
     available_versions: tuple[str, ...] = ()
     error: str | None = None
     """Exception name or HTTP status when ``outcome`` is ERROR — for the report,
@@ -330,9 +330,10 @@ def _npm_metadata(coordinate: PackageCoordinate, document: dict[str, Any]) -> Pa
         repository_url=repository_url,
         homepage_url=_first_url(entry.get("homepage"), document.get("homepage")),
         published_at=published,
-        # npm's equivalent of a PyPI yank: `npm deprecate` stamps the version
-        # entry with a message. Its presence is the signal, whatever it says.
+        # npm deprecation stamps a warning on the version entry; it does not
+        # remove the release. Preserve the existing presence-based predicate.
         yanked="deprecated" in entry,
+        details={"withdrawal_reason": notice} if (notice := _clean_text(entry.get("deprecated"))) else {},
         available_versions=available,
     )
 
@@ -374,6 +375,7 @@ def _pypi_metadata(coordinate: PackageCoordinate, document: dict[str, Any]) -> P
         homepage_url=_first_url(info.get("home_page"), project_urls.get("Homepage"), info.get("project_url")),
         published_at=published,
         yanked=info.get("yanked") is True,
+        details={"withdrawal_reason": notice} if (notice := _clean_text(info.get("yanked_reason"))) else {},
         available_versions=available,
     )
 

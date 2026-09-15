@@ -40,3 +40,8 @@ def test_committed_reference_matches_the_registry():
     """docs/rules.mdx must be regenerated whenever the registry changes."""
     committed = (Path(__file__).parent.parent / "docs" / "rules.mdx").read_text(encoding="utf-8")
     assert committed == generate_rules_doc.generate()
+
+
+def test_package_guidance_exactly_covers_the_registry():
+    expected = {rule.rule_id for rule in create_all_rules() if rule.group_name == "packaging"}
+    assert set(generate_rules_doc.PACKAGE_GUIDANCE) == expected
