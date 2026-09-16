@@ -373,6 +373,20 @@ class TestStdioLaunchHints:
         assert hint.startswith("'./srv.py' is executable but could not be launched: its shebang interpreter")
         assert "--stdio python ./srv.py" in hint
 
+    @pytest.mark.skipif(os.name == "nt", reason="exec bits and shebangs are POSIX")
+    def test_bare_executable_script_is_a_path_lookup_problem_not_a_shebang(self, tmp_path, monkeypatch):
+        """A bare name is looked up on PATH, so a +x file in the current directory is not the launched one."""
+        monkeypatch.chdir(tmp_path)
+        script = tmp_path / "srv.py"
+        script.write_text("#!/usr/bin/env python3\nprint('hi')\n", encoding="utf-8")
+        script.chmod(0o755)
+        with pytest.raises(FileNotFoundError):
+            subprocess.run(["srv.py"], check=False)
+        hint = stdio_launch_hint("srv.py")
+        assert hint.startswith("'srv.py' is a script, not an executable command")
+        assert "shebang" not in hint
+        assert "--stdio python srv.py" in hint
+
     def test_hint_for_plain_missing_command(self):
         assert stdio_launch_hint("no-such-binary") == (
             "Command not found: 'no-such-binary'. Please ensure it is installed and on PATH."

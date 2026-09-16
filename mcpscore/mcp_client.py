@@ -79,8 +79,11 @@ def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
         run_it = shlex.join(["--stdio", interpreter, command])
         if interpreter == "python":
             run_it += f" (inside a uv project: {shlex.join(['--stdio', 'uv', 'run', command])})"
-        if not permission_denied and os.name != "nt" and os.access(command, os.X_OK):
+        names_a_path = os.sep in command or (os.altsep is not None and os.altsep in command)
+        if not permission_denied and names_a_path and os.name != "nt" and os.access(command, os.X_OK):
             # exec of a +x script fails with ENOENT when its shebang interpreter is absent.
+            # A bare name is looked up on PATH instead, so the file in the current
+            # directory says nothing about why the launch failed.
             return (
                 f"'{command}' is executable but could not be launched: its shebang interpreter is missing "
                 f"or wrong. Fix the shebang, or launch it with its interpreter: {run_it}"
