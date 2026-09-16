@@ -15,8 +15,10 @@ mcpscore [options] --package pypi:<name>[==version]
 stdio for files, Streamable HTTP first and then SSE for URLs. Servers in any
 other language run through `--stdio`, and so does a Python server that should
 run in its own project environment: `--stdio uv run server.py`. A bare `.py`
-target runs under mcpscore's own interpreter. Whatever a local server writes
-to stderr appears in the output prefixed with `server stderr:`.
+target runs under mcpscore's own interpreter. Whatever the audited server
+process writes to stderr appears in the output prefixed with `server stderr:`.
+The sessionless probes launch the same server again for their own requests,
+and those extra processes stay silent so startup output is not repeated.
 
 ## Options
 

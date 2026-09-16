@@ -348,6 +348,15 @@ class TestStdioLaunchHints:
         assert hint.startswith("'./srv.py' is a script, not an executable command")
         assert "--stdio python ./srv.py" in hint
 
+    def test_hint_quotes_paths_for_the_shell(self, tmp_path, monkeypatch):
+        """The suggested command must paste back correctly when the path needs quoting."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "my server.py").write_text("", encoding="utf-8")
+        hint = stdio_launch_hint("my server.py")
+        assert "--stdio python 'my server.py'" in hint
+        assert "--stdio uv run 'my server.py'" in hint
+        assert "--stdio node 'a;b.js'" in stdio_launch_hint("a;b.js")
+
     def test_hint_for_plain_missing_command(self):
         assert stdio_launch_hint("no-such-binary") == (
             "Command not found: 'no-such-binary'. Please ensure it is installed and on PATH."

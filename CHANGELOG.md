@@ -19,11 +19,16 @@ explained instead of dumped as tracebacks.
   of skipping as insufficient-data. The capability rule still fails on the
   legacy listing and says which lifecycle the catalog came from. The report's
   `spec` block gains `catalog_versions`.
-- A `--stdio` command the OS cannot launch is reported as one error line, not
-  a traceback. Naming a script instead of an executable (`--stdio server.py`)
-  now shows the interpreter form to use, such as `--stdio uv run server.py`.
-- Lines a local server writes to stderr are relayed with a `server stderr:`
-  prefix so they are not read as mcpscore output.
+- A `--stdio` command the OS cannot launch is explained in one line instead
+  of a traceback, ahead of the usual connection-failure line. Naming a script
+  instead of an executable (`--stdio server.py`) now shows the interpreter
+  form to use, such as `--stdio uv run server.py`.
+- Lines the audited server process writes to stderr are relayed with a
+  `server stderr:` prefix so they are not read as mcpscore output. The
+  sessionless probe launches of the same server stay silent.
+- A rule that needs both a catalog recovered from the stateless lifecycle and
+  a field from the legacy handshake skips as insufficient-data rather than
+  comparing evidence from two lifecycles.
 
 ## [1.18.0] - 2026-09-15
 

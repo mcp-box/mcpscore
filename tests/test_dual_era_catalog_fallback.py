@@ -20,6 +20,7 @@ from mcpscore.rules import AuditData, BaseRule, RuleResult, RuleSeverity
 from mcpscore.rules.base import (
     SKIP_REASON_INSUFFICIENT_DATA,
     SKIP_REASON_NOT_APPLICABLE,
+    requires_fields,
     requires_full_data,
     requires_tools,
 )
@@ -121,6 +122,8 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
     # Scoped to the older revision: it must not fail the array root the catalog's revision allows.
     assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
     assert "readiness_2026_tool_schema_dialect" not in skipped
+    # Needs the legacy capabilities too: evidence from two lifecycles is not comparable.
+    assert skipped["tools_execution_consistent"] == SKIP_REASON_INSUFFICIENT_DATA
     capability = results[CapabilityToolsPresentRule.rule_id]
     assert not capability.passed
     assert "returned JSON-RPC error -32603" in capability.message
@@ -226,6 +229,25 @@ class _FullDataRule(_ToolsRule):
     @requires_full_data
     def check(self, audit_data: AuditData) -> RuleResult:
         return RuleResult(rule_name=self.rule_name, severity=self.severity, passed=True, message="ok")
+
+
+class _ToolsAndCapabilitiesRule(_ToolsRule):
+    rule_id = "dummy_tools_capabilities_rule"
+
+    @requires_fields("tools", "capabilities")
+    def check(self, tools, capabilities) -> RuleResult:  # type: ignore[override]
+        return RuleResult(rule_name=self.rule_name, severity=self.severity, passed=True, message="ok")
+
+
+def test_rules_spanning_both_lifecycles_are_skipped():
+    auditor = MCPAuditor()
+    auditor.audit_data.catalog_versions["tools"] = "2026-07-28"
+
+    assert auditor._evidence_spans_lifecycles(_ToolsAndCapabilitiesRule())
+    assert not auditor._evidence_spans_lifecycles(_ToolsRule())
+    assert not auditor._evidence_spans_lifecycles(_FullDataRule())
+    auditor.audit_data.catalog_versions.clear()
+    assert not auditor._evidence_spans_lifecycles(_ToolsAndCapabilitiesRule())
 
 
 def test_applicability_follows_the_catalog_revision():

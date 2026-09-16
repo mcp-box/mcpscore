@@ -209,8 +209,9 @@ Details: [score badge](https://docs.mcpscore.dev/badge).
 - Cause: `--stdio` executes a program, and a bare script name is looked up on
   `PATH` like any other command.
 - Fix: name the interpreter: `--stdio uv run server.py` or
-  `--stdio python server.py`. Lines the server itself writes to stderr appear
-  in the output prefixed with `server stderr:`.
+  `--stdio python server.py`. Lines the audited server process writes to
+  stderr appear in the output prefixed with `server stderr:`; the extra
+  launches the sessionless probes make are silent.
 
 **A local server starts and then the audit hangs or exits `2`**
 

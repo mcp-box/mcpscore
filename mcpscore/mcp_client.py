@@ -76,9 +76,9 @@ def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
     """
     interpreter = _SCRIPT_INTERPRETERS.get(Path(command).suffix.lower())
     if interpreter is not None:
-        run_it = f"--stdio {interpreter} {command}"
+        run_it = shlex.join(["--stdio", interpreter, command])
         if interpreter == "python":
-            run_it += f" (inside a uv project: --stdio uv run {command})"
+            run_it += f" (inside a uv project: {shlex.join(['--stdio', 'uv', 'run', command])})"
         if permission_denied or Path(command).is_file():
             return f"'{command}' is a script, not an executable command. Launch it with its interpreter: {run_it}"
         return f"Server script not found: '{command}'. Check the path, then launch it with its interpreter: {run_it}"

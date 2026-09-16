@@ -527,6 +527,17 @@ class MCPAuditor:
         requires = getattr(rule.check, "_requires", None)
         return (requires,) if isinstance(requires, str) else tuple(requires or ())
 
+    def _evidence_spans_lifecycles(self, rule: BaseRule) -> bool:
+        """Whether a rule would compare a recovered catalog with session-only evidence.
+
+        A catalog recovered from the stateless lifecycle and the fields the
+        legacy ``initialize`` returned describe two lifecycles the server may
+        configure differently, so a rule needing both cannot judge either.
+        """
+        names = set(self._required_fields(rule))
+        recovered = {name for name in names if name in self.audit_data.catalog_versions}
+        return bool(recovered) and bool(names - recovered)
+
     def _applicability_version(self, rule: BaseRule) -> str | None:
         """Return the protocol revision a rule's evidence was observed on.
 
@@ -597,7 +608,7 @@ class MCPAuditor:
             skip_reason: str | None = None
             if not rule.applies_to(self._applicability_version(rule)):
                 skip_reason = SKIP_REASON_NOT_APPLICABLE
-            elif self._skipped_for_partial(rule):
+            elif self._skipped_for_partial(rule) or self._evidence_spans_lifecycles(rule):
                 skip_reason = SKIP_REASON_INSUFFICIENT_DATA
             else:
                 skip_reason = rule.skip_reason(self.audit_data)
