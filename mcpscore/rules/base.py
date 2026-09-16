@@ -175,6 +175,14 @@ class AuditData:
     # pagination failed, repeated a cursor, or exceeded its safety bound.
     incomplete_listings: frozenset[str] = frozenset()
 
+    catalog_versions: dict[str, str] = field(default_factory=dict)
+    """Protocol revision a listing was served on when it is not the session's.
+
+    Set when the legacy session listing failed and the catalog was recovered
+    from the stateless modern lifecycle instead; `listing_errors` keeps the
+    legacy failure. Rules that judge such a catalog apply the revision here.
+    """
+
 
 # Decorators to specify what data a rule needs
 def requires_protocol_version(func: Callable) -> Callable:

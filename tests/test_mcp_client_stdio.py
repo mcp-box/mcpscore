@@ -3,10 +3,18 @@
 import logging
 from unittest.mock import AsyncMock, patch
 
+from mcp import StdioServerParameters
 import pytest
 
 from mcpscore.enums import ConnectionErrorReason, MCPTransportType
-from mcpscore.mcp_client import MCPClient, StdioCommand
+from mcpscore.mcp_client import (
+    SERVER_STDERR_PREFIX,
+    MCPClient,
+    ServerStderrRelay,
+    StdioCommand,
+    relayed_stdio_client,
+    stdio_launch_hint,
+)
 
 
 class TestMCPClientStdioErrors:
@@ -199,12 +207,13 @@ class TestStdioCommand:
         """No --env: the SDK's own default environment handling applies (env=None)."""
         cmd = StdioCommand(command="dotnet", args=("run", "--project", "./srv"))
         with (
-            patch("mcpscore.mcp_client.stdio_client") as mock_stdio,
+            patch("mcpscore.mcp_client.stdio_client"),
             patch.object(mcp_client, "_establish_session", new=AsyncMock()) as establish,
         ):
             result = await mcp_client._connect_with_stdio_command(cmd)
         assert result is True
-        params = mock_stdio.call_args.args[0]
+        params = mcp_client.stdio_params
+        assert params is not None
         assert params.command == "dotnet"
         assert params.args == ["run", "--project", "./srv"]
         assert params.env is None
@@ -214,13 +223,14 @@ class TestStdioCommand:
         """--env vars land on top of the SDK default env, not instead of it."""
         cmd = StdioCommand(command="./server", env={"API_KEY": "secret", "PATH": "/custom"})
         with (
-            patch("mcpscore.mcp_client.stdio_client") as mock_stdio,
+            patch("mcpscore.mcp_client.stdio_client"),
             patch("mcpscore.mcp_client.get_default_environment", return_value={"PATH": "/usr/bin", "HOME": "/home"}),
             patch.object(mcp_client, "_establish_session", new=AsyncMock()),
         ):
             result = await mcp_client._connect_with_stdio_command(cmd)
         assert result is True
-        params = mock_stdio.call_args.args[0]
+        params = mcp_client.stdio_params
+        assert params is not None
         assert params.env == {"PATH": "/custom", "HOME": "/home", "API_KEY": "secret"}
 
     async def test_command_not_found_names_the_command(self, mcp_client, caplog):
@@ -230,6 +240,7 @@ class TestStdioCommand:
             result = await mcp_client._connect_with_stdio_command(cmd)
         assert result is False
         assert "Command not found: 'no-such-binary'" in caplog.text
+        assert "Traceback" not in caplog.text
         assert mcp_client.last_connection_error is not None
 
     async def test_command_handshake_timeout_classified(self, mcp_client, caplog):
@@ -288,3 +299,89 @@ class TestStdioCommandRealProcess:
             assert client._init_result.server_info.version == "env-round-trip-proof"
         finally:
             await client.cleanup()
+
+
+class TestStdioLaunchHints:
+    """A --stdio command the OS cannot launch gets one explanatory line, never a traceback."""
+
+    @pytest.fixture
+    def mcp_client(self):
+        return MCPClient()
+
+    async def test_script_named_as_command_shows_interpreter_form(self, mcp_client, tmp_path, monkeypatch, caplog):
+        """`--stdio weather.py` looks the script up on PATH; the fix is to name its interpreter."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "weather.py").write_text("print('hi')\n", encoding="utf-8")
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.side_effect = FileNotFoundError(2, "No such file", "weather.py")
+            result = await mcp_client._connect_with_stdio_command(StdioCommand(command="weather.py"))
+        assert result is False
+        assert "'weather.py' is a script, not an executable command" in caplog.text
+        assert "--stdio python weather.py" in caplog.text
+        assert "--stdio uv run weather.py" in caplog.text
+        assert "Traceback" not in caplog.text
+        assert mcp_client.last_connection_error.reason is ConnectionErrorReason.UNREACHABLE
+
+    async def test_missing_script_named_as_command(self, mcp_client, tmp_path, monkeypatch, caplog):
+        monkeypatch.chdir(tmp_path)
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.side_effect = FileNotFoundError(2, "No such file", "server.js")
+            result = await mcp_client._connect_with_stdio_command(StdioCommand(command="server.js"))
+        assert result is False
+        assert "Server script not found: 'server.js'" in caplog.text
+        assert "--stdio node server.js" in caplog.text
+        assert "Traceback" not in caplog.text
+
+    async def test_permission_denied_on_command_is_one_line(self, mcp_client, caplog):
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.side_effect = PermissionError(13, "Permission denied", "./srv")
+            result = await mcp_client._connect_with_stdio_command(StdioCommand(command="./srv"))
+        assert result is False
+        assert "Permission denied launching './srv'. Make it executable (chmod +x)" in caplog.text
+        assert "Traceback" not in caplog.text
+        assert mcp_client.last_connection_error.reason is ConnectionErrorReason.UNREACHABLE
+
+    def test_hint_for_script_without_exec_bit(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "srv.py").write_text("", encoding="utf-8")
+        hint = stdio_launch_hint("./srv.py", permission_denied=True)
+        assert hint.startswith("'./srv.py' is a script, not an executable command")
+        assert "--stdio python ./srv.py" in hint
+
+    def test_hint_for_plain_missing_command(self):
+        assert stdio_launch_hint("no-such-binary") == (
+            "Command not found: 'no-such-binary'. Please ensure it is installed and on PATH."
+        )
+
+
+class TestServerStderrRelay:
+    """Whatever a local server writes to stderr reaches the log with a prefix."""
+
+    def test_child_stderr_lines_are_logged_with_prefix(self, caplog):
+        import subprocess
+        import sys
+
+        caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
+        with ServerStderrRelay() as relay:
+            subprocess.run(
+                [sys.executable, "-c", "import sys; sys.stderr.write('boom\\nbang\\n')"],
+                stderr=relay.errlog,
+                check=True,
+            )
+        assert relay.errlog.closed
+        messages = [record.getMessage() for record in caplog.records]
+        assert f"{SERVER_STDERR_PREFIX}boom" in messages
+        assert f"{SERVER_STDERR_PREFIX}bang" in messages
+
+    async def test_transport_receives_the_relay_pipe(self):
+        """The SDK gets the relay's pipe as errlog, and the pipe closes with the transport."""
+        params = StdioServerParameters(command="srv", args=[])
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.return_value = ("read", "write")
+            async with relayed_stdio_client(params) as streams:
+                errlog = mock_stdio.call_args.kwargs["errlog"]
+                assert streams == ("read", "write")
+                assert mock_stdio.call_args.args[0] is params
+                assert errlog.fileno() >= 0
+                assert not errlog.closed
+        assert errlog.closed

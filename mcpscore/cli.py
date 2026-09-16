@@ -89,7 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="COMMAND",
         help=(
             "Launch a local MCP server as an arbitrary stdio command — any language: "
-            "--stdio ./server, --stdio java -jar server.jar, --stdio dotnet run --project ./srv. "
+            "--stdio ./server, --stdio java -jar server.jar, --stdio dotnet run --project ./srv, "
+            "--stdio uv run server.py (a Python server in its own project environment). "
+            "The command is a program to execute, so a bare script name needs its interpreter. "
             "Consumes the REST of the command line (the server's own flags included), so put "
             "every mcpscore option before it. Replaces the positional target. The command runs "
             "directly (no shell). Never pass secrets as arguments — the command line appears as "

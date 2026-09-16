@@ -140,15 +140,24 @@ class CapabilityDeclarationRule(BaseRule):
         return None
 
     def _evaluate(
-        self, capabilities: ServerCapabilities | None, items: list | None, listing_errors: dict | None = None
+        self,
+        capabilities: ServerCapabilities | None,
+        items: list | None,
+        listing_errors: dict | None = None,
+        fallback_version: str | None = None,
     ) -> RuleResult:
-        """Compare the declared capability against what the server served."""
+        """Compare the declared capability against what the server served.
+
+        ``fallback_version`` is the revision the catalog was recovered on after
+        the session listing failed: the items were judged, but this rule still
+        fails on the listing the negotiated session could not serve.
+        """
         collection_error = (listing_errors or {}).get(self.feature, {})
         suggested_fix = None
         declared = getattr(capabilities, self.feature, None) is not None if capabilities is not None else False
         served = items is not None
 
-        if declared and served:
+        if declared and served and fallback_version is None:
             passed = True
             message = f"✅ Declares the {self.feature} capability and serves {len(items or [])} via {self.method}"
         elif not declared and not served:
@@ -193,12 +202,18 @@ class CapabilityDeclarationRule(BaseRule):
                     f"Check the {self.method} response and connection in server logs, then "
                     f"retry. The audit could not determine a more specific cause."
                 )
+            if fallback_version is not None:
+                message += (
+                    f" The {len(items or [])} {self.feature} were collected on the {fallback_version} "
+                    f"stateless lifecycle instead; clients on the negotiated session get none."
+                )
 
         details = {
             f"capability_{self.feature}": _wire_str(getattr(capabilities, self.feature, None)),
             "declared": declared,
             "served": served,
             **({"collection_error": collection_error} if collection_error and not passed else {}),
+            **({"catalog_version": fallback_version} if fallback_version is not None else {}),
         }
         if served and not declared:
             # Use the common renderer only for this field-level failure. Keep
@@ -247,7 +262,12 @@ class CapabilityToolsPresentRule(CapabilityDeclarationRule):
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Compare the declared tools capability against the collected catalog."""
-        return self._evaluate(audit_data.capabilities, audit_data.tools, audit_data.listing_errors)
+        return self._evaluate(
+            audit_data.capabilities,
+            audit_data.tools,
+            audit_data.listing_errors,
+            fallback_version=audit_data.catalog_versions.get(self.feature),
+        )
 
 
 class CapabilityListChangedRule(CapabilityBaseRule):
@@ -367,7 +387,12 @@ class CapabilityPromptsPresentRule(CapabilityDeclarationRule):
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Compare the declared prompts capability against the collected catalog."""
-        return self._evaluate(audit_data.capabilities, audit_data.prompts, audit_data.listing_errors)
+        return self._evaluate(
+            audit_data.capabilities,
+            audit_data.prompts,
+            audit_data.listing_errors,
+            fallback_version=audit_data.catalog_versions.get(self.feature),
+        )
 
 
 @register_rule
@@ -455,7 +480,12 @@ class CapabilityResourcesPresentRule(CapabilityDeclarationRule):
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Compare the declared resources capability against the collected catalog."""
-        return self._evaluate(audit_data.capabilities, audit_data.resources, audit_data.listing_errors)
+        return self._evaluate(
+            audit_data.capabilities,
+            audit_data.resources,
+            audit_data.listing_errors,
+            fallback_version=audit_data.catalog_versions.get(self.feature),
+        )
 
 
 @register_rule

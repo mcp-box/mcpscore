@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A dual-era server whose legacy `tools/list` fails is now judged on the tools
+it serves over the stateless lifecycle, and local-server launch mistakes are
+explained instead of dumped as tracebacks.
+
+### Changed
+
+- When the negotiated session's `tools/list` fails but the stateless
+  2026-07-28 listing serves the catalog, the tool rules and the tool-schema
+  readiness rule judge that catalog on the revision it was served on instead
+  of skipping as insufficient-data. The capability rule still fails on the
+  legacy listing and says which lifecycle the catalog came from. The report's
+  `spec` block gains `catalog_versions`.
+- A `--stdio` command the OS cannot launch is reported as one error line, not
+  a traceback. Naming a script instead of an executable (`--stdio server.py`)
+  now shows the interpreter form to use, such as `--stdio uv run server.py`.
+- Lines a local server writes to stderr are relayed with a `server stderr:`
+  prefix so they are not read as mcpscore output.
+
 ## [1.18.0] - 2026-09-15
 
 Repair hints now cover the package checks too, and SARIF findings carry a
