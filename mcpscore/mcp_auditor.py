@@ -485,6 +485,8 @@ class MCPAuditor:
         if stateless.details.get("result_type") == "complete":
             # The failed legacy listing marked the catalog incomplete; a complete
             # modern result replaces it whole, so completeness rules may judge it.
+            # Without the mandatory resultType completeness stays unproven (the
+            # readiness_2026_result_type rule reports the omission itself).
             self.audit_data.incomplete_listings -= {"tools"}
         logger.info(
             "Legacy tools/list failed; auditing the %d tool(s) served on the %s stateless lifecycle instead",

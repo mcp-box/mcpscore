@@ -1,6 +1,10 @@
 """Unit tests for MCPClient STDIO transport error paths."""
 
+import asyncio
 import logging
+import os
+import subprocess
+import sys
 from unittest.mock import AsyncMock, patch
 
 from mcp import StdioServerParameters
@@ -357,6 +361,18 @@ class TestStdioLaunchHints:
         assert "--stdio uv run 'my server.py'" in hint
         assert "--stdio node 'a;b.js'" in stdio_launch_hint("a;b.js")
 
+    @pytest.mark.skipif(os.name == "nt", reason="exec bits and shebangs are POSIX")
+    def test_executable_script_with_bad_shebang_is_not_called_a_script_mistake(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        script = tmp_path / "srv.py"
+        script.write_text("#!/nonexistent/python\nprint('hi')\n", encoding="utf-8")
+        script.chmod(0o755)
+        with pytest.raises(FileNotFoundError):
+            subprocess.run(["./srv.py"], check=False)
+        hint = stdio_launch_hint("./srv.py")
+        assert hint.startswith("'./srv.py' is executable but could not be launched: its shebang interpreter")
+        assert "--stdio python ./srv.py" in hint
+
     def test_hint_for_plain_missing_command(self):
         assert stdio_launch_hint("no-such-binary") == (
             "Command not found: 'no-such-binary'. Please ensure it is installed and on PATH."
@@ -367,9 +383,6 @@ class TestServerStderrRelay:
     """Whatever a local server writes to stderr reaches the log with a prefix."""
 
     def test_child_stderr_lines_are_logged_with_prefix(self, caplog):
-        import subprocess
-        import sys
-
         caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
         with ServerStderrRelay() as relay:
             subprocess.run(
@@ -381,6 +394,29 @@ class TestServerStderrRelay:
         messages = [record.getMessage() for record in caplog.records]
         assert f"{SERVER_STDERR_PREFIX}boom" in messages
         assert f"{SERVER_STDERR_PREFIX}bang" in messages
+
+    async def test_teardown_waits_off_the_event_loop(self, monkeypatch):
+        """A pump that cannot drain must not stall the loop while the relay closes."""
+        monkeypatch.setattr(ServerStderrRelay, "JOIN_TIMEOUT_S", 0.3)
+        relay = ServerStderrRelay().start()
+        # A second writer keeps the pipe open, so the pump never sees EOF.
+        holder = os.dup(relay.errlog.fileno())
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        ticker = asyncio.ensure_future(tick())
+        try:
+            await relay.aclose()
+        finally:
+            ticker.cancel()
+            os.close(holder)
+        assert relay.errlog.closed
+        assert ticks >= 5
 
     async def test_transport_receives_the_relay_pipe(self):
         """The SDK gets the relay's pipe as errlog, and the pipe closes with the transport."""

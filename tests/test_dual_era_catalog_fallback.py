@@ -164,6 +164,27 @@ async def test_partial_stateless_result_keeps_the_catalog_incomplete(stateless_p
     assert "tools" in auditor.audit_data.incomplete_listings
 
 
+async def test_missing_result_type_keeps_the_catalog_incomplete(stateless_probes, monkeypatch):
+    """ResultType is mandatory on the modern lifecycle; without it completeness is unproven."""
+
+    async def run_all_probes(url: str, client: Any = None, headers: Any = None) -> dict:
+        probes = _probes({"tools": [ARRAY_ROOT_TOOL]})
+        probes[PROBE_STATELESS_LIST].details["result_type"] = None
+        return probes
+
+    monkeypatch.setattr(mcp_auditor, "run_all_probes", run_all_probes)
+    auditor = MCPAuditor()
+
+    await auditor.audit(LegacyListingFailsClient())
+
+    assert auditor.audit_data.catalog_versions == {"tools": "2026-07-28"}
+    assert "tools" in auditor.audit_data.incomplete_listings
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    assert skipped["tools_names_unique"] == SKIP_REASON_INSUFFICIENT_DATA
+    readiness = {result.rule_id: result for result in auditor.readiness_results}
+    assert not readiness["readiness_2026_result_type"].passed
+
+
 async def test_no_recovery_when_the_stateless_listing_is_unsupported(stateless_probes):
     stateless_probes(None, outcome=ProbeOutcome.UNSUPPORTED)
     auditor = MCPAuditor()

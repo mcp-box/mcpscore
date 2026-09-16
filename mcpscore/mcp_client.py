@@ -79,6 +79,12 @@ def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
         run_it = shlex.join(["--stdio", interpreter, command])
         if interpreter == "python":
             run_it += f" (inside a uv project: {shlex.join(['--stdio', 'uv', 'run', command])})"
+        if not permission_denied and os.name != "nt" and os.access(command, os.X_OK):
+            # exec of a +x script fails with ENOENT when its shebang interpreter is absent.
+            return (
+                f"'{command}' is executable but could not be launched: its shebang interpreter is missing "
+                f"or wrong. Fix the shebang, or launch it with its interpreter: {run_it}"
+            )
         if permission_denied or Path(command).is_file():
             return f"'{command}' is a script, not an executable command. Launch it with its interpreter: {run_it}"
         return f"Server script not found: '{command}'. Check the path, then launch it with its interpreter: {run_it}"
@@ -99,19 +105,35 @@ class ServerStderrRelay:
     this side; the thread ends once the server's side closes.
     """
 
+    JOIN_TIMEOUT_S: float = 2.0
+    """How long to wait for the pump to drain after the server's side of the pipe closes."""
+
     def __init__(self) -> None:
         super().__init__()
         read_fd, write_fd = os.pipe()
         self.errlog = os.fdopen(write_fd, "w", encoding="utf-8")
         self._reader = threading.Thread(target=self._pump, args=(read_fd,), name="mcpscore-server-stderr", daemon=True)
 
-    def __enter__(self) -> Self:
+    def start(self) -> Self:
+        """Begin pumping; the pipe's write end is ready to hand to the server process."""
         self._reader.start()
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
+    def close(self) -> None:
+        """Close this side of the pipe and wait for the pump to drain (blocking)."""
         self.errlog.close()
-        self._reader.join(timeout=2.0)
+        self._reader.join(timeout=self.JOIN_TIMEOUT_S)
+
+    async def aclose(self) -> None:
+        """Close like ``close`` but wait off the event loop, so a slow drain never stalls it."""
+        self.errlog.close()
+        await asyncio.to_thread(self._reader.join, self.JOIN_TIMEOUT_S)
+
+    def __enter__(self) -> Self:
+        return self.start()
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     @staticmethod
     def _pump(read_fd: int) -> None:
@@ -123,9 +145,12 @@ class ServerStderrRelay:
 @asynccontextmanager
 async def relayed_stdio_client(server_params: StdioServerParameters):
     """Open the SDK stdio transport with the server's stderr relayed into the log."""
-    with ServerStderrRelay() as relay:
+    relay = ServerStderrRelay().start()
+    try:
         async with stdio_client(server_params, errlog=relay.errlog) as streams:
             yield streams
+    finally:
+        await relay.aclose()
 
 
 @dataclass(frozen=True)
