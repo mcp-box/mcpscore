@@ -224,3 +224,48 @@ class TestListChangedAdvisoryScope:
 
         assert rule.skip_reason(data) is None
         assert not rule.check(data).passed
+
+
+def test_declared_and_served_by_stateless_fallback_still_fails(capabilities_full):
+    """A catalog recovered from the modern lifecycle does not excuse the failed session listing."""
+    for rule_cls, feature in DECLARATION_RULES:
+        audit_data = AuditData(
+            capabilities=capabilities_full,
+            listing_errors={feature: {"outcome": "rpc_error", "page_index": 0, "error_code": -32603}},
+            catalog_versions={feature: "2026-07-28"},
+            **{feature: [object(), object()]},
+        )
+        result = rule_cls().check(audit_data)
+        assert not result.passed, feature
+        assert "returned JSON-RPC error -32603" in result.message
+        assert f"The 2 {feature} were collected on the 2026-07-28 stateless lifecycle instead" in result.message
+        details = result.details or {}
+        assert details["served"] is True
+        assert details["catalog_version"] == "2026-07-28"
+        assert details["collection_error"]["error_code"] == -32603
+
+
+def test_partial_session_listing_recovered_from_stateless_passes_with_a_note(capabilities_full):
+    """The negotiated session served page one, so the capability promise held; the note says the rest."""
+    for rule_cls, feature in DECLARATION_RULES:
+        audit_data = AuditData(
+            capabilities=capabilities_full,
+            listing_errors={feature: {"outcome": "rpc_error", "page_index": 1, "error_code": -32602}},
+            catalog_versions={feature: "2026-07-28"},
+            **{feature: [object(), object(), object()]},
+        )
+        result = rule_cls().check(audit_data)
+        assert result.passed, feature
+        assert "served part of the catalog" in result.message
+        assert f"the 3 {feature} judged come from the 2026-07-28 stateless listing" in result.message
+        assert "serves 3 via" not in result.message
+        details = result.details or {}
+        assert details["catalog_version"] == "2026-07-28"
+        assert details["collection_error"]["page_index"] == 1
+
+
+def test_declared_and_served_by_session_has_no_catalog_version(capabilities_full):
+    for rule_cls, feature in DECLARATION_RULES:
+        result = rule_cls().check(_audit_data(capabilities_full, feature, [object()]))
+        assert result.passed, feature
+        assert "catalog_version" not in (result.details or {})

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A dual-era server whose legacy `tools/list` fails is now judged on the tools
+it serves over the stateless lifecycle, and local-server launch mistakes are
+explained instead of dumped as tracebacks.
+
+### Changed
+
+- When the negotiated session's `tools/list` fails, or breaks off after the
+  first page, but the stateless 2026-07-28 listing serves the catalog whole,
+  the tool rules and the tool-schema readiness rule judge that catalog on the
+  revision it was served on instead of skipping as insufficient-data. The
+  capability rule still fails when the legacy listing served nothing, passes
+  with a note when it served part of the catalog, and says which lifecycle
+  the catalog came from either way. The report's `spec` block gains
+  `catalog_versions`.
+- A `--stdio` command the OS cannot launch is explained in one line instead
+  of a traceback, ahead of the usual connection-failure line. Naming a script
+  instead of an executable (`--stdio server.py`) now shows the interpreter
+  form to use, such as `--stdio uv run server.py`; an executable script with
+  no shebang, or whose shebang interpreter is missing, is reported as that.
+- `--smoke` does not run when the audited tools catalog was recovered from the
+  stateless lifecycle: smoke calls go to the negotiated session, which did not
+  serve those tools, and the report says so.
+- Lines the audited server process writes to stderr are relayed with a
+  `server stderr:` prefix so they are not read as mcpscore output. The
+  sessionless probe launches of the same server stay silent.
+- A rule that needs both a catalog recovered from the stateless lifecycle and
+  a field from the legacy handshake skips as insufficient-data rather than
+  comparing evidence from two lifecycles.
+
 ## [1.18.0] - 2026-09-15
 
 Repair hints now cover the package checks too, and SARIF findings carry a

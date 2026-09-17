@@ -182,6 +182,7 @@ class MCPAuditor:
                 await self._collect_prompts()
         await self._collect_probes()
         await self._collect_session_cursor_probes()
+        self._recover_tools_from_stateless_probe()
         self.era = detect_era(self.audit_data.protocol_version, self.audit_data.probes)
         self._run_all_rules()
 
@@ -381,7 +382,7 @@ class MCPAuditor:
         ``initialize`` shape are common in the wild and reading it costs
         nothing.
         """
-        from mcp_types import Implementation, ServerCapabilities, Tool
+        from mcp_types import Implementation, ServerCapabilities
 
         probes = self.audit_data.probes or {}
 
@@ -412,40 +413,95 @@ class MCPAuditor:
             if stateless.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
                 self.audit_data.listings_attempted |= {"tools"}
             if stateless.payload is not None:
-                raw_tools = stateless.payload.get("tools")
-                if isinstance(raw_tools, list):
-                    # Retain the all-or-nothing catalog semantics while keeping
-                    # the failing item's catalog index in sanitized diagnostics.
-                    parsed_tools = []
-                    for index, raw_tool in enumerate(raw_tools):
-                        try:
-                            parsed_tools.append(Tool.model_validate(raw_tool))
-                        except ValidationError as error:
-                            self.audit_data.listing_errors["tools"] = {
-                                "page_index": 0,
-                                **validation_diagnostics(error, prefix=("tools", index)),
-                            }
-                            logger.info("Invalid tools catalog response from the stateless probe")
-                            break
-                    else:
-                        self.audit_data.tools = parsed_tools
-                else:
-                    # The probe outcome remains unsupported. Retain only the
-                    # field's shape, never the malformed catalog's raw value.
-                    missing = "tools" not in stateless.payload
-                    self.audit_data.listing_errors["tools"] = {
-                        "outcome": "invalid_response",
-                        "page_index": 0,
-                        "issues": [
-                            {
-                                "path": "/tools",
-                                "reason": "missing" if missing else "list_type",
-                                "expected": "a required array" if missing else "an array",
-                            }
-                        ],
-                        "issues_total": 1,
-                        "issues_omitted": 0,
+                self.audit_data.tools = self._tools_from_stateless_payload(stateless.payload)
+
+    def _tools_from_stateless_payload(self, payload: dict) -> "list[Tool] | None":
+        """Parse the stateless ``tools/list`` payload into a catalog, or None.
+
+        A malformed payload records a sanitized listing error unless one is
+        already recorded: the legacy listing's failure stays the primary
+        diagnostic when this payload is the fallback for it.
+        """
+        from mcp_types import Tool
+
+        raw_tools = payload.get("tools")
+        if isinstance(raw_tools, list):
+            # Retain the all-or-nothing catalog semantics while keeping
+            # the failing item's catalog index in sanitized diagnostics.
+            parsed_tools = []
+            for index, raw_tool in enumerate(raw_tools):
+                try:
+                    parsed_tools.append(Tool.model_validate(raw_tool))
+                except ValidationError as error:
+                    self.audit_data.listing_errors.setdefault(
+                        "tools",
+                        {"page_index": 0, **validation_diagnostics(error, prefix=("tools", index))},
+                    )
+                    logger.info("Invalid tools catalog response from the stateless probe")
+                    return None
+            return parsed_tools
+        # The probe outcome remains unsupported. Retain only the
+        # field's shape, never the malformed catalog's raw value.
+        missing = "tools" not in payload
+        self.audit_data.listing_errors.setdefault(
+            "tools",
+            {
+                "outcome": "invalid_response",
+                "page_index": 0,
+                "issues": [
+                    {
+                        "path": "/tools",
+                        "reason": "missing" if missing else "list_type",
+                        "expected": "a required array" if missing else "an array",
                     }
+                ],
+                "issues_total": 1,
+                "issues_omitted": 0,
+            },
+        )
+        return None
+
+    def _recover_tools_from_stateless_probe(self) -> None:
+        """Audit the modern tools catalog when the legacy session listing failed or broke off.
+
+        A dual-era server may serve ``tools/list`` on the stateless lifecycle
+        and refuse it on the negotiated legacy session (a tool with an output
+        schema the older revision forbids does exactly that), or serve it only
+        up to a broken page. The tools rules then judge the catalog the server
+        does serve whole, on the revision it was served on; the legacy failure
+        stays in ``listing_errors`` for the capability rule, which still fails
+        when the negotiated session served nothing at all.
+        """
+        if "tools" not in self.audit_data.listings_attempted:
+            return
+        legacy_partial = self.audit_data.tools is not None
+        if legacy_partial and "tools" not in self.audit_data.incomplete_listings:
+            return
+        stateless = (self.audit_data.probes or {}).get(PROBE_STATELESS_LIST)
+        if stateless is None or stateless.outcome is not ProbeOutcome.SUPPORTED or stateless.payload is None:
+            return
+        # Without the mandatory resultType completeness stays unproven (the
+        # readiness_2026_result_type rule reports the omission itself); an
+        # incomplete session catalog is only ever replaced by a complete one.
+        complete = stateless.details.get("result_type") == "complete"
+        if legacy_partial and not complete:
+            return
+        tools = self._tools_from_stateless_payload(stateless.payload)
+        if tools is None:
+            return
+        version = (DRAFT or LATEST).version
+        self.audit_data.tools = tools
+        self.audit_data.catalog_versions["tools"] = version
+        if complete:
+            # The legacy listing marked the catalog incomplete; a complete
+            # modern result replaces it whole, so completeness rules may judge it.
+            self.audit_data.incomplete_listings -= {"tools"}
+        logger.info(
+            "Legacy tools/list %s; auditing the %d tool(s) served on the %s stateless lifecycle instead",
+            "was incomplete" if legacy_partial else "failed",
+            len(tools),
+            version,
+        )
 
     @staticmethod
     def _parse_payload_model(model: type, value: object):
@@ -471,11 +527,43 @@ class MCPAuditor:
         """
         if not self.audit_data.partial:
             return False
-        requires = getattr(rule.check, "_requires", None)
-        names: tuple[str, ...] = (requires,) if isinstance(requires, str) else tuple(requires or ())
+        names = self._required_fields(rule)
         if not names or "full_data" in names:
             return False
         return all(getattr(self.audit_data, name, None) is None for name in names)
+
+    @staticmethod
+    def _required_fields(rule: BaseRule) -> tuple[str, ...]:
+        """Return the AuditData field names a rule's ``check`` declared via ``@requires_*``."""
+        requires = getattr(rule.check, "_requires", None)
+        return (requires,) if isinstance(requires, str) else tuple(requires or ())
+
+    def _evidence_spans_lifecycles(self, rule: BaseRule) -> bool:
+        """Whether a rule would compare a recovered catalog with session-only evidence.
+
+        A catalog recovered from the stateless lifecycle and the fields the
+        legacy ``initialize`` returned describe two lifecycles the server may
+        configure differently, so a rule needing both cannot judge either.
+        """
+        names = set(self._required_fields(rule))
+        recovered = {name for name in names if name in self.audit_data.catalog_versions}
+        return bool(recovered) and bool(names - recovered)
+
+    def _applicability_version(self, rule: BaseRule) -> str | None:
+        """Return the protocol revision a rule's evidence was observed on.
+
+        Modern probe evidence is judged on the latest revision. A catalog
+        recovered from the stateless lifecycle is judged on the revision it
+        was served on, not the session's — a rule scoped to the older
+        revision must not fail a shape the newer one allows. Everything else
+        is judged on the negotiated version.
+        """
+        if rule.uses_modern_probe_evidence and self.era in (Era.MODERN, Era.DUAL):
+            return LATEST.version
+        for name in self._required_fields(rule):
+            if name in self.audit_data.catalog_versions:
+                return self.audit_data.catalog_versions[name]
+        return self.audit_data.protocol_version
 
     def _rules_for_target(self) -> list[BaseRule]:
         """Return the rules that apply to the kind of target this run audited.
@@ -529,14 +617,9 @@ class MCPAuditor:
                 )
 
             skip_reason: str | None = None
-            applicability_version = (
-                LATEST.version
-                if rule.uses_modern_probe_evidence and self.era in (Era.MODERN, Era.DUAL)
-                else self.audit_data.protocol_version
-            )
-            if not rule.applies_to(applicability_version):
+            if not rule.applies_to(self._applicability_version(rule)):
                 skip_reason = SKIP_REASON_NOT_APPLICABLE
-            elif self._skipped_for_partial(rule):
+            elif self._skipped_for_partial(rule) or self._evidence_spans_lifecycles(rule):
                 skip_reason = SKIP_REASON_INSUFFICIENT_DATA
             else:
                 skip_reason = rule.skip_reason(self.audit_data)
@@ -969,6 +1052,10 @@ class MCPAuditor:
                 "latest_version": LATEST.version,
                 "readiness_target": (DRAFT or LATEST).version,
                 "era": self.era.value if self.era is not None else None,
+                # Catalogs judged on a revision other than the negotiated one
+                # (recovered from the stateless lifecycle after the legacy
+                # listing failed), keyed by listing name.
+                "catalog_versions": dict(self.audit_data.catalog_versions),
             },
             "readiness": {
                 "score": self.readiness_score,

@@ -51,6 +51,9 @@ mcpscore path/to/server.js
 # so put every mcpscore option before it
 mcpscore --stdio ./my-go-server
 mcpscore --stdio java -jar server.jar
+# A Python server in its own project environment (a bare `server.py` target
+# runs under mcpscore's interpreter instead):
+mcpscore --stdio uv run server.py
 
 # Pass config to the server with --env; for secrets use the value-less form,
 # which copies from your environment and keeps the value out of the report
@@ -200,6 +203,15 @@ Details: [score badge](https://docs.mcpscore.dev/badge).
 
 - Cause: the path does not exist relative to where you ran the command.
 - Fix: check the path. For non-Python, non-Node servers use `--stdio <command>`.
+
+**`'server.py' is a script, not an executable command`** (exit `2`)
+
+- Cause: `--stdio` executes a program, and a bare script name is looked up on
+  `PATH` like any other command.
+- Fix: name the interpreter: `--stdio uv run server.py` or
+  `--stdio python server.py`. Lines the audited server process writes to
+  stderr appear in the output prefixed with `server stderr:`; the extra
+  launches the sessionless probes make are silent.
 
 **A local server starts and then the audit hangs or exits `2`**
 

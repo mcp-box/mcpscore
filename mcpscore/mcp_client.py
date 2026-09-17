@@ -1,12 +1,17 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
+import errno
 import logging
+import os
+from pathlib import Path
 import shlex
+import subprocess
 import sys
+import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
 
 import anyio
@@ -56,6 +61,157 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ERROR_NO_ACTIVE_SESSION = "No active session, connect to the MCP server first!"
+
+
+SERVER_STDERR_PREFIX = "server stderr: "
+"""Marks each line a local server writes to stderr, so it is not mistaken for mcpscore output."""
+
+SERVER_STDERR_LINE_LIMIT = 8192
+"""Longest stderr line relayed in one piece; longer output is split so the relay stays bounded."""
+
+_SCRIPT_INTERPRETERS: Mapping[str, str] = {".py": "python", ".js": "node"}
+"""Interpreter to suggest when a --stdio command names a script instead of an executable."""
+
+
+_WINDOWS = os.name == "nt"
+"""Platform switch for launch hints, held here so tests can flip it without touching ``os``."""
+
+
+_CMD_METACHARACTERS = frozenset("&^()%!")
+"""cmd.exe characters that are legal in a Windows path and need double quotes to paste literally."""
+
+
+def _paste_quote_windows(part: str) -> str:
+    """Quote one argument for pasting into cmd.exe or PowerShell.
+
+    ``list2cmdline`` covers what ``CreateProcess`` needs (whitespace, quotes);
+    cmd.exe additionally interprets its metacharacters unless the argument is
+    double-quoted. The other shell characters cannot appear in a Windows path.
+    """
+    quoted = subprocess.list2cmdline([part])
+    if quoted.startswith('"') or not (_CMD_METACHARACTERS & set(part)):
+        return quoted
+    return f'"{quoted}"'
+
+
+def _paste_ready(parts: list[str]) -> str:
+    """Render a command line the user can paste into their own shell.
+
+    ``shlex.join`` quotes for POSIX shells; ``cmd.exe`` keeps single quotes
+    literally, so Windows gets double-quoted arguments instead.
+    """
+    if _WINDOWS:
+        return " ".join(_paste_quote_windows(part) for part in parts)
+    return shlex.join(parts)
+
+
+def is_exec_format_error(error: OSError) -> bool:
+    """Whether the OS refused to execute the file's format (no shebang, wrong binary)."""
+    return error.errno == errno.ENOEXEC or getattr(error, "winerror", None) == _WINDOWS_BAD_EXE_FORMAT
+
+
+_WINDOWS_BAD_EXE_FORMAT = 193
+"""ERROR_BAD_EXE_FORMAT: Windows' answer to running a file that is not an executable."""
+
+
+def stdio_launch_hint(command: str, *, permission_denied: bool = False, exec_format: bool = False) -> str:
+    """Explain why the OS could not launch a --stdio command, with the fix.
+
+    A script name is the common mistake: the OS looks it up on PATH as an
+    executable, so the message shows the interpreter form instead.
+    """
+    interpreter = _SCRIPT_INTERPRETERS.get(Path(command).suffix.lower())
+    if interpreter is not None:
+        run_it = _paste_ready(["--stdio", interpreter, command])
+        if interpreter == "python":
+            run_it += f" (inside a uv project: {_paste_ready(['--stdio', 'uv', 'run', command])})"
+        if exec_format:
+            return (
+                f"'{command}' is executable but has no usable shebang, so the OS cannot run it directly. "
+                f"Add one, or launch it with its interpreter: {run_it}"
+            )
+        names_a_path = os.sep in command or (os.altsep is not None and os.altsep in command)
+        if not permission_denied and names_a_path and not _WINDOWS and os.access(command, os.X_OK):
+            # exec of a +x script fails with ENOENT when its shebang interpreter is absent.
+            # A bare name is looked up on PATH instead, so the file in the current
+            # directory says nothing about why the launch failed.
+            return (
+                f"'{command}' is executable but could not be launched: its shebang interpreter is missing "
+                f"or wrong. Fix the shebang, or launch it with its interpreter: {run_it}"
+            )
+        if permission_denied or Path(command).is_file():
+            return f"'{command}' is a script, not an executable command. Launch it with its interpreter: {run_it}"
+        return f"Server script not found: '{command}'. Check the path, then launch it with its interpreter: {run_it}"
+    if exec_format:
+        return (
+            f"'{command}' is not an executable this system can run (exec format error). "
+            "Build it for this platform, or launch it with its interpreter: --stdio <interpreter> <file>"
+        )
+    if permission_denied:
+        return (
+            f"Permission denied launching '{command}'. Make it executable (chmod +x) "
+            "or launch it with its interpreter: --stdio <interpreter> <file>"
+        )
+    return f"Command not found: '{command}'. Please ensure it is installed and on PATH."
+
+
+class ServerStderrRelay:
+    """Forward a local server's stderr into the log, one prefixed line at a time.
+
+    The SDK passes ``errlog`` to the subprocess, which needs a real file
+    descriptor, so the relay owns a pipe: the server writes to it and a
+    daemon thread reads it back into the logger. Leaving the context closes
+    this side; the thread ends once the server's side closes.
+    """
+
+    JOIN_TIMEOUT_S: float = 2.0
+    """How long to wait for the pump to drain after the server's side of the pipe closes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        read_fd, write_fd = os.pipe()
+        self.errlog = os.fdopen(write_fd, "w", encoding="utf-8")
+        self._reader = threading.Thread(target=self._pump, args=(read_fd,), name="mcpscore-server-stderr", daemon=True)
+
+    def start(self) -> Self:
+        """Begin pumping; the pipe's write end is ready to hand to the server process."""
+        self._reader.start()
+        return self
+
+    def close(self) -> None:
+        """Close this side of the pipe and wait for the pump to drain (blocking)."""
+        self.errlog.close()
+        self._reader.join(timeout=self.JOIN_TIMEOUT_S)
+
+    async def aclose(self) -> None:
+        """Close like ``close`` but wait off the event loop, so a slow drain never stalls it."""
+        self.errlog.close()
+        await asyncio.to_thread(self._reader.join, self.JOIN_TIMEOUT_S)
+
+    def __enter__(self) -> Self:
+        return self.start()
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    @staticmethod
+    def _pump(read_fd: int) -> None:
+        # Bounded reads: a server that never writes a newline must not grow
+        # this process; a long line is relayed in pieces instead.
+        with os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as stream:
+            while chunk := stream.readline(SERVER_STDERR_LINE_LIMIT):
+                logger.info("%s%s", SERVER_STDERR_PREFIX, chunk.rstrip("\r\n"))
+
+
+@asynccontextmanager
+async def relayed_stdio_client(server_params: StdioServerParameters):
+    """Open the SDK stdio transport with the server's stderr relayed into the log."""
+    relay = ServerStderrRelay().start()
+    try:
+        async with stdio_client(server_params, errlog=relay.errlog) as streams:
+            yield streams
+    finally:
+        await relay.aclose()
 
 
 @dataclass(frozen=True)
@@ -662,10 +818,20 @@ class MCPClient:
         """
         env = {**get_default_environment(), **command.env} if command.env else None
         server_params = StdioServerParameters(command=command.command, args=list(command.args), env=env)
-        missing_hint = f"Command not found: '{command.command}'. Please ensure it is installed and on PATH."
-        return await self._launch_stdio(server_params, display=command.display, missing_hint=missing_hint)
+        return await self._launch_stdio(
+            server_params,
+            display=command.display,
+            missing_hint=stdio_launch_hint(command.command),
+            permission_hint=stdio_launch_hint(command.command, permission_denied=True),
+        )
 
-    async def _launch_stdio(self, server_params: StdioServerParameters, display: str, missing_hint: str) -> bool:
+    async def _launch_stdio(
+        self,
+        server_params: StdioServerParameters,
+        display: str,
+        missing_hint: str,
+        permission_hint: str | None = None,
+    ) -> bool:
         """Start a stdio server process and perform the MCP handshake.
 
         Args:
@@ -674,6 +840,8 @@ class MCPClient:
                 joined command line).
             missing_hint: Message logged when the launcher executable is not
                 found on PATH.
+            permission_hint: Message logged when the OS refuses to execute
+                the command; defaults to naming the target.
 
         Returns:
             True if a connection was successful, False otherwise
@@ -684,15 +852,17 @@ class MCPClient:
         # needs these same parameters to retry with stateless probes.
         self.stdio_params = server_params
         try:
-            await self._establish_session(stdio_client(server_params), MCPTransportType.STDIO, url=None)
+            await self._establish_session(relayed_stdio_client(server_params), MCPTransportType.STDIO, url=None)
             return True
         except FileNotFoundError as e:
-            logger.exception(missing_hint)
+            # A launch that never happened is a usage problem, not a fault:
+            # the hint is the whole diagnosis, the traceback would only bury it.
+            logger.error(missing_hint)  # noqa: TRY400
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except PermissionError as e:
-            logger.exception("Permission denied launching server: %s", display)
+            logger.error(permission_hint or f"Permission denied launching server: {display}")  # noqa: TRY400
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
@@ -705,15 +875,28 @@ class MCPClient:
             logger.error("MCP initialize handshake failed for server: %s", display)  # noqa: TRY400
             self._record_failure(ConnectionErrorReason.NOT_MCP)
             return False
-        except Exception as e:
-            # A modern-only server is expected to reject the legacy
-            # initialize request. Keep the exception at debug level until the
-            # caller has had a chance to distinguish that from a broken
-            # process with stateless probes.
-            logger.info("Legacy MCP initialize handshake failed for server: %s", display)
-            logger.debug("Handshake error details", exc_info=True)
-            self._record_unclassified_failure(e)
+        except OSError as e:
+            if not is_exec_format_error(e):
+                self._legacy_handshake_failed(e, display)
+                return False
+            logger.error(stdio_launch_hint(server_params.command, exec_format=True))  # noqa: TRY400
+            logger.debug("Error details: %s", e)
+            self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
+        except Exception as e:  # noqa: BLE001 — classified later by the caller's stateless probes
+            self._legacy_handshake_failed(e, display)
+            return False
+
+    def _legacy_handshake_failed(self, error: Exception, display: str) -> None:
+        """Record a legacy handshake failure without deciding yet whether it is a fault.
+
+        A modern-only server is expected to reject the legacy initialize
+        request. Keep the exception at debug level until the caller has had a
+        chance to distinguish that from a broken process with stateless probes.
+        """
+        logger.info("Legacy MCP initialize handshake failed for server: %s", display)
+        logger.debug("Handshake error details", exc_info=error)
+        self._record_unclassified_failure(error)
 
     async def _connect_with_streamable_http(self, server_url: str) -> bool:
         """Establish HTTP connection to MCP server using streamable HTTP transport.

@@ -89,7 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="COMMAND",
         help=(
             "Launch a local MCP server as an arbitrary stdio command — any language: "
-            "--stdio ./server, --stdio java -jar server.jar, --stdio dotnet run --project ./srv. "
+            "--stdio ./server, --stdio java -jar server.jar, --stdio dotnet run --project ./srv, "
+            "--stdio uv run server.py (a Python server in its own project environment). "
+            "The command is a program to execute, so a bare script name needs its interpreter. "
             "Consumes the REST of the command line (the server's own flags included), so put "
             "every mcpscore option before it. Replaces the positional target. The command runs "
             "directly (no shell). Never pass secrets as arguments — the command line appears as "
@@ -777,6 +779,15 @@ async def run_smoke_phase(args: argparse.Namespace, client: MCPClient, auditor: 
     """
     if client.session is None:  # pragma: no cover — audit() succeeded, so a session exists
         return SmokeReport.not_executed("no active session to call tools on")
+    catalog_version = auditor.audit_data.catalog_versions.get("tools")
+    if catalog_version is not None:
+        # Smoke calls run on the negotiated session, but that session did not
+        # serve this catalog: its tools and annotations were observed on the
+        # stateless lifecycle, so a call here could hit an unannotated tool.
+        return SmokeReport.not_executed(
+            f"the negotiated session did not serve the tools catalog; the audited tools come from the "
+            f"{catalog_version} stateless lifecycle and smoke calls would run on the session"
+        )
     logger.info("")
     logger.info("Running smoke checks — invoking tools/call, as requested with --smoke...")
     return await run_smoke_checks(
