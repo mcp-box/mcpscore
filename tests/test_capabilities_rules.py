@@ -245,6 +245,24 @@ def test_declared_and_served_by_stateless_fallback_still_fails(capabilities_full
         assert details["collection_error"]["error_code"] == -32603
 
 
+def test_partial_session_listing_recovered_from_stateless_passes_with_a_note(capabilities_full):
+    """The negotiated session served page one, so the capability promise held; the note says the rest."""
+    for rule_cls, feature in DECLARATION_RULES:
+        audit_data = AuditData(
+            capabilities=capabilities_full,
+            listing_errors={feature: {"outcome": "rpc_error", "page_index": 1, "error_code": -32602}},
+            catalog_versions={feature: "2026-07-28"},
+            **{feature: [object(), object(), object()]},
+        )
+        result = rule_cls().check(audit_data)
+        assert result.passed, feature
+        assert "serves 3 via" in result.message
+        assert "collected whole on the 2026-07-28 stateless lifecycle" in result.message
+        details = result.details or {}
+        assert details["catalog_version"] == "2026-07-28"
+        assert details["collection_error"]["page_index"] == 1
+
+
 def test_declared_and_served_by_session_has_no_catalog_version(capabilities_full):
     for rule_cls, feature in DECLARATION_RULES:
         result = rule_cls().check(_audit_data(capabilities_full, feature, [object()]))

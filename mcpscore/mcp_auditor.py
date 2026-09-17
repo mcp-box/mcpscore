@@ -462,19 +462,29 @@ class MCPAuditor:
         return None
 
     def _recover_tools_from_stateless_probe(self) -> None:
-        """Audit the modern tools catalog when the legacy session listing failed.
+        """Audit the modern tools catalog when the legacy session listing failed or broke off.
 
         A dual-era server may serve ``tools/list`` on the stateless lifecycle
         and refuse it on the negotiated legacy session (a tool with an output
-        schema the older revision forbids does exactly that). The tools rules
-        then judge the catalog the server does serve, on the revision it was
-        served on; the legacy failure stays in ``listing_errors`` and still
-        fails the capability rule.
+        schema the older revision forbids does exactly that), or serve it only
+        up to a broken page. The tools rules then judge the catalog the server
+        does serve whole, on the revision it was served on; the legacy failure
+        stays in ``listing_errors`` for the capability rule, which still fails
+        when the negotiated session served nothing at all.
         """
-        if self.audit_data.tools is not None or "tools" not in self.audit_data.listings_attempted:
+        if "tools" not in self.audit_data.listings_attempted:
+            return
+        legacy_partial = self.audit_data.tools is not None
+        if legacy_partial and "tools" not in self.audit_data.incomplete_listings:
             return
         stateless = (self.audit_data.probes or {}).get(PROBE_STATELESS_LIST)
         if stateless is None or stateless.outcome is not ProbeOutcome.SUPPORTED or stateless.payload is None:
+            return
+        # Without the mandatory resultType completeness stays unproven (the
+        # readiness_2026_result_type rule reports the omission itself); an
+        # incomplete session catalog is only ever replaced by a complete one.
+        complete = stateless.details.get("result_type") == "complete"
+        if legacy_partial and not complete:
             return
         tools = self._tools_from_stateless_payload(stateless.payload)
         if tools is None:
@@ -482,14 +492,13 @@ class MCPAuditor:
         version = (DRAFT or LATEST).version
         self.audit_data.tools = tools
         self.audit_data.catalog_versions["tools"] = version
-        if stateless.details.get("result_type") == "complete":
-            # The failed legacy listing marked the catalog incomplete; a complete
+        if complete:
+            # The legacy listing marked the catalog incomplete; a complete
             # modern result replaces it whole, so completeness rules may judge it.
-            # Without the mandatory resultType completeness stays unproven (the
-            # readiness_2026_result_type rule reports the omission itself).
             self.audit_data.incomplete_listings -= {"tools"}
         logger.info(
-            "Legacy tools/list failed; auditing the %d tool(s) served on the %s stateless lifecycle instead",
+            "Legacy tools/list %s; auditing the %d tool(s) served on the %s stateless lifecycle instead",
+            "was incomplete" if legacy_partial else "failed",
             len(tools),
             version,
         )

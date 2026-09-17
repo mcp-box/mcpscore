@@ -13,12 +13,14 @@ explained instead of dumped as tracebacks.
 
 ### Changed
 
-- When the negotiated session's `tools/list` fails but the stateless
-  2026-07-28 listing serves the catalog, the tool rules and the tool-schema
-  readiness rule judge that catalog on the revision it was served on instead
-  of skipping as insufficient-data. The capability rule still fails on the
-  legacy listing and says which lifecycle the catalog came from. The report's
-  `spec` block gains `catalog_versions`.
+- When the negotiated session's `tools/list` fails, or breaks off after the
+  first page, but the stateless 2026-07-28 listing serves the catalog whole,
+  the tool rules and the tool-schema readiness rule judge that catalog on the
+  revision it was served on instead of skipping as insufficient-data. The
+  capability rule still fails when the legacy listing served nothing, passes
+  with a note when it served part of the catalog, and says which lifecycle
+  the catalog came from either way. The report's `spec` block gains
+  `catalog_versions`.
 - A `--stdio` command the OS cannot launch is explained in one line instead
   of a traceback, ahead of the usual connection-failure line. Naming a script
   instead of an executable (`--stdio server.py`) now shows the interpreter

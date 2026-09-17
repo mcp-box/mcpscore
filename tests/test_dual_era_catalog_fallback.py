@@ -51,10 +51,16 @@ ARRAY_ROOT_TOOL = {
 }
 
 
+PARTIAL_LEGACY_ERROR = {"outcome": "rpc_error", "page_index": 1, "error_code": -32602}
+"""The second page of the session listing failed; page one was served."""
+
+SESSION_TOOL = {"name": "echo", "description": "Echo", "inputSchema": {"type": "object"}}
+
+
 class LegacyListingFailsClient(MCPClient):
     """A connected client whose session tools/list answered with a JSON-RPC error."""
 
-    def __init__(self, tools: list[Any] | None = None) -> None:
+    def __init__(self, tools: list[Any] | None = None, *, partial: bool = False) -> None:
         super().__init__()
         self._tools = tools
         self.url = URL
@@ -62,6 +68,9 @@ class LegacyListingFailsClient(MCPClient):
         self.connection_time_ms = 10
         if tools is None:
             self.listing_errors["tools"] = dict(LEGACY_ERROR)
+            self.incomplete_listings.add("tools")
+        elif partial:
+            self.listing_errors["tools"] = dict(PARTIAL_LEGACY_ERROR)
             self.incomplete_listings.add("tools")
 
     async def initialize(self):
@@ -132,6 +141,48 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
     report = auditor.get_audit_report()
     assert report["spec"]["catalog_versions"] == {"tools": "2026-07-28"}
     assert report["listing_errors"]["tools"] == LEGACY_ERROR
+
+
+async def test_incomplete_session_catalog_is_replaced_by_a_complete_modern_one(stateless_probes):
+    """Page two of the legacy listing failed; the stateless listing serves the whole catalog."""
+    from mcp_types import Tool
+
+    stateless_probes({"resultType": "complete", "tools": [ARRAY_ROOT_TOOL, SESSION_TOOL]})
+    auditor = MCPAuditor()
+
+    await auditor.audit(LegacyListingFailsClient(tools=[Tool.model_validate(SESSION_TOOL)], partial=True))
+
+    data = auditor.audit_data
+    assert [tool.name for tool in data.tools or []] == ["get_alerts", "echo"]
+    assert data.catalog_versions == {"tools": "2026-07-28"}
+    assert "tools" not in data.incomplete_listings
+    assert data.listing_errors["tools"] == PARTIAL_LEGACY_ERROR
+    results = {result.rule_id: result for result in auditor.results}
+    assert "tools_names_unique" in results
+    capability = results[CapabilityToolsPresentRule.rule_id]
+    assert capability.passed
+    assert "serves 2 via tools/list" in capability.message
+    assert "listing was incomplete" in capability.message
+    assert capability.details["collection_error"] == PARTIAL_LEGACY_ERROR
+    assert capability.details["catalog_version"] == "2026-07-28"
+
+
+async def test_incomplete_session_catalog_is_kept_when_the_modern_one_is_not_complete(stateless_probes, monkeypatch):
+    from mcp_types import Tool
+
+    async def run_all_probes(url: str, client: Any = None, headers: Any = None) -> dict:
+        probes = _probes({"resultType": "partial", "tools": [ARRAY_ROOT_TOOL, SESSION_TOOL]})
+        probes[PROBE_STATELESS_LIST].details["result_type"] = "partial"
+        return probes
+
+    monkeypatch.setattr(mcp_auditor, "run_all_probes", run_all_probes)
+    auditor = MCPAuditor()
+
+    await auditor.audit(LegacyListingFailsClient(tools=[Tool.model_validate(SESSION_TOOL)], partial=True))
+
+    assert [tool.name for tool in auditor.audit_data.tools or []] == ["echo"]
+    assert auditor.audit_data.catalog_versions == {}
+    assert "tools" in auditor.audit_data.incomplete_listings
 
 
 async def test_session_catalog_wins_when_the_legacy_listing_works(stateless_probes):

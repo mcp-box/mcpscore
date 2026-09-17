@@ -149,17 +149,25 @@ class CapabilityDeclarationRule(BaseRule):
         """Compare the declared capability against what the server served.
 
         ``fallback_version`` is the revision the catalog was recovered on after
-        the session listing failed: the items were judged, but this rule still
-        fails on the listing the negotiated session could not serve.
+        the session listing failed or broke off. The items were judged either
+        way; this rule still fails when the negotiated session served nothing
+        (the recorded error is on the first page), and passes with a note when
+        it served part of the catalog.
         """
         collection_error = (listing_errors or {}).get(self.feature, {})
         suggested_fix = None
         declared = getattr(capabilities, self.feature, None) is not None if capabilities is not None else False
         served = items is not None
+        session_served_nothing = fallback_version is not None and collection_error.get("page_index") == 0
 
-        if declared and served and fallback_version is None:
+        if declared and served and not session_served_nothing:
             passed = True
             message = f"✅ Declares the {self.feature} capability and serves {len(items or [])} via {self.method}"
+            if fallback_version is not None:
+                message += (
+                    f" (the negotiated session's listing was incomplete; the catalog was collected whole "
+                    f"on the {fallback_version} stateless lifecycle)"
+                )
         elif not declared and not served:
             passed = True
             message = (
@@ -212,7 +220,11 @@ class CapabilityDeclarationRule(BaseRule):
             f"capability_{self.feature}": _wire_str(getattr(capabilities, self.feature, None)),
             "declared": declared,
             "served": served,
-            **({"collection_error": collection_error} if collection_error and not passed else {}),
+            **(
+                {"collection_error": collection_error}
+                if collection_error and (not passed or fallback_version is not None)
+                else {}
+            ),
             **({"catalog_version": fallback_version} if fallback_version is not None else {}),
         }
         if served and not declared:
