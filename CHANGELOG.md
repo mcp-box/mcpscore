@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-09-17
+
 A dual-era server whose legacy `tools/list` fails is now judged on the tools
 it serves over the stateless lifecycle, and local-server launch mistakes are
 explained instead of dumped as tracebacks.
@@ -1688,7 +1690,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.18.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.19.0...HEAD
+[1.19.0]: https://github.com/mcp-box/mcpscore/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/mcp-box/mcpscore/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/mcp-box/mcpscore/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/mcp-box/mcpscore/compare/v1.15.0...v1.16.0
