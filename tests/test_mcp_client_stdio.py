@@ -380,12 +380,27 @@ class TestStdioLaunchHints:
         script = tmp_path / "srv.py"
         script.write_text("#!/usr/bin/env python3\nprint('hi')\n", encoding="utf-8")
         script.chmod(0o755)
+        # A PATH containing "." would launch the script and hide the lookup failure.
+        (tmp_path / "empty-path").mkdir()
+        monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
         with pytest.raises(FileNotFoundError):
             subprocess.run(["srv.py"], check=False)
         hint = stdio_launch_hint("srv.py")
         assert hint.startswith("'srv.py' is a script, not an executable command")
         assert "shebang" not in hint
         assert "--stdio python srv.py" in hint
+
+    def test_hint_uses_windows_quoting_on_windows(self, tmp_path, monkeypatch):
+        """cmd.exe keeps POSIX single quotes literally, so Windows gets double-quoted paths."""
+        import mcpscore.mcp_client as client_module
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "my server.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(client_module.os, "name", "nt")
+        hint = stdio_launch_hint("my server.py")
+        assert '--stdio python "my server.py"' in hint
+        assert '--stdio uv run "my server.py"' in hint
+        assert "python 'my server.py'" not in hint
 
     def test_hint_for_plain_missing_command(self):
         assert stdio_launch_hint("no-such-binary") == (

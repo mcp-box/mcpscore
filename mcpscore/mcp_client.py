@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -68,6 +69,15 @@ _SCRIPT_INTERPRETERS: Mapping[str, str] = {".py": "python", ".js": "node"}
 """Interpreter to suggest when a --stdio command names a script instead of an executable."""
 
 
+def _paste_ready(parts: list[str]) -> str:
+    """Render a command line the user can paste into their own shell.
+
+    ``shlex.join`` quotes for POSIX shells; ``cmd.exe`` keeps single quotes
+    literally, so Windows gets the ``CreateProcess`` quoting instead.
+    """
+    return subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
+
+
 def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
     """Explain why the OS could not launch a --stdio command, with the fix.
 
@@ -76,9 +86,9 @@ def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
     """
     interpreter = _SCRIPT_INTERPRETERS.get(Path(command).suffix.lower())
     if interpreter is not None:
-        run_it = shlex.join(["--stdio", interpreter, command])
+        run_it = _paste_ready(["--stdio", interpreter, command])
         if interpreter == "python":
-            run_it += f" (inside a uv project: {shlex.join(['--stdio', 'uv', 'run', command])})"
+            run_it += f" (inside a uv project: {_paste_ready(['--stdio', 'uv', 'run', command])})"
         names_a_path = os.sep in command or (os.altsep is not None and os.altsep in command)
         if not permission_denied and names_a_path and os.name != "nt" and os.access(command, os.X_OK):
             # exec of a +x script fails with ENOENT when its shebang interpreter is absent.
