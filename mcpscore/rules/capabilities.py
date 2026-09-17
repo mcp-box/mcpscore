@@ -162,11 +162,14 @@ class CapabilityDeclarationRule(BaseRule):
 
         if declared and served and not session_served_nothing:
             passed = True
-            message = f"✅ Declares the {self.feature} capability and serves {len(items or [])} via {self.method}"
-            if fallback_version is not None:
-                message += (
-                    f" (the negotiated session's listing was incomplete; the catalog was collected whole "
-                    f"on the {fallback_version} stateless lifecycle)"
+            if fallback_version is None:
+                message = f"✅ Declares the {self.feature} capability and serves {len(items or [])} via {self.method}"
+            else:
+                # The count is the recovered catalog's, so do not attribute it to the session method.
+                message = (
+                    f"✅ Declares the {self.feature} capability; {self.method} on the negotiated session served "
+                    f"part of the catalog, and the {len(items or [])} {self.feature} judged come from the "
+                    f"{fallback_version} stateless listing"
                 )
         elif not declared and not served:
             passed = True

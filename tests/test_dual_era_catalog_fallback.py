@@ -161,8 +161,9 @@ async def test_incomplete_session_catalog_is_replaced_by_a_complete_modern_one(s
     assert "tools_names_unique" in results
     capability = results[CapabilityToolsPresentRule.rule_id]
     assert capability.passed
-    assert "serves 2 via tools/list" in capability.message
-    assert "listing was incomplete" in capability.message
+    assert "tools/list on the negotiated session served part of the catalog" in capability.message
+    assert "the 2 tools judged come from the 2026-07-28 stateless listing" in capability.message
+    assert "serves 2 via" not in capability.message
     assert capability.details["collection_error"] == PARTIAL_LEGACY_ERROR
     assert capability.details["catalog_version"] == "2026-07-28"
 

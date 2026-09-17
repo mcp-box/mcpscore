@@ -256,8 +256,9 @@ def test_partial_session_listing_recovered_from_stateless_passes_with_a_note(cap
         )
         result = rule_cls().check(audit_data)
         assert result.passed, feature
-        assert "serves 3 via" in result.message
-        assert "collected whole on the 2026-07-28 stateless lifecycle" in result.message
+        assert "served part of the catalog" in result.message
+        assert f"the 3 {feature} judged come from the 2026-07-28 stateless listing" in result.message
+        assert "serves 3 via" not in result.message
         details = result.details or {}
         assert details["catalog_version"] == "2026-07-28"
         assert details["collection_error"]["page_index"] == 1

@@ -11,6 +11,7 @@ from mcp import StdioServerParameters
 import pytest
 
 from mcpscore.enums import ConnectionErrorReason, MCPTransportType
+import mcpscore.mcp_client as client_module
 from mcpscore.mcp_client import (
     SERVER_STDERR_PREFIX,
     MCPClient,
@@ -394,8 +395,6 @@ class TestStdioLaunchHints:
 
     def test_hint_uses_windows_quoting_on_windows(self, tmp_path, monkeypatch):
         """cmd.exe keeps POSIX single quotes literally, so Windows gets double-quoted paths."""
-        import mcpscore.mcp_client as client_module
-
         monkeypatch.chdir(tmp_path)
         (tmp_path / "my server.py").write_text("", encoding="utf-8")
         # Flip the module switch, not os.name: on 3.11 pathlib reads os.name per call.
@@ -407,8 +406,6 @@ class TestStdioLaunchHints:
 
     def test_hint_quotes_cmd_metacharacters_on_windows(self, tmp_path, monkeypatch):
         """cmd.exe would split on & or expand %; such paths are double-quoted, plain ones are not."""
-        import mcpscore.mcp_client as client_module
-
         monkeypatch.chdir(tmp_path)
         for name in ("a&b.py", "100%.py", "plain.py"):
             (tmp_path / name).write_text("", encoding="utf-8")
