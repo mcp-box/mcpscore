@@ -66,6 +66,9 @@ ERROR_NO_ACTIVE_SESSION = "No active session, connect to the MCP server first!"
 SERVER_STDERR_PREFIX = "server stderr: "
 """Marks each line a local server writes to stderr, so it is not mistaken for mcpscore output."""
 
+SERVER_STDERR_LINE_LIMIT = 8192
+"""Longest stderr line relayed in one piece; longer output is split so the relay stays bounded."""
+
 _SCRIPT_INTERPRETERS: Mapping[str, str] = {".py": "python", ".js": "node"}
 """Interpreter to suggest when a --stdio command names a script instead of an executable."""
 
@@ -193,9 +196,11 @@ class ServerStderrRelay:
 
     @staticmethod
     def _pump(read_fd: int) -> None:
-        with os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as lines:
-            for line in lines:
-                logger.info("%s%s", SERVER_STDERR_PREFIX, line.rstrip("\r\n"))
+        # Bounded reads: a server that never writes a newline must not grow
+        # this process; a long line is relayed in pieces instead.
+        with os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as stream:
+            while chunk := stream.readline(SERVER_STDERR_LINE_LIMIT):
+                logger.info("%s%s", SERVER_STDERR_PREFIX, chunk.rstrip("\r\n"))
 
 
 @asynccontextmanager

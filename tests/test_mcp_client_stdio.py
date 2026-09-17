@@ -13,6 +13,7 @@ import pytest
 from mcpscore.enums import ConnectionErrorReason, MCPTransportType
 import mcpscore.mcp_client as client_module
 from mcpscore.mcp_client import (
+    SERVER_STDERR_LINE_LIMIT,
     SERVER_STDERR_PREFIX,
     MCPClient,
     ServerStderrRelay,
@@ -475,6 +476,18 @@ class TestServerStderrRelay:
         messages = [record.getMessage() for record in caplog.records]
         assert f"{SERVER_STDERR_PREFIX}boom" in messages
         assert f"{SERVER_STDERR_PREFIX}bang" in messages
+
+    def test_a_line_without_newline_is_relayed_in_bounded_pieces(self, caplog):
+        """A server that never writes a newline must not grow our memory: long output arrives chunked."""
+        caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
+        payload = "x" * (SERVER_STDERR_LINE_LIMIT * 2 + 100)
+        with ServerStderrRelay() as relay:
+            relay.errlog.write(payload)
+            relay.errlog.flush()
+        pieces = [record.getMessage()[len(SERVER_STDERR_PREFIX) :] for record in caplog.records]
+        assert len(pieces) == 3
+        assert all(len(piece) <= SERVER_STDERR_LINE_LIMIT for piece in pieces)
+        assert "".join(pieces) == payload
 
     async def test_teardown_waits_off_the_event_loop(self, monkeypatch):
         """A pump that cannot drain must not stall the loop while the relay closes."""
