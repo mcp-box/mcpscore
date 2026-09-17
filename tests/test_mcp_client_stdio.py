@@ -16,6 +16,7 @@ from mcpscore.mcp_client import (
     MCPClient,
     ServerStderrRelay,
     StdioCommand,
+    is_exec_format_error,
     relayed_stdio_client,
     stdio_launch_hint,
 )
@@ -403,6 +404,46 @@ class TestStdioLaunchHints:
         assert '--stdio python "my server.py"' in hint
         assert '--stdio uv run "my server.py"' in hint
         assert "python 'my server.py'" not in hint
+
+    @pytest.mark.skipif(os.name == "nt", reason="exec bits and shebangs are POSIX")
+    def test_executable_script_without_shebang_raises_exec_format_error(self, tmp_path, monkeypatch):
+        """The OS answer that the launcher must recognize: ENOEXEC, not file-not-found."""
+        import errno
+
+        monkeypatch.chdir(tmp_path)
+        script = tmp_path / "srv.py"
+        script.write_text("print('hi')\n", encoding="utf-8")
+        script.chmod(0o755)
+        with pytest.raises(OSError, match="Exec format error") as raised:
+            subprocess.run(["./srv.py"], check=False)
+        assert raised.value.errno == errno.ENOEXEC
+        assert is_exec_format_error(raised.value)
+
+    async def test_executable_script_without_shebang_gets_the_interpreter_hint(self, mcp_client, caplog):
+        """ENOEXEC is a launch problem, not a handshake failure."""
+        import errno
+
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.side_effect = OSError(errno.ENOEXEC, "Exec format error", "./srv.py")
+            result = await mcp_client._connect_with_stdio_command(StdioCommand(command="./srv.py"))
+        assert result is False
+        assert "'./srv.py' is executable but has no usable shebang" in caplog.text
+        assert "--stdio python ./srv.py" in caplog.text
+        assert "Traceback" not in caplog.text
+        assert "handshake failed" not in caplog.text
+        assert mcp_client.last_connection_error.reason is ConnectionErrorReason.UNREACHABLE
+
+    async def test_other_os_errors_stay_handshake_failures(self, mcp_client, caplog):
+        caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
+        with patch("mcpscore.mcp_client.stdio_client") as mock_stdio:
+            mock_stdio.return_value.__aenter__.side_effect = OSError(32, "Broken pipe")
+            result = await mcp_client._connect_with_stdio_command(StdioCommand(command="./srv"))
+        assert result is False
+        assert "Legacy MCP initialize handshake failed for server: ./srv" in caplog.text
+
+    def test_exec_format_hint_for_a_binary(self):
+        hint = stdio_launch_hint("./srv", exec_format=True)
+        assert hint.startswith("'./srv' is not an executable this system can run")
 
     def test_hint_for_plain_missing_command(self):
         assert stdio_launch_hint("no-such-binary") == (

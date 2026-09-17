@@ -80,9 +80,10 @@ def mock_auditor() -> MagicMock:
     # Instance attributes are not on the spec, so they must be set explicitly or
     # every access raises AttributeError. `last_probes` mirrors a fresh auditor:
     # no probe observations, i.e. no evidence of an auth gate. `audit_data` is
-    # read by finish_server_audit on the partial and modern-only paths.
+    # read by finish_server_audit on the partial and modern-only paths, and
+    # `catalog_versions` by the smoke phase (a bare mock would read as recovered).
     auditor.last_probes = None
-    auditor.audit_data = MagicMock(transport_type=None)
+    auditor.audit_data = MagicMock(transport_type=None, catalog_versions={})
     return auditor
 
 
@@ -2622,3 +2623,22 @@ class TestSarifOutput:
         assert all(
             r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "npm/server" for r in run["results"]
         )
+
+
+async def test_smoke_does_not_run_on_a_catalog_recovered_from_the_stateless_lifecycle(caplog):
+    """Smoke calls go to the negotiated session, which never served the recovered catalog."""
+    import argparse
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from mcpscore.cli import run_smoke_phase
+    from mcpscore.mcp_auditor import MCPAuditor
+
+    auditor = MCPAuditor()
+    auditor.audit_data.catalog_versions["tools"] = "2026-07-28"
+    client = MagicMock()
+    client.session = object()
+    with patch("mcpscore.cli.run_smoke_checks", new=AsyncMock()) as run_checks:
+        report = await run_smoke_phase(argparse.Namespace(call_all=False), client, auditor)
+    run_checks.assert_not_awaited()
+    assert report.executed is False
+    assert "2026-07-28 stateless lifecycle" in (report.reason or "")

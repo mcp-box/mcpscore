@@ -24,8 +24,11 @@ explained instead of dumped as tracebacks.
 - A `--stdio` command the OS cannot launch is explained in one line instead
   of a traceback, ahead of the usual connection-failure line. Naming a script
   instead of an executable (`--stdio server.py`) now shows the interpreter
-  form to use, such as `--stdio uv run server.py`; an executable script whose
-  shebang interpreter is missing is reported as that.
+  form to use, such as `--stdio uv run server.py`; an executable script with
+  no shebang, or whose shebang interpreter is missing, is reported as that.
+- `--smoke` does not run when the audited tools catalog was recovered from the
+  stateless lifecycle: smoke calls go to the negotiated session, which did not
+  serve those tools, and the report says so.
 - Lines the audited server process writes to stderr are relayed with a
   `server stderr:` prefix so they are not read as mcpscore output. The
   sessionless probe launches of the same server stay silent.

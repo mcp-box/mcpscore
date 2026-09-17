@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
+import errno
 import logging
 import os
 from pathlib import Path
@@ -82,7 +83,16 @@ def _paste_ready(parts: list[str]) -> str:
     return subprocess.list2cmdline(parts) if _WINDOWS else shlex.join(parts)
 
 
-def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
+def is_exec_format_error(error: OSError) -> bool:
+    """Whether the OS refused to execute the file's format (no shebang, wrong binary)."""
+    return error.errno == errno.ENOEXEC or getattr(error, "winerror", None) == _WINDOWS_BAD_EXE_FORMAT
+
+
+_WINDOWS_BAD_EXE_FORMAT = 193
+"""ERROR_BAD_EXE_FORMAT: Windows' answer to running a file that is not an executable."""
+
+
+def stdio_launch_hint(command: str, *, permission_denied: bool = False, exec_format: bool = False) -> str:
     """Explain why the OS could not launch a --stdio command, with the fix.
 
     A script name is the common mistake: the OS looks it up on PATH as an
@@ -93,6 +103,11 @@ def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
         run_it = _paste_ready(["--stdio", interpreter, command])
         if interpreter == "python":
             run_it += f" (inside a uv project: {_paste_ready(['--stdio', 'uv', 'run', command])})"
+        if exec_format:
+            return (
+                f"'{command}' is executable but has no usable shebang, so the OS cannot run it directly. "
+                f"Add one, or launch it with its interpreter: {run_it}"
+            )
         names_a_path = os.sep in command or (os.altsep is not None and os.altsep in command)
         if not permission_denied and names_a_path and not _WINDOWS and os.access(command, os.X_OK):
             # exec of a +x script fails with ENOENT when its shebang interpreter is absent.
@@ -105,6 +120,11 @@ def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
         if permission_denied or Path(command).is_file():
             return f"'{command}' is a script, not an executable command. Launch it with its interpreter: {run_it}"
         return f"Server script not found: '{command}'. Check the path, then launch it with its interpreter: {run_it}"
+    if exec_format:
+        return (
+            f"'{command}' is not an executable this system can run (exec format error). "
+            "Build it for this platform, or launch it with its interpreter: --stdio <interpreter> <file>"
+        )
     if permission_denied:
         return (
             f"Permission denied launching '{command}'. Make it executable (chmod +x) "
@@ -831,15 +851,28 @@ class MCPClient:
             logger.error("MCP initialize handshake failed for server: %s", display)  # noqa: TRY400
             self._record_failure(ConnectionErrorReason.NOT_MCP)
             return False
-        except Exception as e:
-            # A modern-only server is expected to reject the legacy
-            # initialize request. Keep the exception at debug level until the
-            # caller has had a chance to distinguish that from a broken
-            # process with stateless probes.
-            logger.info("Legacy MCP initialize handshake failed for server: %s", display)
-            logger.debug("Handshake error details", exc_info=True)
-            self._record_unclassified_failure(e)
+        except OSError as e:
+            if not is_exec_format_error(e):
+                self._legacy_handshake_failed(e, display)
+                return False
+            logger.error(stdio_launch_hint(server_params.command, exec_format=True))  # noqa: TRY400
+            logger.debug("Error details: %s", e)
+            self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
+        except Exception as e:  # noqa: BLE001 — classified later by the caller's stateless probes
+            self._legacy_handshake_failed(e, display)
+            return False
+
+    def _legacy_handshake_failed(self, error: Exception, display: str) -> None:
+        """Record a legacy handshake failure without deciding yet whether it is a fault.
+
+        A modern-only server is expected to reject the legacy initialize
+        request. Keep the exception at debug level until the caller has had a
+        chance to distinguish that from a broken process with stateless probes.
+        """
+        logger.info("Legacy MCP initialize handshake failed for server: %s", display)
+        logger.debug("Handshake error details", exc_info=error)
+        self._record_unclassified_failure(error)
 
     async def _connect_with_streamable_http(self, server_url: str) -> bool:
         """Establish HTTP connection to MCP server using streamable HTTP transport.
