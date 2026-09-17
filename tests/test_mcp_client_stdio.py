@@ -352,6 +352,7 @@ class TestStdioLaunchHints:
         assert hint.startswith("'./srv.py' is a script, not an executable command")
         assert "--stdio python ./srv.py" in hint
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX quoting; the Windows form has its own test")
     def test_hint_quotes_paths_for_the_shell(self, tmp_path, monkeypatch):
         """The suggested command must paste back correctly when the path needs quoting."""
         monkeypatch.chdir(tmp_path)
@@ -396,7 +397,8 @@ class TestStdioLaunchHints:
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "my server.py").write_text("", encoding="utf-8")
-        monkeypatch.setattr(client_module.os, "name", "nt")
+        # Flip the module switch, not os.name: on 3.11 pathlib reads os.name per call.
+        monkeypatch.setattr(client_module, "_WINDOWS", True)
         hint = stdio_launch_hint("my server.py")
         assert '--stdio python "my server.py"' in hint
         assert '--stdio uv run "my server.py"' in hint

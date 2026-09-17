@@ -69,13 +69,17 @@ _SCRIPT_INTERPRETERS: Mapping[str, str] = {".py": "python", ".js": "node"}
 """Interpreter to suggest when a --stdio command names a script instead of an executable."""
 
 
+_WINDOWS = os.name == "nt"
+"""Platform switch for launch hints, held here so tests can flip it without touching ``os``."""
+
+
 def _paste_ready(parts: list[str]) -> str:
     """Render a command line the user can paste into their own shell.
 
     ``shlex.join`` quotes for POSIX shells; ``cmd.exe`` keeps single quotes
     literally, so Windows gets the ``CreateProcess`` quoting instead.
     """
-    return subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
+    return subprocess.list2cmdline(parts) if _WINDOWS else shlex.join(parts)
 
 
 def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
@@ -90,7 +94,7 @@ def stdio_launch_hint(command: str, *, permission_denied: bool = False) -> str:
         if interpreter == "python":
             run_it += f" (inside a uv project: {_paste_ready(['--stdio', 'uv', 'run', command])})"
         names_a_path = os.sep in command or (os.altsep is not None and os.altsep in command)
-        if not permission_denied and names_a_path and os.name != "nt" and os.access(command, os.X_OK):
+        if not permission_denied and names_a_path and not _WINDOWS and os.access(command, os.X_OK):
             # exec of a +x script fails with ENOENT when its shebang interpreter is absent.
             # A bare name is looked up on PATH instead, so the file in the current
             # directory says nothing about why the launch failed.
