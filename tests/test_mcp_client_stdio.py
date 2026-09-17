@@ -405,6 +405,18 @@ class TestStdioLaunchHints:
         assert '--stdio uv run "my server.py"' in hint
         assert "python 'my server.py'" not in hint
 
+    def test_hint_quotes_cmd_metacharacters_on_windows(self, tmp_path, monkeypatch):
+        """cmd.exe would split on & or expand %; such paths are double-quoted, plain ones are not."""
+        import mcpscore.mcp_client as client_module
+
+        monkeypatch.chdir(tmp_path)
+        for name in ("a&b.py", "100%.py", "plain.py"):
+            (tmp_path / name).write_text("", encoding="utf-8")
+        monkeypatch.setattr(client_module, "_WINDOWS", True)
+        assert '--stdio python "a&b.py"' in stdio_launch_hint("a&b.py")
+        assert '--stdio python "100%.py"' in stdio_launch_hint("100%.py")
+        assert "--stdio python plain.py" in stdio_launch_hint("plain.py")
+
     @pytest.mark.skipif(os.name == "nt", reason="exec bits and shebangs are POSIX")
     def test_executable_script_without_shebang_raises_exec_format_error(self, tmp_path, monkeypatch):
         """The OS answer that the launcher must recognize: ENOEXEC, not file-not-found."""

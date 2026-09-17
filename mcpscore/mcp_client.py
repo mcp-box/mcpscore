@@ -74,13 +74,32 @@ _WINDOWS = os.name == "nt"
 """Platform switch for launch hints, held here so tests can flip it without touching ``os``."""
 
 
+_CMD_METACHARACTERS = frozenset("&^()%!")
+"""cmd.exe characters that are legal in a Windows path and need double quotes to paste literally."""
+
+
+def _paste_quote_windows(part: str) -> str:
+    """Quote one argument for pasting into cmd.exe or PowerShell.
+
+    ``list2cmdline`` covers what ``CreateProcess`` needs (whitespace, quotes);
+    cmd.exe additionally interprets its metacharacters unless the argument is
+    double-quoted. The other shell characters cannot appear in a Windows path.
+    """
+    quoted = subprocess.list2cmdline([part])
+    if quoted.startswith('"') or not (_CMD_METACHARACTERS & set(part)):
+        return quoted
+    return f'"{quoted}"'
+
+
 def _paste_ready(parts: list[str]) -> str:
     """Render a command line the user can paste into their own shell.
 
     ``shlex.join`` quotes for POSIX shells; ``cmd.exe`` keeps single quotes
-    literally, so Windows gets the ``CreateProcess`` quoting instead.
+    literally, so Windows gets double-quoted arguments instead.
     """
-    return subprocess.list2cmdline(parts) if _WINDOWS else shlex.join(parts)
+    if _WINDOWS:
+        return " ".join(_paste_quote_windows(part) for part in parts)
+    return shlex.join(parts)
 
 
 def is_exec_format_error(error: OSError) -> bool:
