@@ -1,20 +1,15 @@
 ---
-title: "Smoke Mode"
-description: "Verify on every change that your MCP server still works — connects, lists, and its tools actually run — with one command in CI."
+title: "Smoke mode"
+description: "Check on every change that your MCP server still connects, lists its tools, and runs them, with one command in CI."
 icon: "vial"
 ---
 
-You changed your server — a refactor, a dependency bump, a new tool. Does it
-still work? Not "does it compile": does an agent connecting right now get the
-tools you think you ship, with schemas that match what the handlers actually
-return, and sane errors when a call goes wrong? Every change can quietly
-break that contract, and nothing in a typical build pipeline notices —
-teams end up hand-rolling a bespoke MCP test client to check their own
-server still responds.
-
-Smoke mode makes that check one command. `--smoke` runs the normal audit,
-then **actually calls your server's tools** over the same connection and
-verifies they behave:
+A refactor, a dependency bump or a new tool can break your MCP server without
+failing a single unit test. The server still starts. An agent that connects
+to it gets a tool whose result no longer matches the declared schema, or a
+handler that accepts arguments it should reject. Smoke mode catches that in
+CI: `--smoke` runs the normal audit, then calls your server's tools over the
+same connection and checks the answers.
 
 ```bash
 # One CI step: does my server still work?
@@ -50,89 +45,82 @@ Smoke checks (tools/call): 4 passed, 2 failed, 3 skipped — only readOnlyHint: 
 Gate failed — --smoke: 2 smoke check(s) failed
 ```
 
-Every check prints a line, passes included. A tool that answered gets a
-`returned` line saying what came back: content block count and types, whether
-`structuredContent` was present, `isError`, and the first 80 characters of the
-first text block, whichever check made the call. `Tools called: 3 of 4` counts
-tools the server answered at least once (a timeout or a dropped connection is
-not an answer); the fourth was never invoked because it lacks `readOnlyHint: true`.
-
-One run answers three questions: *does it connect and speak MCP well?* (the
-audit and its score), *are the tools honestly described?* (schema checks),
-and *do the tools actually run and fail properly?* (the smoke calls).
+One run gives you the audit score and, under it, one line per smoke check.
+A tool that answered gets a `returned` line: how many content blocks and of
+which types, whether `structuredContent` was present, whether the result was
+flagged `isError`, and the first 80 characters of the first text block.
+`Tools called: 3 of 4` counts tools the server answered at least once; a
+timeout or a dropped connection is not an answer. The fourth tool was never
+invoked because it is not annotated `readOnlyHint: true`.
 
 <Warning>
-  `--smoke` really invokes `tools/call` on the target. Use it only against
-  servers **you operate** and are willing to execute. For anyone else's
-  server, the ordinary audit is the right tool — it never calls tools.
+  `--smoke` invokes `tools/call` on the target. Run it against servers you
+  operate. The ordinary audit never calls tools, so it is the right choice
+  for anyone else's server.
 </Warning>
 
-## What it verifies on every run
+## What each check catches
 
-Every check verdict is **pass**, **fail**, or **skip** — skip meaning the
-check could not be exercised, never that the server failed it.
+Each check reports `pass`, `fail` or `skip`. Skip means the check could not
+run. It never means the server failed it.
 
 | Check (`check_id`) | The regression it catches |
 |---|---|
-| `smoke_structured_content` | A handler drifted away from its declared `outputSchema`: every callable tool declaring one is invoked, and the result must carry `structuredContent` that conforms (a spec MUST). An explicitly empty `{}` schema still requires the field to be present. |
-| `smoke_invalid_arguments` | Input validation stopped working: each callable tool is invoked with deliberately schema-invalid arguments and must **reject** them — an `isError` tool result or a JSON-RPC error both count. Accepting them, hanging, or crashing fails. |
-| `smoke_unknown_tool` | Routing broke: `tools/call` on a provably nonexistent name must be rejected with a JSON-RPC error — not executed, and not an internal error. |
+| `smoke_structured_content` | A handler no longer matches its declared `outputSchema`. Every callable tool that declares one is invoked, and the result must carry `structuredContent` that conforms to it, a spec MUST. An explicitly empty `{}` schema still requires the field to be present. |
+| `smoke_invalid_arguments` | Input validation stopped working. Each callable tool is invoked with arguments that violate its schema and must reject them. A tool result flagged `isError` and a JSON-RPC error both count as rejection. Accepting the arguments, hanging, or crashing fails the check. |
+| `smoke_unknown_tool` | Routing broke. A `tools/call` for a name that cannot exist on your server must be rejected with a JSON-RPC error, not executed and not answered with an internal error. |
 
-For the two rejection checks, any JSON-RPC error code your server sends
-counts as a rejection **except** the three that are crashes wearing an
-error's clothes: a request timeout, a closed connection, and `-32603`
-internal error (the server tried to run the call and broke).
+For the two rejection checks, any JSON-RPC error code counts as a rejection
+except three: a request timeout, a closed connection, and `-32603` internal
+error. Those three mean the server tried to run the call and failed.
 
-## The safety model
+## Which tools get called
 
-- **Only tools annotated `readOnlyHint: true` are called by default.** An
-  absent annotation defaults to *false* per the spec, so unannotated tools
-  are skipped, never called — and each skip is reported, which makes missing
-  annotations a visible cost.
-- **`--call-all` is the explicit second consent** for everything else. It is
-  never implied by another flag and has no environment-variable form.
-- **The unknown-tool probe cannot hit a real tool.** Its name is derived
-  deterministically to be absent from your server's own collected catalog;
-  if the tool listing failed or is incomplete, the check skips rather than
-  gamble on a name.
-- **Argument synthesis is deterministic and never an LLM** — sample values
-  come from the input schema itself (`default` → `const` → first example →
-  first enum entry → type zero-values), so the same server sees the same
-  calls on every run. Malformed schema fragments are tolerated rather than
-  aborting the run.
+- Only tools annotated `readOnlyHint: true` are called by default. The spec
+  treats a missing annotation as `false`, so an unannotated tool is skipped,
+  and every skip is reported with its reason. Missing annotations are a
+  visible cost, not a silent one.
+- `--call-all` lifts that default. No other flag implies it, and it has no
+  environment-variable form.
+- The unknown-tool check uses a name derived from your server's own catalog,
+  so it cannot match a real tool. If the tool listing failed or is
+  incomplete, the check skips instead of guessing a name.
+- Arguments come from each tool's input schema, in this order: `default`,
+  `const`, the first entry of `examples`, the first `enum` value, then a zero
+  value for the type. No language model is involved, so the same server
+  receives the same calls on every run. A malformed schema fragment is
+  tolerated rather than aborting the run.
 
-## Outage semantics: skip, not fail
+## Errors from upstream skip rather than fail
 
-A tool that returns an error result when called with valid synthesized
-arguments reports as **skip** — it may be rejecting the synthesized sample,
-or its upstream dependency may be down, and *someone else's outage should
-not fail your build*. Only behavior your server owns can fail a smoke check.
+A tool that returns an error result for valid synthesized arguments reports
+as `skip`. It may be rejecting the sample value, or a service behind it may be
+down, and an outage elsewhere should not fail your build. Only behavior your
+server owns can fail a smoke check.
 
-## Gating CI on it
+## Gate CI on it
 
-A smoke failure exits with its **own code, 4**, distinct from the score
-gate's 3 — so CI can tell "the server scored badly" apart from "the tools
-are broken":
+A smoke failure exits with its own code, `4`. The score gate's code is `3`,
+so CI can tell a low score apart from broken tools:
 
 ```bash
-# Fail the build on score OR broken tools, distinguishably
+# Fail the build on a low score or on broken tools, distinguishably
 mcpscore ./server.py --fail-under 80 --smoke
-# exit 0: score ≥ 80 and every smoke check passed or skipped
-# exit 3: score below 80 (takes precedence if both gates fail)
+# exit 0: score at or above 80 and every smoke check passed or skipped
+# exit 3: score below 80 (takes precedence when both gates fail)
 # exit 4: score fine, but a smoke check failed
 ```
 
-The full exit-code contract is in the
-[stability contract](/stability#cli-interface). Skips never gate: a server
-with no `readOnlyHint: true` tools exits 0 (and tells you what it skipped
-and why).
+Skips never gate. A server with no `readOnlyHint: true` tools exits `0` and
+reports what it skipped and why. The full exit-code table is in the
+[stability contract](/stability#cli-interface).
 
-## Results never touch the score
+## Results stay out of the score
 
-Determinism is the score's contract — same server, same score — and tool
-calls depend on upstreams and environment. So smoke results live in their
-own `smoke` section of the [JSON report](/stability#report-schema) and are
-never counted in `score`/`max_score`:
+The score is deterministic: the same server gets the same score. Tool calls
+depend on upstream services and on the environment, so smoke results live in
+their own `smoke` section of the [JSON report](/stability#report-schema) and
+never change `score` or `max_score`:
 
 ```json
 "smoke": {
@@ -144,39 +132,44 @@ never counted in `score`/`max_score`:
   "checks": [
     {
       "check_id": "smoke_structured_content",
-      "tool_name": "get_weather",
+      "tool_name": "dishonest",
       "verdict": "fail",
-      "message": "declared outputSchema is not honored: 'result' is a required property",
-      "details": { "basis": "MCP 2025-11-25 Tools §Output Schema (structured results MUST conform to the declared schema)" }
-    }
+      "message": "declared outputSchema is not honored: Invalid structured content returned by tool dishonest: 'result' is a required property",
+      "details": {
+        "basis": "MCP 2025-11-25 Tools §Output Schema (structured results MUST conform to the declared schema)",
+        "called": true
+      }
+    },
+    ...
   ]
 }
 ```
 
-When `--smoke` is requested but no session exists to call tools on — a
-[partial audit](/authenticated-servers) of an auth-gated server, or a
-modern-only probe audit — the section reports `"executed": false` with the
-reason, instead of silently vanishing.
+When `--smoke` is requested but there is no session to call tools on, the
+section reports `"executed": false` with the reason instead of disappearing.
+That happens on a [partial audit](/authenticated-servers) of an auth-gated
+server, on a modern-only probe audit, and when the tools catalog had to be
+recovered from the stateless lifecycle because the negotiated session could
+not list it.
 
-## What smoke mode is not
+## Where it does not run
 
-- **Not available on [mcpscore.dev](https://mcpscore.dev)**, because
-  invoking tools on third-party URLs from our infrastructure is what the
-  security posture forbids. Smoke mode is CLI-only. In the
-  [GitHub Action](/github-action), `--smoke` in `args` fails the job on a
-  smoke failure but drops the report and comment, since the action treats
-  any non-zero exit as a failed audit. A native input is on the way.
-- **Not a replacement for your test suite.** It proves the MCP contract —
-  honest schemas, proper rejections, tools that answer — not your business
-  logic.
-- **Not part of the score**, ever. A perfectly passing smoke run adds zero
-  points; a failing one subtracts none.
+- mcpscore.dev never runs smoke checks. Invoking tools on third-party
+  URLs from our infrastructure is outside the security posture, so smoke
+  mode is CLI-only.
+- The [GitHub Action](/github-action) accepts `--smoke` in `args` and
+  fails the job on a smoke failure, but it then drops the report and the PR
+  comment, because it treats any non-zero exit as a failed audit. A
+  dedicated `smoke` input is planned.
+- Your test suite still has a job. Smoke checks prove the MCP contract:
+  honest schemas, correct rejections, tools that answer. They do not test
+  your business logic.
 
 ## What's next
 
 <CardGroup cols={2}>
   <Card title="GitHub Action" icon="github" href="/github-action">
-    Gate PRs on the score; native smoke support is on the way
+    Gate pull requests on the score
   </Card>
   <Card title="Stability Contract" icon="file-contract" href="/stability">
     Exit codes and the `smoke` report section
