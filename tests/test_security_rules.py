@@ -3,11 +3,12 @@
 import pytest
 
 from mcpscore.enums import MCPTransportType
-from mcpscore.probes import PROBE_MALFORMED_JSON, ProbeOutcome, ProbeResult
+from mcpscore.probes import PROBE_MALFORMED_JSON, PROBE_ORIGIN_VALIDATION, ProbeOutcome, ProbeResult
 from mcpscore.rules import (
     AuditData,
     ErrorDataLeakRule,
     MalformedRequestHandlingRule,
+    OriginHeaderValidationRule,
     RuleSeverity,
     TLSEnabledRule,
 )
@@ -314,3 +315,67 @@ class TestErrorDataLeakRule:
         audit_data = AuditData(transport_type=MCPTransportType.STDIO)
 
         assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
+
+
+def _origin_audit(outcome: ProbeOutcome | None, details: dict | None = None) -> AuditData:
+    probes = (
+        {}
+        if outcome is None
+        else {PROBE_ORIGIN_VALIDATION: ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details or {})}
+    )
+    return AuditData(transport_type=MCPTransportType.STREAMABLE_HTTP, probes=probes)
+
+
+class TestOriginHeaderValidationRule:
+    @pytest.fixture
+    def rule(self):
+        return OriginHeaderValidationRule()
+
+    def test_identity(self, rule):
+        assert rule.rule_id == "security_origin_validation"
+        assert rule.group_name == "security"
+        assert rule.severity == RuleSeverity.HIGH
+        assert rule.probe_id == PROBE_ORIGIN_VALIDATION
+
+    def test_stdio_is_not_applicable(self, rule):
+        data = AuditData(transport_type=MCPTransportType.STDIO, probes={})
+        assert rule.skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_unobservable_control_is_not_applicable(self, rule):
+        data = _origin_audit(ProbeOutcome.NOT_APPLICABLE, {"control_http_status": 401, "reason": "access-controlled"})
+        assert rule.skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    @pytest.mark.parametrize("outcome", [None, ProbeOutcome.ERROR])
+    def test_missing_or_errored_probe_is_insufficient_data(self, rule, outcome):
+        assert rule.skip_reason(_origin_audit(outcome)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_passes_when_foreign_origin_is_refused(self, rule):
+        data = _origin_audit(
+            ProbeOutcome.SUPPORTED, {"http_status": 403, "control_http_status": 200, "control_shape": "modern"}
+        )
+        assert rule.skip_reason(data) is None
+        result = rule.check(data)
+        assert result.passed
+        assert result.details["spec"] == rule.MODERN_SPEC
+        assert result.suggested_fix is None
+
+    def test_fails_a_legacy_server_that_accepts_any_origin(self, rule):
+        data = _origin_audit(
+            ProbeOutcome.UNSUPPORTED,
+            {
+                "http_status": 200,
+                "control_http_status": 200,
+                "control_shape": "legacy-initialize",
+                "modern_control_http_status": 400,
+            },
+        )
+        result = rule.check(data)
+        assert not result.passed
+        assert result.details["modern_control_http_status"] == 400
+        assert "DNS rebinding" in result.message
+        assert "HTTP status: 200" in result.message
+        assert result.details["spec"] == rule.LEGACY_SPEC
+        assert result.details["control_shape"] == "legacy-initialize"
+        assert result.details["expected"] == {"http_status": 403}
+        assert result.suggested_fix
+        assert len(result.suggested_fix) <= 255

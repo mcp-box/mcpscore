@@ -44,7 +44,6 @@ from mcpscore.rules.readiness import (
     MissingMethodHeaderReadinessRule,
     MissingProtocolVersionHeaderReadinessRule,
     NoSessionIdReadinessRule,
-    OriginValidationRule,
     PromptNameHeaderMismatchReadinessRule,
     RemovedMethodsReadinessRule,
     ResourceNameHeaderMismatchReadinessRule,
@@ -170,7 +169,6 @@ class TestDetailProbeRules:
         HeaderValidationReadinessRule,
         UnsupportedVersionErrorReadinessRule,
         ErrorCodeMigrationReadinessRule,
-        OriginValidationRule,
         UnknownMethodErrorRule,
         MissingProtocolVersionHeaderReadinessRule,
         MissingMethodHeaderReadinessRule,
@@ -206,14 +204,6 @@ class TestDetailProbeRules:
         rule = HeaderValidationReadinessRule()
         assert rule.skip_reason(data) is None
         assert not rule.check(data).passed
-
-    def test_origin_validation_fail_message(self):
-        probes = modern_probes(
-            probe_origin_validation=ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.UNSUPPORTED, {"http_status": 200})
-        )
-        result = OriginValidationRule().check(AuditData(probes=probes))
-        assert not result.passed
-        assert "DNS rebinding" in result.message
 
     def test_unknown_method_fail_message(self):
         probes = modern_probes(
@@ -607,7 +597,10 @@ class TestReadinessScoringAxis:
         readiness_ids = {r.rule_id for r in auditor.readiness_results}
         main_ids = {r.rule_id for r in auditor.results}
         assert readiness_ids
-        assert "readiness_2026_origin_validation" in readiness_ids
+        assert "readiness_2026_no_session_id" in readiness_ids
+        # Origin validation scores in Security for every HTTP server (1.20.0).
+        assert "readiness_2026_origin_validation" not in readiness_ids
+        assert "security_origin_validation" in main_ids
         assert readiness_ids.isdisjoint(main_ids)
         assert auditor.readiness_max > 0
 
@@ -784,7 +777,6 @@ class TestSepCitations:
         "readiness_2026_result_type": "SEP-2322",
         "readiness_2026_deprecated_features": "SEP-2577",
         "readiness_2026_tool_schema_dialect": "SEP-2106",
-        "readiness_2026_origin_validation": f"{STREAMABLE_HTTP_SPEC}#security-&-endpoint",
         "readiness_2026_unknown_method_error": f"{STREAMABLE_HTTP_SPEC}#protocol-version-header",
         "readiness_2026_response_content_type": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
         "readiness_2026_missing_protocol_version_rejected": f"{STREAMABLE_HTTP_SPEC}#server-validation",

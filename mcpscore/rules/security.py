@@ -2,7 +2,7 @@ import re
 from typing import ClassVar
 
 from ..enums import MCPTransportType
-from ..probes import PROBE_MALFORMED_JSON, ProbeOutcome
+from ..probes import PROBE_MALFORMED_JSON, PROBE_ORIGIN_VALIDATION, ProbeOutcome
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
     SKIP_REASON_NOT_APPLICABLE,
@@ -394,4 +394,97 @@ class ErrorDataLeakRule(BaseRule):
             details={"error_response_length": len(error_response)},
             suggested_fix=None,
             audit_data=audit_data,
+        )
+
+
+@register_rule
+class OriginHeaderValidationRule(BaseRule):
+    """The Streamable HTTP endpoint rejects an invalid foreign ``Origin`` with HTTP 403.
+
+    Every Streamable HTTP revision requires servers to validate the ``Origin``
+    header of incoming connections, the direct mitigation for DNS rebinding.
+    The observation comes from ``probe_origin_validation``: a control request
+    without the header must be accepted before a foreign-Origin twin is judged,
+    so an access-controlled server is never credited for a 403 it gives everyone.
+
+    Scoring: 3 points (HIGH)
+    """
+
+    rule_id = "security_origin_validation"
+    basis = (
+        "MCP 2025-11-25 Transports §Security Warning and 2026-07-28 Streamable HTTP §Security: "
+        "servers MUST validate the Origin header on all incoming connections to prevent DNS "
+        "rebinding, rejecting an invalid Origin with HTTP 403"
+    )
+    group_name = "security"
+    group_order = 3
+    rule_order = 4
+    probe_id: ClassVar[str] = PROBE_ORIGIN_VALIDATION
+
+    LEGACY_SPEC: ClassVar[str] = (
+        "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning"
+    )
+    MODERN_SPEC: ClassVar[str] = (
+        "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint"
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return "Origin Header Validated"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        # HIGH, not CRITICAL: for local or plain-http targets this is the direct
+        # DNS-rebinding mitigation, for the remote HTTPS majority it is defence in depth.
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when Origin handling could not be observed.
+
+        Origin is an HTTP construct, so stdio is not-applicable (the TLS and
+        error-leak precedent). The probe reports not-applicable when its
+        control request is access-controlled or rejected in both request
+        shapes; a missing or errored probe is insufficient data.
+        """
+        if audit_data.transport_type == MCPTransportType.STDIO:
+            return SKIP_REASON_NOT_APPLICABLE
+        probe = (audit_data.probes or {}).get(self.probe_id)
+        if probe is not None and probe.outcome is ProbeOutcome.NOT_APPLICABLE:
+            return SKIP_REASON_NOT_APPLICABLE
+        if probe is None or probe.outcome is ProbeOutcome.ERROR:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Pass when the foreign-Origin request was refused with HTTP 403."""
+        probe = (audit_data.probes or {})[self.probe_id]
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        shape = probe.details.get("control_shape")
+        return diagnostic_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ Streamable HTTP rejects an invalid foreign Origin with HTTP 403"
+                if passed
+                else "❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding"
+            ),
+            details={
+                "spec": self.LEGACY_SPEC if shape == "legacy-initialize" else self.MODERN_SPEC,
+                "http_status": probe.details.get("http_status"),
+                "control_http_status": probe.details.get("control_http_status"),
+                "control_shape": shape,
+                # Present only after a fallback: the modern control this server rejected.
+                **{k: probe.details[k] for k in ("modern_control_http_status",) if k in probe.details},
+            },
+            suggested_fix=(
+                None
+                if passed
+                else (
+                    "Validate supplied Origin headers against the origins allowed for this endpoint. "
+                    "Return HTTP 403 for invalid origins; do not allow every origin to satisfy browser requests."
+                )
+            ),
+            audit_data=audit_data,
+            expected={"http_status": 403},
         )

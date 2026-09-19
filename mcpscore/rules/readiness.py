@@ -39,7 +39,6 @@ from mcpscore.probes import (
     PROBE_MISSING_METHOD_HEADER,
     PROBE_MISSING_PROTOCOL_VERSION,
     PROBE_MISSING_RESOURCE,
-    PROBE_ORIGIN_VALIDATION,
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
@@ -486,55 +485,6 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
             audit_data=audit_data,
             expected={"ttlMs": "non-negative integer", "cacheScope": ["public", "private"]},
             issues=issues,
-        )
-
-
-@register_rule
-class OriginValidationRule(ProbeBackedReadinessRule):
-    """The HTTP endpoint rejects an invalid foreign Origin with HTTP 403."""
-
-    rule_id = "readiness_2026_origin_validation"
-    rule_order = 14
-    probe_id = PROBE_ORIGIN_VALIDATION
-
-    @property
-    def rule_name(self) -> str:
-        return f"Readiness {READINESS_TARGET} - invalid Origin rejected"
-
-    @property
-    def severity(self) -> RuleSeverity:
-        # HIGH, not CRITICAL: for local or plain-http targets this is the direct
-        # DNS-rebinding mitigation, for the remote HTTPS majority it is defence in depth.
-        # The measured population behind the trade-off is in AGENTS.md.
-        return RuleSeverity.HIGH
-
-    def check(self, audit_data: AuditData) -> RuleResult:
-        probe = self._probe(audit_data)
-        passed = probe.outcome is ProbeOutcome.SUPPORTED
-        message = (
-            "✅ Streamable HTTP rejects an invalid foreign Origin with HTTP 403"
-            if passed
-            else "❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding"
-        )
-        return diagnostic_result(
-            rule_name=self.rule_name,
-            severity=self.severity,
-            passed=passed,
-            message=message,
-            details={
-                "spec": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint",
-                "target_version": READINESS_TARGET,
-                **probe.details,
-            },
-            suggested_fix=(
-                "Validate supplied Origin headers against the origins allowed for this endpoint. "
-                "Return HTTP 403 for invalid origins; do not allow every origin to satisfy browser "
-                "requests."
-            )
-            if not passed
-            else None,
-            audit_data=audit_data,
-            expected={"http_status": 403},
         )
 
 

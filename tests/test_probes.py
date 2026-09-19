@@ -244,12 +244,14 @@ async def test_legacy_server_is_unsupported_but_observed():
     ):
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
 
-    # Not UNSUPPORTED: a legacy server rejects the modern control request, so
-    # its Origin handling was never exercised. Claiming "does not reject an
-    # invalid Origin" would assert something this probe did not observe. The
-    # rule skips legacy servers regardless, so no score depends on it.
+    # Not UNSUPPORTED: this legacy server rejects the modern control AND the
+    # legacy `initialize` fallback, so its Origin handling was never exercised.
+    # Claiming "does not reject an invalid Origin" would assert something this
+    # probe did not observe.
     origin = results[PROBE_ORIGIN_VALIDATION]
     assert origin.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert origin.details["modern_control_http_status"] == 400
+    assert origin.details["control_shape"] == "legacy-initialize"
     assert origin.details["control_http_status"] == 400
 
     # The observation probe still succeeds against a legacy server.
@@ -291,6 +293,55 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
     assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 307
     assert results[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.UNSUPPORTED
     assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
+
+
+def _stateful_legacy_handler(*, rejects_foreign_origin: bool, deletes: list[str]):
+    """Simulate a 2025-11-25 server: `initialize` opens a session, everything else needs one."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "DELETE":
+            deletes.append(request.headers.get("Mcp-Session-Id", ""))
+            return httpx2.Response(200)
+        if request.method != "POST":
+            return httpx2.Response(405)
+        body = json.loads(request.content)
+        if request.headers.get("Origin") == ORIGIN_PROBE_VALUE and rejects_foreign_origin:
+            return httpx2.Response(403, json={"detail": "bad origin"})
+        if body.get("method") == "initialize":
+            return httpx2.Response(
+                200,
+                headers={"Mcp-Session-Id": "sess-1"},
+                json={"jsonrpc": "2.0", "id": body.get("id"), "result": {"protocolVersion": "2025-11-25"}},
+            )
+        return _rpc_error(body.get("id"), -32600, "Bad Request: no session")
+
+    return handler
+
+
+async def test_origin_probe_judges_a_legacy_server_through_initialize():
+    deletes: list[str] = []
+    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes))
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert origin.details["modern_control_http_status"] == 400
+    assert origin.details["control_http_status"] == 200
+    assert origin.details["http_status"] == 403
+    # The control handshake opened a session; the probe closed it. The 403 opened none.
+    assert deletes == ["sess-1"]
+
+
+async def test_origin_probe_fails_a_legacy_server_that_accepts_any_origin():
+    deletes: list[str] = []
+    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=False, deletes=deletes))
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.UNSUPPORTED
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert origin.details["http_status"] == 200
+    # Both handshakes opened sessions; both were closed.
+    assert deletes == ["sess-1", "sess-1"]
 
 
 async def test_new_http_validation_probes_reject_noncompliant_behavior():

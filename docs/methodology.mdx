@@ -149,7 +149,6 @@ the revision went final, and are re-checked whenever a revision does.
 | `readiness_2026_server_discover` | CRITICAL | Servers MUST implement `server/discover` ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
 | `readiness_2026_stateless_request` | CRITICAL | Requests carry their context in `_meta`; the `initialize` handshake is removed ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
 | `readiness_2026_supported_versions` | HIGH | `server/discover` MUST list at least one supported version ([SEP-2575](https://modelcontextprotocol.io/specification/2026-07-28/changelog)) |
-| `readiness_2026_origin_validation` | HIGH | An invalid `Origin` MUST be rejected with HTTP 403 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint)) |
 | `readiness_2026_unknown_method_error` | HIGH | Unimplemented methods MUST return HTTP 404 with `-32601` ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#protocol-version-header)) |
 | `readiness_2026_response_content_type` | HIGH | Successful responses MUST be `application/json` or `text/event-stream` ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#sending-messages)) |
 | `readiness_2026_meta_validation` | HIGH | Requests missing required `_meta` fields MUST be rejected with `-32602` + HTTP 400 |
@@ -168,8 +167,11 @@ the revision went final, and are re-checked whenever a revision does.
 | `readiness_2026_prompt_name_header_mismatch_rejected` | LOW | A `prompts/get` `Mcp-Name` that contradicts `params.name` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
 | `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([SEP-2106](https://modelcontextprotocol.io/specification/2026-07-28/basic/index)) |
 
-The session-ID and removed-method rules are legacy-leakage checks and run
-only when the server shows modern support. Missing-protocol-version rejection
+`Origin` validation is not on this axis: every Streamable HTTP revision
+requires it, so `security_origin_validation` scores it in Security & Auth for
+legacy and modern servers alike (it retired `readiness_2026_origin_validation`
+in 1.20.0). The session-ID and removed-method rules are legacy-leakage checks
+and run only when the server shows modern support. Missing-protocol-version rejection
 and GET-stream removal skip dual-era endpoints, because the spec explicitly
 permits compatibility with older Streamable HTTP revisions.
 
