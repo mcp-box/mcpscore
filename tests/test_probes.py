@@ -295,12 +295,14 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
     assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
 
 
-def _stateful_legacy_handler(*, rejects_foreign_origin: bool, deletes: list[str]):
+def _stateful_legacy_handler(*, rejects_foreign_origin: bool, deletes: list[str], delete_fails: bool = False):
     """Simulate a 2025-11-25 server: `initialize` opens a session, everything else needs one."""
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "DELETE":
             deletes.append(request.headers.get("Mcp-Session-Id", ""))
+            if delete_fails:
+                raise httpx2.ConnectError("connection reset during DELETE")
             return httpx2.Response(200)
         if request.method != "POST":
             return httpx2.Response(405)
@@ -329,6 +331,17 @@ async def test_origin_probe_judges_a_legacy_server_through_initialize():
     assert origin.details["control_http_status"] == 200
     assert origin.details["http_status"] == 403
     # The control handshake opened a session; the probe closed it. The 403 opened none.
+    assert deletes == ["sess-1"]
+
+
+async def test_origin_probe_survives_a_failed_session_delete():
+    """Closing the handshake session is a courtesy; its failure never changes the verdict."""
+    deletes: list[str] = []
+    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes, delete_fails=True))
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_shape"] == "legacy-initialize"
     assert deletes == ["sess-1"]
 
 
