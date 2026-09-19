@@ -561,17 +561,24 @@ class _HttpTarget:
         )
 
     async def end_session(self, response: _HttpProbeResponse) -> None:
-        """Best-effort DELETE of a session a legacy ``initialize`` opened; never raises."""
+        """Best-effort DELETE of a session a legacy ``initialize`` opened; never raises.
+
+        Carries the negotiated ``MCP-Protocol-Version`` (a MUST on every request
+        after ``initialize``) and no ``Origin``, so a conforming server has no
+        reason to refuse the cleanup.
+        """
         session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
         if not session_id:
             return
+        negotiated = (response.result or {}).get("protocolVersion")
+        headers = {
+            "Mcp-Session-Id": session_id,
+            "MCP-Protocol-Version": negotiated if isinstance(negotiated, str) else LEGACY_INITIALIZE_VERSION,
+        }
         try:
-            await self.client.delete(
-                self.url,
-                headers={"Mcp-Session-Id": session_id},
-                timeout=PROBE_TIMEOUT_S,
-                follow_redirects=False,
-            )
+            request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
+            request.headers.pop("Origin", None)
+            await self.client.send(request, follow_redirects=False)
         except Exception:  # noqa: BLE001 — courtesy only; the observation is already made
             return
 
@@ -1582,7 +1589,7 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
     Streamable HTTP servers MUST validate every supplied Origin to prevent DNS
     rebinding and MUST reject an invalid one with HTTP 403 — a requirement of
     every Streamable HTTP revision, not only 2026-07-28. The request is a
-    ``tools/list`` (modern) or ``initialize`` (legacy) and cannot invoke
+    ``server/discover`` (modern) or ``initialize`` (legacy) and cannot invoke
     server-side tool behavior.
 
     **A single 403 proves nothing**, because 403 is also how an access-controlled
@@ -1593,15 +1600,19 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
     foreign Origin first, and only judges the server when that control shows the
     same request would otherwise be accepted.
 
-    A legacy-only server rejects the modern control before it looks at Origin,
-    so the control falls back to the request every 2025-11-25 client opens
-    with: ``initialize``. Sessions that handshake opens are closed with DELETE.
-    ``details["control_shape"]`` records which request judged the server.
+    The modern control is ``server/discover``, mandatory in 2026-07-28, so a
+    server without tools is judged like any other. A legacy-only server rejects
+    the modern control before it looks at Origin, so the control falls back to
+    the request every 2025-11-25 client opens with: ``initialize``. Sessions
+    that handshake opens are closed with DELETE. Both controls drop any
+    ``Origin`` a caller configured as a client default — the control must be
+    the headerless twin of the spoofed request. ``details["control_shape"]``
+    records which request judged the server.
     """
     target_version = _target_version()
-    body = _request_body("tools/list", 10, _modern_meta(target_version))
-    headers = _request_headers(target_version, "tools/list")
-    control = await target.post(body, headers, follow_redirects=False)
+    body = _request_body("server/discover", 10, _modern_meta(target_version))
+    headers = _request_headers(target_version, "server/discover")
+    control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
     shape = "modern"
     unjudged: dict[str, Any] = {}
 
@@ -1609,7 +1620,7 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
         unjudged["modern_control_http_status"] = control.status_code
         body = _legacy_initialize_body(10)
         headers = _legacy_headers()
-        control = await target.post(body, headers, follow_redirects=False)
+        control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
         await target.end_session(control)
         shape = "legacy-initialize"
 

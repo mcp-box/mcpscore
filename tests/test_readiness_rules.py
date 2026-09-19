@@ -598,7 +598,7 @@ class TestReadinessScoringAxis:
         main_ids = {r.rule_id for r in auditor.results}
         assert readiness_ids
         assert "readiness_2026_no_session_id" in readiness_ids
-        # Origin validation scores in Security for every HTTP server (1.20.0).
+        # Origin validation scores in Security for every HTTP server, never on this axis.
         assert "readiness_2026_origin_validation" not in readiness_ids
         assert "security_origin_validation" in main_ids
         assert readiness_ids.isdisjoint(main_ids)

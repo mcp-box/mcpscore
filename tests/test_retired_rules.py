@@ -20,7 +20,7 @@ RETIRED_RULE_IDS = frozenset(
     {
         "capability_logging_present",
         "capability_resources_subscribe",
-        "readiness_2026_origin_validation",  # 1.20.0: scored in Security for every HTTP server
+        "readiness_2026_origin_validation",
     }
 )
 """rule_id is a public contract: these are retired, never reused."""
