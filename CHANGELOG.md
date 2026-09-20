@@ -13,11 +13,13 @@ modern, as a Security & Auth rule.
 ### Added
 
 - `security_origin_validation` (HIGH): the endpoint must refuse a request
-  carrying an invalid foreign `Origin` with HTTP 403, the DNS-rebinding
-  mitigation that 2025-11-25 Transports §Security Warning and 2026-07-28
-  Streamable HTTP §Security both make a MUST. A control request without the
-  header must be accepted first, so an access-controlled server is never
-  credited for a 403 it gives everyone. Not applicable over stdio. As a
+  carrying an invalid foreign `Origin`, the DNS-rebinding mitigation every
+  Streamable HTTP revision makes a MUST. Servers negotiating 2025-11-25 or
+  later must answer HTTP 403, as that text prescribes; 2025-03-26 and
+  2025-06-18 mandate validation without a status, so any 4xx refusal passes
+  there. A control request without the header must be accepted first, so an
+  access-controlled server is never credited for a refusal it gives
+  everyone. Not applicable over stdio or before 2025-03-26. As a
   security-group rule it carries `security-severity` in `--sarif` output.
 - The Origin probe falls back to a legacy `initialize` control when a server
   rejects the modern request shape, so 2025-11-25 servers are judged instead

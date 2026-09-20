@@ -1,8 +1,9 @@
 import re
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ..enums import MCPTransportType
 from ..probes import PROBE_MALFORMED_JSON, PROBE_ORIGIN_VALIDATION, ProbeOutcome
+from ..spec import compare
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
     SKIP_REASON_NOT_APPLICABLE,
@@ -399,34 +400,34 @@ class ErrorDataLeakRule(BaseRule):
 
 @register_rule
 class OriginHeaderValidationRule(BaseRule):
-    """The Streamable HTTP endpoint rejects an invalid foreign ``Origin`` with HTTP 403.
+    """The Streamable HTTP endpoint refuses a request carrying an invalid foreign ``Origin``.
 
     Every Streamable HTTP revision requires servers to validate the ``Origin``
     header of incoming connections, the direct mitigation for DNS rebinding.
-    The observation comes from ``probe_origin_validation``: a control request
-    without the header must be accepted before a foreign-Origin twin is judged,
-    so an access-controlled server is never credited for a 403 it gives everyone.
+    From 2025-11-25 the refusal MUST be HTTP 403; 2025-03-26 and 2025-06-18
+    mandate validation without prescribing a status, so on those revisions any
+    4xx refusal passes. The observation comes from ``probe_origin_validation``:
+    a control request without the header must be accepted before a
+    foreign-Origin twin is judged, so an access-controlled server is never
+    credited for a refusal it gives everyone.
 
     Scoring: 3 points (HIGH)
     """
 
     rule_id = "security_origin_validation"
     basis = (
-        "MCP 2025-11-25 Transports §Security Warning and 2026-07-28 Streamable HTTP §Security: "
-        "servers MUST validate the Origin header on all incoming connections to prevent DNS "
-        "rebinding, rejecting an invalid Origin with HTTP 403"
+        "Transports §Security Warning (2025-03-26, 2025-06-18) and Streamable HTTP §Security (2025-11-25, "
+        "2026-07-28): servers MUST validate the Origin header on all incoming connections to prevent DNS "
+        "rebinding; from 2025-11-25 an invalid Origin MUST be rejected with HTTP 403"
     )
     group_name = "security"
     group_order = 3
     rule_order = 4
+    min_spec_version = "2025-03-26"  # Streamable HTTP, and its Origin requirement, begin here
     probe_id: ClassVar[str] = PROBE_ORIGIN_VALIDATION
 
-    LEGACY_SPEC: ClassVar[str] = (
-        "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning"
-    )
-    MODERN_SPEC: ClassVar[str] = (
-        "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint"
-    )
+    FORBIDDEN_REQUIRED_FROM: ClassVar[str] = "2025-11-25"
+    """First revision whose text prescribes HTTP 403 for an invalid Origin."""
 
     @property
     def rule_name(self) -> str:
@@ -455,28 +456,49 @@ class OriginHeaderValidationRule(BaseRule):
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
+    @classmethod
+    def _requires_forbidden(cls, negotiated_version: str | None) -> bool:
+        """Whether the negotiated revision prescribes HTTP 403 (unknown versions are held to the current text)."""
+        return negotiated_version is None or compare(negotiated_version, cls.FORBIDDEN_REQUIRED_FROM) >= 0
+
+    @staticmethod
+    def _spec_url(negotiated_version: str | None) -> str:
+        if negotiated_version is None or compare(negotiated_version, "2026-07-28") >= 0:
+            return "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint"
+        return f"https://modelcontextprotocol.io/specification/{negotiated_version}/basic/transports#security-warning"
+
     def check(self, audit_data: AuditData) -> RuleResult:
-        """Pass when the foreign-Origin request was refused with HTTP 403."""
+        """Pass when the foreign-Origin request was refused as the negotiated revision requires."""
         probe = (audit_data.probes or {})[self.probe_id]
-        passed = probe.outcome is ProbeOutcome.SUPPORTED
-        shape = probe.details.get("control_shape")
+        status = probe.details.get("http_status")
+        strict = self._requires_forbidden(audit_data.protocol_version)
+        if strict:
+            passed = probe.outcome is ProbeOutcome.SUPPORTED
+            expected: dict[str, Any] = {"http_status": 403}
+            requirement = "with HTTP 403"
+        else:
+            passed = isinstance(status, int) and 400 <= status < 500
+            expected = {"http_status": "4xx"}
+            requirement = "with a 4xx status"
+        details = {
+            "spec": self._spec_url(audit_data.protocol_version),
+            "http_status": status,
+            "control_http_status": probe.details.get("control_http_status"),
+            "control_shape": probe.details.get("control_shape"),
+            # Present only after a fallback: the modern control this server rejected.
+            **{k: probe.details[k] for k in ("modern_control_http_status",) if k in probe.details},
+        }
         return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=(
-                "✅ Streamable HTTP rejects an invalid foreign Origin with HTTP 403"
+                f"✅ Streamable HTTP rejects an invalid foreign Origin {requirement}"
                 if passed
-                else "❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding"
+                else f"❌ Streamable HTTP does not reject an invalid foreign Origin {requirement}, "
+                "risking DNS rebinding"
             ),
-            details={
-                "spec": self.LEGACY_SPEC if shape == "legacy-initialize" else self.MODERN_SPEC,
-                "http_status": probe.details.get("http_status"),
-                "control_http_status": probe.details.get("control_http_status"),
-                "control_shape": shape,
-                # Present only after a fallback: the modern control this server rejected.
-                **{k: probe.details[k] for k in ("modern_control_http_status",) if k in probe.details},
-            },
+            details=details,
             suggested_fix=(
                 None
                 if passed
@@ -486,5 +508,5 @@ class OriginHeaderValidationRule(BaseRule):
                 )
             ),
             audit_data=audit_data,
-            expected={"http_status": 403},
+            expected=expected,
         )
