@@ -7,6 +7,7 @@ from mcpscore.rules import (
     BaseRule,
     ErrorDataLeakRule,
     MalformedRequestHandlingRule,
+    OriginHeaderValidationRule,
     RuleResult,
     RuleSeverity,
     StreamableHTTPTransportRule,
@@ -147,6 +148,7 @@ class TestAuditorSkipsNonApplicableRules:
             TLSEnabledRule(),
             MalformedRequestHandlingRule(),
             ErrorDataLeakRule(),
+            OriginHeaderValidationRule(),
             StreamableHTTPTransportRule(),
         ]
         auditor.audit_data = AuditData(transport_type=MCPTransportType.STDIO)
@@ -160,6 +162,7 @@ class TestAuditorSkipsNonApplicableRules:
             "security_tls_enabled": SKIP_REASON_NOT_APPLICABLE,
             "security_malformed_request_handling": SKIP_REASON_INSUFFICIENT_DATA,
             "security_error_data_leak": SKIP_REASON_NOT_APPLICABLE,
+            "security_origin_validation": SKIP_REASON_NOT_APPLICABLE,
             "transport_streamable_http": SKIP_REASON_NOT_APPLICABLE,
         }
 

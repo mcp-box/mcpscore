@@ -129,11 +129,12 @@ are skipped and excluded from the maximum, never failed.
   Names, titles, descriptions, JSON Schema validity, URIs, MIME types,
   annotations, and pagination behavior. These decide whether an agent picks
   the right tool and calls it correctly.
-- **Security & Auth** (11 rules): TLS version and certificate, error responses
-  that leak data, and for auth-gated servers the OAuth posture: the
-  `WWW-Authenticate` challenge, RFC 9728 resource metadata, the RFC 8414
-  authorization-server chain, and PKCE enforcement.
-- **Readiness** (21 rules): how ready the server is for the 2026-07-28 spec
+- **Security & Auth** (12 rules): TLS version and certificate, `Origin`
+  validation against DNS rebinding, error responses that leak data, and for
+  auth-gated servers the OAuth posture: the `WWW-Authenticate` challenge,
+  RFC 9728 resource metadata, the RFC 8414 authorization-server chain, and
+  PKCE enforcement.
+- **Readiness** (20 rules): how ready the server is for the 2026-07-28 spec
   revision, on its own axis. Servers already on the new stateless lifecycle
   get these points counted in the main score. Legacy servers see them as
   guidance.

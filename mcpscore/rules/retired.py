@@ -52,6 +52,16 @@ class RetiredRule:
 
 RETIRED_RULES: tuple[RetiredRule, ...] = (
     RetiredRule(
+        rule_id="readiness_2026_origin_validation",
+        version="1.20.0",
+        severity="HIGH",
+        reason=(
+            "Filed Origin validation as a 2026-07-28 readiness delta, but 2025-11-25 Transports §Security "
+            "Warning already made it a MUST for every Streamable HTTP server, and its probe never judged "
+            "legacy servers. Replaced by `security_origin_validation`, which scores every HTTP server once."
+        ),
+    ),
+    RetiredRule(
         rule_id="capability_resources_subscribe",
         version="1.1.0",
         severity="HIGH",

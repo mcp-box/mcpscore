@@ -3,11 +3,12 @@
 import pytest
 
 from mcpscore.enums import MCPTransportType
-from mcpscore.probes import PROBE_MALFORMED_JSON, ProbeOutcome, ProbeResult
+from mcpscore.probes import PROBE_MALFORMED_JSON, PROBE_ORIGIN_VALIDATION, ProbeOutcome, ProbeResult
 from mcpscore.rules import (
     AuditData,
     ErrorDataLeakRule,
     MalformedRequestHandlingRule,
+    OriginHeaderValidationRule,
     RuleSeverity,
     TLSEnabledRule,
 )
@@ -314,3 +315,128 @@ class TestErrorDataLeakRule:
         audit_data = AuditData(transport_type=MCPTransportType.STDIO)
 
         assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
+
+
+def _origin_audit(
+    outcome: ProbeOutcome | None, details: dict | None = None, protocol_version: str | None = "2025-11-25"
+) -> AuditData:
+    probes = (
+        {}
+        if outcome is None
+        else {PROBE_ORIGIN_VALIDATION: ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details or {})}
+    )
+    return AuditData(protocol_version=protocol_version, transport_type=MCPTransportType.STREAMABLE_HTTP, probes=probes)
+
+
+class TestOriginHeaderValidationRule:
+    @pytest.fixture
+    def rule(self):
+        return OriginHeaderValidationRule()
+
+    def test_identity(self, rule):
+        assert rule.rule_id == "security_origin_validation"
+        assert rule.group_name == "security"
+        assert rule.severity == RuleSeverity.HIGH
+        assert rule.probe_id == PROBE_ORIGIN_VALIDATION
+
+    def test_stdio_is_not_applicable(self, rule):
+        data = AuditData(transport_type=MCPTransportType.STDIO, probes={})
+        assert rule.skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_unobservable_control_is_not_applicable(self, rule):
+        data = _origin_audit(ProbeOutcome.NOT_APPLICABLE, {"control_http_status": 401, "reason": "access-controlled"})
+        assert rule.skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    @pytest.mark.parametrize("outcome", [None, ProbeOutcome.ERROR])
+    def test_missing_or_errored_probe_is_insufficient_data(self, rule, outcome):
+        assert rule.skip_reason(_origin_audit(outcome)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_applies_from_the_first_streamable_http_revision(self, rule):
+        assert rule.applies_to("2025-03-26")
+        assert rule.applies_to("2026-07-28")
+        assert not rule.applies_to("2024-11-05")
+
+    def test_passes_when_foreign_origin_is_refused(self, rule):
+        data = _origin_audit(
+            ProbeOutcome.SUPPORTED,
+            {"http_status": 403, "control_http_status": 200, "control_shape": "modern"},
+            protocol_version="2026-07-28",
+        )
+        assert rule.skip_reason(data) is None
+        result = rule.check(data)
+        assert result.passed
+        assert result.details["spec"].startswith("https://modelcontextprotocol.io/specification/2026-07-28/")
+        assert result.suggested_fix is None
+
+    def test_fails_a_legacy_server_that_accepts_any_origin(self, rule):
+        data = _origin_audit(
+            ProbeOutcome.UNSUPPORTED,
+            {
+                "http_status": 200,
+                "control_http_status": 200,
+                "control_shape": "legacy-initialize",
+                "modern_control_http_status": 400,
+            },
+        )
+        result = rule.check(data)
+        assert not result.passed
+        assert result.details["modern_control_http_status"] == 400
+        assert "DNS rebinding" in result.message
+        assert "HTTP status: 200" in result.message
+        assert result.details["spec"] == (
+            "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning"
+        )
+        assert result.details["control_shape"] == "legacy-initialize"
+        assert result.details["expected"] == {"http_status": 403}
+        assert result.suggested_fix
+        assert len(result.suggested_fix) <= 255
+
+    @pytest.mark.parametrize("version", ["2025-11-25", None])
+    def test_from_2025_11_25_only_403_counts(self, rule, version):
+        """2025-11-25 added the sub-bullet: an invalid Origin MUST get HTTP 403."""
+        data = _origin_audit(
+            ProbeOutcome.UNSUPPORTED,
+            {"http_status": 400, "control_http_status": 200, "control_shape": "legacy-initialize"},
+            protocol_version=version,
+        )
+        result = rule.check(data)
+        assert not result.passed
+        assert "with HTTP 403" in result.message
+        assert result.details["expected"] == {"http_status": 403}
+
+    @pytest.mark.parametrize("version", ["2025-03-26", "2025-06-18"])
+    def test_earlier_revisions_accept_any_4xx_refusal(self, rule, version):
+        """Those revisions mandate validation but prescribe no status."""
+        data = _origin_audit(
+            ProbeOutcome.UNSUPPORTED,
+            {"http_status": 400, "control_http_status": 200, "control_shape": "legacy-initialize"},
+            protocol_version=version,
+        )
+        result = rule.check(data)
+        assert result.passed
+        assert "with a 4xx status" in result.message
+        assert result.details["spec"] == (
+            f"https://modelcontextprotocol.io/specification/{version}/basic/transports#security-warning"
+        )
+
+    def test_earlier_revisions_still_fail_an_accepted_foreign_origin(self, rule):
+        data = _origin_audit(
+            ProbeOutcome.UNSUPPORTED,
+            {"http_status": 200, "control_http_status": 200, "control_shape": "legacy-initialize"},
+            protocol_version="2025-06-18",
+        )
+        result = rule.check(data)
+        assert not result.passed
+        assert result.details["expected"] == {"http_status": "4xx"}
+
+    def test_modern_shaped_evidence_is_held_to_403_whatever_the_session_negotiated(self, rule):
+        """A dual-era server answered a 2026-07-28 request; that revision's text applies."""
+        data = _origin_audit(
+            ProbeOutcome.UNSUPPORTED,
+            {"http_status": 400, "control_http_status": 200, "control_shape": "modern"},
+            protocol_version="2025-06-18",
+        )
+        result = rule.check(data)
+        assert not result.passed
+        assert "with HTTP 403" in result.message
+        assert result.details["spec"].startswith("https://modelcontextprotocol.io/specification/2026-07-28/")

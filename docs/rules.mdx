@@ -109,6 +109,7 @@ Sources: [npm package metadata](https://docs.npmjs.com/cli/v11/configuring-npm/p
 | `security_malformed_request_handling` | Malformed Request Handling | MEDIUM (2) | all versions |
 | `security_error_data_leak` | No Sensitive Data in Error Messages | MEDIUM (2) | all versions |
 | `auth_www_authenticate` | Auth - WWW-Authenticate Challenge | HIGH (3) | 2025-06-18 and later |
+| `security_origin_validation` | Origin Header Validated | HIGH (3) | 2025-03-26 and later |
 | `auth_protected_resource_metadata` | Auth - Protected Resource Metadata | HIGH (3) | 2025-06-18 and later |
 | `auth_authorization_servers_https` | Auth - Authorization Servers Present and HTTPS | HIGH (3) | 2025-06-18 and later |
 | `auth_challenge_references_metadata` | Auth - Challenge References Resource Metadata | MEDIUM (2) | 2025-06-18 and later |
@@ -221,7 +222,6 @@ normative citations behind each rule.
 | `readiness_2026_no_session_id` | Readiness 2026-07-28 - no session IDs | HIGH (3) | all versions |
 | `readiness_2026_removed_methods` | Readiness 2026-07-28 - removed methods | MEDIUM (2) | all versions |
 | `readiness_2026_supported_versions` | Readiness 2026-07-28 - supported versions listed | HIGH (3) | all versions |
-| `readiness_2026_origin_validation` | Readiness 2026-07-28 - invalid Origin rejected | HIGH (3) | all versions |
 | `readiness_2026_unknown_method_error` | Readiness 2026-07-28 - unknown method error | HIGH (3) | all versions |
 | `readiness_2026_response_content_type` | Readiness 2026-07-28 - response content type | HIGH (3) | all versions |
 | `readiness_2026_missing_protocol_version_rejected` | Readiness 2026-07-28 - missing protocol-version header rejected | LOW (1) | all versions |
@@ -245,5 +245,6 @@ mcpscore version that produced it; the check simply no longer exists.
 
 | Rule ID | Retired in | Last severity | Why |
 |---|---|---|---|
+| `readiness_2026_origin_validation` | 1.20.0 | HIGH | Filed Origin validation as a 2026-07-28 readiness delta, but 2025-11-25 Transports §Security Warning already made it a MUST for every Streamable HTTP server, and its probe never judged legacy servers. Replaced by `security_origin_validation`, which scores every HTTP server once. |
 | `capability_resources_subscribe` | 1.1.0 | HIGH | Scored the absence of an optional capability — 2025-11-25 Resources §Capabilities calls `subscribe` optional — and 2026-07-28 removes `resources/subscribe` outright (SEP-2575). |
 | `capability_logging_present` | 1.1.0 | MEDIUM | Scored the absence of an optional capability, and contradicted `readiness_2026_deprecated_features`, which fails a server for *declaring* `logging` (deprecated by SEP-2577). No server could pass both. |

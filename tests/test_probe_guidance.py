@@ -159,7 +159,8 @@ def test_each_rule_guidance_contract(rule_id, failure, monkeypatch):
 
 def test_inventory_covers_all_45_rules():
     assert len(RULES) == 45
-    assert sum(r.group_name == "readiness" for r in RULES.values()) == 21
+    assert sum(r.group_name == "readiness" for r in RULES.values()) == 20
+    assert sum(r.group_name == "security" for r in RULES.values()) == 12
 
 
 @pytest.mark.parametrize("outcome", [ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE])

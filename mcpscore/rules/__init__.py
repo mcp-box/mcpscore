@@ -84,7 +84,6 @@ from .readiness import (
     MissingMethodHeaderReadinessRule,
     MissingProtocolVersionHeaderReadinessRule,
     NoSessionIdReadinessRule,
-    OriginValidationRule,
     PromptNameHeaderMismatchReadinessRule,
     RemovedMethodsReadinessRule,
     ResourceNameHeaderMismatchReadinessRule,
@@ -121,6 +120,7 @@ from .resources import (
 from .security import (
     ErrorDataLeakRule,
     MalformedRequestHandlingRule,
+    OriginHeaderValidationRule,
     TLSEnabledRule,
 )
 from .server_info import (
@@ -187,7 +187,7 @@ __all__ = (
     "MissingMethodHeaderReadinessRule",
     "MissingProtocolVersionHeaderReadinessRule",
     "NoSessionIdReadinessRule",
-    "OriginValidationRule",
+    "OriginHeaderValidationRule",
     "PackageDescriptionPresentRule",
     "PackageLicenseDeclaredRule",
     "PackageNotWithdrawnRule",

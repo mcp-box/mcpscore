@@ -244,12 +244,14 @@ async def test_legacy_server_is_unsupported_but_observed():
     ):
         assert results[probe_id].outcome is ProbeOutcome.UNSUPPORTED, probe_id
 
-    # Not UNSUPPORTED: a legacy server rejects the modern control request, so
-    # its Origin handling was never exercised. Claiming "does not reject an
-    # invalid Origin" would assert something this probe did not observe. The
-    # rule skips legacy servers regardless, so no score depends on it.
+    # Not UNSUPPORTED: this legacy server rejects the modern control AND the
+    # legacy `initialize` fallback, so its Origin handling was never exercised.
+    # Claiming "does not reject an invalid Origin" would assert something this
+    # probe did not observe.
     origin = results[PROBE_ORIGIN_VALIDATION]
     assert origin.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert origin.details["modern_control_http_status"] == 400
+    assert origin.details["control_shape"] == "legacy-initialize"
     assert origin.details["control_http_status"] == 400
 
     # The observation probe still succeeds against a legacy server.
@@ -291,6 +293,172 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
     assert results[PROBE_ORIGIN_VALIDATION].details["http_status"] == 307
     assert results[PROBE_UNKNOWN_METHOD].outcome is ProbeOutcome.UNSUPPORTED
     assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
+
+
+def _stateful_legacy_handler(
+    *,
+    rejects_foreign_origin: bool,
+    deletes: list[str],
+    delete_fails: bool = False,
+    unknown_method_status: int = 400,
+):
+    """Simulate a 2025-11-25 server: `initialize` opens a session, everything else needs one.
+
+    ``unknown_method_status`` models servers that answer an unknown method with
+    HTTP 200 carrying a JSON-RPC error instead of an HTTP error.
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "DELETE":
+            deletes.append(request.headers.get("Mcp-Session-Id", ""))
+            if delete_fails:
+                raise httpx2.ConnectError("connection reset during DELETE")
+            return httpx2.Response(200)
+        if request.method != "POST":
+            return httpx2.Response(405)
+        body = json.loads(request.content)
+        if request.headers.get("Origin") == ORIGIN_PROBE_VALUE and rejects_foreign_origin:
+            return httpx2.Response(403, json={"detail": "bad origin"})
+        if body.get("method") == "initialize":
+            return httpx2.Response(
+                200,
+                headers={"Mcp-Session-Id": "sess-1"},
+                json={"jsonrpc": "2.0", "id": body.get("id"), "result": {"protocolVersion": "2025-11-25"}},
+            )
+        if body.get("method") == "server/discover":
+            return _rpc_error(
+                body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=unknown_method_status
+            )
+        return _rpc_error(body.get("id"), -32600, "Bad Request: no session")
+
+    return handler
+
+
+async def test_origin_probe_does_not_mistake_a_200_json_rpc_error_for_an_accepted_control():
+    """A legacy server answering `server/discover` with 200 + method-not-found is judged via `initialize`."""
+    deletes: list[str] = []
+    handler = _stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes, unknown_method_status=200)
+    results = await _run(handler)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert origin.details["modern_control_http_status"] == 200
+
+
+async def test_origin_probe_reports_the_json_rpc_error_when_no_control_is_served():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        return _rpc_error(body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=200)
+
+    results = await _run(handler)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert "JSON-RPC error -32601" in origin.details["reason"]
+
+
+async def test_origin_probe_judges_a_legacy_server_through_initialize():
+    deletes: list[str] = []
+    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes))
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert origin.details["modern_control_http_status"] == 400
+    assert origin.details["control_http_status"] == 200
+    assert origin.details["http_status"] == 403
+    # The control handshake opened a session; the probe closed it. The 403 opened none.
+    assert deletes == ["sess-1"]
+
+
+async def test_origin_probe_survives_a_failed_session_delete():
+    """Closing the handshake session is a courtesy; its failure never changes the verdict."""
+    deletes: list[str] = []
+    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes, delete_fails=True))
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert deletes == ["sess-1"]
+
+
+async def test_origin_probe_control_ignores_a_caller_configured_origin():
+    """A `--header 'Origin: …'` default must not turn the control into a spoofed request."""
+    seen: list[str | None] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("method") == "server/discover":
+            seen.append(request.headers.get("Origin"))
+            if request.headers.get("Origin") is not None:
+                return httpx2.Response(403)
+            return _rpc_result(body.get("id"), {"supportedVersions": ["2026-07-28"], "resultType": "complete"})
+        return _modern_server_handler(request)
+
+    async with (
+        httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Origin": "https://caller.example"}
+        ) as client,
+        httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as fresh_client,
+    ):
+        results = await run_all_probes(URL, client=client, fresh_client=fresh_client)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_http_status"] == 200
+    # The control went out with no Origin at all; the spoofed twin carried ours.
+    assert None in seen
+    assert ORIGIN_PROBE_VALUE in seen
+
+
+async def test_origin_probe_session_delete_carries_the_negotiated_version_and_no_origin():
+    deletes: list[dict[str, str | None]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "DELETE":
+            deletes.append(
+                {
+                    "session": request.headers.get("Mcp-Session-Id"),
+                    "version": request.headers.get("MCP-Protocol-Version"),
+                    "origin": request.headers.get("Origin"),
+                }
+            )
+            return httpx2.Response(200)
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if request.headers.get("Origin") == ORIGIN_PROBE_VALUE:
+            return httpx2.Response(403)
+        if body.get("method") == "initialize":
+            return httpx2.Response(
+                200,
+                headers={"Mcp-Session-Id": "sess-9"},
+                json={"jsonrpc": "2.0", "id": body.get("id"), "result": {"protocolVersion": "2025-06-18"}},
+            )
+        return _rpc_error(body.get("id"), -32600, "Bad Request: no session")
+
+    async with (
+        httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Origin": "https://caller.example"}
+        ) as client,
+        httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as fresh_client,
+    ):
+        results = await run_all_probes(URL, client=client, fresh_client=fresh_client)
+
+    assert results[PROBE_ORIGIN_VALIDATION].outcome is ProbeOutcome.SUPPORTED
+    assert deletes == [{"session": "sess-9", "version": "2025-06-18", "origin": None}]
+
+
+async def test_origin_probe_fails_a_legacy_server_that_accepts_any_origin():
+    deletes: list[str] = []
+    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=False, deletes=deletes))
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.UNSUPPORTED
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert origin.details["http_status"] == 200
+    # Both handshakes opened sessions; both were closed.
+    assert deletes == ["sess-1", "sess-1"]
 
 
 async def test_new_http_validation_probes_reject_noncompliant_behavior():
@@ -971,7 +1139,7 @@ async def test_origin_probe_cannot_judge_an_access_controlled_server():
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content) if request.method == "POST" else {}
-        if body.get("method") == "tools/list":
+        if body.get("method") == "server/discover":
             return httpx2.Response(403, json={"detail": "forbidden"})
         return _modern_server_handler(request)
 
@@ -989,12 +1157,20 @@ async def test_origin_probe_passes_only_when_the_control_is_accepted():
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content) if request.method == "POST" else {}
-        if body.get("method") == "tools/list":
+        if body.get("method") == "server/discover":
             origin = request.headers.get("Origin")
             seen.append(origin)
             if origin == "https://mcpscore.invalid":
                 return httpx2.Response(403, json={"detail": "bad origin"})
-            return _rpc_result(body.get("id"), {"tools": [], "resultType": "complete"})
+            return _rpc_result(
+                body.get("id"),
+                {
+                    "supportedVersions": ["2025-11-25", "2026-07-28"],
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                    "resultType": "complete",
+                },
+            )
         return _modern_server_handler(request)
 
     results = await _run(handler)
@@ -1002,7 +1178,7 @@ async def test_origin_probe_passes_only_when_the_control_is_accepted():
     origin = results[PROBE_ORIGIN_VALIDATION]
     assert origin.outcome is ProbeOutcome.SUPPORTED
     assert origin.details["control_http_status"] == 200
-    # Other probes also call tools/list, so `seen` holds more than this probe's
+    # Other probes also call server/discover, so `seen` holds more than this probe's
     # two requests. Pin what matters: the spoofed Origin was sent exactly once,
     # and the request immediately before it carried none — that ordering is the
     # control. Compared by equality, not substring, so it cannot pass on a URL

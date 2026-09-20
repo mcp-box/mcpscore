@@ -353,16 +353,13 @@ class TestContentTypeRuleOnStdio:
         """HTTP-only probes are not missing data on stdio; their subject is absent."""
         from mcpscore.rules import AuditData
         from mcpscore.rules.base import SKIP_REASON_NOT_APPLICABLE
-        from mcpscore.rules.readiness import (
-            HeaderValidationReadinessRule,
-            NoSessionIdReadinessRule,
-            OriginValidationRule,
-        )
+        from mcpscore.rules.readiness import HeaderValidationReadinessRule, NoSessionIdReadinessRule
+        from mcpscore.rules.security import OriginHeaderValidationRule
 
         audit_data = AuditData(probes=modern_probes)
         audit_data.transport_type = MCPTransportType.STDIO
 
-        for rule in (HeaderValidationReadinessRule(), NoSessionIdReadinessRule(), OriginValidationRule()):
+        for rule in (HeaderValidationReadinessRule(), NoSessionIdReadinessRule(), OriginHeaderValidationRule()):
             assert rule.skip_reason(audit_data) == SKIP_REASON_NOT_APPLICABLE
 
 

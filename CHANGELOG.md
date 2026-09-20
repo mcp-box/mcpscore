@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+`Origin` validation now scores every Streamable HTTP server, legacy or
+modern, as a Security & Auth rule.
+
+### Added
+
+- `security_origin_validation` (HIGH): the endpoint must refuse a request
+  carrying an invalid foreign `Origin`, the DNS-rebinding mitigation every
+  Streamable HTTP revision makes a MUST. Servers negotiating 2025-11-25 or
+  later must answer HTTP 403, as that text prescribes; 2025-03-26 and
+  2025-06-18 mandate validation without a status, so any 4xx refusal passes
+  there. A control request without the header must be accepted first, so an
+  access-controlled server is never credited for a refusal it gives
+  everyone. Not applicable over stdio or before 2025-03-26. As a
+  security-group rule it carries `security-severity` in `--sarif` output.
+- The Origin probe falls back to a legacy `initialize` control when a server
+  rejects the modern request shape, so 2025-11-25 servers are judged instead
+  of skipped; sessions the handshake opens are closed with DELETE. The
+  observation's `details` record `control_shape` (`modern` or
+  `legacy-initialize`) and, after a fallback, `modern_control_http_status`.
+
+### Removed
+
+- `readiness_2026_origin_validation` is retired (see the Retired rules table).
+  It filed a requirement every Streamable HTTP revision already carried as a
+  2026-07-28 readiness delta, and its probe never judged legacy servers. The
+  readiness axis is now 20 rules (max 41 points on a full modern audit); a
+  modern server's main score is unchanged in total because the same 3 points
+  now come from Security & Auth, while a legacy HTTP server gains 3 points of
+  assessable Security & Auth.
+
+
 ## [1.19.0] - 2026-09-17
 
 A dual-era server whose legacy `tools/list` fails is now judged on the tools

@@ -54,7 +54,7 @@ from mcp_types import JSONRPCRequest
 
 from mcpscore.redirects import send_within_origin
 from mcpscore.report_evidence import report_evidence
-from mcpscore.spec import DRAFT, LATEST, Era
+from mcpscore.spec import DRAFT, LATEST, SPEC_VERSIONS, Era, Lifecycle
 from mcpscore.tls import async_client
 
 logger = logging.getLogger(__name__)
@@ -369,6 +369,29 @@ def _request_body(method: str, request_id: int, meta: dict[str, Any], params: di
     return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": body_params}
 
 
+LEGACY_INITIALIZE_VERSION = next(v for v in reversed(SPEC_VERSIONS) if v.lifecycle is Lifecycle.STATEFUL).version
+"""Newest revision with the ``initialize`` handshake; the fallback control speaks it."""
+
+
+def _legacy_initialize_body(request_id: int) -> dict:
+    """Build the ``initialize`` request every stateful-lifecycle client opens with."""
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": LEGACY_INITIALIZE_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": CLIENT_NAME, "version": client_version()},
+        },
+    }
+
+
+def _legacy_headers() -> dict[str, str]:
+    """Headers of a stateful-lifecycle POST; ``initialize`` needs no version header."""
+    return {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+
+
 def _request_headers(protocol_version: str, method: str, name: str | None = None) -> dict[str, str]:
     """Build the standard headers of a modern Streamable HTTP POST (SEP-2243)."""
     headers = {
@@ -536,6 +559,28 @@ class _HttpTarget:
             text,
             "truncated" if truncated else None,
         )
+
+    async def end_session(self, response: _HttpProbeResponse) -> None:
+        """Best-effort DELETE of a session a legacy ``initialize`` opened; never raises.
+
+        Carries the negotiated ``MCP-Protocol-Version`` (a MUST on every request
+        after ``initialize``) and no ``Origin``, so a conforming server has no
+        reason to refuse the cleanup.
+        """
+        session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
+        if not session_id:
+            return
+        negotiated = (response.result or {}).get("protocolVersion")
+        headers = {
+            "Mcp-Session-Id": session_id,
+            "MCP-Protocol-Version": negotiated if isinstance(negotiated, str) else LEGACY_INITIALIZE_VERSION,
+        }
+        try:
+            request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
+            request.headers.pop("Origin", None)
+            await self.client.send(request, follow_redirects=False)
+        except Exception:  # noqa: BLE001 — courtesy only; the observation is already made
+            return
 
     async def get_status(self, headers: dict[str, str]) -> _HttpProbeResponse:
         """GET the endpoint and close without consuming a possible legacy SSE stream."""
@@ -1539,11 +1584,13 @@ async def _probe_removed_method(target: _ProbeTarget) -> ProbeResult:
 
 
 async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
-    """Send a harmless list request with an invalid foreign ``Origin``.
+    """Send a harmless request with an invalid foreign ``Origin``.
 
     Streamable HTTP servers MUST validate every supplied Origin to prevent DNS
-    rebinding and MUST reject an invalid one with HTTP 403. The request uses
-    ``tools/list`` and cannot invoke server-side tool behavior.
+    rebinding and MUST reject an invalid one with HTTP 403 — a requirement of
+    every Streamable HTTP revision, not only 2026-07-28. The request is a
+    ``server/discover`` (modern) or ``initialize`` (legacy) and cannot invoke
+    server-side tool behavior.
 
     **A single 403 proves nothing**, because 403 is also how an access-controlled
     server refuses everyone. Judged on its own, every server that rejects
@@ -1552,40 +1599,66 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
     unauthenticated request. So this sends a control request *without* the
     foreign Origin first, and only judges the server when that control shows the
     same request would otherwise be accepted.
+
+    The modern control is ``server/discover``, mandatory in 2026-07-28, so a
+    server without tools is judged like any other. A legacy-only server rejects
+    the modern control before it looks at Origin, so the control falls back to
+    the request every 2025-11-25 client opens with: ``initialize``. Sessions
+    that handshake opens are closed with DELETE. Both controls drop any
+    ``Origin`` a caller configured as a client default — the control must be
+    the headerless twin of the spoofed request. ``details["control_shape"]``
+    records which request judged the server.
     """
     target_version = _target_version()
-    body = _request_body("tools/list", 10, _modern_meta(target_version))
-    control = await target.post(
-        body,
-        _request_headers(target_version, "tools/list"),
-        follow_redirects=False,
-    )
+    body = _request_body("server/discover", 10, _modern_meta(target_version))
+    headers = _request_headers(target_version, "server/discover")
+    control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
+    shape = "modern"
+    unjudged: dict[str, Any] = {}
+
+    # "Accepted" means the server answered the method, not merely 2xx: a legacy
+    # server may return HTTP 200 carrying a JSON-RPC method-not-found error,
+    # and judging that server on a request it cannot serve would fail it for
+    # the wrong reason.
+    def served(response: _HttpProbeResponse, field: str) -> bool:
+        return 200 <= response.status_code < 300 and (response.result or {}).get(field) is not None
+
+    if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
+        unjudged["modern_control_http_status"] = control.status_code
+        body = _legacy_initialize_body(10)
+        headers = _legacy_headers()
+        control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
+        await target.end_session(control)
+        shape = "legacy-initialize"
+        accepted = served(control, "protocolVersion")
+    else:
+        accepted = served(control, "supportedVersions")
 
     # Decide on the control before sending anything spoofed. When the answer is
     # already unknowable, the second request would add security-relevant traffic
     # (and another timeout) to a server we cannot judge anyway.
+    unjudged["control_http_status"] = control.status_code
+    unjudged["control_shape"] = shape
     if control.status_code in AUTH_GATED_STATUSES:
         # The endpoint refuses the control too, so a 403 to the foreign Origin
         # would say nothing about Origin handling. Not a failure — an
         # unanswerable question.
-        unjudged: dict[str, Any] = {
-            "control_http_status": control.status_code,
-            "reason": "control request is access-controlled; Origin handling not observable",
-        }
+        unjudged["reason"] = "control request is access-controlled; Origin handling not observable"
         return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
-    if not 200 <= control.status_code < 300:
-        unjudged = {
-            "control_http_status": control.status_code,
-            "reason": f"control request was not accepted (HTTP {control.status_code})",
-        }
+    if not accepted:
+        unjudged["reason"] = f"control request was not accepted (HTTP {control.status_code}" + (
+            f", JSON-RPC error {control.error_code})" if control.error_code is not None else ")"
+        )
         return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
 
-    headers = _request_headers(target_version, "tools/list")
-    headers["Origin"] = ORIGIN_PROBE_VALUE
-    response = await target.post(body, headers, follow_redirects=False)
+    spoofed = dict(headers)
+    spoofed["Origin"] = ORIGIN_PROBE_VALUE
+    response = await target.post(body, spoofed, follow_redirects=False)
+    if shape == "legacy-initialize":
+        await target.end_session(response)
 
     details = _base_details(response)
-    details["control_http_status"] = control.status_code
+    details.update(unjudged)  # control status and shape, plus the rejected modern control when it fell back
     outcome = ProbeOutcome.SUPPORTED if response.status_code == 403 else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details)
 

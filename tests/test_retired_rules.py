@@ -16,7 +16,13 @@ from mcpscore.rules import AuditData, create_all_rules
 from mcpscore.rules.base import READINESS_GROUP
 from mcpscore.rules.retired import RETIRED_RULES
 
-RETIRED_RULE_IDS = frozenset({"capability_logging_present", "capability_resources_subscribe"})
+RETIRED_RULE_IDS = frozenset(
+    {
+        "capability_logging_present",
+        "capability_resources_subscribe",
+        "readiness_2026_origin_validation",
+    }
+)
 """rule_id is a public contract: these are retired, never reused."""
 
 
