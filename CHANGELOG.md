@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-09-20
+
 `Origin` validation now scores every Streamable HTTP server, legacy or
 modern, as a Security & Auth rule.
 
@@ -1721,7 +1723,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.19.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.20.0...HEAD
+[1.20.0]: https://github.com/mcp-box/mcpscore/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/mcp-box/mcpscore/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/mcp-box/mcpscore/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/mcp-box/mcpscore/compare/v1.16.0...v1.17.0
