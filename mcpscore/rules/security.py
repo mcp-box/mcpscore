@@ -457,13 +457,20 @@ class OriginHeaderValidationRule(BaseRule):
         return None
 
     @classmethod
-    def _requires_forbidden(cls, negotiated_version: str | None) -> bool:
-        """Whether the negotiated revision prescribes HTTP 403 (unknown versions are held to the current text)."""
-        return negotiated_version is None or compare(negotiated_version, cls.FORBIDDEN_REQUIRED_FROM) >= 0
+    def _requires_forbidden(cls, negotiated_version: str | None, control_shape: str | None) -> bool:
+        """Whether the refused request falls under text that prescribes HTTP 403.
+
+        A modern-shaped probe request is a 2026-07-28 request whatever the
+        legacy session negotiated; otherwise the negotiated revision decides,
+        and an unknown one is held to the current text.
+        """
+        if control_shape == "modern" or negotiated_version is None:
+            return True
+        return compare(negotiated_version, cls.FORBIDDEN_REQUIRED_FROM) >= 0
 
     @staticmethod
-    def _spec_url(negotiated_version: str | None) -> str:
-        if negotiated_version is None or compare(negotiated_version, "2026-07-28") >= 0:
+    def _spec_url(negotiated_version: str | None, control_shape: str | None) -> str:
+        if control_shape == "modern" or negotiated_version is None or compare(negotiated_version, "2026-07-28") >= 0:
             return "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint"
         return f"https://modelcontextprotocol.io/specification/{negotiated_version}/basic/transports#security-warning"
 
@@ -471,7 +478,8 @@ class OriginHeaderValidationRule(BaseRule):
         """Pass when the foreign-Origin request was refused as the negotiated revision requires."""
         probe = (audit_data.probes or {})[self.probe_id]
         status = probe.details.get("http_status")
-        strict = self._requires_forbidden(audit_data.protocol_version)
+        shape = probe.details.get("control_shape")
+        strict = self._requires_forbidden(audit_data.protocol_version, shape)
         if strict:
             passed = probe.outcome is ProbeOutcome.SUPPORTED
             expected: dict[str, Any] = {"http_status": 403}
@@ -481,10 +489,10 @@ class OriginHeaderValidationRule(BaseRule):
             expected = {"http_status": "4xx"}
             requirement = "with a 4xx status"
         details = {
-            "spec": self._spec_url(audit_data.protocol_version),
+            "spec": self._spec_url(audit_data.protocol_version, shape),
             "http_status": status,
             "control_http_status": probe.details.get("control_http_status"),
-            "control_shape": probe.details.get("control_shape"),
+            "control_shape": shape,
             # Present only after a fallback: the modern control this server rejected.
             **{k: probe.details[k] for k in ("modern_control_http_status",) if k in probe.details},
         }

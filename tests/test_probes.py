@@ -295,8 +295,18 @@ async def test_origin_and_unknown_method_probes_reject_noncompliant_behavior():
     assert results[PROBE_UNKNOWN_METHOD].details["http_status"] == 200
 
 
-def _stateful_legacy_handler(*, rejects_foreign_origin: bool, deletes: list[str], delete_fails: bool = False):
-    """Simulate a 2025-11-25 server: `initialize` opens a session, everything else needs one."""
+def _stateful_legacy_handler(
+    *,
+    rejects_foreign_origin: bool,
+    deletes: list[str],
+    delete_fails: bool = False,
+    unknown_method_status: int = 400,
+):
+    """Simulate a 2025-11-25 server: `initialize` opens a session, everything else needs one.
+
+    ``unknown_method_status`` models servers that answer an unknown method with
+    HTTP 200 carrying a JSON-RPC error instead of an HTTP error.
+    """
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "DELETE":
@@ -315,9 +325,38 @@ def _stateful_legacy_handler(*, rejects_foreign_origin: bool, deletes: list[str]
                 headers={"Mcp-Session-Id": "sess-1"},
                 json={"jsonrpc": "2.0", "id": body.get("id"), "result": {"protocolVersion": "2025-11-25"}},
             )
+        if body.get("method") == "server/discover":
+            return _rpc_error(
+                body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=unknown_method_status
+            )
         return _rpc_error(body.get("id"), -32600, "Bad Request: no session")
 
     return handler
+
+
+async def test_origin_probe_does_not_mistake_a_200_json_rpc_error_for_an_accepted_control():
+    """A legacy server answering `server/discover` with 200 + method-not-found is judged via `initialize`."""
+    deletes: list[str] = []
+    handler = _stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes, unknown_method_status=200)
+    results = await _run(handler)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.SUPPORTED
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert origin.details["modern_control_http_status"] == 200
+
+
+async def test_origin_probe_reports_the_json_rpc_error_when_no_control_is_served():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        return _rpc_error(body.get("id"), ERROR_METHOD_NOT_FOUND, "Method not found", http_status=200)
+
+    results = await _run(handler)
+
+    origin = results[PROBE_ORIGIN_VALIDATION]
+    assert origin.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert origin.details["control_shape"] == "legacy-initialize"
+    assert "JSON-RPC error -32601" in origin.details["reason"]
 
 
 async def test_origin_probe_judges_a_legacy_server_through_initialize():

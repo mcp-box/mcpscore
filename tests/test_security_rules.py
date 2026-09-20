@@ -428,3 +428,15 @@ class TestOriginHeaderValidationRule:
         result = rule.check(data)
         assert not result.passed
         assert result.details["expected"] == {"http_status": "4xx"}
+
+    def test_modern_shaped_evidence_is_held_to_403_whatever_the_session_negotiated(self, rule):
+        """A dual-era server answered a 2026-07-28 request; that revision's text applies."""
+        data = _origin_audit(
+            ProbeOutcome.UNSUPPORTED,
+            {"http_status": 400, "control_http_status": 200, "control_shape": "modern"},
+            protocol_version="2025-06-18",
+        )
+        result = rule.check(data)
+        assert not result.passed
+        assert "with HTTP 403" in result.message
+        assert result.details["spec"].startswith("https://modelcontextprotocol.io/specification/2026-07-28/")

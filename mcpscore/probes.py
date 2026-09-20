@@ -1616,13 +1616,23 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
     shape = "modern"
     unjudged: dict[str, Any] = {}
 
-    if control.status_code not in AUTH_GATED_STATUSES and not 200 <= control.status_code < 300:
+    # "Accepted" means the server answered the method, not merely 2xx: a legacy
+    # server may return HTTP 200 carrying a JSON-RPC method-not-found error,
+    # and judging that server on a request it cannot serve would fail it for
+    # the wrong reason.
+    def served(response: _HttpProbeResponse, field: str) -> bool:
+        return 200 <= response.status_code < 300 and (response.result or {}).get(field) is not None
+
+    if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
         unjudged["modern_control_http_status"] = control.status_code
         body = _legacy_initialize_body(10)
         headers = _legacy_headers()
         control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
         await target.end_session(control)
         shape = "legacy-initialize"
+        accepted = served(control, "protocolVersion")
+    else:
+        accepted = served(control, "supportedVersions")
 
     # Decide on the control before sending anything spoofed. When the answer is
     # already unknowable, the second request would add security-relevant traffic
@@ -1635,8 +1645,10 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
         # unanswerable question.
         unjudged["reason"] = "control request is access-controlled; Origin handling not observable"
         return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
-    if not 200 <= control.status_code < 300:
-        unjudged["reason"] = f"control request was not accepted (HTTP {control.status_code})"
+    if not accepted:
+        unjudged["reason"] = f"control request was not accepted (HTTP {control.status_code}" + (
+            f", JSON-RPC error {control.error_code})" if control.error_code is not None else ")"
+        )
         return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
 
     spoofed = dict(headers)
