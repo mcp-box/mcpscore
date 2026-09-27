@@ -16,7 +16,7 @@ from mcpscore.spec import DRAFT, LATEST
 
 HEADER = """\
 ---
-title: "Rules Reference"
+title: "Rules reference"
 description: "Every rule mcpscore runs — generated from the rule registry, so it cannot drift from the code."
 icon: "list-check"
 ---
