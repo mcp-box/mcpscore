@@ -14,7 +14,8 @@
       {
         "group": "Get Started",
         "pages": [
-          "index"
+          "index",
+          "local-servers"
         ]
       },
       {
@@ -22,6 +23,7 @@
         "pages": [
           "authenticated-servers",
           "package-audits",
+          "improve-your-score",
           "badge"
         ]
       },
@@ -30,7 +32,8 @@
         "pages": [
           "smoke-mode",
           "configure-rules",
-          "github-action"
+          "github-action",
+          "ci-other-platforms"
         ]
       },
       {
@@ -44,7 +47,8 @@
         "group": "Reference",
         "pages": [
           "cli",
-          "rules"
+          "rules",
+          "troubleshooting"
         ]
       }
     ]

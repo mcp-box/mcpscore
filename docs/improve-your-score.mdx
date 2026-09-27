@@ -1,0 +1,419 @@
+---
+title: "Improve your score"
+description: "The rules most MCP servers fail, ranked by how many servers fail them, with the fix for each."
+icon: "arrow-trend-up"
+---
+
+Most of the points MCP servers lose, they lose on the same dozen rules. The
+table ranks them by how many real servers fail each one. Start at the top of
+the list: every fix below is a few lines of code, and most are worth points
+on almost every server.
+
+| Rule | Fails on | Independent hosts | Points | Fix |
+|---|---:|---:|---:|---|
+| `pagination_tools_invalid_cursor` | 98% | 97% | 1 per list | [Reject cursors you never issued](#step-4-reject-cursors-you-never-issued) |
+| `server_title_present` | 84% | 76% | 2 | [Describe your server](#step-1-describe-your-server) |
+| `security_origin_validation` | 90% | 82% | 3 | [Validate the Origin header](#step-3-validate-the-origin-header) |
+| `capability_tools_list_changed` | 65% | 57% | 1 | [List-change notifications](#list-change-notifications) |
+| `protocol_version_latest` | 47% | 46% | 2 | [Latest protocol revision](#latest-protocol-revision) |
+| `server_websiteurl_present` | 86% | 87% | 1 | [Describe your server](#step-1-describe-your-server) |
+| `tools_annotations_present` | 53% | 44% | 2 | [Describe your tools](#step-2-describe-your-tools) |
+| `server_instructions_present` | 43% | 41% | 1 | [Describe your server](#step-1-describe-your-server) |
+| `server_icons_present` | 77% | 93% | 1 | [Describe your server](#step-1-describe-your-server) |
+| `tools_input_properties_documented` | 41% | 45% | 2 | [Describe your tools](#step-2-describe-your-tools) |
+| `tools_title_present_in_all` | 51% | 42% | 1 | [Describe your tools](#step-2-describe-your-tools) |
+| `security_malformed_request_handling` | 18% | 26% | 2 | [Malformed requests](#malformed-requests) |
+
+The rows are ordered by how many servers fail the rule. "Fails on" is the
+share of servers the rule applied to. A rule is one check, identified by its
+`rule_id`; look any of them up in the [rules reference](/rules).
+
+<Note>
+  Measured on 13,547 public MCP servers that mcpscore 1.20.0 audited in full
+  on 2026-09-20 and 2026-09-21. "Independent hosts" leaves out the 18 hosting
+  platforms with 100 or more servers each, because a platform decides some of
+  these results for every server it hosts.
+</Note>
+
+## Start from a real server
+
+The fixes below are applied to one small server, built with the MCP Python
+SDK 2.x and served over Streamable HTTP. Each step adds one change and
+re-audits it, so you can see what every change is worth. The code is Python;
+each step also names the protocol field the rule reads, which any SDK can
+set.
+
+```python server.py
+from mcp.server import MCPServer
+
+mcp = MCPServer("notes")
+
+
+@mcp.tool()
+def search_notes(query: str) -> list[str]:
+    """Search your notes and return the titles that match."""
+    return [f"Note about {query}"]
+
+
+if __name__ == "__main__":
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8765)
+```
+
+Install the SDK, start the server, then audit it from a second terminal:
+
+```bash
+pip install "mcp>=2.2"
+python server.py
+mcpscore http://127.0.0.1:8765/mcp
+```
+
+```text
+...
+❌ Server version is not present in server info. First affected field: server "/serverInfo/version".
+❌ Server title is not present in server info. This is an optional quality recommendation. ...
+❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding. Observed HTTP status: 200.
+❌ Number of tools without behavior annotations: 1. This is an optional quality recommendation. ...
+❌ tools/list returned a page for an invalid cursor instead of JSON-RPC -32602.
+...
+Audit finished. Final score: 122/151
+```
+
+Every failed rule prints a `Fix:` line under it. The four steps below turn
+most of them into passes.
+
+## Step 1: describe your server
+
+Clients show your server by its `serverInfo`: a `title` for people, a
+`version` for bug reports, `instructions` that tell the model when to use
+it, a `websiteUrl`, and `icons`. Set all five where you create the server:
+
+```python server.py highlight={2,4-11}
+from mcp.server import MCPServer
+from mcp.types import Icon
+
+mcp = MCPServer(
+    "notes",
+    title="Notes",
+    version="1.4.0",
+    instructions="Search the user's notes by keyword. Read-only: this server never edits notes.",
+    website_url="https://notes.example.com/docs/mcp",
+    icons=[Icon(src="https://notes.example.com/icon.png", mime_type="image/png")],
+)
+```
+
+Restart the server and audit it again:
+
+```text
+✅ Server version is present: "1.4.0" (format not checked).
+✅ Server title is present: "Notes" (presence checked only).
+✅ Server provides instructions.
+✅ serverInfo.websiteUrl is present (URL not fetched or validated).
+✅ Server declares 1 icon(s) with an https:// or data: src prefix (content not checked).
+...
+Audit finished. Final score: 130/151
+```
+
+Eight points. An icon passes only when its `src` starts with `https://` or
+`data:`, so a relative path or a plain `http://` URL still fails
+`server_icons_present`. `websiteUrl` and `icons` are judged on servers that
+negotiate 2025-11-25 or later; on older revisions they are skipped and cost
+nothing.
+
+## Step 2: describe your tools
+
+A model picks a tool from its description, its input schema and its
+annotations. Three rules check that each tool carries them: a `title`, at
+least one behavior annotation, and a `description` on every input property.
+Add them the same way you added the server's metadata, on the decorator and
+the parameter:
+
+```python server.py highlight={1,4-5,9-15}
+from typing import Annotated
+
+from mcp.server import MCPServer
+from mcp.types import Icon, ToolAnnotations
+from pydantic import Field
+
+...
+
+@mcp.tool(
+    title="Search notes",
+    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+)
+def search_notes(
+    query: Annotated[str, Field(description="Keywords to match against note titles and bodies.")],
+) -> list[str]:
+    """Search your notes and return the titles that match."""
+    return [f"Note about {query}"]
+```
+
+```text
+✅ All tools have a display title.
+✅ All tools declare behavior annotations.
+✅ All statically reachable tool inputs are documented.
+...
+Audit finished. Final score: 135/151
+```
+
+Annotations must describe what the tool does. Set `readOnlyHint` to true
+only when the tool cannot change anything: clients use it to decide whether
+to ask the user before a call, and [smoke mode](/smoke-mode) calls only
+read-only tools by default.
+
+## Step 3: validate the Origin header
+
+A browser page can reach a server on the user's machine or private network
+through DNS rebinding. The MCP spec makes servers check the `Origin` header
+and, from revision 2025-11-25, answer a foreign one with HTTP 403. mcpscore
+sends one request without `Origin`, which must succeed, and one with
+`Origin: https://mcpscore.invalid`, which must be refused.
+
+The Python SDK enables this check on its own only when the server binds to
+`127.0.0.1` or `localhost`. A deployed server binds to `0.0.0.0`, so you
+turn it on and list your hosts and origins:
+
+```python server.py highlight={2,11-14}
+from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
+
+...
+
+if __name__ == "__main__":
+    mcp.run(
+        transport="streamable-http",
+        host="0.0.0.0",
+        port=8765,
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=["notes.example.com", "127.0.0.1:*", "localhost:*"],
+            allowed_origins=["https://notes.example.com"],
+        ),
+    )
+```
+
+Check it with a request that carries a foreign origin:
+
+```bash
+curl -i -X POST http://127.0.0.1:8765/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Origin: https://evil.example' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+```
+
+```text
+HTTP/1.1 403 Forbidden
+...
+Invalid Origin header
+```
+
+The audit agrees:
+
+```text
+✅ Streamable HTTP rejects an invalid foreign Origin with HTTP 403.
+...
+Audit finished. Final score: 138/151
+```
+
+`allowed_hosts` is enforced too: a request whose `Host` header is not in the
+list gets HTTP 421. Add every hostname your server is reached by, including
+the one behind your load balancer. Requests without an `Origin` header, which
+is what non-browser MCP clients send, are always accepted.
+
+<Accordion title="Technical details">
+  The requirement is Transports §Security Warning in revisions 2025-03-26 and
+  2025-06-18, and Streamable HTTP §Security in 2025-11-25 and 2026-07-28.
+  Before 2025-11-25 any 4xx refusal passes; from 2025-11-25 the status must
+  be 403. mcpscore judges the foreign-origin request only after the control
+  request without `Origin` was accepted, so a server that refuses everyone
+  gets no credit for refusing the probe. The rule does not apply to stdio
+  servers.
+</Accordion>
+
+## Step 4: reject cursors you never issued
+
+List requests (`tools/list`, `resources/list`, `resources/templates/list`,
+`prompts/list`) take an optional `cursor` for the next page. A cursor your
+server never issued must be answered with JSON-RPC error `-32602` (Invalid
+params). mcpscore sends a made-up cursor to each list your server declares
+and expects that error back. Almost every server returns the first page
+instead.
+
+A server that returns each list in one page never issues a cursor, so any
+cursor it receives is invalid. One middleware covers all four lists:
+
+```python server.py highlight={1,3,5,7,10-14,20}
+from mcp import MCPError
+from mcp.server import MCPServer
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import INVALID_PARAMS, Icon, ToolAnnotations
+
+LIST_METHODS = {"tools/list", "resources/list", "resources/templates/list", "prompts/list"}
+
+
+async def reject_cursors(ctx: ServerRequestContext, call_next: CallNext) -> HandlerResult:
+    """Every list fits in one page, so no cursor is valid."""
+    if ctx.method in LIST_METHODS and (ctx.params or {}).get("cursor") is not None:
+        raise MCPError(code=INVALID_PARAMS, message="Invalid cursor")
+    return await call_next(ctx)
+
+
+mcp = MCPServer(
+    "notes",
+    ...
+    middleware=[reject_cursors],
+)
+```
+
+```text
+✅ tools/list rejects invalid pagination cursors with JSON-RPC -32602.
+✅ resources/list rejects invalid pagination cursors with JSON-RPC -32602.
+✅ resources/templates/list rejects invalid pagination cursors with JSON-RPC -32602.
+✅ prompts/list rejects invalid pagination cursors with JSON-RPC -32602.
+...
+Audit finished. Final score: 142/151
+```
+
+That's it. Four changes took the server from 122/151 to 142/151. If your
+server does paginate, validate the cursor where you decode it and raise the
+same error when decoding fails.
+
+<Accordion title="The finished server.py">
+
+```python server.py
+from typing import Annotated
+
+from mcp import MCPError
+from mcp.server import MCPServer
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import INVALID_PARAMS, Icon, ToolAnnotations
+from pydantic import Field
+
+LIST_METHODS = {"tools/list", "resources/list", "resources/templates/list", "prompts/list"}
+
+
+async def reject_cursors(ctx: ServerRequestContext, call_next: CallNext) -> HandlerResult:
+    """Every list fits in one page, so no cursor is valid."""
+    if ctx.method in LIST_METHODS and (ctx.params or {}).get("cursor") is not None:
+        raise MCPError(code=INVALID_PARAMS, message="Invalid cursor")
+    return await call_next(ctx)
+
+
+mcp = MCPServer(
+    "notes",
+    title="Notes",
+    version="1.4.0",
+    instructions="Search the user's notes by keyword. Read-only: this server never edits notes.",
+    website_url="https://notes.example.com/docs/mcp",
+    icons=[Icon(src="https://notes.example.com/icon.png", mime_type="image/png")],
+    middleware=[reject_cursors],
+)
+
+
+@mcp.tool(
+    title="Search notes",
+    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+)
+def search_notes(
+    query: Annotated[str, Field(description="Keywords to match against note titles and bodies.")],
+) -> list[str]:
+    """Search your notes and return the titles that match."""
+    return [f"Note about {query}"]
+
+
+if __name__ == "__main__":
+    mcp.run(
+        transport="streamable-http",
+        host="0.0.0.0",
+        port=8765,
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=["notes.example.com", "127.0.0.1:*", "localhost:*"],
+            allowed_origins=["https://notes.example.com"],
+        ),
+    )
+```
+
+</Accordion>
+
+## The remaining nine points
+
+The finished server still fails three kinds of rule. Each one is either
+fixed by deploying or is a choice you can make on purpose.
+
+| Rule | Points | Why it still fails here |
+|---|---:|---|
+| `security_tls_enabled` | 5 | The audit ran against `http://127.0.0.1`. Serve the deployed endpoint over HTTPS and it passes. |
+| `capability_*_list_changed` | 1 each | The catalog is static. See [list-change notifications](#list-change-notifications). |
+| `protocol_version_supported_versions_include_negotiated` | 1 | The SDK's `server/discover` lists only 2026-07-28 while it still serves 2025-11-25 clients. |
+
+## Other fixes from the ranking
+
+### List-change notifications
+
+`capability_tools_list_changed`, and its `prompts` and `resources` twins,
+pass when the server declares `listChanged: true` for that capability. The
+declaration promises that the server sends a `notifications/.../list_changed`
+message whenever the list changes. If your catalog never changes after
+startup, leave the declaration out and accept the one point per list.
+Declaring it without sending the notifications makes clients cache a list
+that goes stale.
+
+### Latest protocol revision
+
+`protocol_version_latest` passes when the server speaks the newest MCP
+revision, 2026-07-28, either on the negotiated connection or through the
+2026-07-28 stateless lifecycle next to the older handshake. The fix is an
+SDK upgrade. The example above passes it on MCP Python SDK 2.2.0 without any
+code for it. Keep the older handshake while your users' clients still need
+it.
+
+### Malformed requests
+
+`security_malformed_request_handling` sends an HTTP body that is not valid
+JSON. The server must answer with a JSON-RPC parse error whose `id` is
+`null`:
+
+```json
+{"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}
+```
+
+The official SDKs do this already. Servers that fail it usually parse the
+body in their own web framework and return that framework's error page. Put
+the parse inside a handler that returns the object above.
+
+## When a fix does not move the score
+
+**Symptom:** the rule now passes, and the score line did not change.
+**Cause:** a rule that was skipped before, or is not applicable on your
+revision, adds to neither the score nor the maximum.
+**Fix:** compare `max_score` too. The score is `score/max_score`, and both
+numbers change when a rule starts applying.
+
+**Symptom:** after step 3 the audit stops with `HTTP error 421 from server`
+and `Error connecting to the MCP server`, exit code `2`.
+**Cause:** the host you audit through is not in `allowed_hosts`, so the SDK
+refuses every request, with or without `Origin`.
+**Fix:** add that hostname to `allowed_hosts`, with `:*` to allow any port.
+
+**Symptom:** `server_icons_present` fails with `Number of server icons whose
+src lacks an https:// or data: prefix: 1`.
+**Cause:** the icon `src` is relative or uses `http://`.
+**Fix:** use an absolute `https://` URL or a `data:` URI.
+
+## Recap
+
+- Describe your server: `title`, `version`, `instructions`, `websiteUrl`,
+  `icons`.
+- Describe your tools: a `title`, behavior annotations, and a description on
+  every input property.
+- Validate the `Origin` header and answer a foreign one with HTTP 403.
+- Reject cursors you never issued with JSON-RPC `-32602`.
+
+## What's next
+
+- [Configure rules](/configure-rules) to turn off a rule that does not fit
+  your server, such as `listChanged` on a static catalog.
+- [Use mcpscore in CI](/github-action) so the score cannot drop without
+  someone noticing.
+- [Methodology](/methodology) explains how points add up to the score.
