@@ -48,8 +48,8 @@ Only the auth, TLS, and transport surface was scored — not comparable to a ful
 Audit finished. PARTIAL score: 24/27 from 10 of 79 checks — not comparable to a full audit.
 ```
 
-This is a partial audit. It covers TLS, the 401 challenge, the RFC 9728
-protected-resource metadata, and the authorization server that metadata
+This is a partial audit. It covers TLS, the 401 challenge, the
+[RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata, and the authorization server that metadata
 names. Those are real findings about your auth posture, and a missing PKCE
 advertisement shows up here without any credential.
 
@@ -140,7 +140,7 @@ Audit finished. Final score: ...
 ```
 
 `--oauth` registers mcpscore as a client on the fly (dynamic client
-registration, RFC 7591). Some authorization servers, GitHub's among them,
+registration, [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)). Some authorization servers, GitHub's among them,
 do not offer registration. For those, register an OAuth app once and pass
 its client ID:
 
@@ -161,7 +161,8 @@ the exact registered port, pin it with `--callback-port`.
 - `--oauth` refuses to run alongside `--token`, an `Authorization`
   `--header`, or `MCPSCORE_TOKEN`, so the server never receives two
   credentials.
-- RFC 8252 requires authorization servers to accept any port on a loopback
+- [RFC 8252 §7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)
+  requires authorization servers to accept any port on a loopback
   redirect. `--callback-port` exists for the servers that do not follow it.
 </Accordion>
 

@@ -98,8 +98,9 @@ Gate failed — --smoke: 1 smoke check(s) failed
 ```
 
 `Tools called: 0 of 1`. mcpscore calls only tools annotated
-`readOnlyHint: true`, and `add` has no annotations. The spec reads a missing
-annotation as `false`, so `add` might write something, and smoke mode leaves
+`readOnlyHint: true`, and `add` has no annotations. The spec
+[defaults a missing `readOnlyHint`](https://modelcontextprotocol.io/specification/2025-11-25/schema#toolannotations-readonlyhint)
+to `false`, so `add` might write something, and smoke mode leaves
 it alone. Every skip says why, so the gap in coverage is visible.
 
 The failure is about the server, not about `add`. Step 3 explains it.
@@ -150,7 +151,9 @@ covers it.
 ### Step 3: read a failure
 
 `smoke_unknown_tool` calls a tool name that cannot exist on your server and
-expects a JSON-RPC error. This server answers with a tool result flagged
+expects a JSON-RPC error, as
+[Tools §Error Handling](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling) requires for
+unknown tools. This server answers with a tool result flagged
 `isError`, which tells the client the tool exists and ran. The MCP Python SDK
 answers this way by default, in both `FastMCP` (1.x) and `MCPServer` (2.x),
 so a server built on it fails this check until the SDK changes or the server
@@ -205,9 +208,9 @@ run. It never means the server failed it.
 
 | Check (`check_id`) | The regression it catches |
 |---|---|
-| `smoke_structured_content` | A handler no longer matches its declared `outputSchema`. Every callable tool that declares one is invoked, and the result must carry `structuredContent` that conforms to it, a spec MUST. An explicitly empty `{}` schema still requires the field to be present. |
-| `smoke_invalid_arguments` | Input validation stopped working. Each callable tool is invoked with arguments that violate its schema and must reject them. A tool result flagged `isError` and a JSON-RPC error both count as rejection. Accepting the arguments, hanging, or crashing fails the check. |
-| `smoke_unknown_tool` | Routing broke. A `tools/call` for a name that cannot exist on your server must be rejected with a JSON-RPC error. A result, an `isError` result, and an internal error all fail. |
+| `smoke_structured_content` | A handler no longer matches its declared [`outputSchema`](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#output-schema). Every callable tool that declares one is invoked, and the result must carry `structuredContent` that conforms to it, a spec MUST. An explicitly empty `{}` schema still requires the field to be present. |
+| `smoke_invalid_arguments` | Input validation stopped working ([Tools §Error Handling](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling)). Each callable tool is invoked with arguments that violate its schema and must reject them. A tool result flagged `isError` and a JSON-RPC error both count as rejection. Accepting the arguments, hanging, or crashing fails the check. |
+| `smoke_unknown_tool` | Routing broke. A `tools/call` for a name that cannot exist on your server must be rejected with a [JSON-RPC protocol error](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling). A result, an `isError` result, and an internal error all fail. |
 
 For the two rejection checks, any JSON-RPC error code counts as a rejection
 except three: a request timeout, a closed connection, and `-32603` internal

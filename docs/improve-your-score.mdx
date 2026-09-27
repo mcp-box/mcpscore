@@ -85,7 +85,8 @@ most of them into passes.
 
 ## Step 1: describe your server
 
-Clients show your server by its `serverInfo`: a `title` for people, a
+Clients show your server by its
+[`serverInfo`](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#initialization): a `title` for people, a
 `version` for bug reports, `instructions` that tell the model when to use
 it, a `websiteUrl`, and `icons`. Set all five where you create the server:
 
@@ -115,7 +116,7 @@ Restart the server and audit it again:
 Audit finished. Final score: 130/151
 ```
 
-Eight points. An icon passes only when its `src` starts with `https://` or
+Eight points. An [icon](https://modelcontextprotocol.io/specification/2025-11-25/basic#icons) passes only when its `src` starts with `https://` or
 `data:`, so a relative path or a plain `http://` URL still fails
 `server_icons_present`. `websiteUrl` and `icons` are judged on servers that
 negotiate 2025-11-25 or later; on older revisions they are skipped and cost
@@ -124,7 +125,7 @@ nothing.
 ## Step 2: describe your tools
 
 A model picks a tool from its description, its input schema and its
-annotations. Three rules check that each tool carries them: a `title`, at
+annotations. Three rules check that each [tool](https://modelcontextprotocol.io/specification/2026-07-28/server/tools#tool) carries them: a `title`, at
 least one behavior annotation, and a `description` on every input property.
 Add them the same way you added the server's metadata, on the decorator and
 the parameter:
@@ -165,7 +166,8 @@ read-only tools by default.
 ## Step 3: validate the Origin header
 
 A browser page can reach a server on the user's machine or private network
-through DNS rebinding. The MCP spec makes servers check the `Origin` header
+through DNS rebinding. The MCP spec makes servers
+[check the `Origin` header](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint)
 and, from revision 2025-11-25, answer a foreign one with HTTP 403. mcpscore
 sends one request without `Origin`, which must succeed, and one with
 `Origin: https://mcpscore.invalid`, which must be refused.
@@ -222,8 +224,12 @@ the one behind your load balancer. Requests without an `Origin` header, which
 is what non-browser MCP clients send, are always accepted.
 
 <Accordion title="Technical details">
-  The requirement is Transports §Security Warning in revisions 2025-03-26 and
-  2025-06-18, and Streamable HTTP §Security in 2025-11-25 and 2026-07-28.
+  The requirement is Transports §Security Warning in revisions
+  [2025-03-26](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#security-warning),
+  [2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#security-warning)
+  and [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning),
+  and Streamable HTTP §Security & Endpoint in
+  [2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint).
   Before 2025-11-25 any 4xx refusal passes; from 2025-11-25 the status must
   be 403. mcpscore judges the foreign-origin request only after the control
   request without `Origin` was accepted, so a server that refuses everyone
@@ -235,8 +241,9 @@ is what non-browser MCP clients send, are always accepted.
 
 List requests (`tools/list`, `resources/list`, `resources/templates/list`,
 `prompts/list`) take an optional `cursor` for the next page. A cursor your
-server never issued must be answered with JSON-RPC error `-32602` (Invalid
-params). mcpscore sends a made-up cursor to each list your server declares
+server never issued should be answered with JSON-RPC error `-32602` (Invalid
+params), per
+[Pagination §Error Handling](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/pagination#error-handling). mcpscore sends a made-up cursor to each list your server declares
 and expects that error back. Almost every server returns the first page
 instead.
 
@@ -354,8 +361,10 @@ fixed by deploying or is a choice you can make on purpose.
 ### List-change notifications
 
 `capability_tools_list_changed`, and its `prompts` and `resources` twins,
-pass when the server declares `listChanged: true` for that capability. The
-declaration promises that the server sends a `notifications/.../list_changed`
+pass when the server declares `listChanged: true` for that
+[capability](https://modelcontextprotocol.io/specification/2026-07-28/server/tools#capabilities). The
+declaration promises that the server sends a
+[`notifications/.../list_changed`](https://modelcontextprotocol.io/specification/2026-07-28/server/tools#list-changed-notification)
 message whenever the list changes. If your catalog never changes after
 startup, leave the declaration out and accept the one point per list.
 Declaring it without sending the notifications makes clients cache a list
@@ -365,7 +374,8 @@ that goes stale.
 
 `protocol_version_latest` passes when the server speaks the newest MCP
 revision, 2026-07-28, either on the negotiated connection or through the
-2026-07-28 stateless lifecycle next to the older handshake. The fix is an
+2026-07-28 [stateless lifecycle](https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle#protocol-version-negotiation)
+next to the older handshake. The fix is an
 SDK upgrade. The example above passes it on MCP Python SDK 2.2.0 without any
 code for it. Keep the older handshake while your users' clients still need
 it.
@@ -373,7 +383,8 @@ it.
 ### Malformed requests
 
 `security_malformed_request_handling` sends an HTTP body that is not valid
-JSON. The server must answer with a JSON-RPC parse error whose `id` is
+JSON. The server must answer with a JSON-RPC
+[parse error](https://www.jsonrpc.org/specification#error_object) whose `id` is
 `null`:
 
 ```json
