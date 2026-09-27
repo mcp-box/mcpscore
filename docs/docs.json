@@ -56,6 +56,10 @@
   "navbar": {
     "links": [
       {
+        "label": "Audit a server",
+        "href": "https://mcpscore.dev/"
+      },
+      {
         "label": "PyPI",
         "href": "https://pypi.org/project/mcpscore/"
       }
@@ -67,8 +71,19 @@
   },
   "footer": {
     "socials": {
+      "website": "https://mcpscore.dev",
       "github": "https://github.com/mcp-box/mcpscore"
-    }
+    },
+    "links": [
+      {
+        "header": "mcpscore.dev",
+        "items": [
+          { "label": "Audit a server", "href": "https://mcpscore.dev/" },
+          { "label": "Blog", "href": "https://mcpscore.dev/blog" },
+          { "label": "Our mission", "href": "https://mcpscore.dev/our-mission" }
+        ]
+      }
+    ]
   },
   "contextual": {
     "options": [
