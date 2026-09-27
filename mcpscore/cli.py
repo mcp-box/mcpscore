@@ -64,6 +64,35 @@ def _percentage_argument(raw: str) -> int:
     return value
 
 
+_DESCRIPTION = """\
+Audit an MCP server and get a 0-100 quality score, with a finding for every
+rule it fails.
+
+Give it a server URL, a local .py or .js file, a server command (--stdio), or a
+published package (--package). The report prints to stderr; --json writes the
+full report to stdout."""
+
+_EPILOG = """\
+examples:
+  # Audit a remote server
+  mcpscore https://mcp.deepwiki.com/mcp
+
+  # Audit a local server written in any language
+  mcpscore --stdio node build/index.js
+
+  # Fail a CI job when the score drops below 80%, and keep the JSON report
+  mcpscore https://your-server.example/mcp --fail-under 80 --json > report.json
+
+exit codes:
+  0  the audit completed and every gate passed
+  1  the audit never ran: a usage error, or a failed --oauth sign-in
+  2  could not connect to the server (or read the package registry)
+  3  a --fail-under, --fail-under-readiness, or [gate] threshold was not met
+  4  a --smoke check failed
+
+docs: https://docs.mcpscore.dev/cli"""
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the mcpscore CLI.
 
@@ -73,186 +102,176 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = _CLIArgumentParser(
         prog="mcpscore",
-        description="Audit an MCP server and get a comprehensive report on its quality.",
-    )
-    parser.add_argument(
-        "target",
-        nargs="?",
-        help=(
-            "Path to a local MCP server (.py, .js) or URL of a remote server (Streamable HTTP / SSE). "
-            "For servers in other languages, use --stdio instead."
-        ),
-    )
-    parser.add_argument(
-        "--stdio",
-        nargs=argparse.REMAINDER,
-        metavar="COMMAND",
-        help=(
-            "Launch a local MCP server as an arbitrary stdio command — any language: "
-            "--stdio ./server, --stdio java -jar server.jar, --stdio dotnet run --project ./srv, "
-            "--stdio uv run server.py (a Python server in its own project environment). "
-            "The command is a program to execute, so a bare script name needs its interpreter. "
-            "Consumes the REST of the command line (the server's own flags included), so put "
-            "every mcpscore option before it. Replaces the positional target. The command runs "
-            "directly (no shell). Never pass secrets as arguments — the command line appears as "
-            "the report's target (and in the process list); use the value-less --env NAME form."
-        ),
-    )
-    parser.add_argument(
-        "--package",
-        metavar="COORDINATE",
-        help=(
-            "Score a published package instead of a running server: --package npm:@scope/name, "
-            "--package npm:name@1.2.3, --package pypi:name==1.2.3. Reads the registry's metadata "
-            "only — the package is never downloaded and never executed, so no install hook runs. "
-            "Judges how the server is PUBLISHED (resolves, versioned, licensed, source-linked), "
-            "not whether it speaks MCP; for that, run the server with --stdio. The two scores "
-            "come from disjoint rule sets and are not comparable."
-        ),
-    )
-    parser.add_argument(
-        "--env",
-        action="append",
-        metavar="NAME=VALUE",
-        help=(
-            "Extra environment variable for the --stdio server process. Repeatable. "
-            "--env NAME=VALUE sets it inline (non-sensitive config only: the value lands in "
-            "shell history and the process list). --env NAME copies the value from mcpscore's "
-            "own environment — use this for secrets: API_KEY=… mcpscore --env API_KEY --stdio … "
-            "Merged over a minimal default environment; values are never logged or reported."
-        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=_DESCRIPTION,
+        epilog=_EPILOG,
     )
     # An "action=version" argument exits during parsing, before argparse
-    # enforces the required `target` — so `mcpscore --version` works on its
-    # own, which is the whole point of asking a tool what version it is.
+    # enforces the required `target`, so `mcpscore --version` works on its own.
     parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {_mcpscore_version()}",
-        help="Show the installed mcpscore version and exit",
+        help="Print the installed mcpscore version and exit.",
     )
-    parser.add_argument(
+
+    target = parser.add_argument_group("what to audit (pick one)")
+    target.add_argument(
+        "target",
+        nargs="?",
+        help=(
+            "A server URL (Streamable HTTP, then SSE) or a local .py or .js file. "
+            "For a server in any other language, use --stdio."
+        ),
+    )
+    target.add_argument(
+        "--stdio",
+        nargs=argparse.REMAINDER,
+        metavar="COMMAND",
+        help=(
+            "Start the server with this command and audit it over stdio: --stdio ./server, "
+            "--stdio node build/index.js, --stdio uv run server.py. "
+            "It takes the rest of the command line, so put every mcpscore option before it. "
+            "The command runs without a shell. "
+            "Never put secrets in it: the command line is shown in the report; use --env NAME."
+        ),
+    )
+    target.add_argument(
+        "--package",
+        metavar="COORDINATE",
+        help=(
+            "Score how a published package is released, from registry metadata only: "
+            "npm:@scope/name, npm:name@1.2.3, pypi:name==1.2.3. "
+            "The package is never downloaded or run. "
+            "This score uses its own rules and is not comparable to a server audit."
+        ),
+    )
+    target.add_argument(
+        "--env",
+        action="append",
+        metavar="NAME=VALUE",
+        help=(
+            "Set an environment variable for the --stdio server. Repeatable. "
+            "NAME=VALUE is visible in shell history, so use it for plain config. "
+            "A bare NAME copies the value from mcpscore's own environment, the form for secrets: "
+            "API_KEY=... mcpscore --env API_KEY --stdio ..."
+        ),
+    )
+
+    output = parser.add_argument_group("output")
+    output.add_argument(
         "--json",
         action="store_true",
-        help="Emit a machine-readable JSON report to stdout (logs go to stderr)",
+        help="Write the full report as JSON to stdout. Logs stay on stderr.",
     )
-    parser.add_argument(
+    output.add_argument(
         "--sarif",
         metavar="FILE",
         help=(
-            "Write the failed rules as SARIF 2.1.0 to FILE ('-' for stdout), for GitHub code scanning: "
-            "upload it with github/codeql-action/upload-sarif and the findings appear as alerts in the "
-            "repository's Security tab. Findings only — passed and skipped rules "
-            "are not in it; --json remains the full report, and both can be requested (only one on stdout). "
-            "A readiness rule not counted in the score is a note, whatever its severity."
+            "Write the failed rules as SARIF 2.1.0 to FILE ('-' for stdout) for GitHub code scanning. "
+            "Passed and skipped rules are left out; --json carries the full report."
         ),
     )
-    parser.add_argument(
+
+    gates = parser.add_argument_group("rules and CI gates")
+    gates.add_argument(
         "--config",
         metavar="FILE",
         help=(
-            "Per-project rule configuration to apply: a mcpscore.toml, or a pyproject.toml with a "
-            '[tool.mcpscore] table. Rules set to "off" do not run; rules set to a severity name count at '
-            "that severity; [gate] fail_on fails the build (exit 3) on any failed rule counted in the main "
-            "score at or above it. "
-            "Without this flag, the nearest mcpscore.toml or [tool.mcpscore] up to the repository root is "
-            "used. The configuration changes the score for this run only; the badge and mcpscore.dev "
-            "never apply one."
+            "Apply a rule configuration: a mcpscore.toml, or a pyproject.toml with a [tool.mcpscore] table. "
+            "It turns rules off, changes their severity, and can fail the run (exit 3) with [gate] fail_on. "
+            "Default: the nearest one up to the repository root. "
+            "It changes this run's score only; mcpscore.dev and the badge never apply it."
         ),
     )
-    parser.add_argument(
+    gates.add_argument(
         "--no-config",
         action="store_true",
-        help="Ignore any mcpscore.toml or [tool.mcpscore]: audit with the canonical rule set and weights.",
+        help="Ignore any configuration file and audit with the standard rules and weights.",
     )
-    parser.add_argument(
+    gates.add_argument(
         "--fail-under",
         metavar="PCT",
         type=_percentage_argument,
         help=(
-            "Exit with code 3 when the main score percentage (0-100, rounded) is below PCT — "
-            "a CI gate: 'your server scored badly' (3) stays distinct from 'the audit never "
-            "ran' (1) or 'could not connect' (2). A partial audit always fails this gate: its "
-            "percentage covers only the observable surface and cannot demonstrate the "
-            "threshold — pass a credential to audit behind the gate."
+            "Exit 3 when the score, as a rounded percentage, is below PCT (0-100). "
+            "A partial audit (an auth-gated server audited without a working credential) always fails it."
         ),
     )
-    parser.add_argument(
+    gates.add_argument(
         "--fail-under-readiness",
         metavar="PCT",
         type=_percentage_argument,
         help=(
-            "Exit with code 3 when the readiness percentage for the latest spec revision is "
-            "below PCT. Skipped when readiness was not assessed at all (nothing to gate on), "
-            "matching the GitHub Action's min-readiness input."
+            "Exit 3 when the readiness percentage for the latest spec revision is below PCT. "
+            "Skipped when readiness was not assessed."
         ),
     )
-    parser.add_argument(
+
+    smoke = parser.add_argument_group("smoke checks (these call your tools)")
+    smoke.add_argument(
         "--smoke",
         action="store_true",
         help=(
-            "After the audit, smoke-test the server by actually invoking its tools (tools/call): "
-            "verifies that declared output schemas are honored, that schema-invalid arguments are "
-            "rejected, and that unknown tool names are rejected. For servers YOU operate (e.g. in "
-            "CI) — by default only tools annotated readOnlyHint: true are called; see --call-all. "
-            "Smoke results never affect the score; any smoke failure exits with code 4. "
-            "Needs a live session, so it is unavailable with --package and does not run on "
-            "partial or modern-only probe audits. Put it before --stdio."
+            "After the audit, call the server's tools (tools/call) and check they honor their output "
+            "schemas and reject bad arguments and unknown tool names. "
+            "Only tools annotated readOnlyHint: true are called. "
+            "Never changes the score; a failed check exits 4. "
+            "It needs a live session, so it skips partial and modern-only audits and --package."
         ),
     )
-    parser.add_argument(
+    smoke.add_argument(
         "--call-all",
         action="store_true",
         help=(
-            "With --smoke: call every tool, not only those annotated readOnlyHint: true. "
-            "This is explicit consent to trigger side effects — use it only against a server "
-            "whose tools you are willing to execute."
+            "With --smoke, call every tool, including ones that may write, delete, or send. "
+            "Use it only on a server whose tools you are willing to run."
         ),
     )
-    parser.add_argument(
+
+    auth = parser.add_argument_group("authentication (URL targets)")
+    auth.add_argument(
         "--header",
         action="append",
         metavar="'Name: Value'",
         help=(
-            "Extra HTTP header sent to the server, e.g. --header 'Authorization: Bearer <token>' "
-            "to audit an auth-gated server. Repeatable. Header values are never logged or reported."
+            'Send an extra HTTP header, e.g. --header "Authorization: Bearer $TOKEN". '
+            "Repeatable. Values are never logged or reported."
         ),
     )
-    parser.add_argument(
+    auth.add_argument(
         "--token",
         metavar="TOKEN",
         help=(
-            "Convenience for --header 'Authorization: Bearer <TOKEN>'. "
-            "Defaults to the MCPSCORE_TOKEN environment variable (keeps tokens out of shell history)."
+            "Shorthand for --header 'Authorization: Bearer TOKEN'. "
+            "Default: $MCPSCORE_TOKEN, which keeps the token out of shell history."
         ),
     )
-    parser.add_argument(
+    auth.add_argument(
         "--oauth",
         action="store_true",
         help=(
-            "Obtain a token interactively: opens your browser for the server's OAuth flow "
-            "(authorization code + PKCE). The token is held in memory only — never written "
-            "to disk, never logged. Requires the authorization server to support dynamic "
-            "client registration unless --client-id is given."
+            "Sign in through the server's OAuth flow in your browser (authorization code + PKCE). "
+            "The token is kept in memory only. "
+            "Needs dynamic client registration unless you pass --client-id."
         ),
     )
-    parser.add_argument(
+    auth.add_argument(
         "--client-id",
         metavar="ID",
         help=(
-            "Pre-registered OAuth client ID for --oauth, for authorization servers without "
-            "dynamic client registration (e.g. GitHub's). The registered app must allow a "
-            "loopback redirect URI (http://127.0.0.1:<port>/callback)."
+            "A pre-registered OAuth client ID for --oauth, for authorization servers without "
+            "dynamic registration (GitHub's, for one). "
+            "The app must allow the redirect http://127.0.0.1:<port>/callback."
         ),
     )
-    parser.add_argument(
+    auth.add_argument(
         "--callback-port",
         metavar="PORT",
         type=int,
         help=(
-            "Fixed loopback port for the --oauth redirect URI. RFC 8252 says authorization "
-            "servers must accept any port on loopback redirects, but if yours requires the "
-            "exact pre-registered URI, pin the port you registered (pairs with --client-id)."
+            "Fix the loopback port of the --oauth redirect, for an authorization server that "
+            "requires the exact registered URI. Default: any free port."
         ),
     )
     return parser
