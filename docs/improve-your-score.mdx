@@ -9,20 +9,24 @@ table ranks them by how many real servers fail each one. Start at the top of
 the list: every fix below is a few lines of code, and most are worth points
 on almost every server.
 
-| Rule | Fails on | Independent hosts | Points | Fix |
-|---|---:|---:|---:|---|
-| `pagination_tools_invalid_cursor` | 98% | 97% | 1 per list | [Reject cursors you never issued](#step-4-reject-cursors-you-never-issued) |
-| `server_title_present` | 84% | 76% | 2 | [Describe your server](#step-1-describe-your-server) |
-| `security_origin_validation` | 90% | 82% | 3 | [Validate the Origin header](#step-3-validate-the-origin-header) |
-| `capability_tools_list_changed` | 65% | 57% | 1 | [List-change notifications](#list-change-notifications) |
-| `protocol_version_latest` | 47% | 46% | 2 | [Latest protocol revision](#latest-protocol-revision) |
-| `server_websiteurl_present` | 86% | 87% | 1 | [Describe your server](#step-1-describe-your-server) |
-| `tools_annotations_present` | 53% | 44% | 2 | [Describe your tools](#step-2-describe-your-tools) |
-| `server_instructions_present` | 43% | 41% | 1 | [Describe your server](#step-1-describe-your-server) |
-| `server_icons_present` | 77% | 93% | 1 | [Describe your server](#step-1-describe-your-server) |
-| `tools_input_properties_documented` | 41% | 45% | 2 | [Describe your tools](#step-2-describe-your-tools) |
-| `tools_title_present_in_all` | 51% | 42% | 1 | [Describe your tools](#step-2-describe-your-tools) |
-| `security_malformed_request_handling` | 18% | 26% | 2 | [Malformed requests](#malformed-requests) |
+<div className="rule-table">
+
+| Rule | Fails on | Points | Fix |
+|---|---:|---:|---|
+| `pagination_tools_invalid_cursor` | 98% | 1 per list | [Reject cursors you never issued](#step-4-reject-cursors-you-never-issued) |
+| `security_origin_validation` | 90% | 3 | [Validate the Origin header](#step-3-validate-the-origin-header) |
+| `server_websiteurl_present` | 86% | 1 | [Describe your server](#step-1-describe-your-server) |
+| `server_title_present` | 84% | 2 | [Describe your server](#step-1-describe-your-server) |
+| `server_icons_present` | 77% | 1 | [Describe your server](#step-1-describe-your-server) |
+| `capability_tools_list_changed` | 65% | 1 | [List-change notifications](#list-change-notifications) |
+| `tools_annotations_present` | 53% | 2 | [Describe your tools](#step-2-describe-your-tools) |
+| `tools_title_present_in_all` | 51% | 1 | [Describe your tools](#step-2-describe-your-tools) |
+| `protocol_version_latest` | 47% | 2 | [Latest protocol revision](#latest-protocol-revision) |
+| `server_instructions_present` | 43% | 1 | [Describe your server](#step-1-describe-your-server) |
+| `tools_input_properties_documented` | 41% | 2 | [Describe your tools](#step-2-describe-your-tools) |
+| `security_malformed_request_handling` | 18% | 2 | [Malformed requests](#malformed-requests) |
+
+</div>
 
 The rows are ordered by how many servers fail the rule. "Fails on" is the
 share of servers the rule applied to. A rule is one check, identified by its
@@ -30,9 +34,7 @@ share of servers the rule applied to. A rule is one check, identified by its
 
 <Note>
   Measured on 13,547 public MCP servers that mcpscore 1.20.0 audited in full
-  on 2026-09-20 and 2026-09-21. "Independent hosts" leaves out the 18 hosting
-  platforms with 100 or more servers each, because a platform decides some of
-  these results for every server it hosts.
+  on 2026-09-20 and 2026-09-21.
 </Note>
 
 ## Start from a real server

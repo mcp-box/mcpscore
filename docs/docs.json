@@ -14,13 +14,13 @@
       {
         "group": "Get Started",
         "pages": [
-          "index",
-          "local-servers"
+          "index"
         ]
       },
       {
         "group": "Guides",
         "pages": [
+          "local-servers",
           "authenticated-servers",
           "package-audits",
           "improve-your-score",
