@@ -1,65 +1,154 @@
 ---
-title: "Score Badge"
-description: "Embed a live mcpscore badge in your README — it updates automatically every time your server is re-audited."
+title: "Add the badge to your README"
+description: "Embed a live mcpscore badge that shows your server's latest score from mcpscore.dev and links to the full report."
 icon: "shield-check"
 ---
 
-Every server audited on [mcpscore.dev](https://mcpscore.dev) gets a badge URL
-keyed by the server's URL, not by any single audit. Embed it once and it shows
-the latest completed score from then on.
+A badge tells a visitor how well your MCP server is built before they read
+a line of your README. It shows the latest score from mcpscore.dev and
+links to the full report.
+
+```markdown
+[![mcpscore](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fmcp.deepwiki.com%2Fmcp)](https://mcpscore.dev/s?url=https%3A%2F%2Fmcp.deepwiki.com%2Fmcp)
+```
+
+That snippet renders as this badge, live from mcpscore.dev:
+
+[![mcpscore](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fmcp.deepwiki.com%2Fmcp)](https://mcpscore.dev/s?url=https%3A%2F%2Fmcp.deepwiki.com%2Fmcp)
+
+Replace the DeepWiki address with your server's, URL-encoded, in both
+places. The report page on mcpscore.dev gives you the snippet with that
+already done.
+
+## Step 1: audit your server on mcpscore.dev
+
+Open [mcpscore.dev](https://mcpscore.dev), paste your server's URL, and
+run the audit. When it finishes you are on your server's report page.
+
+The badge reads its score from that audit. A server that has never been
+audited on mcpscore.dev shows `no data`.
+
+## Step 2: copy the snippet into your README
+
+The report page has a Markdown snippet and an HTML snippet. Paste one into
+your README:
 
 <CodeGroup>
 
 ```markdown Markdown
-[![mcpscore score](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp)](https://mcpscore.dev/s?url=https%3A%2F%2Fyour-server.example%2Fmcp)
+[![mcpscore](https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp)](https://mcpscore.dev/s?url=https%3A%2F%2Fyour-server.example%2Fmcp)
 ```
 
 ```html HTML
 <a href="https://mcpscore.dev/s?url=https%3A%2F%2Fyour-server.example%2Fmcp">
-  <img src="https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp" alt="mcpscore score" />
+  <img src="https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fyour-server.example%2Fmcp" alt="mcpscore" />
 </a>
 ```
 
 </CodeGroup>
 
-Both URLs carry your server's address, URL-encoded. The report page on
-mcpscore.dev has this snippet prefilled. Copy it from there.
+Check it: the badge shows your score as a percentage, the same number as
+the report page. DeepWiki's `78/94` shows as `83`.
 
-## How it stays fresh
+The `url` parameter must match the audited URL exactly. Add a trailing
+slash to the DeepWiki address and the same server shows `no data`:
 
-The image and the link are both keyed by the server URL in the query string,
-never by a single audit. Re-audit the server on mcpscore.dev or from CI and
-every README embed shows the new score on its own. The link always opens the
-server's latest report.
+```bash
+curl -s 'https://mcpscore.dev/api/v1/servers/badge.svg?url=https%3A%2F%2Fmcp.deepwiki.com%2Fmcp%2F' \
+  | grep -o 'aria-label="[^"]*"'
+```
 
-The image is cached for 5 minutes, so a new score shows up within that. A
-server that has never been audited gets a neutral "no data" badge, so the
-embed never breaks.
+```text
+aria-label="mcpscore: no data"
+```
 
-Requesting the badge never triggers an audit. It is a read-only lookup, so a
-high-traffic README costs your server nothing.
+This is why copying the snippet from the report page is safer than typing
+it.
+
+## Step 3: re-audit to update the badge
+
+Every audit of the same URL on mcpscore.dev updates the badge. Your README
+never changes, because the badge URL names the server, not one audit. The
+link always opens the server's latest report.
+
+The badge image is cached for 5 minutes, so a new score appears within
+that time.
+
+Runs of the CLI and the GitHub Action stay on your machine or your CI
+runner and do not update the badge. Re-audit on mcpscore.dev after a
+release to refresh it.
+
+## Read the badge
+
+The number is the main score as a percentage. Its color follows the score
+ramp:
+
+| Badge value | Color | Meaning |
+|---|---|---|
+| `90` and above | green | The server passes nearly every rule that applies to it. |
+| `50` to `89` | amber | Fixable gaps. The report lists each one with its fix. |
+| below `50` | red | Major gaps in protocol handling, the catalog, or security posture. |
+| `89 partial` | by score | The server requires auth. mcpscore.dev scored only the surface an anonymous client can see. |
+| `no data` | grey | No completed audit for this exact URL. |
+| `pending` | grey | An audit is running. |
+| `failed` | red | The last audit could not run. |
+
+The ring before the word `mcpscore` has four quarters, one per category,
+clockwise from the top right: Protocol, Primitives, Security & Auth,
+Readiness. Each quarter takes the color of that category's result.
+
+<Accordion title="Technical details">
+- The badge is `GET /api/v1/servers/badge.svg?url=<server URL>`. It returns
+  the most recent completed audit for that exact URL, with
+  `Cache-Control: public, max-age=300`.
+- Requesting the badge never starts an audit. It is a read-only lookup, so
+  a README with heavy traffic sends no requests to your server.
+- The link target `/s?url=` serves a page with your score in its preview
+  tags, so a shared link unfurls with the real score, then redirects to the
+  report.
+- mcpscore.dev audits anonymously. A server behind auth gets a partial
+  audit there. To score it fully, run the CLI with a credential, as in
+  [Audit a server behind auth](/authenticated-servers).
+</Accordion>
 
 ## When it looks wrong
 
-**The badge says "no data" but you audited the server**
+**The badge says `no data` but you audited the server**
 
-- Cause: the `url` parameter does not match the audited URL exactly.
-  `https://example.com/mcp` and `https://example.com/mcp/other` are
-  different servers to the badge.
-- Fix: copy the snippet from the report page, which URL-encodes the exact
-  address.
+- Cause: the `url` parameter differs from the audited URL, often by a
+  trailing slash or a path segment.
+- Fix: copy the snippet from the report page, which encodes the exact
+  address you audited.
 
 **The badge shows an old score**
 
-- Cause: the 5-minute cache, or the newer audit ran against a different URL.
-- Fix: wait, then check the URL in the query string against the audit you
-  expect.
+- Cause: the 5-minute cache, or the new audit ran against a different URL.
+- Fix: wait five minutes, then compare the `url` in the snippet with the
+  URL of the new audit.
+
+**The badge did not change after a CI run**
+
+- Cause: CLI and Action runs do not report to mcpscore.dev.
+- Fix: re-audit the server on mcpscore.dev.
+
+**The badge says `partial`**
+
+- Cause: the server requires auth, and mcpscore.dev audits without
+  credentials.
+- Fix: nothing is broken. The number covers the auth, TLS, and transport
+  surface only.
+
+## Recap
+
+- Audit your server on mcpscore.dev.
+- Copy the snippet from the report page into your README.
+- Re-audit on mcpscore.dev to update the badge.
 
 ## What's next
 
 <CardGroup cols={2}>
-  <Card title="GitHub Action" icon="github" href="/github-action">
-    Re-audit on every pull request so the badge tracks your main branch
+  <Card title="Improve your score" icon="arrow-trend-up" href="/improve-your-score">
+    The rules servers fail most, and how to fix them
   </Card>
   <Card title="Scoring methodology" icon="scale-balanced" href="/methodology">
     What the number on the badge measures

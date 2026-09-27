@@ -46,18 +46,157 @@ Gate failed — --smoke: 2 smoke check(s) failed
 ```
 
 One run gives you the audit score and, under it, one line per smoke check.
-A tool that answered gets a `returned` line: how many content blocks and of
-which types, whether `structuredContent` was present, whether the result was
-flagged `isError`, and the first 80 characters of the first text block.
-`Tools called: 3 of 4` counts tools the server answered at least once; a
-timeout or a dropped connection is not an answer. The fourth tool was never
-invoked because it is not annotated `readOnlyHint: true`.
+Each line reads `verdict check_id [tool]: reason`. This server has four tools:
+`honest` works, `dishonest` breaks its own output schema, `sloppy` accepts
+anything, and `writer` was never called because it is not annotated
+read-only.
 
 <Warning>
   `--smoke` invokes `tools/call` on the target. Run it against servers you
   operate. The ordinary audit never calls tools, so it is the right choice
   for anyone else's server.
 </Warning>
+
+## Smoke-test your own server
+
+The steps below take a minimal server built with the MCP Python SDK from no
+coverage to a CI gate. Each step changes one thing and shows the run that
+proves it. The server has one tool:
+
+```python server.py
+from mcp.server import MCPServer
+
+mcp = MCPServer("Basic Server")
+
+
+@mcp.tool()
+def add(a: int, b: int) -> int:
+    """Add two numbers."""
+    return a + b
+
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+### Step 1: run it and read the skips
+
+Point mcpscore at the server and add `--smoke`. A server in its own project
+environment runs through `uv run`, the same way you start it yourself:
+
+```bash
+mcpscore --smoke --stdio uv run server.py
+```
+
+```text
+Smoke checks (tools/call): 0 passed, 1 failed, 2 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
+  Tools called: 0 of 1 (a tool counts as called once the server answered a tools/call for it)
+  skip smoke_structured_content [add]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
+  skip smoke_invalid_arguments [add]: not called under the safety default (readOnlyHint is not true); pass --call-all to include it
+  FAIL smoke_unknown_tool: reported a tool execution error (isError) for a nonexistent tool — the spec's unknown-tool example is a protocol error, and an isError result claims the tool exists and ran
+Gate failed — --smoke: 1 smoke check(s) failed
+```
+
+`Tools called: 0 of 1`. mcpscore calls only tools annotated
+`readOnlyHint: true`, and `add` has no annotations. The spec reads a missing
+annotation as `false`, so `add` might write something, and smoke mode leaves
+it alone. Every skip says why, so the gap in coverage is visible.
+
+The failure is about the server, not about `add`. Step 3 explains it.
+
+### Step 2: annotate the tool
+
+Tell clients that `add` has no side effects. This is the one-line change:
+
+```python server.py highlight={2,7}
+from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
+
+mcp = MCPServer("Basic Server")
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+def add(a: int, b: int) -> int:
+    """Add two numbers."""
+    return a + b
+```
+
+Run the same command again:
+
+```text
+Audit finished. Final score: 107/126
+...
+Smoke checks (tools/call): 2 passed, 1 failed, 0 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
+  Tools called: 1 of 1 (a tool counts as called once the server answered a tools/call for it)
+  pass smoke_structured_content [add]: structuredContent conforms to the declared outputSchema
+       returned 1 content block(s) [text]; structuredContent present; first text "0"
+  pass smoke_invalid_arguments [add]: rejected with an isError tool result
+       returned 1 content block(s) [text]; isError: true; first text "Error executing tool add: 1 validation error for addArguments\na\n  Input should b" [truncated]
+  FAIL smoke_unknown_tool: reported a tool execution error (isError) for a nonexistent tool — the spec's unknown-tool example is a protocol error, and an isError result claims the tool exists and ran
+```
+
+`add` is now called twice. With valid arguments it returned a result that
+matches the output schema the SDK derived from `-> int`. With a string where
+an integer belongs it refused, which is the rejection the check wants. A
+tool that answers gets a `returned` line: the number and types of content
+blocks, whether `structuredContent` was present, whether the result was
+flagged `isError`, and the first 80 characters of text.
+
+The annotation also raised the score from 105/126 to 107/126, because
+`tools_annotations_present` now passes. The same annotation tells every
+client that `add` does not modify its environment, and your smoke run now
+covers it.
+
+### Step 3: read a failure
+
+`smoke_unknown_tool` calls a tool name that cannot exist on your server and
+expects a JSON-RPC error. This server answers with a tool result flagged
+`isError`, which tells the client the tool exists and ran. The MCP Python SDK
+answers this way by default, in both `FastMCP` (1.x) and `MCPServer` (2.x),
+so a server built on it fails this check until the SDK changes or the server
+rejects unknown names itself.
+
+A failure in your own tool reads the same way. The first example on this
+page shows the two most common ones:
+
+```text
+  FAIL smoke_structured_content [dishonest]: declared outputSchema is not honored: Invalid structured content returned by tool dishonest: 'result' is a required property
+  FAIL smoke_invalid_arguments [sloppy]: accepted schema-invalid arguments (returned a success result)
+       returned 1 content block(s) [text]; first text "{}"
+```
+
+`dishonest` declares an output schema with a required `result` field and
+returns an object without it. `sloppy` returned a success result for
+arguments its input schema forbids. Both would reach an agent in production.
+
+### Step 4: gate CI on it
+
+Any smoke failure exits with code `4`. Add the score gate the same way, and
+CI can tell a low score apart from broken tools:
+
+```bash
+# Fail the build on a low score or on broken tools, distinguishably
+mcpscore --fail-under 80 --smoke --stdio uv run server.py
+```
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Score at or above 80, and every smoke check passed or skipped |
+| `3` | Score below 80. Takes precedence when both gates fail |
+| `4` | Score fine, but a smoke check failed |
+
+Raise the threshold to 90 against the 83% server from Step 1 and both gates
+fail. The score gate wins:
+
+```text
+Audit finished. Final score: 105/126
+Smoke checks (tools/call): 0 passed, 1 failed, 2 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
+Gate failed — --fail-under 90: score 105/126 (83%) is below the required 90%
+```
+
+Skips never gate. A server with no `readOnlyHint: true` tools and a correct
+unknown-tool rejection exits `0` and reports what it skipped and why. The
+full exit-code table is in the [stability contract](/stability#cli-interface).
 
 ## What each check catches
 
@@ -68,52 +207,48 @@ run. It never means the server failed it.
 |---|---|
 | `smoke_structured_content` | A handler no longer matches its declared `outputSchema`. Every callable tool that declares one is invoked, and the result must carry `structuredContent` that conforms to it, a spec MUST. An explicitly empty `{}` schema still requires the field to be present. |
 | `smoke_invalid_arguments` | Input validation stopped working. Each callable tool is invoked with arguments that violate its schema and must reject them. A tool result flagged `isError` and a JSON-RPC error both count as rejection. Accepting the arguments, hanging, or crashing fails the check. |
-| `smoke_unknown_tool` | Routing broke. A `tools/call` for a name that cannot exist on your server must be rejected with a JSON-RPC error, not executed and not answered with an internal error. |
+| `smoke_unknown_tool` | Routing broke. A `tools/call` for a name that cannot exist on your server must be rejected with a JSON-RPC error. A result, an `isError` result, and an internal error all fail. |
 
 For the two rejection checks, any JSON-RPC error code counts as a rejection
 except three: a request timeout, a closed connection, and `-32603` internal
-error. Those three mean the server tried to run the call and failed.
+error. Those three mean the server tried to run the call and failed. Each
+call has 30 seconds to answer.
 
 ## Which tools get called
 
-- Only tools annotated `readOnlyHint: true` are called by default. The spec
-  treats a missing annotation as `false`, so an unannotated tool is skipped,
-  and every skip is reported with its reason. Missing annotations are a
-  visible cost, not a silent one.
+- Only tools annotated `readOnlyHint: true` are called by default. An
+  unannotated tool is skipped, and every skip is reported with its reason.
 - `--call-all` lifts that default. No other flag implies it, and it has no
-  environment-variable form.
+  environment-variable form. On the unannotated server from Step 1, it calls
+  `add` without the annotation:
+
+  ```bash
+  mcpscore --smoke --call-all --stdio uv run server.py
+  ```
+
+  ```text
+  Smoke checks (tools/call): 2 passed, 1 failed, 0 skipped — every tool called (--call-all). Never counted in the score.
+  ```
+
 - The unknown-tool check uses a name derived from your server's own catalog,
   so it cannot match a real tool. If the tool listing failed or is
   incomplete, the check skips instead of guessing a name.
 - Arguments come from each tool's input schema, in this order: `default`,
   `const`, the first entry of `examples`, the first `enum` value, then a zero
   value for the type. No language model is involved, so the same server
-  receives the same calls on every run. A malformed schema fragment is
-  tolerated rather than aborting the run.
+  receives the same calls on every run.
 
-## Errors from upstream skip rather than fail
-
+<Accordion title="Technical details: errors from upstream skip rather than fail">
 A tool that returns an error result for valid synthesized arguments reports
-as `skip`. It may be rejecting the sample value, or a service behind it may be
-down, and an outage elsewhere should not fail your build. Only behavior your
-server owns can fail a smoke check.
+as `skip` in `smoke_structured_content`. It may be rejecting the sample
+value, or a service behind it may be down, and an outage elsewhere should
+not fail your build. A JSON-RPC error to valid arguments skips for the same
+reason. Only behavior your server owns can fail a smoke check.
 
-## Gate CI on it
-
-A smoke failure exits with its own code, `4`. The score gate's code is `3`,
-so CI can tell a low score apart from broken tools:
-
-```bash
-# Fail the build on a low score or on broken tools, distinguishably
-mcpscore ./server.py --fail-under 80 --smoke
-# exit 0: score at or above 80 and every smoke check passed or skipped
-# exit 3: score below 80 (takes precedence when both gates fail)
-# exit 4: score fine, but a smoke check failed
-```
-
-Skips never gate. A server with no `readOnlyHint: true` tools exits `0` and
-reports what it skipped and why. The full exit-code table is in the
-[stability contract](/stability#cli-interface).
+Calls run one at a time, in catalog order: every structured-content call
+first, then every invalid-arguments call, then the unknown-tool call. A
+malformed schema fragment is tolerated rather than aborting the run.
+</Accordion>
 
 ## Results stay out of the score
 
@@ -154,28 +289,36 @@ not list it.
 
 ## Where it does not run
 
-- mcpscore.dev never runs smoke checks. Invoking tools on third-party
-  URLs from our infrastructure is outside the security posture, so smoke
+- mcpscore.dev never runs smoke checks. Invoking tools on third-party URLs
+  from our infrastructure is outside the website's safety model, so smoke
   mode is CLI-only.
-- The [GitHub Action](/github-action) accepts `--smoke` in `args` and
-  fails the job on a smoke failure, but it then drops the report and the PR
-  comment, because it treats any non-zero exit as a failed audit. A
-  dedicated `smoke` input is planned.
+- The [GitHub Action](/github-action) accepts `--smoke` in `args`. A smoke
+  failure fails the job after the report and PR comment are published. The
+  comment does not list the smoke checks yet, and there is no dedicated
+  `smoke` input.
 - Your test suite still has a job. Smoke checks prove the MCP contract:
   honest schemas, correct rejections, tools that answer. They do not test
   your business logic.
+
+## Recap
+
+- Run `mcpscore --smoke` against your own server and read the skip reasons.
+- Annotate read-only tools with `readOnlyHint: true` so smoke mode calls them.
+- Read each `FAIL` line as check, tool, and reason.
+- Gate CI with `--fail-under` and `--smoke`: exit `3` is the score, exit `4`
+  is broken tools.
 
 ## What's next
 
 <CardGroup cols={2}>
   <Card title="GitHub Action" icon="github" href="/github-action">
-    Gate pull requests on the score
+    Run the same gate on every pull request
+  </Card>
+  <Card title="CI beyond GitHub" icon="gears" href="/ci-other-platforms">
+    Exit codes and `--json` in any CI system
   </Card>
   <Card title="Stability Contract" icon="file-contract" href="/stability">
     Exit codes and the `smoke` report section
-  </Card>
-  <Card title="Scoring Methodology" icon="scale-balanced" href="/methodology">
-    Why the audit itself never calls tools
   </Card>
   <Card title="Authenticated Servers" icon="lock" href="/authenticated-servers">
     Pass credentials so smoke can reach behind the gate

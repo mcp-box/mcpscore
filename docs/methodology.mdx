@@ -1,50 +1,125 @@
 ---
-title: "Scoring Methodology"
-description: "Exactly how the mcpscore score is computed, what is and is not checked, and why — verifiable, disputable, spec-anchored."
+title: "Scoring methodology"
+description: "How mcpscore turns an audit into a score: rules, weights, categories, skips, spec revisions, and what the score leaves out."
 icon: "scale-balanced"
 ---
 
-A score you cannot check is a score you cannot trust. This page is the whole
-method: how the number is computed, what runs against your server, what is
-deliberately left out, and how to dispute a rule. Every claim here is one you
-can verify from the JSON report and the spec.
+Every point in an mcpscore report traces back to one rule, and every rule
+cites the MCP specification. This page follows one real audit from the
+command to the final number. Then it covers what runs against your server
+and what the score leaves out, so you can check any score yourself.
 
-## Four principles
+```bash
+# Audit a public server and read the score
+mcpscore https://mcp.deepwiki.com/mcp
+```
 
-| Principle | What it means for you |
-|---|---|
-| **Deterministic** | No LLM judging, no API keys, no sampling. The same server state always produces the same score, in seconds, so the score works as a CI gate |
-| **Spec-anchored** | Every rule enforces something the [MCP specification](https://modelcontextprotocol.io/specification) or its published best practices say, and the citation ships in every result: `details.basis` for most rules, `details.sep` for readiness rules |
-| **Fair across revisions** | Servers are scored against the revision they negotiated, never punished for a spec they don't speak yet |
-| **Honest about limits** | Anything mcpscore cannot verify from the outside is [listed as untested](#what-mcpscore-does-not-test), not silently skipped |
+```text
+✅ Server uses HTTPS with valid TLS (TLSv1.3).
+✅ No sensitive-data patterns were detected in the sampled error response.
+❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding. Observed HTTP status: 200.
+  Fix: Validate supplied Origin headers against the origins allowed for this endpoint. Return HTTP 403 for invalid origins; do not allow every origin to satisfy browser requests.
+...
+Audit finished. Final score: 78/94
+Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
+Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 20 checks assessed)
+```
 
-## The score
+That run gives you three numbers: the main score (`78/94`), the spec revision
+the server speaks (`2025-11-25`, legacy), and a separate readiness score for
+the newest revision (`3/13`). The rest of this page explains each one.
 
-Each rule has a severity. A passing rule adds its weight. The score is
-`earned/maximum`.
+## How 78/94 adds up
 
-| Severity | Weight | Meaning |
+A rule is one check against your server, such as `security_origin_validation`.
+Each rule has a severity, and the severity sets its weight. A passing rule
+earns its weight. A failing rule earns nothing. The score is points earned
+over points available.
+
+| Severity | Weight | Typical rules |
 |---|---|---|
-| CRITICAL | 5 | Spec violations that break interoperability: protocol version, server name, TLS |
-| HIGH | 3 | Strong spec expectations: server version, valid tool schemas |
-| MEDIUM | 2 | Recommendations that improve agent UX: titles, descriptions, error hygiene |
-| LOW | 1 | Nice-to-haves: capability extras, transport recommendations |
+| CRITICAL | 5 | Protocol version allowed, server name present, TLS enabled |
+| HIGH | 3 | Server version present, valid tool schemas, `Origin` validated |
+| MEDIUM | 2 | Titles, tool annotations, error hygiene |
+| LOW | 1 | Icons, `websiteUrl`, invalid-cursor handling |
 
-Only applicable rules count toward the maximum. A rule that cannot
-meaningfully run is skipped and excluded from both numbers, never failed.
-Every skip appears in the report's `skipped_rules` with one of three reasons:
+The same DeepWiki audit, grouped by category:
+
+| Category | Earned | Available | Failed rules |
+|---|---|---|---|
+| Protocol | 36 | 42 | `protocol_version_latest` (2), `server_title_present` (2), `server_websiteurl_present` (1), `server_icons_present` (1) |
+| Primitives | 35 | 42 | `tools_annotations_present` (2), `tools_title_present_in_all` (1), four `pagination_*_invalid_cursor` rules (1 each) |
+| Security & Auth | 7 | 10 | `security_origin_validation` (3) |
+| **Total** | **78** | **94** | 11 failed, 25 passed, 43 skipped |
+
+Fixing the one Security & Auth failure moves the score to 81/94. The
+`--json` report carries the same arithmetic per rule in `results[].severity_value`
+and `results[].passed`, so you can recompute any score from the report alone.
+
+## Skipped rules count for nothing
+
+Only rules that ran count toward the maximum. A rule that has nothing to
+judge is skipped and left out of both numbers, never failed. That is why
+DeepWiki is scored out of 94 and a server with prompts and resources is
+scored out of more. DeepWiki serves no prompts or resources, so the 24 rules
+about them were skipped.
+
+Every skip appears in the report's `skipped_rules[]` with one reason:
 
 | Skip reason | When |
 |---|---|
-| `not-applicable` | The rule has no subject: its requirement does not exist for the negotiated version or transport, or an optional catalog has no items to judge |
-| `insufficient-data` | The observations the rule needs are unavailable, for example a probe errored. The rule can neither pass nor fail |
-| `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support. The gateway rules already carry that verdict |
+| `not-applicable` | The rule has no subject: the requirement does not exist for the negotiated revision or transport, or an optional catalog has no items |
+| `insufficient-data` | The observation the rule needs is unavailable, for example a probe errored. The rule can neither pass nor fail |
+| `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support. The two gateway readiness rules already carry that verdict |
+| `disabled-by-config` | Your [project configuration](/configure-rules) turned the rule off |
 
+<Accordion title="Technical details: empty and unreadable catalogs">
 An empty tools catalog that was fetched successfully gives the per-tool rules
-nothing to assess, so they contribute `0/0` as `not-applicable`. A declared
-catalog that could not be fetched uses `insufficient-data` instead, because an
-item may exist unobserved. A separate presence rule still judges whether a
-complete catalog is empty.
+nothing to assess, so they skip as `not-applicable`. A declared catalog that
+could not be fetched skips as `insufficient-data` instead, because an item may
+exist unobserved. A separate presence rule, `tools_at_least_one`, still judges
+whether a complete tools catalog is empty.
+</Accordion>
+
+## Four categories, three in the main score
+
+The main score groups its rules into three categories, and readiness is the
+fourth, on its own axis. The server audit has 99 rules today. The
+[rules reference](/rules) lists each one with its weight and the spec
+revisions it applies to.
+
+| Category | Rules | What it covers |
+|---|---|---|
+| Protocol | 17 | Protocol version, server name, title and version, advertised capabilities, transport |
+| Primitives | 50 | Tools, prompts, resources, and resource templates: names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination |
+| Security & Auth | 12 | The server's security posture, detailed below |
+| Readiness | 20 | How ready the server is for the 2026-07-28 revision, [scored separately](#the-readiness-score-separate-informative) |
+
+A separate set of six packaging rules scores a published npm or PyPI package
+instead of a running server. See [package audits](/package-audits).
+
+### Security & Auth: the server's security posture
+
+Security & Auth scores the security posture that is observable on a deployed
+server, from outside, without calling a tool.
+
+| What is checked | Rules |
+|---|---|
+| Transport security: HTTPS with a verified certificate and TLS 1.2 or 1.3 | `security_tls_enabled` (CRITICAL) |
+| `Origin` validation: a request with a foreign `Origin` gets HTTP 403, which blocks DNS rebinding | `security_origin_validation` (HIGH) |
+| Error hygiene: a malformed request gets the JSON-RPC parse error, and the error body carries no stack traces, file paths, or credentials | `security_malformed_request_handling`, `security_error_data_leak` (MEDIUM) |
+| Authorization posture, on servers that answer an unauthenticated request with 401 or 403: the `WWW-Authenticate` challenge, RFC 9728 resource metadata, the RFC 8414 authorization-server chain, HTTPS throughout, advertised scopes, and advertised PKCE `S256` support | eight `auth_*` rules |
+
+Three related checks live in other categories, because the spec files them
+there. Tool behavior annotations are `tools_annotations_present` and
+sensitive tool header parameters are `tools_mcp_headers_not_sensitive`, both
+in Primitives. Session-ID handling on the stateless lifecycle is
+`readiness_2026_no_session_id`, in Readiness.
+
+A server that serves anonymous requests has no authorization posture to
+grade, so the eight `auth_*` rules skip as `not-applicable`. That is the case
+for DeepWiki above. To score the authorization flow behind the gate, see
+[authenticated servers](/authenticated-servers).
 
 ## How an audit runs
 
@@ -62,21 +137,21 @@ complete catalog is empty.
   </Step>
   <Step title="Probe">
     Sessionless requests that observe behavior the spec defines outside the
-    negotiated session. Probes read state and nothing more. **An audit never
-    invokes `tools/call`.** The one opt-in exception is the CLI's
+    negotiated session. Probes read state and change nothing. An audit never
+    invokes `tools/call`. The one opt-in exception is the CLI's
     [smoke mode](/smoke-mode), for your own server, reported outside the score.
   </Step>
   <Step title="Evaluate">
-    Every registered rule runs against the collected data and probe
-    observations. The [rules reference](/rules) lists them all.
+    Every registered rule runs against the collected data and the probe
+    observations.
   </Step>
 </Steps>
 
 ### What the probes send
 
-Several probes are deliberately malformed, because the spec says how a server
+Several probes are malformed on purpose, because the spec says how a server
 must answer them. They can look like scanning in a WAF log. Each one checks
-documented normative behavior:
+documented behavior:
 
 | Probe | What the spec requires |
 |---|---|
@@ -88,61 +163,68 @@ documented normative behavior:
 | A fabricated pagination cursor on each declared list | JSON-RPC `-32602` (recommended) |
 | One truncated JSON body | JSON-RPC `-32700` with a null ID |
 
-A few probe details matter when reading a report:
-
-- **Stdio gets the same JSON-RPC probes.** The modern lifecycle is stateless,
+<Accordion title="Technical details: stdio probes, cursors, and pagination bounds">
+- Stdio gets the same JSON-RPC probes. The modern lifecycle is stateless,
   so behaviors expressible through the SDK are probed over stdio too, using
   two short-lived sibling processes and no `initialize` handshake. The
   truncated-JSON probe runs only over HTTP, because the SDK path cannot
   inject malformed wire input safely, so stdio reports `insufficient-data`
   for that rule. HTTP-only questions such as `Origin`, headers, status codes,
-  sessions, and auth metadata are `not-applicable` for stdio, never failed.
-- **Invalid-cursor probes use the initialized session** when one exists.
-  Legacy and dual-era servers may reject a sessionless request before the
-  cursor can be judged. Modern-only servers are assessed through the
-  stateless path.
-- **Pagination traversal is bounded.** For modern servers, mcpscore follows
+  sessions, and auth metadata are `not-applicable` for stdio.
+- Invalid-cursor probes use the initialized session when one exists.
+  Legacy and dual-era servers can reject a sessionless request before the
+  cursor is judged. Modern-only servers are assessed through the stateless
+  path.
+- Pagination traversal is bounded. For modern servers, mcpscore follows
   declared paginated lists to compare `cacheScope` across pages. It is
-  read-only, capped at 100 pages per surface and 30 seconds in total, and
-  skips when no list returns multiple complete pages.
+  read-only, capped at 100 pages per list and 30 seconds in total, and skips
+  when no list returns more than one complete page.
+</Accordion>
 
 ## Scoring across spec revisions
 
-MCP publishes dated revisions, `2024-11-05` through `2026-07-28`. The 2026
-revision replaces the stateful `initialize` lifecycle with a stateless one,
-and the spec itself describes servers as **legacy** (stateful), **modern**
-(stateless), or **dual-era** (both). mcpscore treats the revision as a
-property of your server that it detects, not a mode of the tool:
+MCP publishes dated revisions, from `2024-11-05` to `2026-07-28`. The
+2026-07-28 revision replaces the stateful `initialize` lifecycle with a
+stateless one. The spec calls stateful servers legacy, stateless servers
+modern, and servers that speak both dual-era. mcpscore detects which one your
+server is and scores it against the revision it negotiated:
 
-- Rules declare the version range they apply to. Outside it they are skipped,
-  which keeps scores comparable across servers on different revisions.
+- Rules declare the revisions they apply to. Outside that range they skip as
+  `not-applicable`, so a server is never failed on a revision it does not
+  speak. DeepWiki negotiates `2025-11-25`, so the five `tools_mcp_headers_*`
+  rules for 2026-07-28 skipped.
 - The report's `spec.era` states which lifecycle was observed, following the
-  spec's own detection guidance.
-- Modern-only servers are fully supported over HTTP and stdio. If the legacy
-  handshake fails but stateless requests succeed, the audit runs through the
-  probe layer instead of reporting a connection failure.
+  spec's own detection guidance. `spec.negotiated_version` and
+  `spec.latest_version` give the revisions.
+- Modern-only servers are fully supported over HTTP and stdio. When the
+  legacy handshake fails but stateless requests succeed, the audit runs
+  through the probe layer instead of reporting a connection failure.
 
-## The readiness axis
+## The readiness score: separate, informative
 
-mcpscore answers a second question: is this server ready for the 2026-07-28
-revision? The answer is always its own axis, `readiness.score` over
-`readiness.max_score`, and how it relates to the main score depends on the
-server:
+Readiness answers a second question: how ready is this server for the
+2026-07-28 revision. It is always reported on its own axis, as
+`readiness.score` over `readiness.max_score`. Whether its points also count
+in the main score depends on the server:
 
 | Server | Readiness points | Report flag |
 |---|---|---|
-| Legacy only | Informative. Guidance, not punishment. A fully compliant 2025-11-25 server keeps a clean main score | `readiness.counted_in_main: false` |
-| Modern or dual-era | Counted in the main score as well. The readiness block stays as the transparent breakdown of that share | `readiness.counted_in_main: true` |
-| Partial audit | Never counted. A partial score is already not comparable | `readiness.counted_in_main: false` |
+| Legacy only | Informative. A fully compliant 2025-11-25 server keeps a clean main score | `readiness.counted_in_main: false` |
+| Modern or dual-era | Counted in the main score too. The readiness block is the breakdown of that share | `readiness.counted_in_main: true` |
+| Partial audit | Never counted, because a partial score is already not comparable | `readiness.counted_in_main: false` |
 
-Whenever any readiness check was skipped, the human-readable line says how
-many were assessed, and the report carries `readiness.assessed`,
-`readiness.skipped`, and `readiness.total`. A perfect fraction never implies
-that every check ran.
+DeepWiki is legacy, so its `3/13` is guidance only. Its CLI line says
+`4 of 20 checks assessed`: the server has no stateless lifecycle, so the
+two gateway rules (`readiness_2026_server_discover` and
+`readiness_2026_stateless_request`) failed and 16 detail checks skipped as
+`requires-modern-support`. The report carries `readiness.assessed`,
+`readiness.skipped`, and `readiness.total`, so a perfect fraction never hides
+checks that did not run.
 
+<Accordion title="Technical details: every readiness rule and its normative basis">
 Each readiness rule is anchored to normative language of the 2026-07-28
-revision. The citations were re-verified against the dated spec URLs the day
-the revision went final, and are re-checked whenever a revision does.
+revision. The citations are re-checked against the dated spec URLs whenever
+a revision goes final.
 
 | Rule | Severity | Normative basis |
 |---|---|---|
@@ -167,62 +249,72 @@ the revision went final, and are re-checked whenever a revision does.
 | `readiness_2026_prompt_name_header_mismatch_rejected` | LOW | A `prompts/get` `Mcp-Name` that contradicts `params.name` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
 | `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([SEP-2106](https://modelcontextprotocol.io/specification/2026-07-28/basic/index)) |
 
-`Origin` validation is not on this axis: every Streamable HTTP revision
-requires it, so `security_origin_validation` scores it in Security & Auth for
-legacy and modern servers alike (it retired `readiness_2026_origin_validation`
-in 1.20.0). The session-ID and removed-method rules are legacy-leakage checks
-and run only when the server shows modern support. Missing-protocol-version rejection
-and GET-stream removal skip dual-era endpoints, because the spec explicitly
-permits compatibility with older Streamable HTTP revisions.
+`Origin` validation is not on this axis. Every Streamable HTTP revision
+requires it, so `security_origin_validation` scores it in Security & Auth
+for legacy and modern servers alike. The session-ID and removed-method rules
+check for legacy behavior leaking into the modern lifecycle, so they run only
+when the server shows modern support. Missing-protocol-version rejection and
+GET-stream removal skip dual-era endpoints, because the spec permits
+compatibility with older Streamable HTTP revisions there.
+</Accordion>
 
 ## What mcpscore does not test
 
-Out of scope today, either because it is not observable from outside or
-because testing it safely from outside is not yet possible:
+These are out of scope today, either because they are not observable from
+outside or because they cannot yet be tested safely from outside:
 
-- **True statelessness**, meaning no hidden cross-request state. Only
-  probabilistically testable, as the spec itself concedes.
-- **`requestState` integrity enforcement** (MRTR). Only tamper rejection is
+- What tools do. The audit never calls them, so the score judges how
+  tools are described and typed, not how they behave. [Smoke mode](/smoke-mode)
+  covers that for your own server, outside the score.
+- What tool descriptions say. Descriptions are checked for presence, not
+  read for instructions aimed at the agent.
+- The package behind the server. mcpscore does not scan code or
+  dependencies for malware. Pair it with a package scanner for that.
+- True statelessness, meaning no hidden state across requests. The spec
+  itself calls it testable only probabilistically.
+- `requestState` integrity enforcement. Only tamper rejection is
   observable, and active tampering probes are deferred.
-- **`subscriptions/listen`** behavior and SSE stream semantics.
-- **Tasks and MCP Apps extensions**, which version independently of the core.
-- **Client-side OAuth obligations** such as issuer validation and credential
-  binding. Not observable from a server audit.
-- **What tools do.** The audit never calls them, so the score judges how tools
-  are described and typed, not how they behave. [Smoke mode](/smoke-mode)
-  covers that gap for your own server, outside the score.
+- `subscriptions/listen` behavior and SSE stream semantics.
+- The Tasks and MCP Apps extensions, which version separately from the
+  core spec.
+- Client-side OAuth obligations such as issuer validation and credential
+  binding. A server audit cannot observe them.
 
-## Why did my score change?
+## When the score changes
 
-The score is deterministic for the same server state and the same mcpscore
-version. When it moves, one of three things moved:
+The score is deterministic: the same server state and the same mcpscore
+version give the same score. When it moves, one of three things moved:
 
-1. **A different mcpscore version ran.** Most releases add rules, which
-   changes both numbers. The report's `mcpscore_version` says which engine
-   scored it. Scores compare only within one version, per the
+1. A different mcpscore version ran. Most releases add rules, which
+   changes both numbers. The report's `mcpscore_version` names the engine.
+   Scores compare only within one version, per the
    [stability contract](/stability#evolving-by-design).
-2. **The audit type differs.** A partial audit covers far fewer checks. A
-   modern-lifecycle server's main score includes readiness points
+2. The audit type differs. A partial audit covers far fewer checks. A
+   modern server's main score includes readiness points
    (`readiness.counted_in_main`) and a legacy server's does not.
-3. **The server answered differently.** A rolling deploy or mixed replica
-   versions behind a load balancer make byte-identical probes get different
-   answers. A server that rate-limits the probes turns rules into
-   `insufficient-data` skips, which changes the maximum. Diff the two JSON
-   reports by `rule_id`. The flipping rule is the finding, and it usually
-   points at the server's consistency.
+3. The server answered differently. Rolling deploys and mixed replica
+   versions behind a load balancer give identical probes different answers.
+   A server that rate-limits the probes turns rules into `insufficient-data`
+   skips, which changes the maximum.
 
-## Disagree with a rule?
+To find the cause, diff the two `--json` reports by `rule_id`. The rule that
+flipped is the finding. For fixes to the rules servers fail most, see
+[improve your score](/improve-your-score).
 
-Open an issue with the `rule_id` and the spec text you believe contradicts
-it. Rules are required to be defensible by citation, and a rule that cannot
-be defended is a bug. To propose a new rule, see
+## Disputing a rule
+
+Open an [issue](https://github.com/mcp-box/mcpscore/issues) with the
+`rule_id` and the spec text you believe contradicts it. Every rule must be
+defensible by citation, and a rule that is not is a bug. Most results carry
+their citation in `details.basis`, and readiness results in `details.sep`.
+To propose a new rule, see
 [CONTRIBUTING](https://github.com/mcp-box/mcpscore/blob/main/CONTRIBUTING.md).
 
 ## What's next
 
 <CardGroup cols={2}>
   <Card title="Rules reference" icon="list-check" href="/rules">
-    Every rule, its weight, and the spec range it applies to
+    Every rule, its weight, and the spec revisions it applies to
   </Card>
   <Card title="Stability contract" icon="file-contract" href="/stability">
     What you can build on, and what moves between releases
