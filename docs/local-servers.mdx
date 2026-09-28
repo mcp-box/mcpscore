@@ -114,6 +114,18 @@ Audit finished. Final score: 105/126
 dependency in your `pyproject.toml` is there. The score is the same as in
 Step 1, because the server is the same.
 
+<Warning>
+  `--stdio` takes the rest of the command line, so every mcpscore option goes
+  before it. An option after it is passed to your server instead:
+
+  ```bash
+  mcpscore --fail-under 90 --stdio uv run server.py   # gate applies: exit 3 below 90%
+  mcpscore --stdio uv run server.py --fail-under 90   # server gets --fail-under: exit 0
+  ```
+
+  mcpscore warns when it sees one of its own options after `--stdio`.
+</Warning>
+
 `--stdio` works for any language. It runs the command directly, with no
 shell in between:
 
@@ -248,7 +260,7 @@ findings.
 |---|---|---|
 | `server.py could not start: No module named '...'`, exit code `2` | A `.py` target runs with mcpscore's Python, which lacks your dependencies. | Run the command the message suggests: `--stdio uv run server.py`, or your virtualenv: `--stdio .venv/bin/python server.py` |
 | `KeyError` or a missing-key message in the `server stderr:` lines, exit code `2` | The server does not inherit your shell's environment. | Add `--env NAME` for each variable the server reads, before `--stdio`. |
-| `--fail-under` has no effect and the exit code is `0` | The option came after `--stdio`, so mcpscore passed it to your server as an argument. | Move every mcpscore option before `--stdio`. |
+| `--fail-under came after --stdio, so mcpscore passes it to the server`, and the exit code is `0` | The option came after `--stdio`, so mcpscore passed it to your server as an argument. | Move every mcpscore option before `--stdio`. |
 | `'server.py' is a script, not an executable command.` | `--stdio` runs a program, and a script needs its interpreter. | `--stdio python server.py`, or `--stdio uv run server.py` in a uv project |
 | `Command not found: 'my-go-server'. Please ensure it is installed and on PATH.` | The executable is not on `PATH`. | Give its path: `--stdio ./my-go-server` |
 | `Usage error: give either a target or --stdio, not both`, exit code `1` | The command has both a file or URL and `--stdio`. | Keep one of them. |

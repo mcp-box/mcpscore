@@ -377,6 +377,45 @@ def parse_env_vars(pairs: list[str]) -> dict[str, str]:
     return env
 
 
+MCPSCORE_ONLY_OPTIONS = frozenset(
+    {
+        "--fail-under",
+        "--fail-under-readiness",
+        "--smoke",
+        "--call-all",
+        "--sarif",
+        "--no-config",
+        "--oauth",
+        "--callback-port",
+        "--package",
+        "--stdio",
+    }
+)
+"""Options a server is unlikely to share; after --stdio they almost surely meant mcpscore.
+
+Options a server may well take itself (--config, --token, --env, --json, -v)
+are left out so a correct command never draws a warning.
+"""
+
+
+def misplaced_stdio_options(stdio: list[str] | None) -> list[str]:
+    """Return mcpscore options that appear in the --stdio command, where they go to the server."""
+    if not stdio:
+        return []
+    found = [arg.partition("=")[0] for arg in stdio[1:]]
+    return [option for option in dict.fromkeys(found) if option in MCPSCORE_ONLY_OPTIONS]
+
+
+def warn_misplaced_stdio_options(stdio: list[str] | None) -> None:
+    """Warn that mcpscore options after --stdio are not applied, e.g. a --fail-under gate that never fails."""
+    if misplaced := misplaced_stdio_options(stdio):
+        logger.warning(
+            "%s came after --stdio, so mcpscore passes it to the server and does not apply it. "
+            "Put mcpscore options before --stdio.",
+            ", ".join(misplaced),
+        )
+
+
 def resolve_target(args: argparse.Namespace) -> str | StdioCommand | PackageCoordinate:
     """Resolve the audit target from the positional target, --stdio and --package.
 
@@ -941,6 +980,7 @@ async def async_main() -> None:
         sys.exit(1)
 
     logger.info("Welcome to mcpscore!")
+    warn_misplaced_stdio_options(args.stdio)
 
     config = resolve_rule_config(args)
 

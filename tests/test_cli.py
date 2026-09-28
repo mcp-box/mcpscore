@@ -30,6 +30,7 @@ from mcpscore.cli import (
     build_report,
     log_audit_outcome,
     main,
+    misplaced_stdio_options,
     parse_env_vars,
     resolve_target,
     run_package_audit,
@@ -1785,6 +1786,76 @@ class TestPackageCliFlow:
 
 class TestStdioCommandCliFlow:
     """--stdio: generic any-language local servers, and --env plumbing."""
+
+    @pytest.mark.parametrize(
+        ("stdio", "expected"),
+        [
+            (["uv", "run", "server.py", "--fail-under", "90"], ["--fail-under"]),
+            (["uv", "run", "server.py", "--fail-under=90", "--smoke"], ["--fail-under", "--smoke"]),
+            (["uv", "run", "server.py", "--sarif", "out.sarif", "--sarif", "x"], ["--sarif"]),
+            # Options a server may take itself never warn.
+            (["srv", "--config", "c.toml", "--token", "t", "--env", "prod", "--json", "-v"], []),
+            # The command itself is the server's executable, whatever its name.
+            (["--smoke"], []),
+            (["dotnet", "run", "--project", "./src/Server"], []),
+            (None, []),
+        ],
+    )
+    def test_misplaced_stdio_options(self, stdio: list[str] | None, expected: list[str]) -> None:
+        assert misplaced_stdio_options(stdio) == expected
+
+    async def test_fail_under_after_stdio_warns_that_it_is_not_applied(
+        self,
+        monkeypatch: MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        """A CI gate written this way never fails; the warning is the only sign of it."""
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--stdio", "uv", "run", "server.py", "--fail-under", "90"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = None
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+
+        with (
+            caplog.at_level(logging.WARNING, logger="mcpscore.cli"),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit),
+        ):
+            await async_main()
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings == [
+            (
+                "--fail-under came after --stdio, so mcpscore passes it to the server and does not apply it. "
+                "Put mcpscore options before --stdio."
+            )
+        ]
+        target = mock_client.detect_and_connect.await_args.args[0]
+        assert target.args == ("run", "server.py", "--fail-under", "90")
+
+    async def test_options_before_stdio_do_not_warn(
+        self,
+        monkeypatch: MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        mock_client: MagicMock,
+        mock_auditor: MagicMock,
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "--fail-under", "90", "--stdio", "uv", "run", "server.py"])
+        mock_client.detect_and_connect = AsyncMock(return_value=(False, None))
+        mock_client.last_connection_error = None
+        mock_auditor.audit_modern_only = AsyncMock(return_value=False)
+
+        with (
+            caplog.at_level(logging.WARNING, logger="mcpscore.cli"),
+            patch("mcpscore.cli.MCPClient", return_value=mock_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+            pytest.raises(SystemExit),
+        ):
+            await async_main()
+
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
     def test_stdio_remainder_captures_command_and_flags(self) -> None:
         args = build_parser().parse_args(["--json", "--stdio", "java", "-jar", "server.jar", "--port", "9"])
