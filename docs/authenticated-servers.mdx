@@ -22,7 +22,8 @@ Audit finished. Final score: 202/218
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
 ```
 
-That is a full audit: every rule ran against the live session. The token
+That is a full audit: every applicable rule could inspect the live session.
+Rules for a revision or a catalog the server does not have still skip. The token
 is sent as an `Authorization` header and is never logged or written to the
 report.
 

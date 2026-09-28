@@ -65,8 +65,8 @@ def _percentage_argument(raw: str) -> int:
 
 
 _DESCRIPTION = """\
-Audit an MCP server and get a 0-100 quality score, with a finding for every
-rule it fails.
+Audit an MCP server and get a quality score in points (78/94, say), with a
+finding for every rule it fails.
 
 Give it a server URL, a local .py or .js file, a server command (--stdio), or a
 published package (--package). The report prints to stderr; --json writes the
@@ -217,7 +217,8 @@ def build_parser() -> argparse.ArgumentParser:
             "schemas and reject bad arguments and unknown tool names. "
             "Only tools annotated readOnlyHint: true are called. "
             "Never changes the score; a failed check exits 4. "
-            "It needs a live session, so it skips partial and modern-only audits and --package."
+            "It needs a live session, so it skips partial and modern-only audits. "
+            "With --package it is a usage error (exit 1): a package is never run."
         ),
     )
     smoke.add_argument(

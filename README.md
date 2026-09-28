@@ -7,7 +7,8 @@
 [![License](https://img.shields.io/github/license/mcp-box/mcpscore.svg)](https://github.com/mcp-box/mcpscore/blob/main/LICENSE)
 
 **Lighthouse for MCP.** Point mcpscore at an MCP server and get a score plus
-a list of what to fix, each finding cited to the MCP spec.
+a list of what to fix, each finding cited to its source: the MCP spec,
+an RFC, the MCP Registry schema, or a stated best practice.
 
 A missing tool title, a stale protocol version, or an endpoint that accepts
 any `Origin` never crashes your server. It makes agents pick the wrong tool,

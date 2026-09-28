@@ -85,10 +85,11 @@ most of them into passes.
 
 ## Step 1: Describe your server
 
-Clients show your server by its
-[`serverInfo`](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#initialization): a `title` for people, a
-`version` for bug reports, `instructions` that tell the model when to use
-it, a `websiteUrl`, and `icons`. Set all five where you create the server:
+Clients show your server by what it sends when a session
+[starts](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#initialization). `serverInfo` carries a
+`title` for people, a `version` for bug reports, a `websiteUrl`, and
+`icons`. Next to it, the top-level `instructions` field tells the model
+when to use the server. Set all five where you create the server:
 
 ```python server.py highlight={2,4-11}
 from mcp.server import MCPServer
@@ -221,7 +222,8 @@ Audit finished. Final score: 138/151
 `allowed_hosts` is enforced too: a request whose `Host` header is not in the
 list gets HTTP 421. Add every hostname your server is reached by, including
 the one behind your load balancer. Requests without an `Origin` header, which
-is what non-browser MCP clients send, are always accepted.
+is what non-browser MCP clients send, pass the Origin check; the `Host`
+check still applies to them.
 
 <Accordion title="Technical details">
   The requirement is Transports §Security Warning in revisions

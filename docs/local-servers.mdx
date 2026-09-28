@@ -73,8 +73,9 @@ Readiness for MCP 2026-07-28: 33/33 (counted in the main score — modern-lifecy
 That's it. Your server has a score.
 
 A `.py` file runs with mcpscore's own Python, and a `.js` file runs with
-`node`. mcpscore's Python has the `mcp` package installed and nothing else.
-Add one import from your own project and the server cannot start:
+`node`. mcpscore's Python has mcpscore's own dependencies installed, `mcp`
+among them, and none of your project's. Add one import from your own
+project and the server cannot start:
 
 ```python server.py highlight={1}
 import openmeteo_requests

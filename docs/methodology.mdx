@@ -5,7 +5,11 @@ icon: "scale-balanced"
 ---
 
 Every point in an mcpscore report traces back to one rule, and every rule
-cites the MCP specification. This page follows one real audit from the
+cites its source in `details.basis`: a section of the MCP specification for
+most rules, RFC 9728 for authorization, the MCP Registry `server.json`
+schema and the package registries for packaging, JSON-RPC 2.0 for malformed
+requests, and a named mcpscore recommendation where the spec leaves a field
+optional. This page follows one real audit from the
 command to the final number. Then it covers what runs against your server
 and what the score leaves out, so you can check any score yourself.
 
@@ -81,10 +85,12 @@ exist unobserved. A separate presence rule, `tools_at_least_one`, still judges
 whether a complete tools catalog is empty.
 </Accordion>
 
-## Four categories, three in the main score
+## Four categories, readiness counted when it applies
 
-The main score groups its rules into three categories, and readiness is the
-fourth, on its own axis. The server audit has 99 rules today. The
+The main score always includes three categories. Readiness is the fourth:
+it has its own score, and it also counts in the main score on a full audit
+of a modern or dual-era server. Legacy servers and partial audits leave it
+out. The server audit has 99 rules today. The
 [rules reference](/rules) lists each one with its weight and the spec
 revisions it applies to.
 
@@ -93,7 +99,7 @@ revisions it applies to.
 | Protocol | 17 | Protocol version, server name, title and version, advertised capabilities, transport |
 | Primitives | 50 | Tools, prompts, resources, and resource templates: names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination |
 | Security & Auth | 12 | The server's security posture, detailed below |
-| Readiness | 20 | How ready the server is for the 2026-07-28 revision, [scored separately](#the-readiness-score-separate-informative) |
+| Readiness | 20 | How ready the server is for the 2026-07-28 revision, [scored on its own axis](#the-readiness-score-separate-informative) and in the main score for modern and dual-era full audits |
 
 A separate set of six packaging rules scores a published npm or PyPI package
 instead of a running server. See [package audits](/package-audits).

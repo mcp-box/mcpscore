@@ -134,8 +134,8 @@ than `401` or `403`. The common ones:
 | `421` | The server validates the `Host` header and yours is not on its list. | Audit through a host name the server allows, or add yours to its allowed hosts. |
 | `429` | The server rate-limited the audit. | Re-run later. An audit sends a few dozen requests. |
 
-To see what the server says to a `POST`, send the `initialize` request that
-starts every MCP session:
+To see what the server says to a `POST`, send it the request that opens
+a session. Servers on 2025-11-25 and earlier start with `initialize`:
 
 ```bash
 curl -i -X POST https://your-server.example/mcp \
@@ -144,9 +144,26 @@ curl -i -X POST https://your-server.example/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
 ```
 
-An MCP server answers with a JSON-RPC result that contains
+A legacy or dual-era server answers with a JSON-RPC result that contains
 `protocolVersion` and `serverInfo`
 ([Lifecycle §Initialization](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#initialization)).
+
+A modern-only 2026-07-28 server has no `initialize` and may reject it. Ask
+it with `server/discover`, which every modern server implements:
+
+```bash
+curl -i -X POST https://your-server.example/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: server/discover' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+A modern or dual-era server answers with `supportedVersions` and its
+capabilities
+([Lifecycle §Protocol Version Negotiation](https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle#protocol-version-negotiation)).
+If both requests fail, the endpoint is not an MCP server.
 
 ## The endpoint is not an MCP server
 

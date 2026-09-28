@@ -161,7 +161,7 @@ SARIF written to mcpscore.sarif (13 findings)
 | Results | One per failed rule. Passed and skipped rules are left out; `--json` is the full record. |
 | `security-severity` | Set on Security & Auth rules, so they sort into the tab's critical, high, medium, and low bands. |
 | `partialFingerprints` | Hashed from the rule and the shown target, so a re-upload updates the alert instead of opening a second one. |
-| Location | A repository-relative path standing for the target: host and path for a URL, `npm/name` for a package, the file for a local server. Never annotated in a pull request diff. |
+| Location | A repository-relative path standing for the target, at line 1: host and path for a URL, `npm/name` for a package, the file for a local server. A local server's file is real, so GitHub can annotate line 1 when a pull request changes it. URL, package, and `--stdio` targets are synthetic paths and show only in the Security tab. |
 | Target shown | A URL's scheme, host, port, and path; a `--stdio` command's program name; a local path; a package coordinate. Never a URL's userinfo, query, or fragment, a command's arguments, or rule `details`. |
 | `--sarif -` | Writes to stdout. Combined with `--json`, exits `1` before the audit runs. |
 
