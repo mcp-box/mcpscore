@@ -84,18 +84,13 @@ from mcp.server import MCPServer
 
 ```text
 Welcome to mcpscore!
-server stderr: Traceback (most recent call last):
-server stderr:   File ".../weather/server.py", line 1, in <module>
-server stderr:     import openmeteo_requests
-server stderr: ModuleNotFoundError: No module named 'openmeteo_requests'
-Legacy MCP initialize handshake failed for server: server.py
-...
+server.py could not start: No module named 'openmeteo_requests'. mcpscore runs a .py file with its own Python, which does not have the server's dependencies. Run it in its own environment instead: mcpscore --stdio uv run server.py
 Error connecting to the MCP server: server.py
 ```
 
-The exit code is `2`: mcpscore could not connect. Lines that start with
-`server stderr:` are your server's own output, relayed so you can see why it
-stopped.
+The exit code is `2`: mcpscore could not connect. The message names the
+missing module and the command to run instead. Add `-v` to see your
+server's own traceback.
 
 ## Step 2: Run it in its own environment
 
@@ -239,7 +234,9 @@ findings.
   field and is visible in the process list. That is why secrets go in with
   `--env NAME` and never as arguments.
 - Your server's stderr is relayed line by line with a `server stderr:`
-  prefix. Its stdout carries the MCP protocol and is never printed.
+  prefix. Its stdout carries the MCP protocol and is never printed. One
+  exception: when a `.py` target fails on a missing module, mcpscore prints
+  its own one-line message instead, and `-v` shows the traceback.
 - mcpscore opens more than one connection during an audit, for example to
   check that the tool catalog is the same on a second connection, so your
   server starts more than once.
@@ -249,7 +246,7 @@ findings.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `ModuleNotFoundError` in the `server stderr:` lines, exit code `2` | A `.py` target runs with mcpscore's Python, which lacks your dependencies. | `--stdio uv run server.py`, or your virtualenv: `--stdio .venv/bin/python server.py` |
+| `server.py could not start: No module named '...'`, exit code `2` | A `.py` target runs with mcpscore's Python, which lacks your dependencies. | Run the command the message suggests: `--stdio uv run server.py`, or your virtualenv: `--stdio .venv/bin/python server.py` |
 | `KeyError` or a missing-key message in the `server stderr:` lines, exit code `2` | The server does not inherit your shell's environment. | Add `--env NAME` for each variable the server reads, before `--stdio`. |
 | `--fail-under` has no effect and the exit code is `0` | The option came after `--stdio`, so mcpscore passed it to your server as an argument. | Move every mcpscore option before `--stdio`. |
 | `'server.py' is a script, not an executable command.` | `--stdio` runs a program, and a script needs its interpreter. | `--stdio python server.py`, or `--stdio uv run server.py` in a uv project |

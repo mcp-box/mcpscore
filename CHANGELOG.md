@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `mcpscore server.py` runs the file with mcpscore's own Python. When the server
+  then fails on a missing module, mcpscore now prints one line naming the module
+  and the command to run instead: `mcpscore --stdio uv run server.py` when uv
+  is installed and a `pyproject.toml` or `requirements.txt` is found, otherwise
+  the project's `.venv` Python, otherwise a placeholder for the Python that has
+  the dependencies. It no longer prints the server's traceback and does not
+  retry the dead launch as a modern-only server. `-v` still shows the traceback.
+
 ## [1.21.0] - 2026-09-28
 
 Quieter CLI output: one-line connection errors and no per-request log lines,
