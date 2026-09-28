@@ -1,0 +1,223 @@
+---
+title: "GitLab and other CI"
+description: "Fail a GitLab, Jenkins, CircleCI or any other CI job when your MCP server's score drops, with the exit code and the JSON report."
+icon: "gears"
+---
+
+mcpscore is a command-line tool with documented exit codes, so any CI
+system can run it as a quality gate. On GitHub, use the
+[GitHub Action](/github-action). Everywhere else, the job is two lines:
+install mcpscore, then run it with `--fail-under`. This is the whole GitLab
+job:
+
+```yaml .gitlab-ci.yml
+mcpscore:
+  image: python:3.13-slim
+  variables:
+    MCP_SERVER_URL: "https://your-server.example/mcp"
+  script:
+    - pip install "mcpscore==1.20.0"
+    - mcpscore "$MCP_SERVER_URL" --fail-under 90 --json --sarif mcpscore.sarif > mcpscore.json
+  artifacts:
+    when: always
+    paths:
+      - mcpscore.json
+      - mcpscore.sarif
+```
+
+When the score is below 90%, the job log ends like this and the job fails:
+
+```text
+Audit finished. Final score: 78/94
+Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
+Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 20 checks assessed)
+SARIF written to mcpscore.sarif (13 findings)
+Gate failed — --fail-under 90: score 78/94 (83%) is below the required 90%
+```
+
+The job fails on the merge request that lowered the score, and the full
+report stays attached to it.
+
+## Step 1: Install and gate
+
+```yaml .gitlab-ci.yml highlight={6-7}
+mcpscore:
+  image: python:3.13-slim
+  variables:
+    MCP_SERVER_URL: "https://your-server.example/mcp"
+  script:
+    - pip install "mcpscore==1.20.0"
+    - mcpscore "$MCP_SERVER_URL" --fail-under 90
+```
+
+`--fail-under 90` makes mcpscore exit with code `3` when the score, as a
+rounded percentage, is below 90. GitLab fails a job whose script exits with
+anything but `0`, so the threshold is the gate. The other codes a job can see
+are `2` when mcpscore cannot connect and `1` for a usage error; the
+[troubleshooting](/troubleshooting) page lists them all.
+
+Pin the version you tested. A new mcpscore release can add rules, and an
+unpinned install would move your score on a day your server did not change.
+Bump the pin in its own merge request, where a score change has one cause.
+
+Check it: set the threshold above your current score, for example
+`--fail-under 100`, and push. The job fails with `Gate failed — --fail-under
+100`. Put the real threshold back once you have seen it fail.
+
+## Step 2: Keep the report
+
+```yaml .gitlab-ci.yml highlight={7-12}
+mcpscore:
+  image: python:3.13-slim
+  variables:
+    MCP_SERVER_URL: "https://your-server.example/mcp"
+  script:
+    - pip install "mcpscore==1.20.0"
+    - mcpscore "$MCP_SERVER_URL" --fail-under 90 --json --sarif mcpscore.sarif > mcpscore.json
+  artifacts:
+    when: always
+    paths:
+      - mcpscore.json
+      - mcpscore.sarif
+```
+
+`--json` writes the full report to stdout; the log lines go to stderr, so
+redirecting stdout captures clean JSON. `--sarif` writes the failed rules as
+SARIF 2.1.0. Both files are written before the gate runs, so a failed job
+still has them. `when: always` tells GitLab to keep the artifacts when the
+job fails, which is when you need them.
+
+The JSON carries the score, the maximum and one entry per rule:
+
+```bash
+jq -r '"\(.score)/\(.max_score)"' mcpscore.json
+jq -r '.results[] | select(.passed == false) | "\(.severity) \(.rule_id)"' mcpscore.json
+```
+
+```text
+78/94
+MEDIUM protocol_version_latest
+MEDIUM server_title_present
+LOW server_websiteurl_present
+...
+```
+
+The report format is versioned by `schema_version` and described in the
+[stability contract](/stability#report-schema).
+
+## Step 3: Audit a server behind auth
+
+Add a masked CI/CD variable named `MCPSCORE_TOKEN` in the project settings.
+mcpscore reads it without a flag and sends it as `Authorization: Bearer`,
+so the job file does not change and the token never appears in it.
+
+```text
+Using 1 custom header(s).
+```
+
+That line in the job log confirms the token was picked up. Without a working
+token, the audit is partial, and a partial audit always fails
+`--fail-under`, because a score from a handful of checks cannot show the
+threshold was met. See [Audit a server behind auth](/authenticated-servers).
+
+## Step 4: Audit the server in your repository
+
+A server in the repository is audited the same way as a URL: put `--stdio`
+and the command that starts it where the URL was. `--stdio` takes the rest of
+the line, so every mcpscore option goes before it.
+
+```yaml .gitlab-ci.yml highlight={4-5}
+mcpscore:
+  image: python:3.13-slim
+  script:
+    - pip install "mcpscore==1.20.0" -r requirements.txt
+    - mcpscore --fail-under 90 --json --stdio python server.py > mcpscore.json
+  artifacts:
+    when: always
+    paths:
+      - mcpscore.json
+```
+
+This audits every merge request's code before it is deployed. A server in
+another language works the same way with its own image and start command,
+such as `--stdio node build/index.js`. [Smoke mode](/smoke-mode) adds
+`--smoke` to also call the server's read-only tools; a failed smoke check
+exits `4`.
+
+## Step 5: Report without blocking
+
+To see the score on every pipeline before you enforce it, let the job fail
+on the gate without failing the pipeline:
+
+```yaml .gitlab-ci.yml highlight={8-9}
+mcpscore:
+  image: python:3.13-slim
+  variables:
+    MCP_SERVER_URL: "https://your-server.example/mcp"
+  script:
+    - pip install "mcpscore==1.20.0"
+    - mcpscore "$MCP_SERVER_URL" --fail-under 90 --json > mcpscore.json
+  allow_failure:
+    exit_codes: [3]
+```
+
+Exit code `3` now shows as a warning. Exit code `2`, a server mcpscore could
+not reach, still fails the pipeline, because that is a broken deployment and
+not a lower score.
+
+## Any other CI
+
+Jenkins, CircleCI, Buildkite, Azure Pipelines and the rest run shell
+commands, and a shell command's exit code decides the step. This script
+works in all of them. It needs Python for mcpscore and `jq` to print the
+summary.
+
+```sh mcpscore-gate.sh
+#!/bin/sh
+# Audit the server, print the score and every failed rule, keep the reports.
+set -u
+
+status=0
+mcpscore "$MCP_SERVER_URL" --fail-under 90 --json --sarif mcpscore.sarif > mcpscore.json || status=$?
+
+if [ -s mcpscore.json ]; then
+  jq -r '"mcpscore: \(.score)/\(.max_score)"' mcpscore.json
+  jq -r '.results[] | select(.passed == false) | "  \(.severity)\t\(.rule_id)"' mcpscore.json
+fi
+
+exit "$status"
+```
+
+```text
+mcpscore: 78/94
+  MEDIUM	protocol_version_latest
+  MEDIUM	server_title_present
+  LOW	server_websiteurl_present
+  LOW	server_icons_present
+  HIGH	security_origin_validation
+...
+```
+
+The script keeps mcpscore's exit code and passes it on after printing the
+summary, so the step fails exactly when the gate does. When mcpscore cannot
+connect it writes no JSON, and the `-s` test skips the summary instead of
+failing on an empty file. Archive `mcpscore.json` and `mcpscore.sarif` with
+your CI's artifact step. SARIF is the format GitHub code scanning reads; the
+[GitHub Action](/github-action#send-findings-to-code-scanning) uploads it
+for you.
+
+## Recap
+
+- Install a pinned mcpscore and gate with `--fail-under`.
+- Keep the report with `--json` and `--sarif`, as artifacts saved even when
+  the job fails.
+- Pass a token through the masked `MCPSCORE_TOKEN` variable.
+- Audit the server in your repository with `--stdio` and its start command.
+- Report without blocking with `allow_failure: exit_codes: [3]`.
+
+## What's next
+
+- [Configure rules](/configure-rules) to turn off rules that do not fit your
+  server, or fail the gate on any HIGH finding with `[gate]`.
+- [Improve your score](/improve-your-score) for the fixes most servers need.
+- [Troubleshooting](/troubleshooting) when the job exits `2`.

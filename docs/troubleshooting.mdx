@@ -1,0 +1,306 @@
+---
+title: "Troubleshooting"
+description: "What each mcpscore exit code and error message means, and the fix for each."
+icon: "wrench"
+---
+
+When an audit does not end with a score, the exit code tells you which kind
+of problem it hit and the last lines of the output tell you which one.
+Find the exit code in the table, then the message in the sections below.
+
+```bash
+mcpscore https://your-server.example/mcp
+echo $?
+```
+
+```text
+Welcome to mcpscore!
+Attempting Streamable HTTP connection...
+...
+Error connecting to the MCP server: https://your-server.example/mcp
+2
+```
+
+| Exit code | Meaning | In CI |
+|---|---|---|
+| `0` | The audit completed and every gate passed. A partial audit also exits `0` unless you set a gate. | Step passes. |
+| `1` | The audit never ran: a usage error, or a failed `--oauth` sign-in. | Fix the command line. |
+| `2` | mcpscore could not connect to the server, or could not read the package registry for `--package`. | The server is down, gated in a way mcpscore cannot pass, or not an MCP server. |
+| `3` | The audit completed, and a `--fail-under`, `--fail-under-readiness` or `[gate]` threshold was not met. | The score regressed. |
+| `4` | The audit completed, and a `--smoke` check failed. Exit `3` wins when both apply. | A tool broke. |
+
+Every connection failure ends with the same line, `Error connecting to the
+MCP server:` and the target. The line that names the cause is above it.
+Some failures also print a Python traceback from the HTTP library; its last
+line carries the underlying error, such as `certificate is expired`.
+
+<Note>
+  The sections are ordered by how often each outcome appeared when mcpscore
+  audited the 13,695 remote endpoints listed in the official MCP registry in
+  August 2026: authentication 24.6%, unreachable 9.5%, payment required 3.0%,
+  not MCP 2.2%, no completed handshake 1.1%, rate limited 0.8%.
+</Note>
+
+## The server requires authentication
+
+**Symptom:**
+
+```text
+Server requires authentication (HTTP 401): https://api.githubcopilot.com/mcp/
+...
+Server requires authentication — running a partial audit of the observable surface.
+(Pass a token with --token or --header to audit behind the gate.)
+...
+Audit finished. PARTIAL score: 24/27 from 10 of 79 checks — not comparable to a full audit.
+```
+
+**Cause:** the server answered `401` or `403` without credentials. This is
+not an error. mcpscore scores what it can observe without a session: TLS,
+the `WWW-Authenticate` challenge and the OAuth discovery metadata.
+
+**Fix:** pass a credential to audit behind the gate:
+
+```bash
+mcpscore https://your-server.example/mcp --token "$TOKEN"
+mcpscore https://your-server.example/mcp --oauth
+```
+
+A partial audit always fails `--fail-under`, with exit code `3`, because a
+score from ten checks cannot demonstrate a threshold:
+
+```text
+Gate failed — --fail-under 80: this was a partial audit — its score covers only the observable surface and cannot demonstrate the threshold; pass a credential to audit behind the gate (or drop --fail-under for partial audits)
+```
+
+The whole flow, including OAuth sign-in, is in
+[Audit a server behind auth](/authenticated-servers).
+
+### The server rejected your credentials
+
+**Symptom:**
+
+```text
+Server rejected the provided credentials — running a partial audit of the observable surface.
+(Check that the --token/--header credentials are valid for this server.)
+```
+
+**Cause:** you passed `--token`, `--header` or `$MCPSCORE_TOKEN`, and the
+server still answered `401` or `403`.
+
+**Fix:** check that the token is current and has the scopes the server
+requires. `--token` sends it as `Authorization: Bearer`; a server that
+expects another header needs `--header 'X-Api-Key: ...'` instead.
+
+## The server is unreachable
+
+**Symptom:**
+
+```text
+Connection refused or server unreachable: https://your-server.example/mcp
+...
+Error connecting to the MCP server: https://your-server.example/mcp
+```
+
+**Cause:** the host name does not resolve, nothing listens on the port, or
+the TLS handshake failed. The traceback's last line says which, in your
+operating system's words. On macOS: `nodename nor servname provided, or not
+known` for DNS, `All connection attempts failed` for a closed port, and
+`certificate is expired` or `certificate is not trusted` for TLS.
+
+**Fix:** check the URL from the same machine with
+`curl -sS -o /dev/null -w '%{http_code}\n' https://your-server.example/mcp`.
+If curl fails the same way, the problem is the network or the certificate,
+not mcpscore. A certificate error is a real finding: MCP clients refuse that
+server too.
+
+## The server answered with an HTTP error
+
+**Symptom:**
+
+```text
+HTTP error 404 from server: https://your-server.example/mcp
+...
+Error connecting to the MCP server: https://your-server.example/mcp
+```
+
+**Cause:** the server answered the MCP handshake with an HTTP status other
+than `401` or `403`. The common ones:
+
+| Status | Usual cause | Fix |
+|---|---|---|
+| `404` | Wrong path. Many servers serve MCP at `/mcp`, some at `/sse` or the root. | Use the endpoint URL from the server's own docs. |
+| `402` | The server requires payment. | Audit it with a paid credential, or accept that mcpscore cannot. |
+| `405` | Often a symptom, not the cause. mcpscore tries Streamable HTTP (`POST`) first and then SSE (`GET`), and reports the last failure. A `POST`-only server that gave a non-MCP answer to `POST` shows up as the `GET`'s `405`. | Send the handshake yourself and read the answer: see below. |
+| `421` | The server validates the `Host` header and yours is not on its list. | Audit through a host name the server allows, or add yours to its allowed hosts. |
+| `429` | The server rate-limited the audit. | Re-run later. An audit sends a few dozen requests. |
+
+To see what the server says to a `POST`, send it the request that opens
+a session. Servers on 2025-11-25 and earlier start with `initialize`:
+
+```bash
+curl -i -X POST https://your-server.example/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+```
+
+A legacy or dual-era server answers with a JSON-RPC result that contains
+`protocolVersion` and `serverInfo`
+([Lifecycle §Initialization](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#initialization)).
+
+A modern-only 2026-07-28 server has no `initialize` and may reject it. Ask
+it with `server/discover`, which every modern server implements:
+
+```bash
+curl -i -X POST https://your-server.example/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: server/discover' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+A modern or dual-era server answers with `supportedVersions` and its
+capabilities
+([Lifecycle §Protocol Version Negotiation](https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle#protocol-version-negotiation)).
+If both requests fail, the endpoint is not an MCP server.
+
+## The endpoint is not an MCP server
+
+**Symptom:**
+
+```text
+Not a valid MCP server (handshake failed): https://your-server.example/
+...
+Error connecting to the MCP server: https://your-server.example/
+```
+
+A traceback above it may end in `Expected response with content type
+'text/event-stream', got 'text/html'`.
+
+**Cause:** the URL answered, but not with MCP. It is usually a website, a
+REST API or a proxy's error page on the right host but the wrong path.
+
+**Fix:** find the MCP endpoint path in the server's docs and audit that
+URL. The `curl` request in the previous section shows what the URL returns.
+
+## The server redirected
+
+**Symptom:**
+
+```text
+The server redirected (HTTP 301) to https://github.com/, which mcpscore does not follow (the POST would become a GET) — audit that URL instead if it is the intended server.
+Error connecting to the MCP server: http://github.com/
+```
+
+**Cause:** mcpscore follows a redirect only when it stays on the same origin
+and keeps the request as sent, which is the MCP SDK's rule too. A redirect
+from `http://` to `https://`, or to another host, is not followed.
+
+**Fix:** audit the URL the message names. If that URL is `http://` while
+yours was `https://`, the server sits behind a TLS-terminating proxy it does
+not trust; the message suggests the `https://` form to try.
+
+## The handshake timed out
+
+**Symptom:**
+
+```text
+MCP initialize handshake timed out for server: https://your-server.example/mcp
+```
+
+or `Connection timeout for server:` when the TCP connection never opened.
+
+**Cause:** the server accepted the connection and did not complete the MCP
+handshake within 30 seconds, or the host dropped the connection attempt.
+Cold-starting serverless hosts and servers that do slow work in their
+startup code hit this.
+
+**Fix:** re-run once the server is warm. If it times out every time, move
+slow startup work out of the `initialize` path.
+
+## A local server does not start
+
+These come from `--stdio` and from a `.py` or `.js` target, which mcpscore
+launches itself.
+
+**Symptom:** `Command not found: 'my-server'. Please ensure it is installed
+and on PATH.`
+**Cause:** the first word after `--stdio` is not an executable on `PATH`,
+and not an existing file.
+**Fix:** use the full path, such as `--stdio ./bin/my-server`, or install the
+command.
+
+**Symptom:** `'server.py' is a script, not an executable command. Launch it
+with its interpreter: --stdio python server.py`
+**Cause:** `--stdio` runs a command, and a script without a shebang and the
+executable bit is not one.
+**Fix:** run the command the message prints. For a Python script it also
+prints the `uv run` form to use inside a uv project.
+
+**Symptom:** `Permission denied launching './server'. Make it executable
+(chmod +x) or launch it with its interpreter`
+**Cause:** the file exists but is not executable.
+**Fix:** `chmod +x ./server`, or put its interpreter first.
+
+**Symptom:** `Server script not found: ./server.py`
+**Cause:** the `.py` or `.js` target path does not exist.
+**Fix:** check the path relative to the directory you run mcpscore from.
+
+**Symptom:**
+
+```text
+server stderr: python3: can't open file '/path/to/missing.py': [Errno 2] No such file or directory
+...
+Stdio connection failure: Could not connect to the MCP server. Details: Connection closed
+```
+
+**Cause:** the command started, and the server process exited before it
+answered. Every line the server writes to stderr is shown with the
+`server stderr:` prefix.
+**Fix:** read the `server stderr:` lines. They usually name a missing file,
+a missing dependency or a missing environment variable. Pass variables with
+`--env NAME`.
+
+## The command line was rejected
+
+**Symptom:** the usage summary, then a line starting with `Usage error:`,
+exit code `1`. For example:
+
+```text
+Usage error: argument --fail-under: 150 is not a percentage (expected 0-100)
+Usage error: --json and --sarif - both write to stdout; give --sarif a file name
+```
+
+**Cause:** a flag value or a combination of flags mcpscore cannot run.
+**Fix:** the line names the flag. `--stdio` takes the rest of the command
+line, so every mcpscore option must come before it. All flags are listed in
+the [CLI reference](/cli).
+
+## A gate failed
+
+**Symptom:** the audit completes, then `Gate failed —` and exit code `3`:
+
+```text
+Audit finished. Final score: 78/94
+...
+Gate failed — --fail-under 90: score 78/94 (83%) is below the required 90%
+```
+
+**Cause:** the score, as a rounded percentage, is below `--fail-under`; or
+the readiness percentage is below `--fail-under-readiness`; or a rule at or
+above a `[gate] fail_on` severity failed.
+**Fix:** the failed rules are the `❌` lines above the score, each with a
+`Fix:` line. [Improve your score](/improve-your-score) covers the rules most
+servers fail. To change what the gate counts, see
+[Configure rules](/configure-rules).
+
+A failed `--smoke` check exits `4` with `Gate failed — --smoke: 2 smoke
+check(s) failed`. [Smoke mode](/smoke-mode) explains each check.
+
+## What's next
+
+- [Audit a server behind auth](/authenticated-servers) for `--token`,
+  `--header` and `--oauth`.
+- [Improve your score](/improve-your-score) once the audit runs.
+- [CLI reference](/cli) for every flag.

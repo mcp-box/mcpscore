@@ -1,0 +1,276 @@
+---
+title: "Audit a local server"
+description: "Score an MCP server you run over stdio, in any language, with its own dependencies and secrets."
+icon: "laptop-code"
+---
+
+Your server runs on your machine over stdio, and you want its score before
+anyone installs it. mcpscore launches the server itself, audits it, and
+stops it when the audit ends.
+
+```bash
+# Score the server in the current uv project, with its API key
+mcpscore --env WEATHER_API_KEY --stdio uv run server.py
+```
+
+```text
+Welcome to mcpscore!
+Connected to the MCP server: uv run server.py
+Transport: stdio
+Starting the audit...
+...
+Audit finished. Final score: 105/126
+```
+
+That is the command you end up with. The steps below build it one piece at
+a time, and each piece fixes a failure you would otherwise hit.
+
+## Step 1: Audit a Python file
+
+Start with a small server. Save it as `server.py`:
+
+```python server.py
+from mcp.server import MCPServer
+
+mcp = MCPServer("Weather")
+
+
+@mcp.tool()
+def forecast(city: str) -> str:
+    """Return tomorrow's forecast for a city."""
+    return f"Sunny in {city}"
+
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+Pass the file to mcpscore the same way you pass a URL in the
+[quick start](/#quick-start):
+
+```bash
+mcpscore server.py
+```
+
+```text
+Welcome to mcpscore!
+Connected to the MCP server: server.py
+Transport: stdio
+Starting the audit...
+✅ Server name is present: "Weather".
+❌ Server version is not present in server info. First affected field: server "/serverInfo/version".
+  Fix: Set serverInfo.version to a non-empty implementation version in server metadata. This check does not require semantic versioning.
+...
+✅ All tools have a nonblank description.
+❌ Number of tools without behavior annotations: 1. This is an optional quality recommendation. First affected field: tool at index 0 "/annotations".
+  Fix: Declare behavior annotations that match the tool's actual effects. Set readOnlyHint to true only if the tool cannot change state.
+...
+Audit finished. Final score: 105/126
+Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
+Readiness for MCP 2026-07-28: 33/33 (counted in the main score — modern-lifecycle server; 12 of 20 checks assessed)
+```
+
+That's it. Your server has a score.
+
+A `.py` file runs with mcpscore's own Python, and a `.js` file runs with
+`node`. mcpscore's Python has mcpscore's own dependencies installed, `mcp`
+among them, and none of your project's. Add one import from your own
+project and the server cannot start:
+
+```python server.py highlight={1}
+import openmeteo_requests
+from mcp.server import MCPServer
+```
+
+```text
+Welcome to mcpscore!
+server stderr: Traceback (most recent call last):
+server stderr:   File ".../weather/server.py", line 1, in <module>
+server stderr:     import openmeteo_requests
+server stderr: ModuleNotFoundError: No module named 'openmeteo_requests'
+Legacy MCP initialize handshake failed for server: server.py
+...
+Error connecting to the MCP server: server.py
+```
+
+The exit code is `2`: mcpscore could not connect. Lines that start with
+`server stderr:` are your server's own output, relayed so you can see why it
+stopped.
+
+## Step 2: Run it in its own environment
+
+`--stdio` takes the command you already use to start your server. Put it
+where the file name was:
+
+```bash highlight={1}
+mcpscore --stdio uv run server.py
+```
+
+```text
+Welcome to mcpscore!
+Connected to the MCP server: uv run server.py
+Transport: stdio
+Starting the audit...
+...
+Audit finished. Final score: 105/126
+```
+
+`uv run` starts the server inside your project's environment, so every
+dependency in your `pyproject.toml` is there. The score is the same as in
+Step 1, because the server is the same.
+
+`--stdio` works for any language. It runs the command directly, with no
+shell in between:
+
+```bash
+mcpscore --stdio node build/index.js
+mcpscore --stdio ./my-go-server
+mcpscore --stdio java -jar server.jar
+mcpscore --stdio dotnet run --project ./src/Server
+mcpscore --stdio .venv/bin/python server.py
+```
+
+`--stdio` consumes the rest of the command line, including your server's own
+flags. Every mcpscore option goes before it.
+
+## Step 3: Pass the server its secrets
+
+Most servers read an API key at startup. Add that to `server.py`:
+
+```python server.py highlight={1,6}
+import os
+
+import openmeteo_requests
+from mcp.server import MCPServer
+
+API_KEY = os.environ["WEATHER_API_KEY"]
+```
+
+Export the key and run the Step 2 command:
+
+```bash
+export WEATHER_API_KEY=your-key
+mcpscore --stdio uv run server.py
+```
+
+```text
+Welcome to mcpscore!
+server stderr: Traceback (most recent call last):
+server stderr:   File ".../weather/server.py", line 6, in <module>
+server stderr:     API_KEY = os.environ["WEATHER_API_KEY"]
+...
+server stderr: KeyError: 'WEATHER_API_KEY'
+...
+Error connecting to the MCP server: uv run server.py
+```
+
+The key is in your shell, and the server still cannot see it. mcpscore
+starts the server with a minimal environment: `HOME`, `LOGNAME`, `PATH`,
+`SHELL`, `TERM`, and `USER` on macOS and Linux. Your shell's secrets stay
+out of a process you have not vouched for.
+
+Hand the key over by name with `--env`:
+
+```bash highlight={1}
+mcpscore --env WEATHER_API_KEY --stdio uv run server.py
+```
+
+```text
+Welcome to mcpscore!
+Connected to the MCP server: uv run server.py
+Transport: stdio
+Starting the audit...
+...
+Audit finished. Final score: 105/126
+```
+
+`--env NAME` copies the value from mcpscore's own environment, so it never
+appears on the command line, in shell history, or in the report. Repeat the
+flag for each variable. `--env NAME=VALUE` sets a value inline, which is
+fine for non-secret settings like `--env LOG_LEVEL=debug`.
+
+## Step 4: Fail when the score drops
+
+Add `--fail-under` with the lowest percentage you accept:
+
+```bash highlight={1}
+mcpscore --fail-under 90 --env WEATHER_API_KEY --stdio uv run server.py
+```
+
+```text
+...
+Audit finished. Final score: 105/126
+Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
+Readiness for MCP 2026-07-28: 33/33 (counted in the main score — modern-lifecycle server; 12 of 20 checks assessed)
+Gate failed — --fail-under 90: score 105/126 (83%) is below the required 90%
+```
+
+The exit code is `3`. 105 of 126 rounds to 83%, below the 90% you asked
+for. Lower the bar to where the server is today:
+
+```bash
+mcpscore --fail-under 80 --env WEATHER_API_KEY --stdio uv run server.py
+echo $?
+```
+
+```text
+...
+Audit finished. Final score: 105/126
+...
+0
+```
+
+Now a change that costs points fails the command, in your terminal or in
+CI, before the server reaches anyone else. Raise the number as you fix
+findings.
+
+<Accordion title="Technical details: how mcpscore launches your server">
+- A `.py` target runs with the interpreter mcpscore itself runs on
+  (`sys.executable`). A `.js` target runs with `node` from `PATH`.
+- `--stdio` runs the first word as the executable and passes the rest as
+  arguments. There is no shell, so quoting, pipes, and `$VARS` in the
+  server command are not interpreted. A script name on its own is not an
+  executable: `--stdio server.py` fails with a hint to use
+  `--stdio python server.py`.
+- The server gets the MCP Python SDK's default environment (`HOME`,
+  `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER` on POSIX) plus each `--env`.
+  `--env` values are never logged and never written to the report.
+- The command line, as typed after `--stdio`, becomes the report's `target`
+  field and is visible in the process list. That is why secrets go in with
+  `--env NAME` and never as arguments.
+- Your server's stderr is relayed line by line with a `server stderr:`
+  prefix. Its stdout carries the MCP protocol and is never printed.
+- mcpscore opens more than one connection during an audit, for example to
+  check that the tool catalog is the same on a second connection, so your
+  server starts more than once.
+</Accordion>
+
+## When it fails
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError` in the `server stderr:` lines, exit code `2` | A `.py` target runs with mcpscore's Python, which lacks your dependencies. | `--stdio uv run server.py`, or your virtualenv: `--stdio .venv/bin/python server.py` |
+| `KeyError` or a missing-key message in the `server stderr:` lines, exit code `2` | The server does not inherit your shell's environment. | Add `--env NAME` for each variable the server reads, before `--stdio`. |
+| `--fail-under` has no effect and the exit code is `0` | The option came after `--stdio`, so mcpscore passed it to your server as an argument. | Move every mcpscore option before `--stdio`. |
+| `'server.py' is a script, not an executable command.` | `--stdio` runs a program, and a script needs its interpreter. | `--stdio python server.py`, or `--stdio uv run server.py` in a uv project |
+| `Command not found: 'my-go-server'. Please ensure it is installed and on PATH.` | The executable is not on `PATH`. | Give its path: `--stdio ./my-go-server` |
+| `Usage error: give either a target or --stdio, not both`, exit code `1` | The command has both a file or URL and `--stdio`. | Keep one of them. |
+
+More failures and their fixes are in [Troubleshooting](/troubleshooting).
+
+## Recap
+
+- Audit a Python or JavaScript file with `mcpscore server.py`.
+- Run the server in its own environment with `--stdio uv run server.py`, or
+  any command in any language.
+- Pass secrets with `--env NAME`, before `--stdio`.
+- Fail the run below a score with `--fail-under 80`.
+
+## What's next
+
+- [Improve your score](/improve-your-score): the findings most servers
+  fail, and the fix for each.
+- [Smoke mode](/smoke-mode): call the server's tools after the audit and
+  check they behave.
+- [GitHub Action](/github-action) or [other CI](/ci-other-platforms): run
+  the Step 4 command on every pull request.

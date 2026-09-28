@@ -1,90 +1,119 @@
 ---
-title: "CLI Reference"
+title: "CLI reference"
 description: "Every mcpscore flag, environment variable, and exit code in one place."
 icon: "terminal"
 ---
 
 ```bash
-mcpscore [options] <target>
-mcpscore [options] --stdio <command> [args...]
-mcpscore [options] --package npm:<name>[@version]
-mcpscore [options] --package pypi:<name>[==version]
+mcpscore [options] https://your-server.example/mcp
+mcpscore [options] server.py
+mcpscore [options] --stdio COMMAND [ARGS...]
+mcpscore [options] --package npm:@scope/name
 ```
 
-`target` is a local `.py` or `.js` file, or a URL. The transport is detected:
-stdio for files, Streamable HTTP first and then SSE for URLs. Servers in any
-other language run through `--stdio`, and so does a Python server that should
-run in its own project environment: `--stdio uv run server.py`. A bare `.py`
-target runs under mcpscore's own interpreter. Whatever the audited server
-process writes to stderr appears in the output prefixed with `server stderr:`.
-The sessionless probes launch the same server again for their own requests,
-and those extra processes stay silent so startup output is not repeated.
+```bash
+# Audit a remote server
+mcpscore https://mcp.deepwiki.com/mcp
 
-## Options
+# Audit a local server written in any language
+mcpscore --stdio node build/index.js
+
+# Fail a CI job when the score drops below 80%, and keep the JSON report
+mcpscore https://your-server.example/mcp --fail-under 80 --json > report.json
+```
+
+`mcpscore --help` prints the same flags, grouped the same way as the tables below.
+
+## What to audit
+
+Give exactly one of these.
+
+| Flag | Example | What it does |
+|---|---|---|
+| `target` | `https://your-server.example/mcp`, `server.py`, `server.js` | A URL is tried over Streamable HTTP, then SSE. A `.py` file runs under mcpscore's own interpreter; a `.js` file runs under `node`. |
+| `--stdio COMMAND` | `--stdio uv run server.py`, `--stdio java -jar server.jar` | Starts the server with this command and audits it over stdio. Takes the rest of the command line, so every mcpscore option goes before it. Runs without a shell, so a script needs its interpreter. See [local servers](/local-servers). |
+| `--package COORDINATE` | `npm:@scope/name`, `npm:name@1.2.3`, `pypi:name==1.2.3` | Scores how a package is published, from registry metadata only. The package is never downloaded or run. Not comparable to a server score. See [package audits](/package-audits). |
+| `--env NAME=VALUE` | `--env LOG_LEVEL=debug` | Sets a variable for the `--stdio` server. Repeatable. The value is visible in shell history and the process list: plain config only. |
+| `--env NAME` | `API_KEY=... mcpscore --env API_KEY --stdio ...` | Copies `NAME` from mcpscore's own environment. The form for secrets: the value never appears on a command line or in the report. |
+
+Server stderr appears in the output prefixed with `server stderr:`. The
+sessionless probes start the server again for their own requests; those
+extra processes stay silent.
+
+## Output
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--stdio <command...>` | — | Launch the server as a command, any language. Consumes the rest of the command line, including the server's own flags, so put every mcpscore option before it. Runs without a shell, so a script needs its interpreter: `--stdio uv run server.py`, `--stdio node server.js`. |
-| `--env NAME=VALUE` | — | Set an environment variable for the `--stdio` server. Repeatable. The value lands in shell history and the process list, so use it for plain config only. |
-| `--env NAME` | — | Copy `NAME` from mcpscore's own environment into the server's. The form for secrets: the value never appears on a command line or in the report. It does sit in the server process's environment, which process inspection can read with enough privilege, as with any secret passed by environment. |
-| `--package <coordinate>` | — | Score a published package instead of a running server: `npm:@scope/name`, `npm:name@1.2.3`, `pypi:name==1.2.3`. Reads registry metadata only. See [package audits](/package-audits). |
-| `--json` | off | Write one JSON document to stdout. All logs go to stderr. Schema in the [stability contract](/stability). |
-| `--sarif FILE` | off | Write the failed rules as SARIF 2.1.0 to `FILE`, or to stdout with `-`, for [GitHub code scanning](#sarif-for-github-code-scanning). Findings only; combine with `--json` for the full report. |
-| `--config FILE` | nearest `mcpscore.toml` or `[tool.mcpscore]` | Apply a per-project rule configuration: rules off, re-ranked, and a severity gate. Changes the score for this run only. See [configure rules](/configure-rules). |
-| `--no-config` | off | Ignore any configuration and audit with the canonical rule set and weights. |
-| `--fail-under PCT` | none | Exit `3` when the main score percentage (0–100, rounded) is below `PCT`. A partial audit always fails this gate. |
-| `--fail-under-readiness PCT` | none | Exit `3` when the readiness percentage is below `PCT`. Skipped when readiness was not assessed at all. |
-| `--smoke` | off | After the audit, call the server's tools and check they behave. Only tools annotated `readOnlyHint: true` are called. Unavailable with `--package`; does not run on partial or modern-only probe audits. See [smoke mode](/smoke-mode). |
-| `--call-all` | off | With `--smoke`: call every tool, not only read-only ones. Explicit consent to trigger side effects. |
-| `--header 'Name: Value'` | — | Extra HTTP header for URL targets. Repeatable. Values are never logged or reported. |
-| `--token TOKEN` | `$MCPSCORE_TOKEN` | Shorthand for `--header 'Authorization: Bearer TOKEN'`. |
-| `--oauth` | off | Open the browser for the server's OAuth flow (authorization code + PKCE). The token lives in memory only. Needs dynamic client registration unless `--client-id` is given. |
-| `--client-id ID` | — | Pre-registered OAuth client for `--oauth`, for authorization servers without dynamic registration (GitHub's, for one). The app must allow a loopback redirect, `http://127.0.0.1:<port>/callback`. |
-| `--callback-port PORT` | any free port | Pin the loopback port for the `--oauth` redirect, for authorization servers that require the exact registered URI. |
-| `--version` | — | Print `mcpscore <version>` to stdout and exit `0`. Safe to parse. |
+| `--json` | off | Writes the full report as one JSON document to stdout. Logs stay on stderr. Fields are in the [stability contract](/stability#report-schema). |
+| `--sarif FILE` | off | Writes the failed rules as SARIF 2.1.0 to `FILE`, or to stdout with `-`. See [SARIF for GitHub code scanning](#sarif-for-github-code-scanning). |
+| `--version` | | Prints `mcpscore <version>` to stdout and exits `0`. Safe to parse. |
 
-An explicit `Authorization` header wins over `--token` and `MCPSCORE_TOKEN`.
-Only an `Authorization` credential marks the report `authenticated: true`;
-other headers are sent but make no such claim.
+## Rules and CI gates
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--config FILE` | nearest `mcpscore.toml` or `[tool.mcpscore]` up to the repository root | Turns rules off, changes their severity, and sets a `[gate] fail_on` severity that exits `3`. Changes this run's score only; mcpscore.dev and the badge never apply it. See [configure rules](/configure-rules). |
+| `--no-config` | off | Ignores any configuration file. Standard rules and weights. |
+| `--fail-under PCT` | none | Exits `3` when the score as a rounded percentage is below `PCT` (0 to 100). A partial audit always fails it. |
+| `--fail-under-readiness PCT` | none | Exits `3` when the readiness percentage for the latest spec revision is below `PCT`. Skipped when readiness was not assessed. |
+
+## Smoke checks
+
+These flags call the server's tools. See [smoke mode](/smoke-mode).
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--smoke` | off | After the audit, calls tools annotated `readOnlyHint: true` and checks output schemas, invalid-argument rejection, and unknown-tool rejection. Never changes the score. A failed check exits `4`. Needs a live session: skipped on partial and modern-only audits, refused with `--package`. |
+| `--call-all` | off | With `--smoke`, calls every tool, including ones that write, delete, or send. Refused without `--smoke`. |
+
+## Authentication
+
+For URL targets. See [authenticated servers](/authenticated-servers).
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--header 'Name: Value'` | | Sends an extra HTTP header. Repeatable. Values are never logged or reported. |
+| `--token TOKEN` | `$MCPSCORE_TOKEN` | Shorthand for `--header "Authorization: Bearer TOKEN"`. An explicit `Authorization` header wins. |
+| `--oauth` | off | Runs the server's OAuth flow in your browser (authorization code + PKCE). The token is kept in memory only. Needs dynamic client registration unless `--client-id` is given. Refused when a token is already set. |
+| `--client-id ID` | | A pre-registered OAuth client for `--oauth` (GitHub's authorization server needs one). The app must allow `http://127.0.0.1:<port>/callback`. |
+| `--callback-port PORT` | any free port | Fixes the loopback port of the `--oauth` redirect, for authorization servers that require the exact registered URI. |
+
+Only an `Authorization` credential marks the report `authenticated: true`.
+Other headers are sent and make no such claim.
 
 ## Environment variables
 
 | Variable | Used by | Meaning |
 |---|---|---|
-| `MCPSCORE_TOKEN` | `--token` fallback | Bearer token for auth-gated servers. The form for CI, where the value should never be on a command line. |
-
-Anything passed with `--env NAME` is read from the environment too, but that is
-your server's variable, not mcpscore's.
+| `MCPSCORE_TOKEN` | `--token` | Bearer token for auth-gated servers. The CI form: the value never appears on a command line. |
 
 ## Exit codes
 
 | Code | Meaning | In CI |
 |---|---|---|
-| `0` | Audit completed and every gate that was set passed | Green |
-| `1` | Audit never ran: a usage error, or an `--oauth` flow that timed out, was refused, or failed registration or token exchange | Fix the invocation |
-| `2` | Could not connect to the server, or a package's registry could not be read | Fix the target or the network |
-| `3` | Audit completed but `--fail-under`, `--fail-under-readiness`, or a configured `[gate]` was not met. A partial audit always fails `--fail-under` | The server needs work |
-| `4` | Audit completed but a `--smoke` check failed. When a threshold gate also fails, `3` wins | The tools are broken |
+| `0` | The audit completed and every gate that was set passed | Green |
+| `1` | The audit never ran: a usage error, an unwritable `--sarif` file, or a failed `--oauth` sign-in | Fix the invocation |
+| `2` | Could not connect to the server, or could not read the package registry | Fix the target or the network |
+| `3` | The audit completed but `--fail-under`, `--fail-under-readiness`, or a `[gate]` was not met | The server needs work |
+| `4` | The audit completed but a `--smoke` check failed. When a threshold gate also fails, `3` wins | The tools are broken |
 
-Without gate flags or a configured `[gate]`, a completed audit exits `0` whatever the score.
+Without a gate flag or a configured `[gate]`, a completed audit exits `0`
+whatever the score. A failing gate names itself on the last line:
 
-A `2` that reads "redirected (HTTP 307) to `<url>`, which mcpscore does not
-follow" means the URL you gave answers with a redirect. mcpscore follows a
-redirect only while it stays on the endpoint's origin and keeps the request as
-sent (a trailing slash, an `http` to `https` upgrade), the same rule as the MCP
-Python SDK, so it never audits an origin you did not name and never lets a
-`303` turn your `POST` into a `GET`. The message says which rule applied. Audit
-the URL it names. The one exception is a redirect from `https` to `http`: the
-message then suggests the `https` form of the target instead, because a token
-or custom header must not travel to the plaintext URL. That shape usually means
-the server sits behind a TLS-terminating proxy whose forwarded headers it does
-not trust.
+```text
+Audit finished. Final score: 78/94
+...
+Gate failed — --fail-under 90: score 78/94 (83%) is below the required 90%
+```
 
-## Output
+A `2` that says the URL was redirected means mcpscore follows a redirect only
+within the endpoint's origin and with the request unchanged. Audit the URL
+the message names. [Troubleshooting](/troubleshooting) has the other causes.
 
-Human-readable output goes to stderr. With `--json`, stdout carries exactly the
-report and nothing else, so `mcpscore ... --json > report.json` and piping into
-`jq` both work.
+## Output streams
+
+Human-readable output goes to stderr. With `--json`, stdout carries the
+report and nothing else.
 
 ```bash
 # Every failed rule id, one per line
@@ -92,11 +121,22 @@ mcpscore https://mcp.deepwiki.com/mcp --json 2>/dev/null \
   | jq -r '.results[] | select(.passed | not) | .rule_id'
 ```
 
+```text
+protocol_version_latest
+server_title_present
+server_websiteurl_present
+server_icons_present
+security_origin_validation
+tools_title_present_in_all
+...
+```
+
 ### SARIF for GitHub code scanning
 
 `--sarif` writes the failed rules in SARIF 2.1.0, the format GitHub's
-Security tab ingests. Upload the file and each failed rule becomes a code
-scanning alert, next to the findings of your other scanners.
+Security tab reads. Upload the file and each failed rule becomes a code
+scanning alert. The upload workflow is in the
+[GitHub Action guide](/github-action#send-findings-to-code-scanning).
 
 ```bash
 # The findings as a file for upload-sarif; the JSON report still goes to stdout
@@ -105,67 +145,54 @@ mcpscore https://mcp.deepwiki.com/mcp --json --sarif mcpscore.sarif > report.jso
 
 ```text
 ...
-Audit finished. Final score: 78/91
-SARIF written to mcpscore.sarif (12 findings)
+Audit finished. Final score: 78/94
+SARIF written to mcpscore.sarif (13 findings)
 ```
 
-One `result` per failed rule, with the rule's message, its severity, and a
-fingerprint of the rule and target under the one key GitHub matches alerts
-on, so a re-upload updates the alert instead of opening a second one:
+| mcpscore severity | SARIF `level` | Security tab |
+|---|---|---|
+| `CRITICAL`, `HIGH` | `error` | Error |
+| `MEDIUM` | `warning` | Warning |
+| `LOW` | `note` | Note |
+| Readiness rule not counted in the score | `note` | Note, whatever its severity |
+
+| Property | Value |
+|---|---|
+| Results | One per failed rule. Passed and skipped rules are left out; `--json` is the full record. |
+| `security-severity` | Set on Security & Auth rules, so they sort into the tab's critical, high, medium, and low bands. |
+| `partialFingerprints` | Hashed from the rule and the shown target, so a re-upload updates the alert instead of opening a second one. |
+| Location | A repository-relative path standing for the target, at line 1: host and path for a URL, `npm/name` for a package, the file for a local server. A local server's file is real, so GitHub can annotate line 1 when a pull request changes it. URL, package, and `--stdio` targets are synthetic paths and show only in the Security tab. |
+| Target shown | A URL's scheme, host, port, and path; a `--stdio` command's program name; a local path; a package coordinate. Never a URL's userinfo, query, or fragment, a command's arguments, or rule `details`. |
+| `--sarif -` | Writes to stdout. Combined with `--json`, exits `1` before the audit runs. |
+
+<Accordion title="Example result">
 
 ```json
 {
   "ruleId": "protocol_version_latest",
   "level": "warning",
   "message": {
-    "text": "❌ Not using the latest protocol version: negotiated '2025-11-25', latest is '2026-07-28', and no stateless-lifecycle support was observed"
+    "text": "❌ Not using the latest protocol version: negotiated \"2025-11-25\", latest is '2026-07-28', and no stateless-lifecycle support was observed.\nSuggested fix: Implement the latest revision on the negotiated path or expose modern per-request lifecycle support. ..."
   },
   "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "mcp.deepwiki.com/mcp" }, "region": { "startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1 } } }],
   "partialFingerprints": { "primaryLocationLineHash": "f1dcb75c967781b90dfa2a3e693e639b" },
-  "properties": { "severity": "MEDIUM", "readiness": false, "counted_in_score": true }
+  "properties": { "severity": "MEDIUM", "severity_value": 2, "readiness": false, "counted_in_score": true }
 }
 ```
 
-| mcpscore severity | SARIF level | In the Security tab |
-|---|---|---|
-| `CRITICAL`, `HIGH` | `error` | Error |
-| `MEDIUM` | `warning` | Warning |
-| `LOW` | `note` | Note |
-| Any readiness rule not counted in the score | `note` | Note, whatever its severity: the score waves it through, so the alert must not read as an error |
+</Accordion>
 
-The location is a repository-relative path standing for the target, because
-GitHub rejects an upload whose locations use another URI scheme: the host and
-path for a URL, `npm/name` for a package, the file itself for a local server.
-The finding is about a running server rather than a line of source, so it is
-never annotated in a pull request diff; the Security tab and the job's exit
-code carry it.
-
-**What the file shows of the target**, and this is the whole rule: a URL's
-scheme, host, port, and path; a `--stdio` command's program name, such as
-`npx` or `python`; a local path; a package coordinate. Never a URL's userinfo,
-query, or fragment, never a command's arguments, never rule `details`, which
-can hold the audited URL verbatim. URLs quoted in rule messages are cut down
-the same way, and the alert identity is hashed from that shown form, so
-nothing the file hides enters a hash either. The file's readers are everyone
-who can read the repository's alerts, a wider audience than a local report.
-What the export cannot do is tell which part of a path or a program name is
-secret, so keep credentials in `--token`, `--header`, or `--env NAME`, never
-in a URL or on a command line.
-
-Security & Auth rules also carry GitHub's `security-severity`, so they sort
-into the tab's critical, high, medium, and low bands. Passed and skipped rules
-are not in the file: SARIF carries findings, and `--json` stays the complete
-record. `--sarif -` writes to stdout and cannot be combined with `--json`,
-which exits `1` before the audit runs. The workflow that uploads the file is
-in the [GitHub Action guide](/github-action#send-findings-to-code-scanning).
+A SARIF file is read by everyone who can see the repository's alerts. Keep
+credentials in `--token`, `--header`, or `--env NAME`, never in a URL path or
+a program name.
 
 ## What's next
 
 <CardGroup cols={2}>
   <Card title="Stability contract" icon="file-contract" href="/stability">
-    Which flags, fields, and exit codes are guaranteed across releases
+    Which flags, fields, and exit codes stay stable across releases
   </Card>
-  <Card title="Authenticated servers" icon="lock" href="/authenticated-servers">
-    The token, header, and OAuth flags in practice
+  <Card title="Troubleshooting" icon="wrench" href="/troubleshooting">
+    Exit codes, connection failures, and partial audits
   </Card>
 </CardGroup>

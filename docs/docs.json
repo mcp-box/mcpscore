@@ -12,7 +12,7 @@
   "navigation": {
     "groups": [
       {
-        "group": "Get Started",
+        "group": "Get started",
         "pages": [
           "index"
         ]
@@ -20,8 +20,10 @@
       {
         "group": "Guides",
         "pages": [
+          "local-servers",
           "authenticated-servers",
           "package-audits",
+          "improve-your-score",
           "badge"
         ]
       },
@@ -30,7 +32,8 @@
         "pages": [
           "smoke-mode",
           "configure-rules",
-          "github-action"
+          "github-action",
+          "ci-other-platforms"
         ]
       },
       {
@@ -44,13 +47,18 @@
         "group": "Reference",
         "pages": [
           "cli",
-          "rules"
+          "rules",
+          "troubleshooting"
         ]
       }
     ]
   },
   "navbar": {
     "links": [
+      {
+        "label": "Audit a server",
+        "href": "https://mcpscore.dev/"
+      },
       {
         "label": "PyPI",
         "href": "https://pypi.org/project/mcpscore/"
@@ -63,8 +71,19 @@
   },
   "footer": {
     "socials": {
+      "website": "https://mcpscore.dev",
       "github": "https://github.com/mcp-box/mcpscore"
-    }
+    },
+    "links": [
+      {
+        "header": "mcpscore.dev",
+        "items": [
+          { "label": "Audit a server", "href": "https://mcpscore.dev/" },
+          { "label": "Blog", "href": "https://mcpscore.dev/blog" },
+          { "label": "Our mission", "href": "https://mcpscore.dev/our-mission" }
+        ]
+      }
+    ]
   },
   "contextual": {
     "options": [

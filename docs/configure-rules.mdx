@@ -1,64 +1,158 @@
 ---
-title: "Configure Rules"
-description: "Turn rules off and re-rank the rest for your own CI with a mcpscore.toml — the way you configure a linter. Your badge and mcpscore.dev stay canonical."
+title: "Configure rules"
+description: "Turn rules off and re-rank the rest for your own CI with a mcpscore.toml, the way you configure a linter. Your badge and mcpscore.dev stay canonical."
 icon: "sliders"
 ---
 
 Some rules won't apply to your server, and some matter more to you than their
 default weight says. A `mcpscore.toml` next to your code turns rules off and
 re-ranks the rest by `rule_id`, and the score you see in CI is the score under
-that policy. The badge and mcpscore.dev never read it: they always show the
+that policy. The badge and mcpscore.dev never read it. They always show the
 canonical score.
 
-```toml
-# mcpscore.toml — checked in next to your server
+```toml mcpscore.toml
 [rules]
-server_websiteurl_present = "off"       # we don't publish a website
-server_icons_present      = "off"
-server_title_present      = "critical"  # our agent picks tools by title
+server_websiteurl_present = "off"   # we do not publish a website
+server_title_present = "critical"    # our agent picks servers by title
 
 [gate]
 fail_on = "critical"   # any failed rule at or above CRITICAL fails the build
 ```
 
 ```text
-Config: mcpscore.toml — 2 rules off, 1 re-ranked, gate at CRITICAL
+Config: mcpscore.toml — 1 rule off, 1 re-ranked, gate at CRITICAL
 ...
 ⏭️ Skipping rule 'server_websiteurl_present': disabled-by-config
-⏭️ Skipping rule 'server_icons_present': disabled-by-config
 ...
-Audit finished. Final score: 78/92 (mcpscore.toml: 2 rules off, 1 re-ranked, gate at CRITICAL)
+Audit finished. Final score: 105/128 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
 Gate failed — [gate] fail_on = "critical": 1 failed rule at or above CRITICAL: server_title_present
 ```
 
-The score line names the file so a pasted number keeps its qualifier, and the
-gate says exactly which rule failed the build.
+The score line names the file, so a pasted number keeps its qualifier. The
+gate names the rule that failed the build.
+
+## Build the file one entry at a time
+
+The steps below build that file against the one-tool server from
+[smoke mode](/smoke-mode#smoke-test-your-own-server). With no configuration it
+scores `105/126`, and two of its failed rules are `server_websiteurl_present`
+and `server_title_present`. Every `rule_id` is in the [rules reference](/rules).
+
+Create `mcpscore.toml` in the directory you run mcpscore from, or anywhere
+above it inside the repository.
+
+### Step 1: Turn a rule off
+
+```toml mcpscore.toml
+[rules]
+server_websiteurl_present = "off"   # we do not publish a website
+```
+
+```bash
+mcpscore --stdio uv run server.py
+```
+
+```text
+Config: mcpscore.toml — 1 rule off
+...
+⏭️ Skipping rule 'server_websiteurl_present': disabled-by-config
+Audit finished. Final score: 105/125 (mcpscore.toml: 1 rule off)
+```
+
+The first line says which file was applied. The rule no longer runs, so its
+point leaves the maximum: `126` becomes `125`. It appears in the report's
+`skipped_rules` with reason `disabled-by-config`.
+
+### Step 2: Re-rank a rule
+
+A severity name instead of `off` keeps the rule running and changes its weight.
+`server_title_present` is `MEDIUM` by default, worth 2 points. Make it
+`critical`, worth 5:
+
+```toml mcpscore.toml highlight={3}
+[rules]
+server_websiteurl_present = "off"   # we do not publish a website
+server_title_present = "critical"    # our agent picks servers by title
+```
+
+```text
+Config: mcpscore.toml — 1 rule off, 1 re-ranked
+...
+Audit finished. Final score: 105/128 (mcpscore.toml: 1 rule off, 1 re-ranked)
+```
+
+The rule still fails, so the score stays at `105` and the maximum grows by 3.
+The weights are 1, 2, 3 and 5 points for `low`, `medium`, `high` and
+`critical`.
+
+### Step 3: Fail the build on it
+
+Add a `[gate]` table. Any failed rule counted in the main score at or above
+`fail_on` exits with code `3`:
+
+```toml mcpscore.toml highlight={5-6}
+[rules]
+server_websiteurl_present = "off"   # we do not publish a website
+server_title_present = "critical"    # our agent picks servers by title
+
+[gate]
+fail_on = "critical"   # any failed rule at or above CRITICAL fails the build
+```
+
+```text
+Audit finished. Final score: 105/128 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
+Gate failed — [gate] fail_on = "critical": 1 failed rule at or above CRITICAL: server_title_present
+```
+
+The exit code is `3`, the same code as `--fail-under`, so a CI step that
+already fails on a low score now fails on this rule too. Re-ranking in Step 2
+is what put the rule over the line. A rule that is `off` never trips the gate.
+
+### Step 4: Fix the server and watch it pass
+
+Give the server a title:
+
+```python server.py highlight={3}
+from mcp.server import MCPServer
+
+mcp = MCPServer("Basic Server", title="Basic Server")
+```
+
+```text
+✅ Server title is present: "Basic Server" (presence checked only).
+...
+Audit finished. Final score: 110/128 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
+```
+
+The exit code is `0`. The rule your team cares most about now guards every
+change, and the website score still counts it at its default weight.
 
 ## What each entry does
 
 | Entry | Effect |
 |---|---|
-| `rule_id = "off"` | The rule does not run and counts toward neither the score nor the maximum. It appears in the report's `skipped_rules` with reason `disabled-by-config`, unless the engine could not have judged it anyway, in which case the canonical reason (`not-applicable`, `insufficient-data`) is kept |
-| `rule_id = "low"` / `"medium"` / `"high"` / `"critical"` | The rule runs and counts at that severity, worth 1, 2, 3, or 5 points. The result records the rule's own severity as `details.severity_default` |
-| `[gate] fail_on = "high"` | Exit code `3` when any failed rule counted in the main score sits at or above that severity after re-ranking. Readiness rules count only when a modern-lifecycle server promotes them, matching `--fail-under`. Promote a rule to `critical` and it now blocks the build; a rule that is off cannot |
+| `rule_id = "off"` | The rule does not run and counts toward neither the score nor the maximum. It appears in `skipped_rules` with reason `disabled-by-config`, unless the engine could not have judged it anyway, in which case the canonical reason (`not-applicable`, `insufficient-data`) is kept |
+| `rule_id = "low"` / `"medium"` / `"high"` / `"critical"` | The rule runs and counts at that severity, worth 1, 2, 3 or 5 points. The result records the rule's own severity as `details.severity_default` |
+| `[gate] fail_on = "high"` | Exit code `3` when any failed rule counted in the main score sits at or above that severity after re-ranking. Readiness rules count only when a modern-lifecycle server promotes them, matching `--fail-under` |
 
 Values are case-insensitive. A `rule_id` that mcpscore doesn't know, including
 one it has retired, is warned about and ignored, so a file written for a newer
 release still works on an older one. Any other value is a usage error and exit
-code `1`. Every `rule_id` is in the [rules reference](/rules).
+code `1`.
 
 ## Where the file lives
 
-mcpscore looks, in this order, and says which it used:
+mcpscore looks in this order and prints the file it used on the `Config:` line:
 
 1. `--config FILE`, any path. A missing file is a usage error.
-2. Otherwise the nearest configuration, walking from the working directory up
-   to the repository root, the first directory that contains `.git`. In each
-   directory a `mcpscore.toml` wins over a `pyproject.toml` with a
-   `[tool.mcpscore]` table, and a nearer `pyproject.toml` wins over a
-   `mcpscore.toml` further up:
+2. Otherwise the nearest configuration, walking up from the working directory.
+   The walk stops at the repository root, the first directory that contains
+   `.git`. In each directory a `mcpscore.toml` wins over a `pyproject.toml`
+   with a `[tool.mcpscore]` table, and a nearer file wins over one further up.
 
-```toml
+A `pyproject.toml` takes the same entries under `tool.mcpscore`:
+
+```toml pyproject.toml
 [tool.mcpscore.rules]
 server_websiteurl_present = "off"
 
@@ -66,25 +160,37 @@ server_websiteurl_present = "off"
 fail_on = "high"
 ```
 
-`--no-config` ignores all of it, which is how you reproduce the canonical
-number inside a configured repository.
+```text
+Config: pyproject.toml — 1 rule off, gate at HIGH
+```
+
+`--no-config` ignores all of it. That is how you reproduce the canonical
+number inside a configured repository:
+
+```bash
+mcpscore --no-config --stdio uv run server.py
+```
+
+```text
+Audit finished. Final score: 105/126
+```
 
 ## What it changes, and what it doesn't
 
 A configuration changes the score for the run that used it. It does not touch
 the [badge](/badge) or the report on [mcpscore.dev](https://mcpscore.dev),
-which only ever show audits run by the website itself, with every rule at its
+which only show audits run by the website itself, with every rule at its
 default weight. Two teams with different files get different numbers for the
-same server, and that is the point: compare configured scores only across runs
-with the same `config.sha256`, which the report carries.
+same server. Compare configured scores only across runs with the same
+`config.sha256`, which the report carries.
 
 In the JSON report the applied configuration is a `config` block:
 
 ```json
 "config": {
   "source": "mcpscore.toml",
-  "sha256": "72346634bd0c…",
-  "disabled": ["server_websiteurl_present", "server_icons_present"],
+  "sha256": "b17a4a83f436…",
+  "disabled": ["server_websiteurl_present"],
   "reranked": {"server_title_present": {"from": "MEDIUM", "to": "CRITICAL"}},
   "unknown": [],
   "gate": {"fail_on": "CRITICAL", "failed": ["server_title_present"]}
@@ -92,31 +198,44 @@ In the JSON report the applied configuration is a `config` block:
 ```
 
 The [GitHub Action](/github-action) picks the file up from your checkout, so
-`min-score` gates the configured score, and the PR comment carries the same
-qualifier.
+`min-score` gates the configured score, the PR comment carries the same
+qualifier, and a `[gate]` failure fails the job with the rule named.
 
 ## When it fails
 
-**`Usage error: mcpscore.toml: rule 'x' has value 'skip'; expected off, low, medium, high, or critical`** (exit `1`)
+**`Usage error: mcpscore.toml: rule 'server_websiteurl_present' has value 'skip'; expected off, low, medium, high, or critical`** (exit `1`)
 
 - Cause: an unsupported value. `off` is the one spelling.
 - Fix: use `off` or a severity name.
 
-**`Config: unknown rule 'x'; ignored`**
+**`Config: unknown rule 'server_titel_present'; ignored`**
 
 - Cause: a `rule_id` this release doesn't have, or a typo.
-- Fix: check the id in the [rules reference](/rules). A retired rule says so
-  in the warning and can be deleted from the file.
+- Fix: check the id in the [rules reference](/rules).
 
-**`Gate failed — [gate] fail_on = "high": …`** (exit `3`)
+**`Config: rule 'readiness_2026_origin_validation' was retired in mcpscore 1.20.0; ignored`**
 
-- Cause: a rule at or above your threshold failed. That is the gate working.
-- Fix: fix the rule, lower the threshold, or re-rank that rule below it.
+- Cause: the rule was removed from the engine. The retired-rules table in the
+  [rules reference](/rules) says why, and names the replacement when there
+  is one.
+- Fix: delete the line.
+
+**`Usage error: missing.toml: cannot read config file: No such file or directory`** (exit `1`)
+
+- Cause: `--config` points at a file that does not exist.
+- Fix: correct the path, or drop `--config` and let discovery find the file.
 
 **The badge still shows the old score after you turned rules off**
 
 - Cause: the badge is canonical by design and never applies a configuration.
 - Fix: none needed. Your CI number and the badge answer different questions.
+
+## Recap
+
+- Turn a rule off with `rule_id = "off"`.
+- Re-rank a rule with a severity name.
+- Fail the build with `[gate] fail_on`.
+- Fix the server, and the same file keeps guarding it.
 
 ## What's next
 

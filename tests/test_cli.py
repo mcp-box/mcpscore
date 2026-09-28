@@ -702,6 +702,34 @@ class TestJSONOutput:
         assert "Usage error" in caplog.text
 
 
+class TestHelpText:
+    """`mcpscore --help` — the reference a user reads in the terminal."""
+
+    def test_help_lists_examples_and_every_exit_code(self) -> None:
+        """The epilog keeps its line breaks and documents exit codes 0-4."""
+        text = build_parser().format_help()
+
+        assert "examples:\n  # Audit a remote server\n  mcpscore https://mcp.deepwiki.com/mcp\n" in text
+        for code in range(5):
+            assert f"\n  {code}  " in text
+        assert "docs: https://docs.mcpscore.dev/cli" in text
+
+    def test_help_groups_every_flag(self) -> None:
+        """Flags sit in named groups, so the help scans by task."""
+        parser = build_parser()
+        titles = [group.title for group in parser._action_groups]
+
+        assert titles[2:] == [
+            "what to audit (pick one)",
+            "output",
+            "rules and CI gates",
+            "smoke checks (these call your tools)",
+            "authentication (URL targets)",
+        ]
+        options = next(g for g in parser._action_groups if g.title == "options")
+        assert {a.dest for a in options._group_actions} == {"help", "version"}
+
+
 class TestVersionFlag:
     """`mcpscore --version` — the first thing anyone runs to identify a build."""
 

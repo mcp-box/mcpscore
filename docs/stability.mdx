@@ -1,29 +1,96 @@
 ---
-title: "Stability Contract"
-description: "What mcpscore promises to keep stable across releases — and what deliberately evolves."
+title: "Stability contract"
+description: "What mcpscore keeps stable across releases, so your CI gates and report consumers keep working, and what moves on purpose."
 icon: "file-contract"
 ---
 
 Build on `rule_id`, the report schema, the CLI shape, and the exit codes.
-Those change only with a major version. Do not build on messages, rule names,
-or the absolute score. Those move in minor releases, on purpose. This page is
-the contract, in force since 1.1.0.
+Those change only in a major version. Messages, rule names, and the absolute
+score move in minor releases, on purpose. This contract has been in force
+since 1.1.0.
+
+Here is a real `--json` report, trimmed to one result. The stable parts are
+the ones your code should read:
+
+```bash
+# Write a machine-readable report to a file
+mcpscore https://mcp.deepwiki.com/mcp --json > report.json
+```
+
+```json
+{
+  "schema_version": 1,
+  "mcpscore_version": "1.20.0",
+  "generated_at": "2026-09-26T10:46:01.780465+00:00",
+  "target": "https://mcp.deepwiki.com/mcp",
+  "transport": "streamable-http",
+  "score": 78,
+  "max_score": 94,
+  "authenticated": false,
+  "partial": false,
+  "server_info": { "name": "DeepWiki", "version": "2.14.3" },
+  "package": null,
+  "summary": { "total": 36, "passed": 25, "failed": 11, "skipped": 43, ... },
+  "results": [
+    {
+      "rule_id": "tools_annotations_present",
+      "rule_name": "Tools - All tools should declare behavior annotations",
+      "severity": "MEDIUM",
+      "severity_value": 2,
+      "passed": false,
+      "message": "❌ Number of tools without behavior annotations: 3. ...",
+      "details": {
+        "issues": [
+          {
+            "entity_kind": "tool",
+            "reason": "missing_behavior_annotation",
+            "expected": "at least one behavior annotation reflecting actual effects",
+            "entity_index": 0,
+            "path": "/annotations"
+          },
+          ...
+        ],
+        "issues_total": 3,
+        "issues_omitted": 0,
+        "basis": "MCP 2025-11-25 Tools §Tool (annotations)"
+      },
+      "suggested_fix": "Declare behavior annotations that match the tool's actual effects. Set readOnlyHint to true only if the tool cannot change state."
+    },
+    ...
+  ],
+  "skipped_rules": [
+    {
+      "rule_id": "protocol_version_supported_versions_include_negotiated",
+      "rule_name": "MCP Protocol Version - Supported Versions Include Negotiated",
+      "reason": "not-applicable",
+      "group_name": "protocol_version"
+    },
+    ...
+  ],
+  "spec": { "negotiated_version": "2025-11-25", "latest_version": "2026-07-28", "era": "legacy", ... },
+  "readiness": { "score": 3, "max_score": 13, "counted_in_main": false, "assessed": 4, "skipped": 16, "total": 20, ... }
+}
+```
+
+Key a CI check or a dashboard on `rule_id`, `passed`, `severity_value`, and
+the counts. Show `message`, `rule_name`, and `suggested_fix` to people. The
+next sections say exactly which fields are which.
 
 ## Stable
 
 ### Rule identifiers
 
-A `rule_id` such as `tools_description_present_in_all` is never renamed and
-never reused for a different check. Rules are added in any release. A rule can
-be retired and stop running, but its identifier keeps its meaning forever.
-The [rules reference](/rules) lists retired ones too.
+A `rule_id` such as `tools_annotations_present` is never renamed and never
+reused for a different check. Rules are added in any release. A rule can be
+retired and stop running, but its `rule_id` keeps its meaning forever. The
+[rules reference](/rules) lists retired rules too.
 
 ### Report schema
 
 The `--json` report carries `schema_version`, currently `1`. Within a schema
 version, existing fields keep their names, types, and meanings. New fields
-appear in any release, so consumers must ignore unknown fields. A removal or
-type change bumps `schema_version`.
+appear in any release, so ignore fields you do not know. A removal or a type
+change bumps `schema_version`.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -37,22 +104,26 @@ type change bumps `schema_version`.
 | `partial` | bool | Only the observable surface of an auth-gated server was scored |
 | `partial_reason` | string or null | Why the audit was partial |
 | `incomplete_listings` | array | Catalogs whose paginated listing could not be fully collected |
-| `listing_errors` | object | Sanitized errors keyed by catalog name; values carry `outcome`, `page_index`, optional `error_code`, and optional bounded `issues`, `issues_total`, `issues_omitted` |
+| `listing_errors` | object | Sanitized errors keyed by catalog name. Values carry `outcome`, `page_index`, optional `error_code`, and optional bounded `issues`, `issues_total`, `issues_omitted` |
 | `server_info` | object or null | `name` and `version` the server reported. `null` when identity was never observed |
-| `package` | object or null | Always present. `null` for a server audit, an object for a package audit. See below |
+| `package` | object or null | Always present. `null` for a server audit, an object for a [package audit](#package-audits) |
 | `summary` | object | `total`, `passed`, `failed`, `skipped`, and `by_severity` counts |
-| `results[]` | array | One entry per rule that ran: `rule_id`, `rule_name`, `severity`, `severity_value`, `passed`, `message`, `details`, and optional failure-only `suggested_fix` (absent on passes and older findings) |
+| `results[]` | array | One entry per rule that ran: `rule_id`, `rule_name`, `severity`, `severity_value`, `passed`, `message`, `details`, and `suggested_fix` on failures that have [guidance](#failure-guidance) |
 | `skipped_rules[]` | array | One entry per rule that did not run: `rule_id`, `rule_name`, `reason`, `group_name` |
-| `spec` | object | `negotiated_version`, `session_protocol_version`, `latest_version`, `readiness_target`, `era`, `catalog_versions` (catalogs judged on a revision other than the negotiated one, keyed by listing name; empty unless a legacy listing failed and the stateless modern listing served it) |
-| `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus `assessed`, `skipped`, `total` coverage counts |
-| `smoke` | object | Present only when the run used `--smoke`. See below |
-| `config` | object | Present only when a per-project configuration was applied. See below |
+| `spec` | object | `negotiated_version`, `session_protocol_version`, `latest_version`, `readiness_target`, `era`, `catalog_versions` |
+| `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus the coverage counts `assessed`, `skipped`, `total` |
+| `smoke` | object | Present only when the run used `--smoke`. See [smoke results](#smoke-results) |
+| `config` | object | Present only when a project configuration was applied. See [configuration](#configuration) |
+
+`spec.catalog_versions` lists catalogs judged on a revision other than the
+negotiated one, keyed by listing name. It is empty unless a legacy listing
+failed and the stateless modern listing served it.
 
 ### Package audits
 
 `package` is `null` for every server audit. When it is an object, the report
-is a package audit and its score comes from the packaging rules alone, a rule
-set disjoint from server audits. Anything that compares or aggregates scores
+is a package audit. Its score comes from the packaging rules alone, a rule set
+separate from server audits, so anything that compares or aggregates scores
 must branch on this field.
 
 | Field | Meaning |
@@ -63,235 +134,286 @@ must branch on this field.
 | `repository_url`, `license`, `published_at`, `withdrawn` | The metadata the rules judged |
 | `executed` | Always `false`. The package was read, never downloaded or run |
 
-For a package audit `transport` and `spec.negotiated_version` are both `null`.
+For a package audit, `transport` and `spec.negotiated_version` are both
+`null`.
 
 ### Smoke results
 
-`smoke` is absent unless the run used [`--smoke`](/smoke-mode). It carries
-`summary` (pass/fail/skip counts), `coverage` (`tools_called`: distinct tools
-the server answered at least one `tools/call` for; `tools_total`: distinct
-tools the checks looked at), and `checks`. A check whose call completed sets
-`details.called: true`; a check that received a result also carries a bounded
-`details.response` (`content_blocks`, `content_types`, `structured_content`,
-`is_error`, and `first_text` capped at 80 code points). Consumers
-must not require it. Smoke results are never counted in `score` or
-`max_score`, and a smoke failure is reported through exit code `4`, not
-through the report's score fields.
+`smoke` is absent unless the run used [`--smoke`](/smoke-mode). Smoke results
+never count in `score` or `max_score`. A smoke failure is reported through
+exit code `4`.
 
 | Field | Meaning |
 |---|---|
 | `executed` | `false` when no session existed to call tools on, with the explanation in `reason` |
 | `call_all` | Whether `--call-all` was given |
 | `summary` | `passed`, `failed`, `skipped` counts |
+| `coverage` | `tools_called`: distinct tools the server answered at least one `tools/call` for. `tools_total`: distinct tools the checks looked at |
 | `checks[]` | `check_id`, `tool_name` (`null` for server-level checks), `verdict` (`pass`, `fail`, `skip`), `message`, `details` |
 
+A check whose call completed sets `details.called: true`. A check that
+received a result also carries a bounded `details.response` with
+`content_blocks`, `content_types`, `structured_content`, `is_error`, and
+`first_text` capped at 80 code points. Do not require `details.response`.
 `check_id` values are stable in the same way `rule_id`s are.
 
 ### Configuration
 
-`config` is absent unless a `mcpscore.toml` or `[tool.mcpscore]` was applied
-([configure rules](/configure-rules)). When present, the score was computed
-under that policy: rules turned off did not run and appear in
-`skipped_rules[]` with reason `disabled-by-config` (a canonical skip reason
-is kept when the engine could not have judged the rule anyway), and
-re-ranked rules carry
-their configured severity in `results[]` with the default in
-`details.severity_default`. A configured score is comparable only across
-runs with the same `config.sha256` and engine version. The badge and
-mcpscore.dev never apply a configuration.
+`config` is absent unless a `mcpscore.toml` or `[tool.mcpscore]` table was
+applied ([configure rules](/configure-rules)). When present, the score was
+computed under that policy:
+
+- Rules turned off did not run. They appear in `skipped_rules[]` with reason
+  `disabled-by-config`, unless the engine could not have judged the rule
+  anyway, in which case the canonical skip reason is kept.
+- Re-ranked rules carry their configured severity in `results[]`, with the
+  default in `details.severity_default`.
+- A configured score is comparable only across runs with the same
+  `config.sha256` and engine version. The badge and mcpscore.dev never apply
+  a configuration.
 
 | Field | Meaning |
 |---|---|
-| `source`, `sha256` | The file that was applied and a digest of its bytes |
-| `disabled` | Rule ids turned off |
-| `reranked` | Rule id to `{"from": default, "to": configured}` severity names |
-| `unknown` | Configured ids this engine does not have; warned and ignored |
-| `gate` | Present when `[gate]` is set: `fail_on` and the `failed` rule ids that tripped it |
+| `source`, `sha256` | The file that was applied, and a digest of its bytes |
+| `disabled` | Rule IDs turned off |
+| `reranked` | Rule ID to `{"from": default, "to": configured}` severity names |
+| `unknown` | Configured IDs this engine does not have. Warned about and ignored |
+| `gate` | Present when `[gate]` is set: `fail_on` and the `failed` rule IDs that tripped it |
 
 ### CLI interface
 
-The invocation shape is stable: `mcpscore <target>` with `--json`, `--header`,
-`--token`, and the `MCPSCORE_TOKEN` variable. New flags are added; existing
-flags keep their meaning. `mcpscore --version` prints `mcpscore <version>` to
-stdout, exits `0`, and needs no target. `--json` writes exactly one JSON
-document to stdout with all logs on stderr. `--sarif FILE` writes SARIF 2.1.0
-with one `result` per failed rule, keyed by `ruleId` = `rule_id`; the
-severity-to-level mapping and the `primaryLocationLineHash` fingerprint (a
-hash of the rule and target) keep their meaning, so code scanning alerts
-survive an upgrade.
+The invocation shape is stable: `mcpscore <target>` with `--json`,
+`--header`, `--token`, and the `MCPSCORE_TOKEN` environment variable. New
+flags are added. Existing flags keep their meaning.
+
+- `mcpscore --version` prints `mcpscore <version>` to stdout, exits `0`, and
+  needs no target.
+- `--json` writes exactly one JSON document to stdout. All logs go to stderr.
+- `--sarif FILE` writes SARIF 2.1.0 with one `result` per failed rule, keyed
+  by `ruleId` = `rule_id`. The severity-to-level mapping and the
+  `primaryLocationLineHash` fingerprint (a hash of the rule and the target)
+  keep their meaning, so code scanning alerts survive an upgrade.
 
 | Exit code | Meaning |
 |---|---|
-| `0` | Audit completed. With no gate flags, this regardless of score |
+| `0` | Audit completed. With no gate flags, this is the result whatever the score |
 | `1` | Audit never attempted: usage error, or `--oauth` failed (timeout, refusal, registration or token-exchange failure) |
 | `2` | Could not connect to the target, with no fallback available |
 | `3` | Audit completed but `--fail-under`, `--fail-under-readiness`, or a configured `[gate]` was not met. A partial audit always fails `--fail-under` |
 | `4` | Audit completed but a `--smoke` check failed. When a threshold also fails, `3` is returned |
 
+For what to do about each code, see [troubleshooting](/troubleshooting).
+
 ### Credentials
 
-Header and token values are never logged and never written to the report. The
-report records only the boolean `authenticated`. This is a permanent
-commitment, not a default.
+Header and token values are never logged and never written to the report.
+The report records only the boolean `authenticated`. This is a permanent
+commitment.
 
 ## Evolving by design
 
 | What | How it moves | What to do |
 |---|---|---|
-| `score` and `max_score` | Rules are added in most releases, so both numbers change. A score is comparable only within one mcpscore version against one server | Store `mcpscore_version` with every score. Compare across versions by `rule_id`, not by total |
+| `score` and `max_score` | Most releases add rules, so both numbers change. A score is comparable only within one mcpscore version against one server | Store `mcpscore_version` with every score. Compare across versions by `rule_id`, not by total |
 | `partial: true` | Fewer checks ran | Never compare with a full audit |
-| `config` present | The run applied a per-project configuration | Compare only across runs with the same `config.sha256` |
-| `readiness.counted_in_main: true` | A modern-lifecycle server's readiness points are inside the main score | A `min-score` threshold means something slightly different on either side of this flag |
-| `message`, `details`, `rule_name`, severities, category groupings | Improved in any release | Show them to humans. Never key logic on them |
+| `config` present | The run applied a project configuration | Compare only across runs with the same `config.sha256` |
+| `readiness.counted_in_main: true` | A modern-lifecycle server's readiness points are inside the main score | A score threshold means something slightly different on either side of this flag |
+| `message`, `details`, `rule_name`, severities, category groupings | Improved in any release | Show them to people. Never key logic on them |
 | SARIF rule metadata (`shortDescription`, `fullDescription`, `helpUri`, `properties`) | Grows as rules gain citations and docs anchors move | Key on `ruleId` and the fingerprint, as GitHub does |
-| Readiness rules | Target the newest revision, currently 2026-07-28. As adoption matures they migrate into the main axis and new ones appear for the next draft | Their `rule_id`s still follow the never-reused rule |
+| Readiness rules | Target the newest revision, currently 2026-07-28. As adoption grows they move into the main axis, and new ones appear for the next revision | Their `rule_id`s follow the never-reused rule |
 
-We would rather grow the checks than freeze the number early. A calibrated
-scoring frame will revisit this once the ruleset settles.
+mcpscore grows its checks rather than freezing the number early. A calibrated
+scoring frame will revisit this once the rule set settles. The
+[methodology](/methodology#scoring-across-spec-revisions) explains how rules
+apply per spec revision.
 
 ## Versioning
 
 mcpscore follows [SemVer](https://semver.org/). Breaking anything in the
 Stable section needs a major version. Rule additions and score movement are
-minor-version territory. Pre-releases (`bN`) can change anything.
+minor-version changes. Pre-releases (`bN`) can change anything.
 
 ## Failure guidance
 
-A failed rule may include `suggested_fix`: a nonblank plain-text repair hint of
-at most 255 Unicode code points. The field is omitted on passing results and on
-older findings without authored guidance; skipped rules remain separate.
-Consumers must tolerate its absence. In JavaScript, count code points with
-`Array.from(text).length`, rather than UTF-16 `text.length`.
+A failed rule can carry two kinds of guidance: a repair hint in
+`suggested_fix`, and structured evidence in `details.issues`. Neither changes
+a verdict, an applicability decision, or a score weight.
 
-Supported findings include tool, resource, resource-template, prompt,
-server-metadata, capability, protocol, transport, auth/security, pagination,
-catalog-stability, readiness and package rules. The CLI prints their hint as `Fix:` on
-stderr. JSON stdout remains one complete report. SARIF appends sanitized repair
-advice to the finding message, using its stricter URL privacy policy; it does
-not invent source edits. Older findings still export without a repair hint. Optional metadata and list-change advice is
-labeled as a quality recommendation in the message; it is not a protocol mandate.
-Scores and applicability are unchanged.
+### Repair hints: `suggested_fix`
 
-Schema failures retain existing detail keys and add `details.issues`, with a tool
-catalog index, a JSON Pointer field path, a reason and an expected constraint.
-These diagnostics explain the existing validator; they do not broaden it into
-complete JSON Schema conformance checking. A tool's optional output schema is
-checked only when present. Arbitrary schema values are not copied into issues.
+| Property | Contract |
+|---|---|
+| Presence | Failures only. Absent on passes and on findings without authored guidance. Tolerate its absence |
+| Length | Nonblank, at most 255 Unicode code points. In JavaScript, count with `Array.from(text).length`, not `text.length` |
+| CLI | Printed as `Fix:` on stderr. JSON stdout stays one complete report |
+| SARIF | Appended to the finding message after sanitizing, under SARIF's stricter URL privacy policy. It never invents source edits |
 
-Each tool contributes its first failing predicate; at most 20 issues are included.
-`issues_total` and `issues_omitted` describe the evidence limit. Schema and catalog validation paths longer than
-255 Unicode code points are omitted with `path_omitted: true`; stored paths retain their exact JSON Pointer characters, including newlines,
-quotes and backslashes. Only CLI rendering escapes those characters. Indexes still identify the affected tool.
+Hints cover tool, resource, resource-template, prompt, server-metadata,
+capability, protocol, transport, auth and security, pagination,
+catalog-stability, readiness, and package rules. A hint for optional metadata
+or list-change advice says it is a quality recommendation in the message,
+not a protocol mandate.
 
-Catalog metadata failures use the same bounded `details.issues` shape. Each issue
-identifies an `entity_kind` and a zero-based `entity_index` in the **collected,
-concatenated catalog**. Paths are relative to that item, using MCP wire field
-names: tool index 2 with `/inputSchema/properties/query/description`, for example.
-Prompt arguments and icons include their own indexes in the path. Server metadata
-paths start at `/serverInfo`, `/instructions` or `/capabilities` and have no
-catalog index. An empty-tools finding uses `/tools` relative to the catalog result.
+Requirement strength is not inferred from severity or from the presence of a
+hint. Read the rule's `details.basis` and the revisions it applies to. A hint
+is advice for that finding.
 
-These new issues omit publisher names, URI values and image data. Indexes still
-identify entries with missing or duplicated names. Existing detail keys are
-retained for compatibility and are not covered by this new evidence bound.
-Human-readable messages can show server identity values on passes and up to three
-duplicate tool names on failures. Each quoted preview includes at most 60 source
-Unicode code points, with an explicit truncation marker; a value that is a single
-URL keeps up to 200, and a list renders item by item (at most 10 items, then a
-count). Printable Unicode stays readable; quotes, backslashes and nonprinting
-characters are escaped, so the rendered preview can be longer than the bound.
-The full values remain in
-legacy details. This is a display bound, not secret redaction. Website URL values
-are not echoed in passing messages.
-`issues_total` counts affected fields or occurrences, which can differ from a
-legacy count of distinct names or duplicate identifiers. At most 20 issues are
-included; overlong paths use `path_omitted: true` rather than a truncated pointer.
-Messages identify the first affected field; the complete bounded evidence remains
-in `details`. An optional field with an invalid declared value still needs repair.
+### Structured evidence: `details.issues`
 
-The guidance describes the current checks, not additional validation: server
-icons are checked for an `https://` or `data:` prefix only, and a declared
-`listChanged` flag does not prove that notifications work. Header uniqueness still
-groups annotations by tool name; resolve duplicate tool names before treating
-cross-entry collisions as a confirmed error within one tool.
+Schema and catalog failures keep their existing detail keys and add a bounded
+list of issues. Each issue names where the problem is and what was expected:
 
-Catalog collection failures are recorded in report `listing_errors`, and in
-`details.collection_error` when a declaration rule fails. Outcomes distinguish
-`invalid_response`, `timeout`, `rpc_error` and an unspecified `collection_error`.
-Validation locations and expected types are retained without raw response values
-or exception messages. Modern result objects with a missing or non-array `tools` field also receive
-sanitized field-shape diagnostics, while the probe outcome remains unsupported.
-These diagnostics do not change verdicts or score weights.
+| Field | Meaning |
+|---|---|
+| `entity_kind` | What the issue is about: `tool`, `resource`, `resource_template`, `prompt`, `server`, `catalog`, or `response` for readiness probes |
+| `entity_index` | Zero-based index in the collected, concatenated catalog. Absent for `server` and `catalog` issues |
+| `path` | JSON Pointer relative to that item, using MCP wire field names, such as `/inputSchema/properties/query/description` |
+| `reason`, `expected` | Why it failed, and the constraint it was checked against |
+| `path_omitted` | `true` when the path was longer than 255 code points and left out |
 
-Requirement strength is not inferred from severity or the presence of a hint.
-Use the rule's source basis and applicability; a repair hint is advice for that
-finding, not a claim that every scored recommendation is mandatory.
+At most 20 issues are included. `issues_total` counts every affected field or
+occurrence, and `issues_omitted` counts those past the limit. Each tool
+contributes its first failing predicate. Messages name the first affected
+field, and the full bounded evidence stays in `details`.
 
-### Protocol and probe evidence
+<Accordion title="Technical details: issue paths and catalog evidence">
+- Prompt arguments and icons include their own indexes in the path.
+- Server metadata paths start at `/serverInfo`, `/instructions`, or
+  `/capabilities`, with no catalog index. An empty-tools finding uses
+  `/tools`, relative to the catalog result.
+- Stored paths keep their exact JSON Pointer characters, including newlines,
+  quotes, and backslashes. Only CLI rendering escapes them.
+- Issues leave out publisher names, URI values, image data, and arbitrary
+  schema values. Indexes still identify entries with missing or duplicate
+  names.
+- `issues_total` counts affected fields or occurrences, which can differ from
+  a legacy count of distinct names or duplicate identifiers.
+- Schema diagnostics explain the existing validator. They do not extend it to
+  complete JSON Schema conformance. A tool's optional output schema is checked
+  only when present.
+- Existing detail keys are kept for compatibility and are not covered by the
+  evidence bound.
+- An optional field with an invalid declared value still needs repair.
+- Header uniqueness groups annotations by tool name. Resolve duplicate tool
+  names before treating a collision across entries as an error within one
+  tool.
+- Server icons are checked for an `https://` or `data:` prefix only. A
+  declared `listChanged` flag does not prove that notifications work.
+- Catalog collection failures are recorded in the report's `listing_errors`,
+  and in `details.collection_error` when a declaration rule fails. Outcomes
+  are `invalid_response`, `timeout`, `rpc_error`, or `collection_error`.
+  Validation locations and expected types are kept, without raw response
+  values or exception messages.
+- Modern result objects with a missing or non-array `tools` field also get
+  sanitized field-shape diagnostics. The probe outcome stays unsupported.
+</Accordion>
 
-Failed protocol/probe checks retain their observations and can add
-`details.expected` for the particular fields checked. Human messages include
-observed error codes/statuses only when present; stdio messages omit HTTP status.
-Cursor probes distinguish a returned page from an unexpected response, rather
-than inferring success from an absent error code. Audit context is recorded once:
-`transport` at report level and `spec.negotiated_version` and
-`spec.session_protocol_version` in the specification block. The latter is null
-unless a legacy session was established. Existing
-`target_version`, `spec` and `basis` fields retain the rule's revision and source.
-Unavailable probes still skip; a hint cannot turn missing evidence into failure.
+<Accordion title="Technical details: protocol and probe evidence">
+- Failed protocol and probe checks keep their observations and can add
+  `details.expected` for the fields checked.
+- Human messages include observed error codes and statuses only when present.
+  Stdio messages leave out the HTTP status.
+- Cursor probes distinguish a returned page from an unexpected response,
+  rather than inferring success from a missing error code.
+- Audit context is recorded once: `transport` at report level, and
+  `spec.negotiated_version` and `spec.session_protocol_version` in the `spec`
+  block. `session_protocol_version` is `null` unless a legacy session was
+  established. Existing `target_version`, `spec`, and `basis` detail fields
+  keep the rule's revision and source.
+- Unavailable probes still skip. A hint never turns missing evidence into a
+  failure.
+- Readiness result-field issues use `entity_kind: "response"`, the
+  originating `probe_id`, and paths relative to the JSON-RPC `result`.
+  `missing_or_null` means the observation cannot distinguish omission from an
+  explicit null. `invalid_value` means a value was observed and failed the
+  existing predicate.
+- Readiness tool-schema issues use catalog indexes and paths relative to each
+  tool, with the same 20-issue and 255-code-point bounds. A network-reference
+  finding identifies the containing schema. It does not prove a fetch.
+- For readiness schema failures, `offending_tools` keeps its legacy shape,
+  keyed by name, with short problem labels and no values.
+  `offending_tool_indexes` maps each name to all affected catalog indexes,
+  including duplicate names. Unlike `issues`, this index mapping is complete.
+</Accordion>
 
-Readiness result-field issues use `entity_kind: "response"`, the originating
-`probe_id`, and paths relative to the JSON-RPC **result**. `missing_or_null`
-means the collected observation cannot distinguish omission from explicit null;
-`invalid_value` means a value was observed but failed the existing predicate.
-Tool-schema issues use catalog indexes and paths relative to each tool, with the
-same 20-issue and 255-code-point path bounds as catalog findings. A network
-reference finding identifies the containing schema; it does not prove a fetch.
+<Accordion title="Technical details: credential masking and message previews">
+Evidence copies in rules and probes mask credentials:
 
-Rule and probe evidence copies mask `response_session_id` as `[redacted]`
-(absence stays null), remove URL userinfo, and mask known credential query keys:
-`access_token`, `refresh_token`, `id_token`, `token`, `api_key`, `apikey`,
-`client_secret`, `password`, `secret`, `authorization` and `code`. Key matching
-is case-insensitive after URL decoding and treats hyphens like underscores.
-All scheme:// URLs (including postgres and HTTP) are matched case-insensitively,
-including dictionary keys and URLs embedded in challenge
-headers and exception text. Public query parameters, spelling, order, fragments,
-WWW-Authenticate challenges and diagnostic exception reasons remain available.
-If masked dictionary keys collide, retain every entry using deterministic
-` [masked name N]` suffixes. Literal keys are reserved before allocating aliases;
-summary maps with the same source names use the same aliases. These aliases are
-report labels, not original tool names; use catalog indexes to identify tools.
+- `response_session_id` becomes `[redacted]`. Absence stays `null`.
+- URL userinfo is removed.
+- These query keys are masked: `access_token`, `refresh_token`, `id_token`,
+  `token`, `api_key`, `apikey`, `client_secret`, `password`, `secret`,
+  `authorization`, and `code`. Matching is case-insensitive after URL
+  decoding, and treats hyphens like underscores.
+- Every `scheme://` URL is matched case-insensitively, including PostgreSQL
+  and HTTP URLs, dictionary keys, and URLs inside challenge headers and
+  exception text.
+- Public query parameters, spelling, order, fragments, `WWW-Authenticate`
+  challenges, and diagnostic exception reasons stay available.
+- When masked dictionary keys collide, every entry is kept with a
+  deterministic ` [masked name N]` suffix. Literal keys are reserved first,
+  and summary maps with the same source names use the same aliases. These
+  aliases are report labels, not tool names. Use catalog indexes to identify
+  tools.
 
-Human messages restore bounded quoted previews of resource/issuer identifiers,
-version lists, Content-Type values and schema-validator reasons. They use the
-same bounded preview and control-character escaping described above, after
-credential masking. Indexed schema issues still omit raw values, and affected
-tools are counted by catalog index even when their names collide. For readiness
-schema failures, `offending_tools` retains its legacy name-keyed shape with a
-union of short, value-free problem labels. `offending_tool_indexes` maps each
-name to all affected catalog indexes, including duplicate names; unlike bounded
-`issues`, this summary index mapping is complete. Validator previews appear only
-in the human message, not in these structured summaries.
+Human messages show bounded, quoted previews of values:
 
-These protections do not mutate observations used for scoring and are not a
-general secret detector. Arbitrary error text and public metadata can contain
-sensitive information outside these specific patterns; review a report before
-publishing it.
+- A preview holds at most 60 source code points, with a visible truncation
+  marker. A value that is a single URL keeps up to 200. A list renders item
+  by item, at most 10 items, then a count.
+- Printable Unicode stays readable. Quotes, backslashes, and nonprinting
+  characters are escaped, so a rendered preview can be longer than the bound.
+- Messages can show server identity values on passes, and up to three
+  duplicate tool names on failures. Website URL values are not echoed in
+  passing messages.
+- Previews of resource and issuer identifiers, version lists, `Content-Type`
+  values, and schema-validator reasons appear after credential masking.
+  Validator previews appear only in the human message, never in structured
+  summaries.
+- The full values stay in the legacy detail keys. The preview is a display
+  bound, not secret redaction.
 
-Passing PKCE findings establish **advertised S256 support**, not an executed
-authorization flow. Error-hygiene passes mean no configured patterns were found
-in the sampled response, and catalog-stability passes compare two connections
-with the same authorization. Modern-protocol hints preserve valid legacy paths;
-readiness promotion into the main score is unchanged.
+These protections do not change the observations used for scoring, and they
+are not a general secret detector. Error text and public metadata can carry
+sensitive information outside these patterns. Review a report before you
+publish it.
+</Accordion>
 
-Some existing predicates have narrower discovery coverage than the specifications.
-The challenge-origin finding describes mcpscore's current comparison; it does not
-instruct relocating valid metadata. The dated MCP specification permits
-[challenge or well-known discovery](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements),
-and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3)
-requires resource identity validation. Likewise, issuer metadata failures describe
-the locations attempted, rather than proving no valid document exists. These
-limitations require separate correctness changes, not different repair wording.
+<Accordion title="Technical details: what a passing check proves">
+- A passing PKCE finding establishes advertised `S256` support, not an
+  executed authorization flow.
+- An error-hygiene pass means no configured pattern was found in the sampled
+  response.
+- Catalog-stability passes compare two connections made with the same
+  authorization.
+- Modern-protocol hints keep valid legacy paths working. Readiness promotion
+  into the main score is unchanged by hints.
+- Some predicates cover less discovery than the specifications allow. The
+  challenge-origin finding describes mcpscore's current comparison and does
+  not tell you to move valid metadata. The dated MCP specification permits
+  [challenge or well-known discovery](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements),
+  and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3)
+  requires resource identity validation. Issuer metadata failures likewise
+  list the locations tried, rather than proving that no valid document
+  exists. Closing these gaps is a correctness change to the rules, not a
+  change to the wording.
+</Accordion>
+
+<Accordion title="Technical details: package evidence">
+- Package hints separate publisher metadata changes from consumer choices.
+- npm deprecation and PyPI yanking keep their registry-specific names and
+  the publisher's notice when available, in `details.withdrawal_reason`.
+- Notice previews allow 200 code points, so replacement URLs in the notice
+  stay useful. Masking and control-character escaping happen before display.
+  Longer notices are visibly truncated, and the full masked notice stays in
+  `details`.
+- Existing `yanked` detail values and verdicts are unchanged. Public values
+  use bounded quoted previews, and URL credentials are masked in messages and
+  details.
+- A missing license or repository URL describes the metadata. It says
+  nothing about legal permissions or whether the source exists elsewhere.
+- Package audits never run the package and cannot confirm its MCP behavior.
+</Accordion>
 
 ## What's next
 
@@ -300,20 +422,6 @@ limitations require separate correctness changes, not different repair wording.
     Every flag and exit code, with defaults
   </Card>
   <Card title="Scoring methodology" icon="scale-balanced" href="/methodology">
-    Why the score is ruleset-dependent, and what that means for your CI gate
+    How the score is computed, and why it depends on the rule set
   </Card>
 </CardGroup>
-
-### Package evidence
-
-Package hints distinguish publisher metadata changes from consumer choices.
-npm deprecation and PyPI yanking retain their registry-specific names and
-publisher notices when available (`details.withdrawal_reason`). Human notice
-previews allow 200 Unicode code points so replacement URLs in prose remain
-useful; masking and control-character escaping happen before display. Longer
-notices are visibly truncated, with the full masked notice retained in details. Existing
-`yanked` detail values and verdicts remain unchanged. Public values use bounded
-quoted previews; URL credentials are masked in result messages and details.
-A missing license declaration or repository URL describes metadata, not legal
-permissions or whether the source exists elsewhere. Package audits never run
-the package and cannot confirm its MCP behavior.
