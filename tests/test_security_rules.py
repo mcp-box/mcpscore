@@ -1,5 +1,7 @@
 """Unit tests for security audit rules."""
 
+import re
+
 import pytest
 
 from mcpscore.enums import MCPTransportType
@@ -440,3 +442,23 @@ class TestOriginHeaderValidationRule:
         assert not result.passed
         assert "with HTTP 403" in result.message
         assert result.details["spec"].startswith("https://modelcontextprotocol.io/specification/2026-07-28/")
+
+    @pytest.mark.parametrize(
+        ("version", "section", "anchor"),
+        [
+            ("2025-03-26", "Transports §Security Warning", "/basic/transports#security-warning"),
+            ("2025-06-18", "Transports §Security Warning", "/basic/transports#security-warning"),
+            ("2025-11-25", "Transports §Security Warning", "/basic/transports#security-warning"),
+            (
+                "2026-07-28",
+                "Streamable HTTP §Security & Endpoint",
+                "/basic/transports/streamable-http#security-&-endpoint",
+            ),
+        ],
+    )
+    def test_basis_names_the_section_the_spec_link_points_to(self, rule, version, section, anchor):
+        """The cited section and the linked URL must agree for every revision the rule judges."""
+        assert OriginHeaderValidationRule._spec_url(version, None).endswith(anchor)
+        cited = rule.basis.split(":", 1)[0]
+        revisions_by_section = dict(re.findall(r"([A-Z][\w ]+§[^(]+?) \(([^)]+)\)", cited))
+        assert version in revisions_by_section[section]

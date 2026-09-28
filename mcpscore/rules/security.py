@@ -416,9 +416,9 @@ class OriginHeaderValidationRule(BaseRule):
 
     rule_id = "security_origin_validation"
     basis = (
-        "Transports §Security Warning (2025-03-26, 2025-06-18) and Streamable HTTP §Security (2025-11-25, "
-        "2026-07-28): servers MUST validate the Origin header on all incoming connections to prevent DNS "
-        "rebinding; from 2025-11-25 an invalid Origin MUST be rejected with HTTP 403"
+        "Transports §Security Warning (2025-03-26, 2025-06-18, 2025-11-25) and Streamable HTTP §Security & "
+        "Endpoint (2026-07-28): servers MUST validate the Origin header on all incoming connections to prevent "
+        "DNS rebinding; from 2025-11-25 an invalid Origin MUST be rejected with HTTP 403"
     )
     group_name = "security"
     group_order = 3
