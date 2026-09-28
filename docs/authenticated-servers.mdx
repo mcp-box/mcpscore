@@ -26,7 +26,7 @@ That is a full audit: every rule ran against the live session. The token
 is sent as an `Authorization` header and is never logged or written to the
 report.
 
-## Step 1: see what a stranger sees
+## Step 1: See what a stranger sees
 
 Start without a credential. mcpscore detects the 401 and scores the part
 of the server that an anonymous client can observe.
@@ -69,7 +69,7 @@ Gate failed — --fail-under 80: this was a partial audit — its score covers o
 3
 ```
 
-## Step 2: pass a token
+## Step 2: Pass a token
 
 Add `--token`. It is shorthand for
 `--header 'Authorization: Bearer <token>'`.
@@ -88,7 +88,7 @@ The `PARTIAL` marker is gone and the check count is back to the full rule
 set. In the JSON report, `authenticated` is `true` and `partial` is
 `false`.
 
-## Step 3: keep the token out of your shell history
+## Step 3: Keep the token out of your shell history
 
 A value passed to `--token` lands in your shell history and in the process
 list. Set `MCPSCORE_TOKEN` instead. mcpscore reads it whenever `--token` is
@@ -102,7 +102,7 @@ mcpscore https://api.githubcopilot.com/mcp/
 The output is identical to step 2. This is the form to use in CI, where the
 token comes from a secret.
 
-## Step 4: send an API key or any other header
+## Step 4: Send an API key or any other header
 
 Servers that authenticate with an API key take `--header`, which works the
 same way as `--token` and repeats:
@@ -123,7 +123,7 @@ Other headers are sent on every request, but the report makes no claim
 that the audit ran behind the gate. An explicit `Authorization` header wins
 over `--token` and `MCPSCORE_TOKEN`.
 
-## Step 5: sign in through the browser with OAuth
+## Step 5: Sign in through the browser with OAuth
 
 When you have no token to paste, `--oauth` gets one. It opens your browser
 on the server's own sign-in page, runs the authorization code flow with

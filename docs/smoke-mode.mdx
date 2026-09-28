@@ -79,7 +79,7 @@ if __name__ == "__main__":
     mcp.run()
 ```
 
-### Step 1: run it and read the skips
+### Step 1: Run it and read the skips
 
 Point mcpscore at the server and add `--smoke`. A server in its own project
 environment runs through `uv run`, the same way you start it yourself:
@@ -105,7 +105,7 @@ it alone. Every skip says why, so the gap in coverage is visible.
 
 The failure is about the server, not about `add`. Step 3 explains it.
 
-### Step 2: annotate the tool
+### Step 2: Annotate the tool
 
 Tell clients that `add` has no side effects. This is the one-line change:
 
@@ -148,7 +148,7 @@ The annotation also raised the score from 105/126 to 107/126, because
 client that `add` does not modify its environment, and your smoke run now
 covers it.
 
-### Step 3: read a failure
+### Step 3: Read a failure
 
 `smoke_unknown_tool` calls a tool name that cannot exist on your server and
 expects a JSON-RPC error, as
@@ -172,7 +172,7 @@ page shows the two most common ones:
 returns an object without it. `sloppy` returned a success result for
 arguments its input schema forbids. Both would reach an agent in production.
 
-### Step 4: gate CI on it
+### Step 4: Gate CI on it
 
 Any smoke failure exits with code `4`. Add the score gate the same way, and
 CI can tell a low score apart from broken tools:

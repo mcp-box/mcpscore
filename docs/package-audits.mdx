@@ -31,7 +31,7 @@ This scores how the server is published, not whether it speaks MCP; use --stdio 
 The package is never downloaded and never executed, so no install script
 runs on your machine. The whole audit is one HTTPS request to the registry.
 
-## Step 1: audit a package on npm
+## Step 1: Audit a package on npm
 
 A coordinate is the registry, a colon, and the package name as that
 registry spells it. Scoped npm packages keep their `@`:
@@ -45,7 +45,7 @@ check, such as "a license is declared". The
 [rules reference](/rules#packaging-rules) lists all six with their
 weights.
 
-## Step 2: pin a release on PyPI
+## Step 2: Pin a release on PyPI
 
 A PyPI coordinate works the same way as an npm one. Add `==` and a version
 to audit one release instead of the latest:
@@ -71,7 +71,7 @@ and prints the fix. The latest release of the same package scores
 
 npm pins use `@`: `npm:name@1.2.3`, or `npm:@scope/name@1.2.3`.
 
-## Step 3: gate CI on the package score
+## Step 3: Gate CI on the package score
 
 `--fail-under` works on a package audit the same way it works on a server
 audit. The run exits `3` when the score is below the threshold:
@@ -91,7 +91,7 @@ Gate failed — --fail-under 90: score 14/16 (88%) is below the required 90%
 Run it in your release pipeline after publishing. A release that drops its
 license or source link fails the job instead of reaching users.
 
-## Step 4: get the JSON report
+## Step 4: Get the JSON report
 
 `--json` prints the same report shape as a server audit, with a `package`
 block filled in:

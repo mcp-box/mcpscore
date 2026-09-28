@@ -41,7 +41,7 @@ and `server_title_present`. Every `rule_id` is in the [rules reference](/rules).
 Create `mcpscore.toml` in the directory you run mcpscore from, or anywhere
 above it inside the repository.
 
-### Step 1: turn a rule off
+### Step 1: Turn a rule off
 
 ```toml mcpscore.toml
 [rules]
@@ -63,7 +63,7 @@ The first line says which file was applied. The rule no longer runs, so its
 point leaves the maximum: `126` becomes `125`. It appears in the report's
 `skipped_rules` with reason `disabled-by-config`.
 
-### Step 2: re-rank a rule
+### Step 2: Re-rank a rule
 
 A severity name instead of `off` keeps the rule running and changes its weight.
 `server_title_present` is `MEDIUM` by default, worth 2 points. Make it
@@ -85,7 +85,7 @@ The rule still fails, so the score stays at `105` and the maximum grows by 3.
 The weights are 1, 2, 3 and 5 points for `low`, `medium`, `high` and
 `critical`.
 
-### Step 3: fail the build on it
+### Step 3: Fail the build on it
 
 Add a `[gate]` table. Any failed rule counted in the main score at or above
 `fail_on` exits with code `3`:
@@ -108,7 +108,7 @@ The exit code is `3`, the same code as `--fail-under`, so a CI step that
 already fails on a low score now fails on this rule too. Re-ranking in Step 2
 is what put the rule over the line. A rule that is `off` never trips the gate.
 
-### Step 4: fix the server and watch it pass
+### Step 4: Fix the server and watch it pass
 
 Give the server a title:
 

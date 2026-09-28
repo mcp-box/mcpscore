@@ -25,7 +25,7 @@ Audit finished. Final score: 105/126
 That is the command you end up with. The steps below build it one piece at
 a time, and each piece fixes a failure you would otherwise hit.
 
-## Step 1: audit a Python file
+## Step 1: Audit a Python file
 
 Start with a small server. Save it as `server.py`:
 
@@ -96,7 +96,7 @@ The exit code is `2`: mcpscore could not connect. Lines that start with
 `server stderr:` are your server's own output, relayed so you can see why it
 stopped.
 
-## Step 2: run it in its own environment
+## Step 2: Run it in its own environment
 
 `--stdio` takes the command you already use to start your server. Put it
 where the file name was:
@@ -132,7 +132,7 @@ mcpscore --stdio .venv/bin/python server.py
 `--stdio` consumes the rest of the command line, including your server's own
 flags. Every mcpscore option goes before it.
 
-## Step 3: pass the server its secrets
+## Step 3: Pass the server its secrets
 
 Most servers read an API key at startup. Add that to `server.py`:
 
@@ -188,7 +188,7 @@ appears on the command line, in shell history, or in the report. Repeat the
 flag for each variable. `--env NAME=VALUE` sets a value inline, which is
 fine for non-secret settings like `--env LOG_LEVEL=debug`.
 
-## Step 4: fail when the score drops
+## Step 4: Fail when the score drops
 
 Add `--fail-under` with the lowest percentage you accept:
 

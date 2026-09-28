@@ -38,7 +38,7 @@ Gate failed — --fail-under 90: score 78/94 (83%) is below the required 90%
 The job fails on the merge request that lowered the score, and the full
 report stays attached to it.
 
-## Step 1: install and gate
+## Step 1: Install and gate
 
 ```yaml .gitlab-ci.yml highlight={6-7}
 mcpscore:
@@ -64,7 +64,7 @@ Check it: set the threshold above your current score, for example
 `--fail-under 100`, and push. The job fails with `Gate failed — --fail-under
 100`. Put the real threshold back once you have seen it fail.
 
-## Step 2: keep the report
+## Step 2: Keep the report
 
 ```yaml .gitlab-ci.yml highlight={7-12}
 mcpscore:
@@ -105,7 +105,7 @@ LOW server_websiteurl_present
 The report format is versioned by `schema_version` and described in the
 [stability contract](/stability#report-schema).
 
-## Step 3: audit a server behind auth
+## Step 3: Audit a server behind auth
 
 Add a masked CI/CD variable named `MCPSCORE_TOKEN` in the project settings.
 mcpscore reads it without a flag and sends it as `Authorization: Bearer`,
@@ -120,7 +120,7 @@ token, the audit is partial, and a partial audit always fails
 `--fail-under`, because a score from a handful of checks cannot show the
 threshold was met. See [Audit a server behind auth](/authenticated-servers).
 
-## Step 4: audit the server in your repository
+## Step 4: Audit the server in your repository
 
 A server in the repository is audited the same way as a URL: put `--stdio`
 and the command that starts it where the URL was. `--stdio` takes the rest of
@@ -144,7 +144,7 @@ such as `--stdio node build/index.js`. [Smoke mode](/smoke-mode) adds
 `--smoke` to also call the server's read-only tools; a failed smoke check
 exits `4`.
 
-## Step 5: report without blocking
+## Step 5: Report without blocking
 
 To see the score on every pipeline before you enforce it, let the job fail
 on the gate without failing the pipeline:

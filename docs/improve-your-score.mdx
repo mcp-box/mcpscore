@@ -83,7 +83,7 @@ Audit finished. Final score: 122/151
 Every failed rule prints a `Fix:` line under it. The four steps below turn
 most of them into passes.
 
-## Step 1: describe your server
+## Step 1: Describe your server
 
 Clients show your server by its
 [`serverInfo`](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#initialization): a `title` for people, a
@@ -122,7 +122,7 @@ Eight points. An [icon](https://modelcontextprotocol.io/specification/2025-11-25
 negotiate 2025-11-25 or later; on older revisions they are skipped and cost
 nothing.
 
-## Step 2: describe your tools
+## Step 2: Describe your tools
 
 A model picks a tool from its description, its input schema and its
 annotations. Three rules check that each [tool](https://modelcontextprotocol.io/specification/2026-07-28/server/tools#tool) carries them: a `title`, at
@@ -163,7 +163,7 @@ only when the tool cannot change anything: clients use it to decide whether
 to ask the user before a call, and [smoke mode](/smoke-mode) calls only
 read-only tools by default.
 
-## Step 3: validate the Origin header
+## Step 3: Validate the Origin header
 
 A browser page can reach a server on the user's machine or private network
 through DNS rebinding. The MCP spec makes servers
@@ -237,7 +237,7 @@ is what non-browser MCP clients send, are always accepted.
   servers.
 </Accordion>
 
-## Step 4: reject cursors you never issued
+## Step 4: Reject cursors you never issued
 
 List requests (`tools/list`, `resources/list`, `resources/templates/list`,
 `prompts/list`) take an optional `cursor` for the next page. A cursor your

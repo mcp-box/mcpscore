@@ -60,7 +60,7 @@ Every failed check is listed by `rule_id`, so a fix is one lookup in the
 
 The workflow above has three parts that matter. Each step below adds one.
 
-### Step 1: audit on every pull request
+### Step 1: Audit on every pull request
 
 ```yaml .github/workflows/mcpscore.yml highlight={2,8-10}
 name: MCP quality
@@ -81,7 +81,7 @@ repository. The action installs mcpscore, runs the audit, writes
 threshold the job passes whatever the score, which is a safe way to see your
 number first.
 
-### Step 2: give it permission to comment
+### Step 2: Give it permission to comment
 
 ```yaml .github/workflows/mcpscore.yml highlight={7-8}
 name: MCP quality
@@ -104,7 +104,7 @@ so a pull request carries one comment, not one per commit. Without the
 permission the action skips the comment and still passes or fails on the
 score. Commenting never fails the job.
 
-### Step 3: fail below a threshold
+### Step 3: Fail below a threshold
 
 ```yaml .github/workflows/mcpscore.yml highlight={13}
 name: MCP quality
