@@ -7,7 +7,9 @@ from mcpscore.rules import (
     RuleRegistry,
     create_all_rules,
 )
-from mcpscore.rules.base import rule_sort_key
+from mcpscore.rules.base import AuditData, BaseRule, RuleResult, RuleSeverity, rule_sort_key
+from mcpscore.rules.registry import _registry, all_rule_ids
+from mcpscore.rules.retired import RETIRED_RULES
 
 
 def test_registry_creates_all_rules():
@@ -53,16 +55,52 @@ def test_every_rule_cites_its_basis():
         assert len(rule.basis.strip()) >= 15, f"{rule.rule_id} basis citation is not substantive: {rule.basis!r}"
 
 
+class _ConcreteRule(BaseRule):
+    """Concrete, unregistered rule body; subclasses vary one registration attribute."""
+
+    group_name = "tools"
+
+    @property
+    def rule_name(self) -> str:
+        return "test rule"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        return RuleResult(rule_name=self.rule_name, severity=self.severity, passed=True, message="ok")
+
+
+def test_registry_accepts_a_well_formed_rule():
+    class WellFormed(_ConcreteRule):
+        rule_id = "test_well_formed"
+
+    registry = RuleRegistry()
+    registry.register_type(WellFormed)
+    assert isinstance(registry.create_rule("test_well_formed"), WellFormed)
+
+
+def test_registry_rejects_a_non_rule_class():
+    registry = RuleRegistry()
+    with pytest.raises(TypeError, match="must subclass BaseRule"):
+        registry.register_type(object)  # type: ignore[arg-type]
+
+
+def test_registry_rejects_an_abstract_rule():
+    class StillAbstract(BaseRule):
+        rule_id = "test_still_abstract"
+        group_name = "tools"
+
+    registry = RuleRegistry()
+    with pytest.raises(TypeError, match="abstract"):
+        registry.register_type(StillAbstract)
+
+
 def test_registry_rejects_an_empty_rule_id():
-    """Reject the empty rule_id inherited from BaseRule.
+    """Reject the empty rule_id inherited from BaseRule, which a hasattr check cannot catch."""
 
-    BaseRule defaults rule_id to "", so hasattr can never fail — the registry
-    must reject the empty default explicitly, or a rule that forgot its id
-    registers fine until a second one collides on "".
-    """
-    from mcpscore.rules.base import BaseRule
-
-    class ForgotItsId(BaseRule):
+    class ForgotItsId(_ConcreteRule):
         pass
 
     registry = RuleRegistry()
@@ -70,23 +108,69 @@ def test_registry_rejects_an_empty_rule_id():
         registry.register_type(ForgotItsId)
 
 
+def test_registry_rejects_a_rule_id_inherited_from_a_parent_rule():
+    """A subclass of a real rule that forgets its own id must not register under the parent's."""
+
+    class Parent(_ConcreteRule):
+        rule_id = "test_parent"
+
+    class Child(Parent):
+        pass
+
+    registry = RuleRegistry()
+    registry.register_type(Parent)
+    with pytest.raises(TypeError, match="inherits `rule_id`"):
+        registry.register_type(Child)
+    assert all_ids(registry) == ("test_parent",)
+
+
+def test_registry_rejects_the_placeholder_group():
+    class NoGroup(_ConcreteRule):
+        rule_id = "test_no_group"
+        group_name = BaseRule.group_name
+
+    registry = RuleRegistry()
+    with pytest.raises(TypeError, match="group_name"):
+        registry.register_type(NoGroup)
+
+
+def test_registry_rejects_an_empty_group():
+    class EmptyGroup(_ConcreteRule):
+        rule_id = "test_empty_group"
+        group_name = ""
+
+    registry = RuleRegistry()
+    with pytest.raises(TypeError, match="group_name"):
+        registry.register_type(EmptyGroup)
+
+
 def test_registry_rejects_a_retired_rule_id():
-    """Refuse to register a retired rule_id.
-
-    Retired ids are never reused: a waiver in someone's CI would silently
-    start matching a check they never agreed to.
-    """
-    from mcpscore.rules.base import BaseRule
-    from mcpscore.rules.retired import RETIRED_RULES
-
+    """Refuse to register a retired rule_id; a CI waiver would silently match a new check."""
     assert RETIRED_RULES, "test needs at least one retired rule to exercise the check"
 
-    class Imposter(BaseRule):
+    class Imposter(_ConcreteRule):
         rule_id = RETIRED_RULES[0].rule_id
 
     registry = RuleRegistry()
     with pytest.raises(ValueError, match="retired"):
         registry.register_type(Imposter)
+
+
+def test_every_registered_rule_passes_registration_validation():
+    """Re-register every live rule in a fresh registry: all checks pass, no active id is retired."""
+    registered = list(_registry._types.values())
+    assert registered
+
+    fresh = RuleRegistry()
+    for cls in registered:
+        fresh.register_type(cls)
+
+    assert all_ids(fresh) == all_rule_ids()
+    assert not set(all_rule_ids()) & {retired.rule_id for retired in RETIRED_RULES}
+
+
+def all_ids(registry: RuleRegistry) -> tuple[str, ...]:
+    return tuple(registry._types)
 
 
 def test_sort_order_implements_the_documented_ordering():
@@ -141,9 +225,6 @@ def test_every_concrete_rule_module_class_is_registered():
     import importlib
     import inspect
     import pkgutil
-
-    from mcpscore.rules.base import BaseRule
-    from mcpscore.rules.registry import _registry
 
     registered = set(_registry._types.values())
     missing: list[str] = []

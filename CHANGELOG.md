@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Probes that fail for the same reason are reported once with a count. The
   JSON report and scores are unchanged.
 
+- Rule registration now also rejects an abstract rule class, a `rule_id`
+  inherited from a parent rule instead of defined on the class itself, and a
+  rule that leaves `group_name` at `BaseRule`'s `"default"` placeholder. Every
+  shipped rule already complies; scores are unchanged.
+
 ### Fixed
 
 - `security_origin_validation`'s `details.basis` cited Streamable HTTP

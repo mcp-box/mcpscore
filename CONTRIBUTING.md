@@ -38,7 +38,9 @@ Rules live in `mcpscore/rules/`. To add one:
 1. Subclass `BaseRule` in the appropriate module (or a new one), set a unique
    `rule_id`, `group_name`, and ordering, and implement `rule_name`,
    `severity`, and `check()`.
-2. Decorate the class with `@register_rule` so it joins the registry.
+2. Decorate the class with `@register_rule` so it joins the registry. The
+   registry rejects an abstract class, an empty `rule_id` or one inherited
+   from a parent rule, an unset `group_name`, a duplicate id, and a retired id.
 3. Export it from `mcpscore/rules/__init__.py` (import + `__all__`) — a
    decorated rule whose module is never imported silently vanishes from
    audits (a registry test catches this).
