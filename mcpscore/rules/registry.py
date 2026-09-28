@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+import inspect
 from typing import Any
 
 from .base import BaseRule
@@ -24,22 +25,32 @@ class RuleRegistry:
         """Register a new rule class in the registry.
 
         Args:
-            cls: Rule class to register (must subclass BaseRule and define a
-                non-empty ``rule_id`` of its own)
+            cls: Rule class to register (must subclass BaseRule, be concrete,
+                define a non-empty ``rule_id`` in its own class body, and set
+                a ``group_name`` other than BaseRule's placeholder)
 
         Raises:
-            TypeError: If the class doesn't subclass BaseRule, or leaves
-                ``rule_id`` empty (``BaseRule`` defaults it to ``""``, so a
-                bare ``hasattr`` check can never fail — the check must be for
-                a non-empty value on the concrete class).
+            TypeError: If the class doesn't subclass BaseRule, is abstract,
+                leaves ``rule_id`` empty or inherits it from a parent class,
+                or leaves ``group_name`` at BaseRule's ``"default"``.
             ValueError: If rule_id is already registered, or was retired —
                 retired ids are never reused (see ``rules/retired.py``).
 
         """
         if not issubclass(cls, BaseRule):
             raise TypeError(f"{cls.__name__} must subclass BaseRule")
+        if inspect.isabstract(cls):
+            raise TypeError(f"{cls.__name__} is abstract; only concrete rules can be registered")
+        # BaseRule defaults rule_id to "", so a bare hasattr check can never fail.
         if not cls.rule_id:
             raise TypeError(f"{cls.__name__} must define a non-empty `rule_id`")
+        if "rule_id" not in vars(cls):
+            raise TypeError(
+                f"{cls.__name__} inherits `rule_id` {cls.rule_id!r} from a parent class; "
+                "every registered rule must define its own"
+            )
+        if not cls.group_name or cls.group_name == BaseRule.group_name:
+            raise TypeError(f"{cls.__name__} must set `group_name`; {cls.group_name!r} is BaseRule's placeholder")
 
         if cls.rule_id in _RETIRED_IDS:
             raise ValueError(
