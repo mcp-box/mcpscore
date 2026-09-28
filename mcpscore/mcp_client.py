@@ -253,6 +253,29 @@ class ServerStderrRelay:
                 self._emit(chunk.rstrip("\r\n"))
 
 
+_PROJECT_FILES = ("pyproject.toml", "requirements.txt")
+"""Files that say how to build a Python server's environment, preferred in this order."""
+
+
+def _nearest_project_file(script: str) -> Path | None:
+    """Find the closest pyproject.toml or requirements.txt above the script, stopping at its repository root."""
+    for folder in Path(script).resolve().parents:
+        for name in _PROJECT_FILES:
+            if (folder / name).is_file():
+                return folder / name
+        if (folder / ".git").exists():
+            return None
+    return None
+
+
+def _relative_to_cwd(path: Path) -> str:
+    """Show a path relative to the working directory when it lies inside it."""
+    try:
+        return str(path.relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(path)
+
+
 def missing_dependency_hint(script: str, module: str) -> str:
     """Explain that a .py server cannot import its dependencies under mcpscore's Python, with the fix.
 
@@ -260,17 +283,18 @@ def missing_dependency_hint(script: str, module: str) -> str:
     ``uv run`` for a pyproject.toml, ``--with-requirements`` for a
     requirements.txt, otherwise the interpreter that has the dependencies.
     """
-    folder = Path(script).parent
-    if (folder / "pyproject.toml").is_file():
-        in_cwd = folder.resolve() == Path.cwd().resolve()
-        launch = ["uv", "run", script] if in_cwd else ["uv", "run", "--project", str(folder), script]
-        run_it = _paste_ready(["mcpscore", "--stdio", *launch])
-    elif (folder / "requirements.txt").is_file():
-        run_it = _paste_ready(
-            ["mcpscore", "--stdio", "uv", "run", "--with-requirements", str(folder / "requirements.txt"), script]
-        )
-    else:
+    project_file = _nearest_project_file(script)
+    if project_file is None:
         run_it = f"mcpscore --stdio <python-with-its-dependencies> {_paste_ready([script])}"
+    elif project_file.name == "pyproject.toml":
+        folder = project_file.parent
+        in_cwd = folder == Path.cwd().resolve()
+        launch = ["uv", "run", script] if in_cwd else ["uv", "run", "--project", _relative_to_cwd(folder), script]
+        run_it = _paste_ready(["mcpscore", "--stdio", *launch])
+    else:
+        run_it = _paste_ready(
+            ["mcpscore", "--stdio", "uv", "run", "--with-requirements", _relative_to_cwd(project_file), script]
+        )
     return (
         f"{script} could not start: No module named '{module}'. mcpscore runs a .py file with its own Python, "
         f"which does not have the server's dependencies. Run it in its own environment instead: {run_it}"
@@ -934,7 +958,9 @@ class MCPClient:
         # modern-only server rejects that handshake by design, and the CLI
         # needs these same parameters to retry with stateless probes.
         self.stdio_params = server_params
-        relay = ServerStderrRelay(hold=True)
+        # Hold stderr only where it can be diagnosed: a --stdio server may print a
+        # prompt during startup that must reach the user while it waits.
+        relay = ServerStderrRelay(hold=script is not None and script.endswith(".py"))
         try:
             await self._establish_session(relayed_stdio_client(server_params, relay), MCPTransportType.STDIO, url=None)
             relay.release()

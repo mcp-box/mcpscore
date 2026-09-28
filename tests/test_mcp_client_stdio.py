@@ -572,6 +572,11 @@ class TestMissingDependency:
     def mcp_client(self):
         return MCPClient()
 
+    @pytest.fixture(autouse=True)
+    def repo_root(self, tmp_path):
+        """Stop the project-file search at tmp_path, whatever lies above it on this machine."""
+        (tmp_path / ".git").mkdir()
+
     def test_hint_for_a_uv_project_in_the_current_directory(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
@@ -640,3 +645,105 @@ class TestMissingDependency:
         assert success is False
         assert f"{SERVER_STDERR_PREFIX}ModuleNotFoundError" in caplog.text
         assert "could not start" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "error", [asyncio.CancelledError(), OSError(32, "Broken pipe")], ids=["cancelled", "oserror"]
+    )
+    async def test_missing_module_is_explained_whichever_way_the_handshake_dies(
+        self, mcp_client, tmp_path, monkeypatch, caplog, error
+    ):
+        """The SDK can end a dead launch with a teardown cancellation or a pipe error, not only a generic one."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "srv.py").write_text("", encoding="utf-8")
+        with (
+            patch("mcpscore.mcp_client.stdio_client") as mock_stdio,
+            patch.object(ServerStderrRelay, "missing_module", return_value="platformdirs"),
+        ):
+            mock_stdio.return_value.__aenter__.side_effect = error
+            success = await mcp_client._connect_with_stdio("srv.py")
+
+        assert success is False
+        assert "srv.py could not start: No module named 'platformdirs'" in caplog.text
+        assert "handshake failed" not in caplog.text
+        assert mcp_client.last_connection_error.reason is ConnectionErrorReason.UNREACHABLE
+
+    def test_hint_finds_the_project_above_a_nested_script(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+        (tmp_path / "src").mkdir()
+        script = str(Path("src") / "server.py")
+        hint = missing_dependency_hint(script, "x")
+        assert hint.endswith(client_module._paste_ready(["mcpscore", "--stdio", "uv", "run", script]))
+
+    def test_hint_finds_requirements_above_a_nested_script(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "requirements.txt").write_text("", encoding="utf-8")
+        (tmp_path / "src").mkdir()
+        script = str(Path("src") / "server.py")
+        hint = missing_dependency_hint(script, "x")
+        assert hint.endswith(
+            client_module._paste_ready(
+                ["mcpscore", "--stdio", "uv", "run", "--with-requirements", "requirements.txt", script]
+            )
+        )
+
+    def test_nearest_project_file_wins(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+        (tmp_path / "server").mkdir()
+        (tmp_path / "server" / "requirements.txt").write_text("", encoding="utf-8")
+        script = str(Path("server") / "srv.py")
+        hint = missing_dependency_hint(script, "x")
+        assert "--with-requirements" in hint
+
+    def test_search_stops_at_the_repository_root(self, tmp_path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+        (tmp_path / "other").mkdir()
+        (tmp_path / "other" / ".git").mkdir()
+        monkeypatch.chdir(tmp_path / "other")
+        hint = missing_dependency_hint("srv.py", "x")
+        assert hint.endswith("mcpscore --stdio <python-with-its-dependencies> srv.py")
+
+    def test_project_outside_the_working_directory_is_named_absolutely(self, tmp_path, monkeypatch):
+        (tmp_path / "proj").mkdir()
+        (tmp_path / "proj" / "pyproject.toml").write_text("", encoding="utf-8")
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        script = str(tmp_path / "proj" / "srv.py")
+        hint = missing_dependency_hint(script, "x")
+        project = str((tmp_path / "proj").resolve())
+        assert hint.endswith(
+            client_module._paste_ready(["mcpscore", "--stdio", "uv", "run", "--project", project, script])
+        )
+
+    @pytest.mark.parametrize(
+        ("launch", "held"),
+        [
+            (lambda client: client._connect_with_stdio("srv.py"), True),
+            (lambda client: client._connect_with_stdio("srv.js"), False),
+            (lambda client: client._connect_with_stdio_command(StdioCommand("srv")), False),
+        ],
+        ids=["python-file", "js-file", "stdio-command"],
+    )
+    async def test_stderr_is_held_only_for_a_python_file(self, mcp_client, launch, held):
+        """A --stdio server's startup prompt must reach the user while it waits, not after the timeout."""
+        holds: list[bool] = []
+        real_init = ServerStderrRelay.__init__
+
+        def spy(relay, *, hold=False):
+            holds.append(hold)
+            real_init(relay, hold=hold)
+
+        with (
+            patch.object(ServerStderrRelay, "__init__", spy),
+            patch("mcpscore.mcp_client.stdio_client") as mock_stdio,
+        ):
+            mock_stdio.return_value.__aenter__.side_effect = FileNotFoundError()
+            await launch(mcp_client)
+        assert holds == [held]
+
+    def test_search_ends_at_the_filesystem_root(self, monkeypatch):
+        """Outside any repository the search stops at the root and falls back to the generic form."""
+        monkeypatch.setattr(client_module, "_PROJECT_FILES", ("mcpscore-no-such-project-file",))
+        script = str(Path(Path.cwd().anchor) / "srv.py")
+        assert client_module._nearest_project_file(script) is None
