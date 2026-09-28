@@ -1887,6 +1887,43 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
     return None
 
 
+def failure_cause(exc: BaseException) -> str:
+    """Return the innermost cause's message, looking through single-exception groups, wrapped errors and ``from``."""
+    while True:
+        if isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
+            exc = exc.exceptions[0]
+        elif len(exc.args) == 1 and isinstance(exc.args[0], BaseException):
+            exc = exc.args[0]
+        elif exc.__cause__ is not None:
+            exc = exc.__cause__
+        else:
+            break
+    message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else str(exc)
+    return " ".join(message.split()) or type(exc).__name__
+
+
+class _ProbeFailureLog:
+    """Log probe exceptions once per distinct cause, not once per probe."""
+
+    def __init__(self, target: str) -> None:
+        super().__init__()
+        self._target = target
+        self._probes_by_cause: dict[str, list[str]] = {}
+
+    def record(self, probe_id: str, exc: Exception) -> None:
+        cause = failure_cause(exc)
+        logger.debug("Probe %s failed against %s: %s", probe_id, self._target, cause)
+        self._probes_by_cause.setdefault(cause, []).append(probe_id)
+
+    def flush(self) -> None:
+        for cause, probe_ids in self._probes_by_cause.items():
+            if len(probe_ids) == 1:
+                logger.info("Probe %s failed against %s: %s", probe_ids[0], self._target, cause)
+            else:
+                logger.info("%d probes failed against %s: %s", len(probe_ids), self._target, cause)
+        self._probes_by_cause.clear()
+
+
 async def run_all_probes(
     url: str,
     client: httpx2.AsyncClient | None = None,
@@ -1921,12 +1958,13 @@ async def run_all_probes(
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
 
     """
+    failures = _ProbeFailureLog(url)
 
     async def run_one(probe_id: str, http_client: httpx2.AsyncClient) -> ProbeResult:
         try:
             return await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url))
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
-            logger.info("Probe %s failed against %s: %s", probe_id, url, e)
+            failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
 
     async def run_with(
@@ -1953,20 +1991,23 @@ async def run_all_probes(
             **connection_results,
         }
 
-    if client is not None:
-        return await run_with(lambda _probe_id: client, fresh_client)
-    # No follow_redirects on the clients: every probe request goes through
-    # the same-origin policy in ``mcpscore.redirects``, which does not consult
-    # the client's setting, exactly as the SDK transports do not.
-    async with (
-        async_client(headers=headers) as own_client,
-        async_client(headers=headers) as fresh_client,
-        async_client() as anon_client,
-    ):
-        return await run_with(
-            lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client,
-            fresh_client,
-        )
+    try:
+        if client is not None:
+            return await run_with(lambda _probe_id: client, fresh_client)
+        # No follow_redirects on the clients: every probe request goes through
+        # the same-origin policy in ``mcpscore.redirects``, which does not consult
+        # the client's setting, exactly as the SDK transports do not.
+        async with (
+            async_client(headers=headers) as own_client,
+            async_client(headers=headers) as fresh_client,
+            async_client() as anon_client,
+        ):
+            return await run_with(
+                lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client,
+                fresh_client,
+            )
+    finally:
+        failures.flush()
 
 
 async def run_stdio_probes(
@@ -1999,12 +2040,13 @@ async def run_stdio_probes(
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
 
     """
+    failures = _ProbeFailureLog(params.command)
 
     async def run_one(probe_id: str, target: _StdioTarget) -> ProbeResult:
         try:
             return await _TRANSPORT_AGNOSTIC_PROBES[probe_id](target)
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
-            logger.info("Probe %s failed against %s: %s", probe_id, params.command, e)
+            failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
 
     results: list[ProbeResult] = []
@@ -2041,6 +2083,8 @@ async def run_stdio_probes(
             for probe_id in (*STDIO_PROBE_IDS, *CATALOG_CONNECTION_PROBE_IDS)
             if probe_id not in completed
         )
+    finally:
+        failures.flush()
 
     return {
         **not_applicable_results("probe subject is HTTP-specific", HTTP_ONLY_PROBE_IDS),

@@ -141,7 +141,7 @@ class TestMCPClientSSE:
             result = await mcp_client.connect_to_server(MCPTransportType.SSE, server_url)
 
             assert result is False
-            assert "Failed to connect to MCP server via SSE" in caplog.text
+            assert "SSE connection failed: Unexpected error" in caplog.text
 
     async def test_connect_with_sse_custom_client_factory(self, mcp_client):
         """Test SSE connection with custom client factory."""

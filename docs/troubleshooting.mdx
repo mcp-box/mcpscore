@@ -96,16 +96,17 @@ expects another header needs `--header 'X-Api-Key: ...'` instead.
 **Symptom:**
 
 ```text
-Connection refused or server unreachable: https://your-server.example/mcp
+Server unreachable: https://your-server.example/mcp ([Errno 8] nodename nor servname provided, or not known)
 ...
 Error connecting to the MCP server: https://your-server.example/mcp
 ```
 
 **Cause:** the host name does not resolve, nothing listens on the port, or
-the TLS handshake failed. The traceback's last line says which, in your
+the TLS handshake failed. The text in parentheses says which, in your
 operating system's words. On macOS: `nodename nor servname provided, or not
 known` for DNS, `All connection attempts failed` for a closed port, and
-`certificate is expired` or `certificate is not trusted` for TLS.
+`certificate is expired` or `certificate is not trusted` for TLS. Add `-v` to
+see the full traceback.
 
 **Fix:** check the URL from the same machine with
 `curl -sS -o /dev/null -w '%{http_code}\n' https://your-server.example/mcp`.

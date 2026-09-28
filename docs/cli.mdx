@@ -46,6 +46,7 @@ extra processes stay silent.
 |---|---|---|
 | `--json` | off | Writes the full report as one JSON document to stdout. Logs stay on stderr. Fields are in the [stability contract](/stability#report-schema). |
 | `--sarif FILE` | off | Writes the failed rules as SARIF 2.1.0 to `FILE`, or to stdout with `-`. See [SARIF for GitHub code scanning](#sarif-for-github-code-scanning). |
+| `-v`, `--verbose` | off | Also logs every HTTP request, each failed probe, and the traceback behind a connection error. Everything goes to stderr, so `--json` output is unchanged. |
 | `--version` | | Prints `mcpscore <version>` to stdout and exits `0`. Safe to parse. |
 
 ## Rules and CI gates
