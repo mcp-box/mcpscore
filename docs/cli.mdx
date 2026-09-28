@@ -36,7 +36,9 @@ Give exactly one of these.
 | `--env NAME=VALUE` | `--env LOG_LEVEL=debug` | Sets a variable for the `--stdio` server. Repeatable. The value is visible in shell history and the process list: plain config only. |
 | `--env NAME` | `API_KEY=... mcpscore --env API_KEY --stdio ...` | Copies `NAME` from mcpscore's own environment. The form for secrets: the value never appears on a command line or in the report. |
 
-Server stderr appears in the output prefixed with `server stderr:`. The
+Server stderr appears in the output prefixed with `server stderr:`, except
+when a `.py` target fails on a missing module: mcpscore then prints the
+command to run instead, and `-v` shows the stderr. The
 sessionless probes start the server again for their own requests; those
 extra processes stay silent.
 

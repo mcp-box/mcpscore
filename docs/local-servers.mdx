@@ -234,7 +234,9 @@ findings.
   field and is visible in the process list. That is why secrets go in with
   `--env NAME` and never as arguments.
 - Your server's stderr is relayed line by line with a `server stderr:`
-  prefix. Its stdout carries the MCP protocol and is never printed.
+  prefix. Its stdout carries the MCP protocol and is never printed. One
+  exception: when a `.py` target fails on a missing module, mcpscore prints
+  its own one-line message instead, and `-v` shows the traceback.
 - mcpscore opens more than one connection during an audit, for example to
   check that the tool catalog is the same on a second connection, so your
   server starts more than once.

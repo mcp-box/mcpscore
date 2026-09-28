@@ -252,8 +252,15 @@ prints the `uv run` form to use inside a uv project.
 **Cause:** a `.py` target runs with mcpscore's own Python, which has none of
 your project's dependencies.
 **Fix:** run the command the message suggests. It starts the server in its
-own environment: `uv run` when uv is installed, otherwise the project's
-`.venv` Python. `-v` shows the server's traceback.
+own environment:
+
+- `uv run` when uv is installed and a `pyproject.toml` or `requirements.txt`
+  sits in the script's folder or above it
+- otherwise the project's `.venv` Python
+- otherwise `<python-with-its-dependencies>`: put the path of the Python that
+  has your dependencies installed there
+
+`-v` shows the server's traceback.
 
 **Symptom:**
 
@@ -265,7 +272,8 @@ Stdio connection failure: Could not connect to the MCP server. Details: Connecti
 
 **Cause:** the command started, and the server process exited before it
 answered. Every line the server writes to stderr is shown with the
-`server stderr:` prefix.
+`server stderr:` prefix. The exception is a `.py` target that fails on a
+missing module: that gets the one-line message above, and `-v` shows the lines.
 **Fix:** read the `server stderr:` lines. They usually name a missing file,
 a missing dependency or a missing environment variable. Pass variables with
 `--env NAME`.

@@ -579,8 +579,12 @@ class TestMissingDependency:
 
     @pytest.fixture(autouse=True)
     def uv_installed(self, monkeypatch):
-        """Have uv on PATH unless a test removes it, whatever this machine has."""
-        monkeypatch.setattr(client_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+        """Have uv on PATH unless a test removes it, whatever this machine has.
+
+        Patch mcpscore's own check, never ``shutil.which``: the SDK resolves the
+        server executable with it on Windows.
+        """
+        monkeypatch.setattr(client_module, "_uv_installed", lambda: True)
 
     def test_hint_for_a_uv_project_in_the_current_directory(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -763,7 +767,7 @@ class TestMissingDependency:
     def test_without_uv_the_project_venv_is_suggested(self, tmp_path, monkeypatch):
         """pip-installed mcpscore brings no uv: a uv command would fail with command not found."""
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(client_module.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(client_module, "_uv_installed", lambda: False)
         (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
         python = self._make_venv_python(tmp_path)
         hint = missing_dependency_hint("srv.py", "x")
@@ -774,7 +778,7 @@ class TestMissingDependency:
 
     def test_without_uv_or_venv_the_generic_form_is_suggested(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(client_module.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(client_module, "_uv_installed", lambda: False)
         (tmp_path / "requirements.txt").write_text("", encoding="utf-8")
         hint = missing_dependency_hint("srv.py", "x")
         assert hint.endswith("mcpscore --stdio <python-with-its-dependencies> srv.py")
@@ -786,3 +790,9 @@ class TestMissingDependency:
         assert hint.endswith(
             client_module._paste_ready(["mcpscore", "--stdio", str(python.relative_to(tmp_path)), "srv.py"])
         )
+
+    def test_uv_installed_asks_path(self, monkeypatch):
+        monkeypatch.undo()
+        with patch.object(client_module.shutil, "which", return_value=None) as which:
+            assert client_module._uv_installed() is False
+        which.assert_called_once_with("uv")

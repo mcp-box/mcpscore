@@ -283,6 +283,11 @@ def _venv_python(folder: Path) -> Path | None:
     return python if python.is_file() else None
 
 
+def _uv_installed() -> bool:
+    """Report whether a ``uv`` executable is on PATH; ``pip install mcpscore`` does not bring one."""
+    return shutil.which("uv") is not None
+
+
 def _uv_launch(project_file: Path, script: str) -> list[str]:
     """Build the ``uv run`` command that starts the script with the project's dependencies."""
     if project_file.name != "pyproject.toml":
@@ -302,7 +307,7 @@ def missing_dependency_hint(script: str, module: str) -> str:
     project_file = _nearest_project_file(script)
     folder = project_file.parent if project_file is not None else Path(script).resolve().parent
     venv_python = _venv_python(folder)
-    if project_file is not None and shutil.which("uv") is not None:
+    if project_file is not None and _uv_installed():
         run_it = _paste_ready(["mcpscore", "--stdio", *_uv_launch(project_file, script)])
     elif venv_python is not None:
         run_it = _paste_ready(["mcpscore", "--stdio", _relative_to_cwd(venv_python), script])
