@@ -6,12 +6,20 @@ import re
 from unittest.mock import patch
 
 import httpx2
+from mcp import StdioServerParameters
 import pytest
 
 from mcpscore.cli import build_parser, configure_logging
 from mcpscore.enums import MCPTransportType
 from mcpscore.mcp_client import MCPClient
-from mcpscore.probes import PROBE_IDS, _ProbeFailureLog, failure_cause, run_all_probes
+from mcpscore.probes import (
+    PROBE_IDS,
+    STDIO_PROBE_IDS,
+    _ProbeFailureLog,
+    failure_cause,
+    run_all_probes,
+    run_stdio_probes,
+)
 
 URL = "https://example.com/mcp"
 _LOGGERS = ("mcpscore", "httpx2", "httpcore2")
@@ -38,6 +46,11 @@ class TestFailureCause:
         outer = RuntimeError("wrapper")
         outer.__cause__ = ConnectionRefusedError(61, "Connection refused")
         assert failure_cause(outer) == "[Errno 61] Connection refused"
+
+    def test_a_cause_without_a_message_keeps_the_outer_message(self):
+        outer = RuntimeError("server exited during startup")
+        outer.__cause__ = EOFError()
+        assert failure_cause(outer) == "server exited during startup"
 
     def test_keeps_a_multi_exception_group_whole(self):
         group = ExceptionGroup("two failures", [ValueError("a"), ValueError("b")])
@@ -104,6 +117,14 @@ class TestConnectionFailureLogging:
         assert "SSE connection failed: bad stream" in caplog.text
         assert "Traceback" not in caplog.text
 
+    def test_recorded_detail_uses_the_same_cause_as_the_log(self):
+        client = MCPClient()
+        wrapped = httpx2.ConnectError(OSError("certificate is expired"))  # type: ignore[arg-type]
+        client._record_unclassified_failure(ExceptionGroup("unhandled errors in a TaskGroup", [wrapped]))
+
+        assert client.last_connection_error is not None
+        assert client.last_connection_error.detail == "certificate is expired"
+
 
 class TestProbeFailureCollapsing:
     async def test_a_shared_cause_is_logged_once_with_a_count(self, caplog):
@@ -144,3 +165,14 @@ class TestProbeFailureCollapsing:
             f"Probe probe_origin_validation failed against {URL}: origin refused",
             f"2 probes failed against {URL}: timed out",
         ]
+
+    async def test_a_stdio_transport_failure_is_collapsed_with_a_debug_traceback(self, caplog):
+        params = StdioServerParameters(command="mcpscore-does-not-exist", args=[])
+        with caplog.at_level(logging.DEBUG, logger="mcpscore"):
+            results = await run_stdio_probes(params)
+
+        info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+        assert len(info) == 1
+        assert re.fullmatch(r"\d+ probes failed against mcpscore-does-not-exist: .+", info[0])
+        assert any(r.levelno == logging.DEBUG and r.exc_info for r in caplog.records)
+        assert all(r.outcome == "error" for r in results.values() if r.probe_id in STDIO_PROBE_IDS)

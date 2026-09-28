@@ -405,11 +405,6 @@ def extract_http_status(exc: BaseException) -> int | None:
     return error.response.status_code if error is not None else None
 
 
-def _safe_failure_detail(exc: BaseException) -> str:
-    """Return compact exception text that cannot emit terminal controls."""
-    return _printable_detail(" ".join(str(exc).split()) or type(exc).__name__)
-
-
 def _printable_detail(normalized: str) -> str:
     """Escape non-printable characters and cap the length of one-line failure text."""
 
@@ -741,7 +736,7 @@ class MCPClient:
             # Keep a compact, single-line explanation so a caller can defer
             # showing it until modern-only probing has ruled out an expected
             # rejection of the legacy handshake.
-            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_safe_failure_detail(exc))
+            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_describe_failure(exc))
 
     def _observed_status(self, exc: BaseException) -> tuple[int | None, RefusedRedirect | None]:
         """Return the HTTP status a failed attempt observed, with the redirect it refused, from one response.

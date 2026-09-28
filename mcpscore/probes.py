@@ -1887,19 +1887,26 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
     return None
 
 
+def _exception_message(exc: BaseException) -> str:
+    message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else str(exc)
+    return " ".join(message.split())
+
+
 def failure_cause(exc: BaseException) -> str:
-    """Return the innermost cause's message, looking through single-exception groups, wrapped errors and ``from``."""
+    """Return the innermost cause's message, looking through single-exception groups, wrapped errors and ``from``.
+
+    A ``from`` cause without a message of its own does not replace an outer message.
+    """
     while True:
         if isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
             exc = exc.exceptions[0]
         elif len(exc.args) == 1 and isinstance(exc.args[0], BaseException):
             exc = exc.args[0]
-        elif exc.__cause__ is not None:
+        elif exc.__cause__ is not None and (_exception_message(exc.__cause__) or not _exception_message(exc)):
             exc = exc.__cause__
         else:
             break
-    message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else str(exc)
-    return " ".join(message.split()) or type(exc).__name__
+    return _exception_message(exc) or type(exc).__name__
 
 
 class _ProbeFailureLog:
@@ -2075,14 +2082,15 @@ async def run_stdio_probes(
                     _StdioTarget(fresh_read_stream, fresh_write_stream),
                 )
                 results.extend(connection_results.values())
-    except Exception as e:  # noqa: BLE001 — process startup/teardown failures are probe data
-        logger.info("Stdio probe transport failed against %s: %s", params.command, e)
+    except Exception as e:  # process startup/teardown failures are probe data
+        logger.debug("Stdio probe transport failed against %s", params.command, exc_info=e)
         completed = {result.probe_id for result in results}
-        results.extend(
-            ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
-            for probe_id in (*STDIO_PROBE_IDS, *CATALOG_CONNECTION_PROBE_IDS)
-            if probe_id not in completed
-        )
+        not_run = [
+            probe_id for probe_id in (*STDIO_PROBE_IDS, *CATALOG_CONNECTION_PROBE_IDS) if probe_id not in completed
+        ]
+        for probe_id in not_run:
+            failures.record(probe_id, e)
+            results.append(ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__}))
     finally:
         failures.flush()
 
