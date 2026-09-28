@@ -577,6 +577,11 @@ class TestMissingDependency:
         """Stop the project-file search at tmp_path, whatever lies above it on this machine."""
         (tmp_path / ".git").mkdir()
 
+    @pytest.fixture(autouse=True)
+    def uv_installed(self, monkeypatch):
+        """Have uv on PATH unless a test removes it, whatever this machine has."""
+        monkeypatch.setattr(client_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+
     def test_hint_for_a_uv_project_in_the_current_directory(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
@@ -747,3 +752,37 @@ class TestMissingDependency:
         monkeypatch.setattr(client_module, "_PROJECT_FILES", ("mcpscore-no-such-project-file",))
         script = str(Path(Path.cwd().anchor) / "srv.py")
         assert client_module._nearest_project_file(script) is None
+
+    @staticmethod
+    def _make_venv_python(folder: Path) -> Path:
+        python = folder / ".venv" / ("Scripts/python.exe" if client_module._WINDOWS else "bin/python")
+        python.parent.mkdir(parents=True)
+        python.write_text("", encoding="utf-8")
+        return python
+
+    def test_without_uv_the_project_venv_is_suggested(self, tmp_path, monkeypatch):
+        """pip-installed mcpscore brings no uv: a uv command would fail with command not found."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(client_module.shutil, "which", lambda _name: None)
+        (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+        python = self._make_venv_python(tmp_path)
+        hint = missing_dependency_hint("srv.py", "x")
+        assert hint.endswith(
+            client_module._paste_ready(["mcpscore", "--stdio", str(python.relative_to(tmp_path)), "srv.py"])
+        )
+        assert "uv run" not in hint
+
+    def test_without_uv_or_venv_the_generic_form_is_suggested(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(client_module.shutil, "which", lambda _name: None)
+        (tmp_path / "requirements.txt").write_text("", encoding="utf-8")
+        hint = missing_dependency_hint("srv.py", "x")
+        assert hint.endswith("mcpscore --stdio <python-with-its-dependencies> srv.py")
+
+    def test_a_venv_next_to_a_script_without_project_files_is_suggested(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        python = self._make_venv_python(tmp_path)
+        hint = missing_dependency_hint("srv.py", "x")
+        assert hint.endswith(
+            client_module._paste_ready(["mcpscore", "--stdio", str(python.relative_to(tmp_path)), "srv.py"])
+        )

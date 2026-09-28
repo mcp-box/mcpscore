@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `mcpscore server.py` runs the file with mcpscore's own Python. When the server
   then fails on a missing module, mcpscore now prints one line naming the module
-  and the command that runs the server in its own environment, such as
-  `mcpscore --stdio uv run server.py`. It no longer prints the server's
+  and the command that runs the server in its own environment:
+  `mcpscore --stdio uv run server.py` when uv is installed, otherwise the
+  project's `.venv` Python. It no longer prints the server's
   traceback and does not retry the dead launch as a modern-only server. `-v`
   still shows the traceback.
 

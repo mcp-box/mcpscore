@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -276,25 +277,37 @@ def _relative_to_cwd(path: Path) -> str:
         return str(path)
 
 
+def _venv_python(folder: Path) -> Path | None:
+    """Return the interpreter of a ``.venv`` in this folder, if there is one."""
+    python = folder / ".venv" / ("Scripts/python.exe" if _WINDOWS else "bin/python")
+    return python if python.is_file() else None
+
+
+def _uv_launch(project_file: Path, script: str) -> list[str]:
+    """Build the ``uv run`` command that starts the script with the project's dependencies."""
+    if project_file.name != "pyproject.toml":
+        return ["uv", "run", "--with-requirements", _relative_to_cwd(project_file), script]
+    if project_file.parent == Path.cwd().resolve():
+        return ["uv", "run", script]
+    return ["uv", "run", "--project", _relative_to_cwd(project_file.parent), script]
+
+
 def missing_dependency_hint(script: str, module: str) -> str:
     """Explain that a .py server cannot import its dependencies under mcpscore's Python, with the fix.
 
     The suggested command runs the server in its own project environment:
-    ``uv run`` for a pyproject.toml, ``--with-requirements`` for a
-    requirements.txt, otherwise the interpreter that has the dependencies.
+    ``uv run`` when uv is installed, else the project's ``.venv`` Python,
+    else a placeholder for the interpreter that has the dependencies.
     """
     project_file = _nearest_project_file(script)
-    if project_file is None:
-        run_it = f"mcpscore --stdio <python-with-its-dependencies> {_paste_ready([script])}"
-    elif project_file.name == "pyproject.toml":
-        folder = project_file.parent
-        in_cwd = folder == Path.cwd().resolve()
-        launch = ["uv", "run", script] if in_cwd else ["uv", "run", "--project", _relative_to_cwd(folder), script]
-        run_it = _paste_ready(["mcpscore", "--stdio", *launch])
+    folder = project_file.parent if project_file is not None else Path(script).resolve().parent
+    venv_python = _venv_python(folder)
+    if project_file is not None and shutil.which("uv") is not None:
+        run_it = _paste_ready(["mcpscore", "--stdio", *_uv_launch(project_file, script)])
+    elif venv_python is not None:
+        run_it = _paste_ready(["mcpscore", "--stdio", _relative_to_cwd(venv_python), script])
     else:
-        run_it = _paste_ready(
-            ["mcpscore", "--stdio", "uv", "run", "--with-requirements", _relative_to_cwd(project_file), script]
-        )
+        run_it = f"mcpscore --stdio <python-with-its-dependencies> {_paste_ready([script])}"
     return (
         f"{script} could not start: No module named '{module}'. mcpscore runs a .py file with its own Python, "
         f"which does not have the server's dependencies. Run it in its own environment instead: {run_it}"

@@ -248,6 +248,13 @@ prints the `uv run` form to use inside a uv project.
 **Cause:** the `.py` or `.js` target path does not exist.
 **Fix:** check the path relative to the directory you run mcpscore from.
 
+**Symptom:** `server.py could not start: No module named 'openmeteo_requests'`
+**Cause:** a `.py` target runs with mcpscore's own Python, which has none of
+your project's dependencies.
+**Fix:** run the command the message suggests. It starts the server in its
+own environment: `uv run` when uv is installed, otherwise the project's
+`.venv` Python. `-v` shows the server's traceback.
+
 **Symptom:**
 
 ```text
