@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `-v`/`--verbose` logs every HTTP request, each failed probe and the traceback
+  behind a connection error, the detail the default output no longer shows.
+
+### Changed
+
+- Quieter stderr. A successful audit no longer prints an `HTTP Request:` line
+  per request. A connection failure prints its cause on one line, such as
+  `Server unreachable: <url> (certificate is expired)`, with no traceback.
+  A failed connection's details, in the CLI and on mcpscore.dev, name the same
+  underlying cause instead of a wrapper such as a task-group error.
+  Probes that fail for the same reason are reported once with a count. The
+  JSON report and scores are unchanged.
+
 ### Fixed
 
 - `security_origin_validation`'s `details.basis` cited Streamable HTTP

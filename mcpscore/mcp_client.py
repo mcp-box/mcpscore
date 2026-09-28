@@ -50,6 +50,7 @@ from .probes import (
     ProbeOutcome,
     ProbeResult,
     client_version,
+    failure_cause,
 )
 from .redirects import REFUSED_DOWNGRADE, REFUSED_TOO_MANY, RefusedRedirect, send_within_origin, unfollowed_redirect
 from .tls import async_client
@@ -404,9 +405,8 @@ def extract_http_status(exc: BaseException) -> int | None:
     return error.response.status_code if error is not None else None
 
 
-def _safe_failure_detail(exc: BaseException) -> str:
-    """Return compact exception text that cannot emit terminal controls."""
-    normalized = " ".join(str(exc).split()) or type(exc).__name__
+def _printable_detail(normalized: str) -> str:
+    """Escape non-printable characters and cap the length of one-line failure text."""
 
     def printable(char: str) -> str:
         if char.isprintable():
@@ -419,6 +419,11 @@ def _safe_failure_detail(exc: BaseException) -> str:
         return f"\\U{codepoint:08x}"
 
     return "".join(printable(char) for char in normalized)[:500]
+
+
+def _describe_failure(exc: BaseException) -> str:
+    """Return the innermost cause as one printable line."""
+    return _printable_detail(failure_cause(exc))
 
 
 def _preferred_failure(
@@ -669,7 +674,7 @@ class MCPClient:
             if error is not None:
                 self._pending_http_status = error.response.status_code
                 self._pending_refused_redirect = unfollowed_redirect(error.response)
-            logger.info("Connection attempt failed: %s", e)
+            logger.info("Connection attempt failed: %s", _describe_failure(e))
 
     def _record_failure(
         self,
@@ -713,8 +718,8 @@ class MCPClient:
         elif refused is not None:
             _log_refused_redirect(status, refused, server_url)
         else:
-            logger.error("HTTP error %s from server: %s", status, server_url, exc_info=error)
-            logger.debug("Error details: %s", error)
+            logger.error("HTTP error %s from server: %s", status, server_url)
+            logger.debug("Error details", exc_info=error)
         self._record_status_failure(status, refused)
 
     def _record_unclassified_failure(self, exc: BaseException) -> None:
@@ -731,7 +736,7 @@ class MCPClient:
             # Keep a compact, single-line explanation so a caller can defer
             # showing it until modern-only probing has ruled out an expected
             # rejection of the legacy handshake.
-            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_safe_failure_detail(exc))
+            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_describe_failure(exc))
 
     def _observed_status(self, exc: BaseException) -> tuple[int | None, RefusedRedirect | None]:
         """Return the HTTP status a failed attempt observed, with the redirect it refused, from one response.
@@ -945,13 +950,13 @@ class MCPClient:
             return True
 
         except httpx2.ConnectError as e:
-            logger.exception("Connection refused or server unreachable: %s", server_url)
-            logger.debug("Error details: %s", e)
+            logger.error("Server unreachable: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
+            logger.debug("Error details", exc_info=e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx2.TimeoutException as e:
-            logger.exception("Connection timeout for server: %s", server_url)
-            logger.debug("Error details: %s", e)
+            logger.error("Connection timeout for server: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
+            logger.debug("Error details", exc_info=e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
@@ -985,7 +990,8 @@ class MCPClient:
                 _log_refused_redirect(status, refused, server_url)
                 self._record_failure(ConnectionErrorReason.REDIRECTED, status, refused=refused)
             else:
-                logger.exception("Failed to connect to MCP server via Streamable HTTP")
+                logger.error("Streamable HTTP connection failed: %s", _describe_failure(e))  # noqa: TRY400
+                logger.debug("Error details", exc_info=e)
                 self._record_unclassified_failure(e)
             return False
 
@@ -1086,13 +1092,13 @@ class MCPClient:
             return True
 
         except httpx2.ConnectError as e:
-            logger.exception("Connection refused or server unreachable: %s", server_url)
-            logger.debug("Error details: %s", e)
+            logger.error("Server unreachable: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
+            logger.debug("Error details", exc_info=e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx2.TimeoutException as e:
-            logger.exception("Connection timeout for server: %s", server_url)
-            logger.debug("Error details: %s", e)
+            logger.error("Connection timeout for server: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
+            logger.debug("Error details", exc_info=e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
@@ -1107,7 +1113,8 @@ class MCPClient:
             self._record_handshake_failure(server_url)
             return False
         except Exception as e:
-            logger.exception("Failed to connect to MCP server via SSE")
+            logger.error("SSE connection failed: %s", _describe_failure(e))  # noqa: TRY400
+            logger.debug("Error details", exc_info=e)
             self._record_unclassified_failure(e)
             return False
 
@@ -1137,8 +1144,9 @@ class MCPClient:
             init_result: InitializeResult = await self.session.initialize()
             self._init_result = init_result
             return init_result
-        except Exception:
-            logger.exception("Failed to initialize MCP server")
+        except Exception as e:
+            logger.error("Failed to initialize MCP server: %s", _describe_failure(e))  # noqa: TRY400
+            logger.debug("Error details", exc_info=e)
             return None
 
     async def list_tools(self) -> list[Tool] | None:

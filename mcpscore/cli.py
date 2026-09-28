@@ -165,6 +165,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the full report as JSON to stdout. Logs stay on stderr.",
     )
     output.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Log every HTTP request, each probe failure, and tracebacks on stderr.",
+    )
+    output.add_argument(
         "--sarif",
         metavar="FILE",
         help=(
@@ -922,6 +928,7 @@ async def async_main() -> None:
     # Parse before greeting: --version and --help exit during parsing, and
     # neither should be preceded by a banner.
     args = build_parser().parse_args()
+    configure_logging(verbose=args.verbose)
 
     # Resolve the target before greeting: an invalid target/--stdio combination
     # is a usage error, and (like argparse's own) it should not be preceded by
@@ -1087,6 +1094,14 @@ async def async_main() -> None:
         await client.cleanup()
 
 
+def configure_logging(*, verbose: bool = False) -> None:
+    """Send logs to stderr, keeping per-request HTTP lines and debug detail for --verbose."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
+    logging.getLogger("mcpscore").setLevel(logging.DEBUG if verbose else logging.INFO)
+    for name in ("httpx2", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.INFO if verbose else logging.WARNING)
+
+
 def main() -> None:
     """Entry point for the mcpscore CLI command.
 
@@ -1094,7 +1109,7 @@ def main() -> None:
     It sets up logging (to stderr, keeping stdout clean for --json output)
     and runs the async main function.
     """
-    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
+    configure_logging()
     asyncio.run(async_main())
 
 

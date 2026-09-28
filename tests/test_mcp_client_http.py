@@ -158,7 +158,7 @@ class TestMCPClientHTTP:
             result = await mcp_client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, server_url)
 
             assert result is False
-            assert "Failed to connect to MCP server via Streamable HTTP" in caplog.text
+            assert "Streamable HTTP connection failed: Unexpected error" in caplog.text
 
     async def test_detect_and_connect_both_transports_fail(self, mcp_client, caplog):
         """Test detect_and_connect when both HTTP and SSE fail."""

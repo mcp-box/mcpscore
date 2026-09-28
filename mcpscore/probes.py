@@ -1216,8 +1216,12 @@ async def _collect_catalog_identities(
 async def _probe_catalog_connection_independence(
     first: _ProbeTarget,
     second: _ProbeTarget,
+    failures: _ProbeFailureLog | None = None,
 ) -> dict[str, ProbeResult]:
-    """Compare complete modern catalogs over two independent connections."""
+    """Compare complete modern catalogs over two independent connections.
+
+    Transport errors become ``ERROR`` results and are recorded in ``failures`` when given.
+    """
     target_version = _target_version()
 
     async def gather_pair(first_awaitable: Any, second_awaitable: Any) -> tuple[Any, Any]:
@@ -1244,6 +1248,9 @@ async def _probe_catalog_connection_independence(
             ),
         )
     except Exception as exc:  # noqa: BLE001 — probe transport failures are data
+        if failures is not None:
+            for probe_id in CATALOG_CONNECTION_PROBE_IDS:
+                failures.record(probe_id, exc)
         return {
             probe_id: ProbeResult(
                 probe_id,
@@ -1303,6 +1310,8 @@ async def _probe_catalog_connection_independence(
                 ),
             )
         except Exception as exc:  # noqa: BLE001 — incomplete evidence must skip, never fail
+            if failures is not None:
+                failures.record(probe_id, exc)
             return ProbeResult(
                 probe_id,
                 ProbeOutcome.ERROR,
@@ -1887,6 +1896,57 @@ def detect_era(session_protocol_version: str | None, probes: dict[str, ProbeResu
     return None
 
 
+def _exception_message(exc: BaseException) -> str:
+    message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else str(exc)
+    return " ".join(message.split())
+
+
+def failure_cause(exc: BaseException) -> str:
+    """Return the innermost cause's message, looking through single-exception groups, wrapped errors and ``from``.
+
+    A ``from`` cause without a message of its own does not replace an outer message.
+    """
+    while True:
+        if isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
+            exc = exc.exceptions[0]
+        elif len(exc.args) == 1 and isinstance(exc.args[0], BaseException):
+            exc = exc.args[0]
+        elif exc.__cause__ is not None and (_exception_message(exc.__cause__) or not _exception_message(exc)):
+            exc = exc.__cause__
+        else:
+            break
+    return _exception_message(exc) or type(exc).__name__
+
+
+class _ProbeFailureLog:
+    """Log probe exceptions once per distinct cause, not once per probe."""
+
+    def __init__(self, target: str) -> None:
+        super().__init__()
+        self._target = target
+        self._probes_by_cause: dict[str, list[str]] = {}
+
+    def record(self, probe_id: str, exc: Exception) -> None:
+        self._add(probe_id, failure_cause(exc))
+
+    def record_result(self, result: ProbeResult) -> None:
+        """Count a probe that handled its own exception and returned ``ERROR``."""
+        if result.outcome is ProbeOutcome.ERROR:
+            self._add(result.probe_id, str(result.details.get("reason") or result.details.get("exception") or "error"))
+
+    def _add(self, probe_id: str, cause: str) -> None:
+        logger.debug("Probe %s failed against %s: %s", probe_id, self._target, cause)
+        self._probes_by_cause.setdefault(cause, []).append(probe_id)
+
+    def flush(self) -> None:
+        for cause, probe_ids in self._probes_by_cause.items():
+            if len(probe_ids) == 1:
+                logger.info("Probe %s failed against %s: %s", probe_ids[0], self._target, cause)
+            else:
+                logger.info("%d probes failed against %s: %s", len(probe_ids), self._target, cause)
+        self._probes_by_cause.clear()
+
+
 async def run_all_probes(
     url: str,
     client: httpx2.AsyncClient | None = None,
@@ -1921,13 +1981,16 @@ async def run_all_probes(
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
 
     """
+    failures = _ProbeFailureLog(url)
 
     async def run_one(probe_id: str, http_client: httpx2.AsyncClient) -> ProbeResult:
         try:
-            return await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url))
+            result = await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url))
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
-            logger.info("Probe %s failed against %s: %s", probe_id, url, e)
+            failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
+        failures.record_result(result)
+        return result
 
     async def run_with(
         select: Callable[[str], httpx2.AsyncClient],
@@ -1940,6 +2003,7 @@ async def run_all_probes(
             await _probe_catalog_connection_independence(
                 _HttpTarget(primary_client, url),
                 _HttpTarget(comparison_client, url),
+                failures,
             )
             if comparison_client is not None and comparison_client is not primary_client
             else not_applicable_results(
@@ -1953,20 +2017,23 @@ async def run_all_probes(
             **connection_results,
         }
 
-    if client is not None:
-        return await run_with(lambda _probe_id: client, fresh_client)
-    # No follow_redirects on the clients: every probe request goes through
-    # the same-origin policy in ``mcpscore.redirects``, which does not consult
-    # the client's setting, exactly as the SDK transports do not.
-    async with (
-        async_client(headers=headers) as own_client,
-        async_client(headers=headers) as fresh_client,
-        async_client() as anon_client,
-    ):
-        return await run_with(
-            lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client,
-            fresh_client,
-        )
+    try:
+        if client is not None:
+            return await run_with(lambda _probe_id: client, fresh_client)
+        # No follow_redirects on the clients: every probe request goes through
+        # the same-origin policy in ``mcpscore.redirects``, which does not consult
+        # the client's setting, exactly as the SDK transports do not.
+        async with (
+            async_client(headers=headers) as own_client,
+            async_client(headers=headers) as fresh_client,
+            async_client() as anon_client,
+        ):
+            return await run_with(
+                lambda probe_id: anon_client if probe_id in _ANONYMOUS_PROBE_IDS else own_client,
+                fresh_client,
+            )
+    finally:
+        failures.flush()
 
 
 async def run_stdio_probes(
@@ -1999,13 +2066,16 @@ async def run_stdio_probes(
         Mapping of probe_id to its ProbeResult, covering all PROBE_IDS
 
     """
+    failures = _ProbeFailureLog(params.command)
 
     async def run_one(probe_id: str, target: _StdioTarget) -> ProbeResult:
         try:
-            return await _TRANSPORT_AGNOSTIC_PROBES[probe_id](target)
+            result = await _TRANSPORT_AGNOSTIC_PROBES[probe_id](target)
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
-            logger.info("Probe %s failed against %s: %s", probe_id, params.command, e)
+            failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
+        failures.record_result(result)
+        return result
 
     results: list[ProbeResult] = []
     try:
@@ -2031,16 +2101,20 @@ async def run_stdio_probes(
                 connection_results = await _probe_catalog_connection_independence(
                     target,
                     _StdioTarget(fresh_read_stream, fresh_write_stream),
+                    failures,
                 )
                 results.extend(connection_results.values())
-    except Exception as e:  # noqa: BLE001 — process startup/teardown failures are probe data
-        logger.info("Stdio probe transport failed against %s: %s", params.command, e)
+    except Exception as e:  # process startup/teardown failures are probe data
+        logger.debug("Stdio probe transport failed against %s", params.command, exc_info=e)
         completed = {result.probe_id for result in results}
-        results.extend(
-            ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
-            for probe_id in (*STDIO_PROBE_IDS, *CATALOG_CONNECTION_PROBE_IDS)
-            if probe_id not in completed
-        )
+        not_run = [
+            probe_id for probe_id in (*STDIO_PROBE_IDS, *CATALOG_CONNECTION_PROBE_IDS) if probe_id not in completed
+        ]
+        for probe_id in not_run:
+            failures.record(probe_id, e)
+            results.append(ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__}))
+    finally:
+        failures.flush()
 
     return {
         **not_applicable_results("probe subject is HTTP-specific", HTTP_ONLY_PROBE_IDS),

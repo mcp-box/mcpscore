@@ -16,8 +16,8 @@ from mcpscore.enums import ConnectionErrorReason, MCPTransportType
 from mcpscore.mcp_client import (
     ConnectionFailure,
     MCPClient,
+    _describe_failure,
     _preferred_failure,
-    _safe_failure_detail,
     extract_http_status,
     reason_for_status,
 )
@@ -95,13 +95,13 @@ class TestConnectionFailureMessage:
 
 class TestSafeFailureDetail:
     def test_escapes_terminal_controls_without_destroying_unicode(self):
-        detail = _safe_failure_detail(RuntimeError("\x1b[31m故障\x1b[0m\u202e\U000e0001"))
+        detail = _describe_failure(RuntimeError("\x1b[31m故障\x1b[0m\u202e\U000e0001"))
 
         assert detail == r"\x1b[31m故障\x1b[0m\u202e\U000e0001"
         assert "\x1b" not in detail
 
     def test_empty_exception_uses_type_name(self):
-        assert _safe_failure_detail(RuntimeError()) == "RuntimeError"
+        assert _describe_failure(RuntimeError()) == "RuntimeError"
 
 
 class TestPreferredFailure:

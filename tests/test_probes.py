@@ -1811,7 +1811,7 @@ async def test_run_all_probes_creates_its_own_client_when_none_given(monkeypatch
 
     monkeypatch.setattr(probes_module, "_HTTP_PROBES", {pid: make_stub(pid) for pid in PROBE_IDS})
 
-    async def stub_connection_probes(first: object, second: object) -> dict[str, ProbeResult]:
+    async def stub_connection_probes(first: object, second: object, _failures: object = None) -> dict[str, ProbeResult]:
         del first, second
         return {
             probe_id: ProbeResult(probe_id, ProbeOutcome.SUPPORTED, {"stubbed": True})
@@ -1871,7 +1871,7 @@ async def test_catalog_comparison_runs_before_single_probes_can_mutate_client_co
         {probe_id: make_single_probe(probe_id) for probe_id in probes_module._SINGLE_TARGET_PROBE_IDS},
     )
 
-    async def compare(first: _HttpTarget, second: _HttpTarget) -> dict[str, ProbeResult]:
+    async def compare(first: _HttpTarget, second: _HttpTarget, _failures: object = None) -> dict[str, ProbeResult]:
         assert not first.client.cookies
         assert not second.client.cookies
         return {
