@@ -71,6 +71,17 @@ class TestConfigureLogging:
         assert not logging.getLogger("httpcore2").isEnabledFor(logging.INFO)
         assert not logging.getLogger("mcpscore.probes").isEnabledFor(logging.DEBUG)
 
+    def test_default_stays_quiet_under_a_debug_root_logger(self):
+        root = logging.getLogger()
+        previous = root.level
+        root.setLevel(logging.DEBUG)
+        try:
+            configure_logging()
+            assert not logging.getLogger("mcpscore.mcp_client").isEnabledFor(logging.DEBUG)
+            assert logging.getLogger("mcpscore.mcp_client").isEnabledFor(logging.INFO)
+        finally:
+            root.setLevel(previous)
+
     def test_verbose_restores_http_request_lines_and_debug(self):
         configure_logging(verbose=True)
         assert logging.getLogger("httpx2").isEnabledFor(logging.INFO)

@@ -1097,7 +1097,7 @@ async def async_main() -> None:
 def configure_logging(*, verbose: bool = False) -> None:
     """Send logs to stderr, keeping per-request HTTP lines and debug detail for --verbose."""
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
-    logging.getLogger("mcpscore").setLevel(logging.DEBUG if verbose else logging.NOTSET)
+    logging.getLogger("mcpscore").setLevel(logging.DEBUG if verbose else logging.INFO)
     for name in ("httpx2", "httpcore2"):
         logging.getLogger(name).setLevel(logging.INFO if verbose else logging.WARNING)
 
