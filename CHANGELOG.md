@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `security_origin_validation`'s `details.basis` cited Streamable HTTP
+  §Security for 2025-11-25. That revision keeps the requirement in
+  Transports §Security Warning; only 2026-07-28 moves it to Streamable HTTP
+  §Security & Endpoint. The citation now matches the linked `details.spec`
+  URL for every revision. Scores are unchanged.
+
 ## [1.20.0] - 2026-09-20
 
 `Origin` validation now scores every Streamable HTTP server, legacy or
