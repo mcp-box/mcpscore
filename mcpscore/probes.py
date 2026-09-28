@@ -1216,8 +1216,12 @@ async def _collect_catalog_identities(
 async def _probe_catalog_connection_independence(
     first: _ProbeTarget,
     second: _ProbeTarget,
+    failures: _ProbeFailureLog | None = None,
 ) -> dict[str, ProbeResult]:
-    """Compare complete modern catalogs over two independent connections."""
+    """Compare complete modern catalogs over two independent connections.
+
+    Transport errors become ``ERROR`` results and are recorded in ``failures`` when given.
+    """
     target_version = _target_version()
 
     async def gather_pair(first_awaitable: Any, second_awaitable: Any) -> tuple[Any, Any]:
@@ -1244,6 +1248,9 @@ async def _probe_catalog_connection_independence(
             ),
         )
     except Exception as exc:  # noqa: BLE001 — probe transport failures are data
+        if failures is not None:
+            for probe_id in CATALOG_CONNECTION_PROBE_IDS:
+                failures.record(probe_id, exc)
         return {
             probe_id: ProbeResult(
                 probe_id,
@@ -1303,6 +1310,8 @@ async def _probe_catalog_connection_independence(
                 ),
             )
         except Exception as exc:  # noqa: BLE001 — incomplete evidence must skip, never fail
+            if failures is not None:
+                failures.record(probe_id, exc)
             return ProbeResult(
                 probe_id,
                 ProbeOutcome.ERROR,
@@ -1918,7 +1927,14 @@ class _ProbeFailureLog:
         self._probes_by_cause: dict[str, list[str]] = {}
 
     def record(self, probe_id: str, exc: Exception) -> None:
-        cause = failure_cause(exc)
+        self._add(probe_id, failure_cause(exc))
+
+    def record_result(self, result: ProbeResult) -> None:
+        """Count a probe that handled its own exception and returned ``ERROR``."""
+        if result.outcome is ProbeOutcome.ERROR:
+            self._add(result.probe_id, str(result.details.get("reason") or result.details.get("exception") or "error"))
+
+    def _add(self, probe_id: str, cause: str) -> None:
         logger.debug("Probe %s failed against %s: %s", probe_id, self._target, cause)
         self._probes_by_cause.setdefault(cause, []).append(probe_id)
 
@@ -1969,10 +1985,12 @@ async def run_all_probes(
 
     async def run_one(probe_id: str, http_client: httpx2.AsyncClient) -> ProbeResult:
         try:
-            return await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url))
+            result = await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url))
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
+        failures.record_result(result)
+        return result
 
     async def run_with(
         select: Callable[[str], httpx2.AsyncClient],
@@ -1985,6 +2003,7 @@ async def run_all_probes(
             await _probe_catalog_connection_independence(
                 _HttpTarget(primary_client, url),
                 _HttpTarget(comparison_client, url),
+                failures,
             )
             if comparison_client is not None and comparison_client is not primary_client
             else not_applicable_results(
@@ -2051,10 +2070,12 @@ async def run_stdio_probes(
 
     async def run_one(probe_id: str, target: _StdioTarget) -> ProbeResult:
         try:
-            return await _TRANSPORT_AGNOSTIC_PROBES[probe_id](target)
+            result = await _TRANSPORT_AGNOSTIC_PROBES[probe_id](target)
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
+        failures.record_result(result)
+        return result
 
     results: list[ProbeResult] = []
     try:
@@ -2080,6 +2101,7 @@ async def run_stdio_probes(
                 connection_results = await _probe_catalog_connection_independence(
                     target,
                     _StdioTarget(fresh_read_stream, fresh_write_stream),
+                    failures,
                 )
                 results.extend(connection_results.values())
     except Exception as e:  # process startup/teardown failures are probe data

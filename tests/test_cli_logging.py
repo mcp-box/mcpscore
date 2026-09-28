@@ -13,8 +13,11 @@ from mcpscore.cli import build_parser, configure_logging
 from mcpscore.enums import MCPTransportType
 from mcpscore.mcp_client import MCPClient
 from mcpscore.probes import (
-    PROBE_IDS,
+    CATALOG_CONNECTION_PROBE_IDS,
     STDIO_PROBE_IDS,
+    ProbeOutcome,
+    _HttpTarget,
+    _probe_catalog_connection_independence,
     _ProbeFailureLog,
     failure_cause,
     run_all_probes,
@@ -138,10 +141,14 @@ class TestProbeFailureCollapsing:
             ):
                 results = await run_all_probes(URL, client=client, fresh_client=fresh_client)
 
-        assert set(results) == set(PROBE_IDS)
+        errors = sum(1 for r in results.values() if r.outcome == "error")
         lines = [r.getMessage() for r in caplog.records if "failed against" in r.getMessage()]
-        assert len(lines) == 1
-        assert re.fullmatch(rf"\d+ probes failed against {re.escape(URL)}: certificate is expired", lines[0])
+        shared = re.fullmatch(rf"(\d+) probes failed against {re.escape(URL)}: certificate is expired", lines[0])
+        assert shared is not None
+        # probe_auth_metadata keeps only the exception name, so it is summarized on its own line.
+        assert lines[1:] == [f"Probe probe_auth_metadata failed against {URL}: ConnectError"]
+        assert int(shared.group(1)) + 1 == errors
+        assert all(results[probe_id].outcome == "error" for probe_id in CATALOG_CONNECTION_PROBE_IDS)
 
     async def test_per_probe_lines_stay_available_at_debug(self, caplog):
         def refuse(request: httpx2.Request) -> httpx2.Response:
@@ -176,3 +183,15 @@ class TestProbeFailureCollapsing:
         assert re.fullmatch(r"\d+ probes failed against mcpscore-does-not-exist: .+", info[0])
         assert any(r.levelno == logging.DEBUG and r.exc_info for r in caplog.records)
         assert all(r.outcome == "error" for r in results.values() if r.probe_id in STDIO_PROBE_IDS)
+
+    async def test_catalog_comparison_without_a_failure_log_still_returns_errors(self):
+        def refuse(request: httpx2.Request) -> httpx2.Response:
+            raise httpx2.ConnectError("refused", request=request)
+
+        async with (
+            httpx2.AsyncClient(transport=httpx2.MockTransport(refuse)) as first,
+            httpx2.AsyncClient(transport=httpx2.MockTransport(refuse)) as second,
+        ):
+            results = await _probe_catalog_connection_independence(_HttpTarget(first, URL), _HttpTarget(second, URL))
+
+        assert {r.outcome for r in results.values()} == {ProbeOutcome.ERROR}
