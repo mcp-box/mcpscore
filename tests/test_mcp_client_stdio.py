@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from pathlib import Path
 import subprocess
 import sys
 from unittest.mock import AsyncMock, patch
@@ -19,6 +20,7 @@ from mcpscore.mcp_client import (
     ServerStderrRelay,
     StdioCommand,
     is_exec_format_error,
+    missing_dependency_hint,
     relayed_stdio_client,
     stdio_launch_hint,
 )
@@ -524,3 +526,117 @@ class TestServerStderrRelay:
                 assert errlog.fileno() >= 0
                 assert not errlog.closed
         assert errlog.closed
+
+    def test_held_lines_wait_for_release(self, caplog):
+        caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
+        relay = ServerStderrRelay(hold=True).start()
+        relay.errlog.write("early\n")
+        relay.close()
+        assert not caplog.records
+        relay.release()
+        assert [record.getMessage() for record in caplog.records] == [f"{SERVER_STDERR_PREFIX}early"]
+
+    def test_discarded_lines_are_debug_only(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="mcpscore.mcp_client")
+        relay = ServerStderrRelay(hold=True).start()
+        relay.errlog.write("Traceback (most recent call last):\nModuleNotFoundError: No module named 'platformdirs'\n")
+        relay.close()
+        assert relay.missing_module() == "platformdirs"
+        relay.discard()
+        assert [record.levelno for record in caplog.records] == [logging.DEBUG, logging.DEBUG]
+
+    def test_held_lines_are_bounded_and_the_drop_is_counted(self, caplog, monkeypatch):
+        caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
+        monkeypatch.setattr(client_module, "SERVER_STDERR_HELD_LINES", 2)
+        relay = ServerStderrRelay(hold=True).start()
+        relay.errlog.write("a\nb\nc\n")
+        relay.close()
+        relay.release()
+        assert [record.getMessage() for record in caplog.records] == [
+            f"{SERVER_STDERR_PREFIX}(1 earlier lines omitted)",
+            f"{SERVER_STDERR_PREFIX}b",
+            f"{SERVER_STDERR_PREFIX}c",
+        ]
+
+    def test_no_missing_module_in_other_output(self):
+        relay = ServerStderrRelay(hold=True).start()
+        relay.errlog.write("ValueError: bad config\n")
+        relay.close()
+        assert relay.missing_module() is None
+
+
+class TestMissingDependency:
+    """A .py server whose dependencies are not in mcpscore's Python gets the command that works."""
+
+    @pytest.fixture
+    def mcp_client(self):
+        return MCPClient()
+
+    def test_hint_for_a_uv_project_in_the_current_directory(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+        hint = missing_dependency_hint("srv.py", "platformdirs")
+        assert hint.startswith("srv.py could not start: No module named 'platformdirs'.")
+        assert hint.endswith("mcpscore --stdio uv run srv.py")
+
+    def test_hint_for_a_uv_project_elsewhere(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "proj").mkdir()
+        (tmp_path / "proj" / "pyproject.toml").write_text("", encoding="utf-8")
+        script = str(Path("proj") / "srv.py")
+        hint = missing_dependency_hint(script, "x")
+        assert hint.endswith(
+            client_module._paste_ready(["mcpscore", "--stdio", "uv", "run", "--project", "proj", script])
+        )
+
+    def test_hint_for_requirements_txt(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "requirements.txt").write_text("", encoding="utf-8")
+        hint = missing_dependency_hint("srv.py", "x")
+        assert hint.endswith("mcpscore --stdio uv run --with-requirements requirements.txt srv.py")
+
+    def test_hint_without_project_files(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        hint = missing_dependency_hint("srv.py", "x")
+        assert hint.endswith("mcpscore --stdio <python-with-its-dependencies> srv.py")
+
+    async def test_real_server_missing_a_module_gets_the_hint_not_the_traceback(
+        self, mcp_client, tmp_path, monkeypatch, caplog
+    ):
+        caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+        (tmp_path / "srv.py").write_text("import mcpscore_no_such_module\n", encoding="utf-8")
+
+        success, transport = await mcp_client.detect_and_connect("srv.py")
+
+        assert (success, transport) == (False, None)
+        assert "srv.py could not start: No module named 'mcpscore_no_such_module'" in caplog.text
+        assert "mcpscore --stdio uv run srv.py" in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.INFO and SERVER_STDERR_PREFIX in r.getMessage()]
+        assert "handshake failed" not in caplog.text
+        # Not UNKNOWN: the CLI must not retry the dead launch as a modern-only server.
+        assert mcp_client.last_connection_error.reason is ConnectionErrorReason.UNREACHABLE
+
+    async def test_real_server_failing_otherwise_still_shows_its_stderr(self, mcp_client, tmp_path, caplog):
+        caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
+        script = tmp_path / "srv.py"
+        script.write_text("raise SystemExit('bad config')\n", encoding="utf-8")
+
+        success, _ = await mcp_client.detect_and_connect(str(script))
+
+        assert success is False
+        assert f"{SERVER_STDERR_PREFIX}bad config" in caplog.text
+        assert "could not start" not in caplog.text
+
+    async def test_a_stdio_command_is_not_second_guessed(self, mcp_client, tmp_path, caplog):
+        """With --stdio the user chose the interpreter: relay its stderr unchanged."""
+        caplog.set_level(logging.INFO, logger="mcpscore.mcp_client")
+        script = tmp_path / "srv.py"
+        script.write_text("import mcpscore_no_such_module\n", encoding="utf-8")
+
+        success = await mcp_client._connect_with_stdio_command(StdioCommand(sys.executable, (str(script),)))
+
+        assert success is False
+        assert f"{SERVER_STDERR_PREFIX}ModuleNotFoundError" in caplog.text
+        assert "could not start" not in caplog.text

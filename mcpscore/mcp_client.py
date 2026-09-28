@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
@@ -6,6 +7,7 @@ import errno
 import logging
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -69,6 +71,11 @@ SERVER_STDERR_PREFIX = "server stderr: "
 
 SERVER_STDERR_LINE_LIMIT = 8192
 """Longest stderr line relayed in one piece; longer output is split so the relay stays bounded."""
+
+SERVER_STDERR_HELD_LINES = 500
+"""Most stderr lines held back during the handshake; older ones are dropped and counted."""
+
+_MISSING_MODULE = re.compile(r"^ModuleNotFoundError: No module named '([^']+)'")
 
 _SCRIPT_INTERPRETERS: Mapping[str, str] = {".py": "python", ".js": "node"}
 """Interpreter to suggest when a --stdio command names a script instead of an executable."""
@@ -163,19 +170,27 @@ class ServerStderrRelay:
     descriptor, so the relay owns a pipe: the server writes to it and a
     daemon thread reads it back into the logger. Leaving the context closes
     this side; the thread ends once the server's side closes.
+
+    With ``hold=True`` lines are kept back until ``release`` or ``discard``,
+    so a launch failure the caller can explain is not preceded by the
+    server's raw traceback.
     """
 
     JOIN_TIMEOUT_S: float = 2.0
     """How long to wait for the pump to drain after the server's side of the pipe closes."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, hold: bool = False) -> None:
         super().__init__()
+        self._lock = threading.Lock()
+        self._holding = hold
+        self._held: deque[str] = deque(maxlen=SERVER_STDERR_HELD_LINES)
+        self._dropped = 0
+
+    def start(self) -> Self:
+        """Open the pipe and begin pumping; ``errlog`` is ready to hand to the server process."""
         read_fd, write_fd = os.pipe()
         self.errlog = os.fdopen(write_fd, "w", encoding="utf-8")
         self._reader = threading.Thread(target=self._pump, args=(read_fd,), name="mcpscore-server-stderr", daemon=True)
-
-    def start(self) -> Self:
-        """Begin pumping; the pipe's write end is ready to hand to the server process."""
         self._reader.start()
         return self
 
@@ -189,25 +204,83 @@ class ServerStderrRelay:
         self.errlog.close()
         await asyncio.to_thread(self._reader.join, self.JOIN_TIMEOUT_S)
 
+    def release(self) -> None:
+        """Log the held lines and relay every later line as it arrives."""
+        self._flush(logging.INFO)
+
+    def discard(self) -> None:
+        """Keep the held lines for --verbose only, then relay later lines as usual."""
+        self._flush(logging.DEBUG)
+
+    def missing_module(self) -> str | None:
+        """Name of the module a Python server's held stderr says it could not import."""
+        with self._lock:
+            for line in reversed(self._held):
+                if match := _MISSING_MODULE.match(line):
+                    return match.group(1)
+        return None
+
+    def _flush(self, level: int) -> None:
+        with self._lock:
+            if self._dropped:
+                logger.log(level, "%s(%d earlier lines omitted)", SERVER_STDERR_PREFIX, self._dropped)
+            for line in self._held:
+                logger.log(level, "%s%s", SERVER_STDERR_PREFIX, line)
+            self._held.clear()
+            self._dropped = 0
+            self._holding = False
+
+    def _emit(self, line: str) -> None:
+        with self._lock:
+            if not self._holding:
+                logger.info("%s%s", SERVER_STDERR_PREFIX, line)
+                return
+            if len(self._held) == self._held.maxlen:
+                self._dropped += 1
+            self._held.append(line)
+
     def __enter__(self) -> Self:
         return self.start()
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    @staticmethod
-    def _pump(read_fd: int) -> None:
+    def _pump(self, read_fd: int) -> None:
         # Bounded reads: a server that never writes a newline must not grow
         # this process; a long line is relayed in pieces instead.
         with os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as stream:
             while chunk := stream.readline(SERVER_STDERR_LINE_LIMIT):
-                logger.info("%s%s", SERVER_STDERR_PREFIX, chunk.rstrip("\r\n"))
+                self._emit(chunk.rstrip("\r\n"))
+
+
+def missing_dependency_hint(script: str, module: str) -> str:
+    """Explain that a .py server cannot import its dependencies under mcpscore's Python, with the fix.
+
+    The suggested command runs the server in its own project environment:
+    ``uv run`` for a pyproject.toml, ``--with-requirements`` for a
+    requirements.txt, otherwise the interpreter that has the dependencies.
+    """
+    folder = Path(script).parent
+    if (folder / "pyproject.toml").is_file():
+        in_cwd = folder.resolve() == Path.cwd().resolve()
+        launch = ["uv", "run", script] if in_cwd else ["uv", "run", "--project", str(folder), script]
+        run_it = _paste_ready(["mcpscore", "--stdio", *launch])
+    elif (folder / "requirements.txt").is_file():
+        run_it = _paste_ready(
+            ["mcpscore", "--stdio", "uv", "run", "--with-requirements", str(folder / "requirements.txt"), script]
+        )
+    else:
+        run_it = f"mcpscore --stdio <python-with-its-dependencies> {_paste_ready([script])}"
+    return (
+        f"{script} could not start: No module named '{module}'. mcpscore runs a .py file with its own Python, "
+        f"which does not have the server's dependencies. Run it in its own environment instead: {run_it}"
+    )
 
 
 @asynccontextmanager
-async def relayed_stdio_client(server_params: StdioServerParameters):
+async def relayed_stdio_client(server_params: StdioServerParameters, relay: ServerStderrRelay | None = None):
     """Open the SDK stdio transport with the server's stderr relayed into the log."""
-    relay = ServerStderrRelay().start()
+    relay = (relay or ServerStderrRelay()).start()
     try:
         async with stdio_client(server_params, errlog=relay.errlog) as streams:
             yield streams
@@ -808,7 +881,9 @@ class MCPClient:
             else "Node.js not found. Please ensure Node.js is installed and on PATH."
         )
         server_params = StdioServerParameters(command=command, args=[server_script_path], env=None)
-        return await self._launch_stdio(server_params, display=server_script_path, missing_hint=missing_hint)
+        return await self._launch_stdio(
+            server_params, display=server_script_path, missing_hint=missing_hint, script=server_script_path
+        )
 
     async def _connect_with_stdio_command(self, command: StdioCommand) -> bool:
         """Launch an arbitrary local server command and connect over stdio.
@@ -836,6 +911,7 @@ class MCPClient:
         display: str,
         missing_hint: str,
         permission_hint: str | None = None,
+        script: str | None = None,
     ) -> bool:
         """Start a stdio server process and perform the MCP handshake.
 
@@ -847,6 +923,8 @@ class MCPClient:
                 found on PATH.
             permission_hint: Message logged when the OS refuses to execute
                 the command; defaults to naming the target.
+            script: The .py/.js file when mcpscore picked the interpreter,
+                so a missing Python dependency can be explained.
 
         Returns:
             True if a connection was successful, False otherwise
@@ -856,10 +934,13 @@ class MCPClient:
         # modern-only server rejects that handshake by design, and the CLI
         # needs these same parameters to retry with stateless probes.
         self.stdio_params = server_params
+        relay = ServerStderrRelay(hold=True)
         try:
-            await self._establish_session(relayed_stdio_client(server_params), MCPTransportType.STDIO, url=None)
+            await self._establish_session(relayed_stdio_client(server_params, relay), MCPTransportType.STDIO, url=None)
+            relay.release()
             return True
         except FileNotFoundError as e:
+            relay.release()
             # A launch that never happened is a usage problem, not a fault:
             # the hint is the whole diagnosis, the traceback would only bury it.
             logger.error(missing_hint)  # noqa: TRY400
@@ -867,20 +948,26 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except PermissionError as e:
+            relay.release()
             logger.error(permission_hint or f"Permission denied launching server: {display}")  # noqa: TRY400
             logger.debug("Error details: %s", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except TimeoutError:
+            relay.release()
             logger.error("MCP initialize handshake timed out for server: %s", display)  # noqa: TRY400
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except asyncio.CancelledError:
             self._reraise_if_cancelled()
+            if self._explained_by_stderr(relay, script):
+                return False
             logger.error("MCP initialize handshake failed for server: %s", display)  # noqa: TRY400
             self._record_failure(ConnectionErrorReason.NOT_MCP)
             return False
         except OSError as e:
+            if self._explained_by_stderr(relay, script):
+                return False
             if not is_exec_format_error(e):
                 self._legacy_handshake_failed(e, display)
                 return False
@@ -889,8 +976,23 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except Exception as e:  # noqa: BLE001 — classified later by the caller's stateless probes
-            self._legacy_handshake_failed(e, display)
+            if not self._explained_by_stderr(relay, script):
+                self._legacy_handshake_failed(e, display)
             return False
+
+    def _explained_by_stderr(self, relay: ServerStderrRelay, script: str | None) -> bool:
+        """Report a launch that died on a missing Python module as that, with the command that works.
+
+        Otherwise the held stderr is relayed as usual and the caller carries on.
+        """
+        module = relay.missing_module() if script is not None and script.endswith(".py") else None
+        if script is None or module is None:
+            relay.release()
+            return False
+        relay.discard()
+        logger.error(missing_dependency_hint(script, module))
+        self._record_failure(ConnectionErrorReason.UNREACHABLE)
+        return True
 
     def _legacy_handshake_failed(self, error: Exception, display: str) -> None:
         """Record a legacy handshake failure without deciding yet whether it is a fault.
