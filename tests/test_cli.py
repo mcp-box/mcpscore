@@ -1805,6 +1805,15 @@ class TestStdioCommandCliFlow:
     def test_misplaced_stdio_options(self, stdio: list[str] | None, expected: list[str]) -> None:
         assert misplaced_stdio_options(stdio) == expected
 
+    def test_double_dash_ends_the_stdio_command_before_any_warning(self) -> None:
+        """The --stdio command ends at ``--`` (argparse): what follows is the target, never server arguments."""
+        args = build_parser().parse_args(["--stdio", "srv", "--", "--smoke"])
+        assert args.stdio == ["srv"]
+        assert args.target == "--smoke"
+        assert misplaced_stdio_options(args.stdio) == []
+        with pytest.raises(ValueError, match="either a target or --stdio"):
+            resolve_target(args)
+
     def test_warning_names_several_options_in_the_plural(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="mcpscore.cli"):
             warn_misplaced_stdio_options(["uv", "run", "server.py", "--fail-under", "90", "--smoke"])

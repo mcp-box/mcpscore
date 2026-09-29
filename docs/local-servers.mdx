@@ -120,7 +120,7 @@ Step 1, because the server is the same.
 
   ```bash
   mcpscore --fail-under 90 --stdio uv run server.py   # gate applies: exit 3 below 90%
-  mcpscore --stdio uv run server.py --fail-under 90   # server gets --fail-under: exit 0
+  mcpscore --stdio uv run server.py --fail-under 90   # server gets --fail-under: no gate
   ```
 
   mcpscore warns about options no server is likely to share, such as

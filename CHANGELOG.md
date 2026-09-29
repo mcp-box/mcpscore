@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - An mcpscore option placed after `--stdio`, such as
   `mcpscore --stdio uv run server.py --fail-under 90`, is passed to the server,
-  so the gate never ran and the audit exited `0` with no sign why. mcpscore now
+  so the gate never ran, with no sign why: a score below the threshold still
+  exited `0` when the server ignored the extra option. mcpscore now
   warns: `--fail-under came after --stdio, so mcpscore passes it to the server
   and does not apply it`. The warning covers options a server is unlikely to
   take itself (`--fail-under`, `--fail-under-readiness`, `--smoke`,
