@@ -324,7 +324,9 @@ and there is no `Gate failed` line. Near the top:
 ```
 
 **Cause:** `--stdio` takes the rest of the command line as the server
-command, so an option after it goes to your server.
+command, so an option after it goes to your server. The same happens to
+`--config`, `--token`, `--env` and `--json`, without a warning, since a server
+may take those options itself.
 **Fix:** move every mcpscore option before `--stdio`:
 `mcpscore --fail-under 90 --stdio uv run server.py`.
 

@@ -123,7 +123,10 @@ Step 1, because the server is the same.
   mcpscore --stdio uv run server.py --fail-under 90   # server gets --fail-under: exit 0
   ```
 
-  mcpscore warns when it sees one of its own options after `--stdio`.
+  mcpscore warns about options no server is likely to share, such as
+  `--fail-under`, `--smoke` and `--sarif`. It cannot tell whether `--config`,
+  `--token`, `--env` or `--json` are meant for your server, so those get no
+  warning.
 </Warning>
 
 `--stdio` works for any language. It runs the command directly, with no

@@ -409,10 +409,13 @@ def misplaced_stdio_options(stdio: list[str] | None) -> list[str]:
 def warn_misplaced_stdio_options(stdio: list[str] | None) -> None:
     """Warn that mcpscore options after --stdio are not applied, e.g. a --fail-under gate that never fails."""
     if misplaced := misplaced_stdio_options(stdio):
+        pronoun = "it" if len(misplaced) == 1 else "them"
         logger.warning(
-            "%s came after --stdio, so mcpscore passes it to the server and does not apply it. "
+            "%s came after --stdio, so mcpscore passes %s to the server and does not apply %s. "
             "Put mcpscore options before --stdio.",
             ", ".join(misplaced),
+            pronoun,
+            pronoun,
         )
 
 

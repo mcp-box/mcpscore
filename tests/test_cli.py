@@ -35,6 +35,7 @@ from mcpscore.cli import (
     resolve_target,
     run_package_audit,
     validate_output_flags,
+    warn_misplaced_stdio_options,
 )
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.packages import PackageCoordinate, PackageMetadata, PackageOutcome
@@ -1803,6 +1804,16 @@ class TestStdioCommandCliFlow:
     )
     def test_misplaced_stdio_options(self, stdio: list[str] | None, expected: list[str]) -> None:
         assert misplaced_stdio_options(stdio) == expected
+
+    def test_warning_names_several_options_in_the_plural(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="mcpscore.cli"):
+            warn_misplaced_stdio_options(["uv", "run", "server.py", "--fail-under", "90", "--smoke"])
+        assert caplog.messages == [
+            (
+                "--fail-under, --smoke came after --stdio, so mcpscore passes them to the server and does not apply "
+                "them. Put mcpscore options before --stdio."
+            )
+        ]
 
     async def test_fail_under_after_stdio_warns_that_it_is_not_applied(
         self,
