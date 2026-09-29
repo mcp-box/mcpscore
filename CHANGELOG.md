@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.1] - 2026-09-29
+
+Clearer local-server failures: a `.py` server missing its dependencies gets
+the command that runs it, and an option misplaced after `--stdio` is flagged.
+Scores are unchanged.
+
 ### Fixed
 
 - An mcpscore option placed after `--stdio`, such as
@@ -1775,7 +1781,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.21.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.21.1...HEAD
+[1.21.1]: https://github.com/mcp-box/mcpscore/compare/v1.21.0...v1.21.1
 [1.21.0]: https://github.com/mcp-box/mcpscore/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/mcp-box/mcpscore/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/mcp-box/mcpscore/compare/v1.18.0...v1.19.0
