@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An mcpscore option placed after `--stdio`, such as
+  `mcpscore --stdio uv run server.py --fail-under 90`, is passed to the server,
+  so the gate never ran, with no sign why: a score below the threshold still
+  exited `0` when the server ignored the extra option. mcpscore now
+  warns: `--fail-under came after --stdio, so mcpscore passes it to the server
+  and does not apply it`. The warning covers options a server is unlikely to
+  take itself (`--fail-under`, `--fail-under-readiness`, `--smoke`,
+  `--call-all`, `--sarif`, `--no-config`, `--oauth`, `--callback-port`,
+  `--package`, `--stdio`). The command is still run as given.
 - `mcpscore server.py` runs the file with mcpscore's own Python. When the server
   then fails on a missing module, mcpscore now prints one line naming the module
   and the command to run instead: `mcpscore --stdio uv run server.py` when uv
