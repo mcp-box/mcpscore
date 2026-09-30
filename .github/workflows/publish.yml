@@ -32,7 +32,7 @@ jobs:
           # cannot upload main under the tag's version.
           ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: "3.13"
           # Release artifacts must never be built from a shared cache
