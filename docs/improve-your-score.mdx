@@ -225,6 +225,10 @@ the one behind your load balancer. Requests without an `Origin` header, which
 is what non-browser MCP clients send, pass the Origin check; the `Host`
 check still applies to them.
 
+For how a DNS-rebinding attack reaches a server and what the check does and
+doesn't protect, read
+[DNS rebinding and MCP](https://mcpscore.dev/blog/mcp-origin-validation-dns-rebinding).
+
 <Accordion title="Technical details">
   The requirement is Transports §Security Warning in revisions
   [2025-03-26](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#security-warning),
