@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.2] - 2026-09-30
+
+A dependency refresh. No engine, rule, or report changes; scores are
+unchanged.
+
+### Changed
+
+- **Dependencies refreshed.** `mcp==2.2.0` is still the latest SDK release,
+  and `httpx2` and `jsonschema` keep their existing ranges. The lockfile picks
+  up the minor and patch updates since 1.21.1, among them httpx2 2.13.1,
+  pyjwt 2.15.1, cryptography 50.0.2, starlette 1.7.0, and uvicorn 0.54.0, plus
+  ruff 0.16.9 for development. CI moves to `astral-sh/setup-uv` v10.2.0.
+- **Docs:** "Improve your score" links the Origin-validation step to the
+  [DNS rebinding and MCP](https://mcpscore.dev/blog/mcp-origin-validation-dns-rebinding)
+  blog post.
+
 ## [1.21.1] - 2026-09-29
 
 Clearer local-server failures: a `.py` server missing its dependencies gets
@@ -1781,7 +1797,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.21.1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.21.2...HEAD
+[1.21.2]: https://github.com/mcp-box/mcpscore/compare/v1.21.1...v1.21.2
 [1.21.1]: https://github.com/mcp-box/mcpscore/compare/v1.21.0...v1.21.1
 [1.21.0]: https://github.com/mcp-box/mcpscore/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/mcp-box/mcpscore/compare/v1.19.0...v1.20.0
