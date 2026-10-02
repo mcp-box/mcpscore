@@ -28,14 +28,14 @@ jobs:
 Commit that file and open a pull request. The job log ends with the score:
 
 ```text
-mcpscore: 78/94 (83%), era legacy
+mcpscore: 87/103 (84%), era legacy
 ```
 
 The same report lands in the PR comment and in the job summary. The job
 summary needs no token at all. The report looks like this:
 
 ```markdown
-## 🔦 mcpscore — 78/94 (83%)
+## 🔦 mcpscore — 87/103 (84%)
 
 **Target:** `https://mcp.deepwiki.com/mcp`  ·  **Spec:** 2025-11-25 (legacy)
 
@@ -122,12 +122,12 @@ jobs:
           min-score: 80
 ```
 
-`min-score` is a percentage from 0 to 100. A server at 83% passes a threshold
+`min-score` is a percentage from 0 to 100. A server at 84% passes a threshold
 of 80. Set it to 90 and the same server fails the job:
 
 ```text
-mcpscore: 78/94 (83%), era legacy
-::error::score 78/94 (83%) is below the required 90%
+mcpscore: 87/103 (84%), era legacy
+::error::score 87/103 (84%) is below the required 90%
 ```
 
 The report and comment are still published, so the author sees which rules
@@ -226,7 +226,7 @@ A `[gate]` failure fails the job with the rule named:
 ```
 
 ```text
-mcpscore: 78/94 (83%), era legacy
+mcpscore: 87/103 (84%), era legacy
 ::error::readiness 3/13 (23%) is below the required 50%
 ```
 
@@ -316,7 +316,7 @@ Give the step an `id` and read its outputs:
 ```
 
 ```text
-Scored 83% (era legacy)
+Scored 84% (era legacy)
 ```
 
 ### Pin everything
@@ -358,7 +358,7 @@ mcpscore on PyPI. For reproducible runs, pin the action to a commit and
 
 ## When it fails
 
-**`::error::score 78/94 (83%) is below the required 90%`**
+**`::error::score 87/103 (84%) is below the required 90%`**
 
 - Cause: the server scored under the threshold. This is the action doing its
   job.

@@ -24,16 +24,16 @@ mcpscore https://mcp.deepwiki.com/mcp
 ❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding. Observed HTTP status: 200.
   Fix: Validate supplied Origin headers against the origins allowed for this endpoint. Return HTTP 403 for invalid origins; do not allow every origin to satisfy browser requests.
 ...
-Audit finished. Final score: 78/94
+Audit finished. Final score: 87/103
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
 Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 20 checks assessed)
 ```
 
-That run gives you three numbers: the main score (`78/94`), the spec revision
+That run gives you three numbers: the main score (`87/103`), the spec revision
 the server speaks (`2025-11-25`, legacy), and a separate readiness score for
 the newest revision (`3/13`). The rest of this page explains each one.
 
-## How 78/94 adds up
+## How 87/103 adds up
 
 A rule is one check against your server, such as `security_origin_validation`.
 Each rule has a severity, and the severity sets its weight. A passing rule
@@ -53,10 +53,10 @@ The same DeepWiki audit, grouped by category:
 |---|---|---|---|
 | Protocol | 36 | 42 | `protocol_version_latest` (2), `server_title_present` (2), `server_websiteurl_present` (1), `server_icons_present` (1) |
 | Primitives | 35 | 42 | `tools_annotations_present` (2), `tools_title_present_in_all` (1), four `pagination_*_invalid_cursor` rules (1 each) |
-| Security & Auth | 7 | 10 | `security_origin_validation` (3) |
-| **Total** | **78** | **94** | 11 failed, 25 passed, 43 skipped |
+| Security & Auth | 16 | 19 | `security_origin_validation` (3) |
+| **Total** | **87** | **103** | 11 failed, 28 passed, 43 skipped |
 
-Fixing the one Security & Auth failure moves the score to 81/94. The
+Fixing the one Security & Auth failure moves the score to 90/103. The
 `--json` report carries the same arithmetic per rule in `results[].severity_value`
 and `results[].passed`, so you can recompute any score from the report alone.
 
@@ -64,7 +64,7 @@ and `results[].passed`, so you can recompute any score from the report alone.
 
 Only rules that ran count toward the maximum. A rule that has nothing to
 judge is skipped and left out of both numbers, never failed. That is why
-DeepWiki is scored out of 94 and a server with prompts and resources is
+DeepWiki is scored out of 103 and a server with prompts and resources is
 scored out of more. DeepWiki serves no prompts or resources, so the 24 rules
 about them were skipped.
 
@@ -98,7 +98,7 @@ revisions it applies to.
 |---|---|---|
 | Protocol | 17 | Protocol version, server name, title and version, advertised capabilities, transport |
 | Primitives | 50 | Tools, prompts, resources, and resource templates: names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination |
-| Security & Auth | 12 | The server's security posture, detailed below |
+| Security & Auth | 15 | The server's security posture, detailed below |
 | Readiness | 20 | How ready the server is for the 2026-07-28 revision, [scored on its own axis](#the-readiness-score-separate-informative) and in the main score for modern and dual-era full audits |
 
 A separate set of six packaging rules scores a published npm or PyPI package
@@ -114,6 +114,7 @@ server, from outside, without calling a tool.
 | Transport security: HTTPS with a verified certificate and TLS 1.2 or 1.3 ([Authorization §Communication Security](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#communication-security)) | `security_tls_enabled` (CRITICAL) |
 | `Origin` validation: a request with a foreign `Origin` gets HTTP 403, which blocks DNS rebinding ([Transports §Security Warning](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning), [Streamable HTTP §Security & Endpoint](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint)) | `security_origin_validation` (HIGH) |
 | Error hygiene: a malformed request gets the [JSON-RPC parse error](https://www.jsonrpc.org/specification#error_object), and the error body carries no stack traces, file paths, or credentials ([Tools §Security Considerations](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#security-considerations)) | `security_malformed_request_handling`, `security_error_data_leak` (MEDIUM) |
+| Catalog text: every name, title, description, schema string and URI the server lists carries no hidden Unicode (tag characters, bidirectional overrides, control characters, invisible runs), no provider-format credential, and none of a fixed list of prompt-injection phrasings ([OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/) MCP01, MCP03, MCP06) | `catalog_hidden_unicode`, `catalog_no_embedded_secrets`, `catalog_prompt_injection_phrasing` (HIGH) |
 | Authorization posture, on servers that answer an unauthenticated request with 401 or 403: the `WWW-Authenticate` challenge, [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) resource metadata, the [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) authorization-server chain, HTTPS throughout, advertised scopes, and advertised PKCE `S256` support ([Authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-discovery), [§Authorization Code Protection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-code-protection)) | eight `auth_*` rules |
 
 Three related checks live in other categories, because the spec files them
@@ -275,8 +276,10 @@ outside or because they cannot yet be tested safely from outside:
 - What tools do. The audit never calls them, so the score judges how
   tools are described and typed, not how they behave. [Smoke mode](/smoke-mode)
   covers that for your own server, outside the score.
-- What tool descriptions say. Descriptions are checked for presence, not
-  read for instructions aimed at the agent.
+- Whether tool descriptions are honest. Catalog text is scanned for hidden
+  characters, credentials and a fixed list of prompt-injection phrasings,
+  not judged for meaning, so a description that misleads in plain words
+  passes.
 - The package behind the server. mcpscore does not scan code or
   dependencies for malware. Pair it with a package scanner for that.
 - True statelessness, meaning no hidden state across requests. Requests

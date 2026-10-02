@@ -56,7 +56,7 @@ Starting the audit...
 ❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding. Observed HTTP status: 200.
   Fix: Validate supplied Origin headers against the origins allowed for this endpoint. Return HTTP 403 for invalid origins; do not allow every origin to satisfy browser requests.
 ...
-Audit finished. Final score: 78/94
+Audit finished. Final score: 87/103
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
 Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 20 checks assessed)
 ```
@@ -69,7 +69,7 @@ command again after a fix and the score moves.
 
 ## Reading the result
 
-- **`78/94`** is points earned over points available. A rule is one check,
+- **`87/103`** is points earned over points available. A rule is one check,
   like "server title is present". Each rule has a severity, and a failed rule
   costs its weight: CRITICAL 5, HIGH 3, MEDIUM 2, LOW 1. A rule that cannot
   apply to your server is skipped and removed from the maximum, so it never

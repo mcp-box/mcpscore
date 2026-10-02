@@ -28,11 +28,11 @@ mcpscore:
 When the score is below 90%, the job log ends like this and the job fails:
 
 ```text
-Audit finished. Final score: 78/94
+Audit finished. Final score: 87/103
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
 Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 20 checks assessed)
 SARIF written to mcpscore.sarif (13 findings)
-Gate failed — --fail-under 90: score 78/94 (83%) is below the required 90%
+Gate failed — --fail-under 90: score 87/103 (84%) is below the required 90%
 ```
 
 The job fails on the merge request that lowered the score, and the full
@@ -95,7 +95,7 @@ jq -r '.results[] | select(.passed == false) | "\(.severity) \(.rule_id)"' mcpsc
 ```
 
 ```text
-78/94
+87/103
 MEDIUM protocol_version_latest
 MEDIUM server_title_present
 LOW server_websiteurl_present
@@ -189,7 +189,7 @@ exit "$status"
 ```
 
 ```text
-mcpscore: 78/94
+mcpscore: 87/103
   MEDIUM	protocol_version_latest
   MEDIUM	server_title_present
   LOW	server_websiteurl_present
