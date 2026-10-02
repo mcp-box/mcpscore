@@ -19,7 +19,7 @@ Connected to the MCP server: uv run server.py
 Transport: stdio
 Starting the audit...
 ...
-Audit finished. Final score: 105/126
+Audit finished. Final score: 114/135
 ```
 
 That is the command you end up with. The steps below build it one piece at
@@ -65,7 +65,7 @@ Starting the audit...
 ❌ Number of tools without behavior annotations: 1. This is an optional quality recommendation. First affected field: tool at index 0 "/annotations".
   Fix: Declare behavior annotations that match the tool's actual effects. Set readOnlyHint to true only if the tool cannot change state.
 ...
-Audit finished. Final score: 105/126
+Audit finished. Final score: 114/135
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
 Readiness for MCP 2026-07-28: 33/33 (counted in the main score — modern-lifecycle server; 12 of 20 checks assessed)
 ```
@@ -107,7 +107,7 @@ Connected to the MCP server: uv run server.py
 Transport: stdio
 Starting the audit...
 ...
-Audit finished. Final score: 105/126
+Audit finished. Final score: 114/135
 ```
 
 `uv run` starts the server inside your project's environment, so every
@@ -191,7 +191,7 @@ Connected to the MCP server: uv run server.py
 Transport: stdio
 Starting the audit...
 ...
-Audit finished. Final score: 105/126
+Audit finished. Final score: 114/135
 ```
 
 `--env NAME` copies the value from mcpscore's own environment, so it never
@@ -209,13 +209,13 @@ mcpscore --fail-under 90 --env WEATHER_API_KEY --stdio uv run server.py
 
 ```text
 ...
-Audit finished. Final score: 105/126
+Audit finished. Final score: 114/135
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
 Readiness for MCP 2026-07-28: 33/33 (counted in the main score — modern-lifecycle server; 12 of 20 checks assessed)
-Gate failed — --fail-under 90: score 105/126 (83%) is below the required 90%
+Gate failed — --fail-under 90: score 114/135 (84%) is below the required 90%
 ```
 
-The exit code is `3`. 105 of 126 rounds to 83%, below the 90% you asked
+The exit code is `3`. 114 of 135 rounds to 84%, below the 90% you asked
 for. Lower the bar to where the server is today:
 
 ```bash
@@ -225,7 +225,7 @@ echo $?
 
 ```text
 ...
-Audit finished. Final score: 105/126
+Audit finished. Final score: 114/135
 ...
 0
 ```

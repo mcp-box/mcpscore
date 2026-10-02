@@ -15,31 +15,35 @@ catalog gains up to 9 points of assessable Security & Auth.
 
 - `catalog_hidden_unicode` (HIGH): no instructions, names, titles,
   descriptions, schema strings or URIs may carry characters a reader cannot
-  see: Unicode tag characters outside an emoji tag sequence (UTS #51 §2.8),
-  bidirectional embeddings, overrides and isolates (CVE-2021-42574), control
-  characters other than tab and line breaks, and runs of two or more
-  zero-width characters or variation selectors. A single zero-width joiner or
-  variation selector, as emoji and several scripts use, passes.
+  see: Unicode tag characters outside a well-formed emoji tag sequence
+  (UTS #51 §2.8), bidirectional embeddings, overrides and isolates
+  (CVE-2021-42574), control characters other than tab and line breaks, and
+  runs of two or more zero-width characters, directional marks, soft hyphens
+  or variation selectors. A single one, as emoji, right-to-left text and
+  several scripts use, passes.
 - `catalog_no_embedded_secrets` (HIGH): no credential in a provider's issued
   format anywhere in the catalog, schema defaults and examples included: AWS
   access key IDs, GitHub, GitLab and Slack tokens, Stripe live keys,
   Anthropic, OpenAI and Google API keys, private-key headers, JWTs and long
-  bearer tokens. Documentation samples (`EXAMPLE`, `your…`, `xxxx`, jwt.io's
-  token) and low-entropy values pass.
+  bearer tokens (any casing of the scheme). Documentation samples
+  (`EXAMPLE`, `your…`, `xxxx`, jwt.io's token) and low-entropy values pass.
 - `catalog_prompt_injection_phrasing` (HIGH): no text that directs the model
   instead of describing a capability: overriding earlier instructions,
-  keeping an action from the user, reassigning the model's role, or
-  chat-template control tokens. A phrase in quotes, listed with a slash, or
-  introduced by "to" ("attempts to override the system prompt") describes an
-  attack rather than performing it and passes, so a scanner that names the
+  keeping an action from the user, reassigning the model to a persona ("you
+  are now a pirate", "you are now in developer mode"), or chat-template
+  control tokens. A phrase quoted on both sides, listed with a slash, or
+  introduced by "to" ("attempts to override the system prompt") names an
+  attack rather than performing it and passes, so a scanner that lists the
   phrases it detects is not flagged. The list is fixed and documented; no
   model judges the text.
 - All three cite the [OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/)
-  (MCP01, MCP03, MCP06), skip a partial audit as `insufficient-data`, and
-  report each finding as a location, the matched classes and `in_key` for a
-  schema key, never the matched text, so a report cannot repeat a secret or
-  an injected instruction. A partially collected catalog is judged on what
-  was collected and listed under `details.incomplete_listings`.
+  (MCP01, MCP03, MCP06) and the specification's §Security and Trust & Safety,
+  skip a partial audit as `insufficient-data`, and report each finding as a
+  location, the matched classes and `in_key` for a schema key, never the
+  matched text, so a report cannot repeat a secret or an injected
+  instruction. A path that would pass through a flagged schema key stops
+  above it and carries `path_truncated`. A partially collected catalog is
+  judged on what was collected and listed under `details.incomplete_listings`.
 
 ## [1.21.2] - 2026-09-30
 

@@ -70,7 +70,7 @@ mcpscore path/to/server.py
 ```text
 Transport: stdio
 ...
-Audit finished. Final score: 131/155
+Audit finished. Final score: 140/164
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
 ```
 

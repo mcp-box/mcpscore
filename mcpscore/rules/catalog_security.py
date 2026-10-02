@@ -98,6 +98,16 @@ def catalog_texts(audit_data: AuditData) -> Iterator[CatalogText]:
         yield from entries("resource_template", index, {**fields, "/description": template.description})
 
 
+def _publishable_path(path: str) -> tuple[str, bool]:
+    """Cut *path* above the first segment that is itself a finding, so evidence never echoes it."""
+    segments = path.split("/")
+    for position, segment in enumerate(segments[1:], start=1):
+        text = segment.replace("~1", "/").replace("~0", "~")
+        if hidden_unicode_classes(text) or secret_classes(text) or injection_classes(text):
+            return "/".join(segments[:position]), True
+    return path, False
+
+
 class CatalogSecurityRule(BaseRule):
     """Base for rules that scan every collected catalog string.
 
@@ -133,8 +143,12 @@ class CatalogSecurityRule(BaseRule):
             found = self.matches(entry.text)
             if found:
                 classes.update(found)
-                issue = field_issue(entry.kind, entry.index, entry.path, self.issue_reason, self.expected)
-                issues.append({**issue, "matched": sorted(set(found)), **({"in_key": True} if entry.in_key else {})})
+                path, truncated = _publishable_path(entry.path)
+                issue = field_issue(entry.kind, entry.index, path, self.issue_reason, self.expected)
+                flags = {"in_key": True} if entry.in_key else {}
+                if truncated:
+                    flags["path_truncated"] = True
+                issues.append({**issue, "matched": sorted(set(found)), **flags})
         passed = not issues
         details: dict[str, Any] = {"strings_with_findings": len(issues), "matched": dict(sorted(classes.items()))}
         if audit_data.incomplete_listings:
@@ -152,20 +166,27 @@ class CatalogSecurityRule(BaseRule):
 
 
 # Tag characters, U+E0000-E007F, are valid only inside an emoji tag sequence:
-# U+1F3F4 WAVING BLACK FLAG, tag spec characters, U+E007F CANCEL TAG
+# U+1F3F4 WAVING BLACK FLAG, tag spec characters U+E0020-E007E, U+E007F CANCEL TAG
 # (UTS #51 §2.8, e.g. the flag of England).
 _FLAG_BASE = "\U0001f3f4"
 _CANCEL_TAG = "\U000e007f"
-_BIDI_CONTROLS = frozenset("‪‫‬‭‮⁦⁧⁨⁩")
-_INVISIBLES = frozenset("​‌‍⁠⁡⁢⁣⁤﻿")
+_BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+# Zero-width and formatting characters that render as nothing. One alone is
+# legitimate (a joiner in an emoji, a directional mark in right-to-left text, a
+# soft hyphen); only runs of two or more count.
+_INVISIBLES = frozenset("\u00ad\u061c\u200b\u200c\u200d\u200e\u200f\u2060\u2061\u2062\u2063\u2064\ufeff")
 
 
 def _is_tag(char: str) -> bool:
     return "\U000e0000" <= char <= "\U000e007f"
 
 
+def _is_tag_spec(char: str) -> bool:
+    return "\U000e0020" <= char <= "\U000e007e"
+
+
 def _is_variation_selector(char: str) -> bool:
-    return "︀" <= char <= "️" or "\U000e0100" <= char <= "\U000e01ef"
+    return "\ufe00" <= char <= "\ufe0f" or "\U000e0100" <= char <= "\U000e01ef"
 
 
 def _is_control(char: str) -> bool:
@@ -186,7 +207,7 @@ def hidden_unicode_classes(text: str) -> list[str]:
         char = text[position]
         if char == _FLAG_BASE:
             end = position + 1
-            while end < len(text) and _is_tag(text[end]) and text[end] != _CANCEL_TAG:
+            while end < len(text) and _is_tag_spec(text[end]):
                 end += 1
             if end > position + 1 and end < len(text) and text[end] == _CANCEL_TAG:
                 position = end + 1
@@ -225,7 +246,8 @@ class CatalogHiddenUnicodeRule(CatalogSecurityRule):
     rule_id = "catalog_hidden_unicode"
     basis = (
         "OWASP MCP Top 10 (beta) MCP03:2025 Tool Poisoning and MCP06:2025 Prompt Injection via Contextual "
-        "Payloads; Unicode UTS #51 §2.8 (tag sequences), CVE-2021-42574 (bidirectional overrides)"
+        "Payloads; MCP 2025-11-25 §Security and Trust & Safety (Tool Safety: tool descriptions are untrusted); "
+        "Unicode UTS #51 §2.8 (tag sequences), CVE-2021-42574 (bidirectional overrides)"
     )
     rule_order = 20
     issue_reason = "hidden_unicode"
@@ -265,7 +287,7 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "google_api_key"),
     (re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY(?: BLOCK)?-----"), "private_key"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}"), "jwt"),
-    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{24,}=*"), "bearer_token"),
+    (re.compile(r"\b(?i:bearer)\s+[A-Za-z0-9._~+/-]{24,}=*"), "bearer_token"),
 )
 
 # The documentation samples that look like credentials but grant nothing:
@@ -296,7 +318,10 @@ class CatalogNoEmbeddedSecretsRule(CatalogSecurityRule):
     """
 
     rule_id = "catalog_no_embedded_secrets"
-    basis = "OWASP MCP Top 10 (beta) MCP01:2025 Token Mismanagement & Secret Exposure; secret-hygiene best practice"
+    basis = (
+        "OWASP MCP Top 10 (beta) MCP01:2025 Token Mismanagement & Secret Exposure; MCP 2025-11-25 §Security and "
+        "Trust & Safety (Implementation Guidelines: SHOULD follow security best practices and protect data)"
+    )
     rule_order = 21
     issue_reason = "embedded_secret"
     expected = "no credential; reference it by name and supply it through configuration or authorization"
@@ -326,9 +351,9 @@ class CatalogNoEmbeddedSecretsRule(CatalogSecurityRule):
 _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
-            r"(?<!\bto\s)\b(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+)?(?:of\s+)?(?:the\s+|your\s+|my\s+)?"
+            r"\b(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+)?(?:of\s+)?(?:the\s+|your\s+|my\s+)?"
             r"(?:previous|prior|earlier|above|preceding|system|original)\s+"
-            r"(?:instructions?|prompts?|messages?|rules|directions|guidelines|directives)\b",
+            r"(?:instructions?|prompts?|messages?|rules|directions|guidelines|directives)(?![\w'\u2019])",
             re.IGNORECASE,
         ),
         "instruction_override",
@@ -345,7 +370,13 @@ _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "conceal_from_user",
     ),
     (
-        re.compile(r"\byou\s+are\s+now\s+(?:a|an|in|the|my)\b", re.IGNORECASE),
+        re.compile(
+            r"\byou\s+are\s+now\s+(?:a|an|my)\s+(?:\w+\s+){0,2}?"
+            r"(?:assistant|ai|bot|agent|character|persona|player|pirate|hacker|model)\b"
+            r"|\byou\s+are\s+now\s+in\s+(?:developer|god|jailbreak|unrestricted|dan)\s+mode\b"
+            r"|\byou\s+are\s+no\s+longer\s+(?:an?\s+)?(?:assistant|ai|bound|restricted)\b",
+            re.IGNORECASE,
+        ),
         "role_reassignment",
     ),
     (
@@ -354,23 +385,26 @@ _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
-# A phrase wrapped in quotes, or listed with a slash, is quoted rather than used:
-# a scanner that names the phrase it detects is describing itself.
-_QUOTE_MARKS = frozenset("\"'`\u2018\u2019\u201c\u201d/")
+# A phrase wrapped in quotes on both sides, listed with a slash, or introduced by
+# "to" ("attempts to override the system prompt") names an attack rather than
+# performing it: a scanner that lists the phrases it detects is describing itself.
+_QUOTE_MARKS = frozenset("\"'`\u2018\u2019\u201c\u201d")
+_INFINITIVE_RE = re.compile(r"\bto\s+$", re.IGNORECASE)
 
 
-def _is_quoted(text: str, start: int, end: int) -> bool:
+def _is_mention(text: str, start: int, end: int) -> bool:
     before = text[start - 1] if start > 0 else ""
     after = text[end] if end < len(text) else ""
-    return before in _QUOTE_MARKS or after in _QUOTE_MARKS
+    quoted = before in _QUOTE_MARKS and after in _QUOTE_MARKS
+    return quoted or "/" in (before, after) or _INFINITIVE_RE.search(text[max(0, start - 16) : start]) is not None
 
 
 def injection_classes(text: str) -> list[str]:
-    """Return the injection-phrasing classes that appear in *text* unquoted."""
+    """Return the injection-phrasing classes that appear in *text* as directives."""
     return [
         name
         for pattern, name in _INJECTION_PATTERNS
-        if any(not _is_quoted(text, match.start(), match.end()) for match in pattern.finditer(text))
+        if any(not _is_mention(text, match.start(), match.end()) for match in pattern.finditer(text))
     ]
 
 
@@ -390,7 +424,7 @@ class CatalogPromptInjectionPhrasingRule(CatalogSecurityRule):
     rule_id = "catalog_prompt_injection_phrasing"
     basis = (
         "OWASP MCP Top 10 (beta) MCP03:2025 Tool Poisoning and MCP06:2025 Prompt Injection via Contextual "
-        "Payloads; catalog-hygiene best practice"
+        "Payloads; MCP 2025-11-25 §Security and Trust & Safety (Tool Safety: tool descriptions are untrusted)"
     )
     rule_order = 22
     issue_reason = "prompt_injection_phrasing"
