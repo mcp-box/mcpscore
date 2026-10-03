@@ -1,0 +1,164 @@
+---
+title: "OWASP MCP Top 10 coverage"
+description: "Which OWASP MCP Top 10 risks mcpscore checks on a running server, with which rules, and which risks an audit from outside cannot see."
+icon: "shield-halved"
+---
+
+The [OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/) names the
+ten security risks that matter most for MCP. mcpscore checks the part of each
+risk that is visible on a running server, from outside, without calling a
+tool. Those checks are the Security & Auth category of the score. This page
+maps each risk to the rules that cover it and says where the coverage stops.
+
+```bash
+# Score a deployed server; Security & Auth runs on every audit
+mcpscore https://mcp.deepwiki.com/mcp
+```
+
+```text
+...
+✅ Server uses HTTPS with valid TLS (TLSv1.3).
+⏭️ Skipping rule 'security_malformed_request_handling': not-applicable
+✅ No sensitive-data patterns were detected in the sampled error response.
+⏭️ Skipping rule 'auth_www_authenticate': not-applicable
+❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding. Observed HTTP status: 200.
+  Fix: Validate supplied Origin headers against the origins allowed for this endpoint. Return HTTP 403 for invalid origins; do not allow every origin to satisfy browser requests.
+⏭️ Skipping rule 'auth_protected_resource_metadata': not-applicable
+...
+✅ Catalog text contains no hidden Unicode characters.
+✅ Catalog text contains no credential-shaped strings.
+✅ Catalog text contains no prompt-injection phrasing.
+...
+Audit finished. Final score: 87/103
+```
+
+Every line above is a Security & Auth rule. The `auth_*` rules skip because
+DeepWiki serves anonymous requests, so there is no authorization flow to
+grade. A server behind a login grades them; see
+[authenticated servers](/authenticated-servers).
+
+## The mapping
+
+A risk is covered in part when mcpscore checks some of what the risk
+describes. No risk is covered in full: each one also has a part that only
+code, configuration or the client can show.
+
+| OWASP risk | What mcpscore checks | Rules | Coverage |
+|---|---|---|---|
+| MCP01:2025 Token Mismanagement & Secret Exposure | Credentials in a provider's format anywhere in the catalog. Credentials, file paths and stack traces in error responses. Sensitive tool parameters mirrored into HTTP headers. | `catalog_no_embedded_secrets`, `security_error_data_leak`, `tools_mcp_headers_not_sensitive` | Partial |
+| MCP02:2025 Privilege Escalation via Scope Creep | Whether a server behind a login advertises its OAuth scopes | `auth_scopes_advertised` | Minimal |
+| MCP03:2025 Tool Poisoning | Hidden characters and prompt-injection phrasing in every string the server publishes | `catalog_hidden_unicode`, `catalog_prompt_injection_phrasing` | Partial |
+| MCP04:2025 Software Supply Chain Attacks & Dependency Tampering | For a [package audit](/package-audits): the package resolves, the version is published and not withdrawn, the source repository and license are declared | six `package_*` rules | Metadata only |
+| MCP05:2025 Command Injection & Execution | Nothing | None | Not covered |
+| MCP06:2025 Prompt Injection via Contextual Payloads | The catalog-text checks from MCP03, for text that reaches the model before any tool runs | `catalog_prompt_injection_phrasing`, `catalog_hidden_unicode` | Partial |
+| MCP07:2025 Insufficient Authentication & Authorization | HTTPS with a verified certificate. `Origin` validation against DNS rebinding. On a server behind a login: the `WWW-Authenticate` challenge, resource metadata, authorization-server metadata, HTTPS throughout and PKCE `S256` | `security_tls_enabled`, `security_origin_validation`, eight `auth_*` rules | Partial |
+| MCP08:2025 Lack of Audit and Telemetry | Nothing | None | Not covered |
+| MCP09:2025 Shadow MCP Servers | Nothing | None | Not covered |
+| MCP10:2025 Context Injection & Over-Sharing | Nothing | None | Not covered |
+
+One Security & Auth rule maps to no OWASP risk.
+`security_malformed_request_handling` checks that a malformed request gets the
+[JSON-RPC parse error](https://www.jsonrpc.org/specification#error_object),
+which is error hygiene rather than one of the ten risks.
+
+The specification sets the same footing for these checks. Its
+[§Security and Trust & Safety](https://modelcontextprotocol.io/specification/2025-11-25#security-and-trust-&-safety)
+says tool descriptions are untrusted unless they come from a trusted server,
+and that implementers should follow security best practices. The `Origin` and
+TLS rules enforce requirements the spec states directly, in
+[Transports §Security Warning](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning)
+and [Authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
+Every rule's citation is in the [rules reference](/rules#security).
+
+## Where an audit from outside stops
+
+An audit sees what a server publishes and how it answers requests. It never
+calls a tool, never reads source code and never sees the client. Each gap
+below follows from one of those limits.
+
+- **MCP01**: mcpscore finds a credential the server publishes. It does not
+  see how the server stores tokens, how long they live, or what it writes to
+  its logs.
+- **MCP02**: mcpscore sees that scopes are advertised. What a granted token
+  can actually do is decided inside the authorization server and the tools.
+- **MCP03 and MCP06**: the catalog-text rules read for hidden characters and a
+  fixed list of phrasings. A description that misleads in plain words passes.
+  Text returned by a tool is out of reach, because the audit never calls one.
+  A catalog that changes after the audit is out of reach too; running
+  mcpscore in CI catches the change on the next run.
+- **MCP04**: a package audit reads registry metadata only. It does not
+  download, run or scan the package or its dependencies.
+- **MCP05**: injection happens when a tool runs with untrusted input. The
+  audit never sends `tools/call`. [Smoke mode](/smoke-mode) calls your own
+  read-only tools with inputs derived from their schemas, not attack payloads.
+- **MCP07**: mcpscore checks the authorization discovery chain. Whether each
+  tool enforces authorization, and whether the server rejects a token issued
+  for another service, needs credentials and tool calls.
+- **MCP08**: logging and telemetry live inside the server.
+- **MCP09**: an inventory of the MCP servers running in an organization is a
+  governance task. mcpscore audits the server you point it at.
+- **MCP10**: context is shared or kept in the client and in server-side
+  session state, neither of which a request from outside can observe.
+
+For the risks marked Not covered, pair mcpscore with code review, a
+dependency scanner, and the logging and inventory controls your organization
+already runs. The [testing tools comparison](https://mcpscore.dev/blog/mcpscore-vs-conformance-inspector-security-scanners)
+covers which kind of tool answers which question.
+
+## How the catalog-text rules decide
+
+The three catalog rules read every string a server publishes: instructions,
+server info, names, titles, descriptions, schema strings, URIs, MIME types,
+`_meta` and icon URLs. A finding names where the string is and what class
+matched. It never repeats the string, so a report cannot leak a credential or
+replay an injected instruction.
+
+<Accordion title="Technical details">
+  - `catalog_hidden_unicode` flags Unicode tag characters outside a valid
+    emoji tag sequence, bidirectional overrides and isolates, control
+    characters other than tab and line breaks, and runs of two or more
+    zero-width characters, directional marks, soft hyphens or variation
+    selectors. One such character alone passes, because emoji and
+    right-to-left text use them.
+  - `catalog_no_embedded_secrets` matches credentials by their provider's
+    issued format: AWS access key IDs, GitHub, GitLab and Slack tokens,
+    Stripe live keys, Anthropic, OpenAI and Google API keys, private-key
+    headers, JWTs and long bearer tokens. Documentation samples and
+    placeholder values pass.
+  - `catalog_prompt_injection_phrasing` matches a fixed list of directives to
+    the model: overriding earlier instructions, keeping an action from the
+    user, reassigning the model to a persona, and chat-template control
+    tokens. A phrase in matched quotes, listed with a slash, or introduced as
+    an attempt ("attempts to override the system prompt") names an attack
+    rather than performing it, and passes. No model judges the text.
+  - All three skip a partial audit as `insufficient-data`, because a server
+    behind a login shows no catalog without credentials.
+</Accordion>
+
+A finding you intend, such as a game whose instructions give the model a
+role, can be turned off for your own CI in a
+[`mcpscore.toml`](/configure-rules). The public score on mcpscore.dev keeps
+every rule.
+
+## Security findings in CI
+
+`--sarif` writes every failed rule as a code scanning alert. Security & Auth
+rules carry GitHub's `security-severity`, so they sort into the Security tab's
+critical, high, medium and low bands next to your other security alerts.
+
+```bash
+# Findings to code scanning; the JSON report still goes to stdout
+mcpscore https://your-server.example/mcp --json --sarif mcpscore.sarif
+```
+
+The [CLI reference](/cli#sarif-for-github-code-scanning) has the full mapping.
+The [GitHub Action](/github-action#send-findings-to-code-scanning) writes the
+same file through its `sarif-path` input.
+
+## What's next
+
+- [Scoring methodology](/methodology): how Security & Auth counts in the score.
+- [Authenticated servers](/authenticated-servers): grade the `auth_*` rules on
+  a server behind a login.
+- [Rules reference](/rules#security): every Security & Auth rule with its
+  severity and the spec revisions it applies to.
