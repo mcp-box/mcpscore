@@ -60,7 +60,7 @@ Audit finished. Final score: 114/134 (mcpscore.toml: 1 rule off)
 ```
 
 The first line says which file was applied. The rule no longer runs, so its
-point leaves the maximum: `126` becomes `125`. It appears in the report's
+point leaves the maximum: `135` becomes `134`. It appears in the report's
 `skipped_rules` with reason `disabled-by-config`.
 
 ### Step 2: Re-rank a rule
@@ -81,7 +81,7 @@ Config: mcpscore.toml — 1 rule off, 1 re-ranked
 Audit finished. Final score: 114/137 (mcpscore.toml: 1 rule off, 1 re-ranked)
 ```
 
-The rule still fails, so the score stays at `105` and the maximum grows by 3.
+The rule still fails, so the score stays at `114` and the maximum grows by 3.
 The weights are 1, 2, 3 and 5 points for `low`, `medium`, `high` and
 `critical`.
 
