@@ -212,6 +212,13 @@ def _is_variation_selector(char: str) -> bool:
     return "\ufe00" <= char <= "\ufe0f" or "\U000e0100" <= char <= "\U000e01ef"
 
 
+_EMOJI_JOIN = "\ufe0f\u200d"
+
+
+def _is_invisible(char: str) -> bool:
+    return char in _INVISIBLES or _is_variation_selector(char)
+
+
 def _is_control(char: str) -> bool:
     code = ord(char)
     return (code < 0x20 and char not in "\t\n\r") or 0x7F <= code <= 0x9F
@@ -241,13 +248,16 @@ def hidden_unicode_classes(text: str) -> list[str]:
             found.append("bidi_controls")
         elif _is_control(char):
             found.append("control_characters")
-        elif char in _INVISIBLES or _is_variation_selector(char):
-            is_member = _is_variation_selector if _is_variation_selector(char) else _INVISIBLES.__contains__
-            end = position
-            while end < len(text) and is_member(text[end]):
-                end += 1
-            if end - position >= 2:
-                found.append("variation_selector_run" if _is_variation_selector(char) else "zero_width_run")
+        elif _is_invisible(char):
+            end, units = position, 0
+            while end < len(text) and _is_invisible(text[end]):
+                # Emoji ZWJ sequences put VS16 directly before the joiner; that pair is one unit.
+                end += 2 if text.startswith(_EMOJI_JOIN, end) else 1
+                units += 1
+            if units >= 2:
+                run = text[position:end]
+                all_selectors = all(_is_variation_selector(member) for member in run)
+                found.append("variation_selector_run" if all_selectors else "zero_width_run")
             position = end
             continue
         position += 1

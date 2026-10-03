@@ -20,8 +20,9 @@ catalog gains up to 9 points of assessable Security & Auth.
   (UTS #51 §2.8), bidirectional embeddings, overrides and isolates
   (CVE-2021-42574), control characters other than tab and line breaks, and
   runs of two or more zero-width characters, directional marks, soft hyphens
-  or variation selectors. A single one, as emoji, right-to-left text and
-  several scripts use, passes.
+  or variation selectors, in any mix. A single one, as emoji, right-to-left
+  text and several scripts use, passes, and so does the VS16-plus-joiner pair
+  inside emoji sequences such as the heart-on-fire emoji.
 - `catalog_no_embedded_secrets` (HIGH): no credential in a provider's issued
   format anywhere in the catalog, schema defaults and examples included: AWS
   access key IDs, GitHub, GitLab and Slack tokens, Stripe live keys,
