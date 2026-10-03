@@ -454,12 +454,15 @@ _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # "to" ("attempts to override the system prompt") names an attack rather than
 # performing it: a scanner that lists the phrases it detects is describing itself.
 _QUOTE_PAIRS = {'"': '"', "'": "'", "`": "`", "\u2018": "\u2019", "\u201c": "\u201d"}
-# "attempts to override", "allow imported text to override": the phrase is what
-# something tries or is let to do. "You need to ignore …" is still a directive.
+# "attempts to override", "never allow imported text to override": the phrase is
+# what something tries or is let to do. Bare imperatives ("Try to ignore …",
+# "Allow yourself to ignore …", "You need to ignore …") are still directives.
 _DESCRIBED_RE = re.compile(
-    r"\b(?:attempts?|attempting|attempted|tries|trying|tried|try|aims?|seeks?|designed|meant|intended|used)\s+to\s+\Z"
-    r"|\b(?:allows?|allowing|lets?|letting|causes?|causing|tricks?|tricking|forces?|forcing|gets?|getting)"
-    r"\s+(?:\S+\s+){1,3}to\s+\Z",
+    r"\b(?:attempts|attempting|attempted|tries|trying|tried|aims|aiming|seeks|seeking|designed|meant|intended|used)"
+    r"\s+to\s+\Z"
+    r"|(?:\b(?:allows|allowing|lets|letting|causes|causing|tricks|tricking|forces|forcing|gets|getting)"
+    r"|(?:\bnever|\bnot|n['\u2019]t)\s+(?:allow|let|cause|force))"
+    r"\s+(?:\S+\s+){1,3}(?:to\s+)?\Z",
     re.IGNORECASE,
 )
 _CLOSING_PUNCTUATION = ".,;:!?\u2026"

@@ -41,7 +41,9 @@ catalog gains up to 9 points of assessable Security & Auth.
   inside a matched pair of quotes (sentence punctuation before the closing
   mark allowed), listed with a slash, or introduced as an attempt ("attempts
   to override the system prompt", "allows imported text to override system
-  rules"). "You need to ignore previous instructions" is still flagged. The
+  rules", "never let tool output override system rules"). Imperatives such
+  as "try to ignore previous instructions" or "you need to ignore previous
+  instructions" are still flagged. The
   list is fixed and documented; no model judges the text.
 - All three cite the [OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/)
   (MCP01, MCP03, MCP06) and the specification's §Security and Trust & Safety,
