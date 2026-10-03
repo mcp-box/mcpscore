@@ -55,6 +55,15 @@ normative citations behind each rule.
 """
 
 
+SECURITY_HEADER = """\
+## Security
+
+The Security & Auth category. [OWASP MCP Top 10 coverage](/security) maps these
+rules to the OWASP risks and lists what an audit from outside cannot see.
+
+"""
+
+
 PACKAGING_HEADER = """\
 ## Packaging rules
 
@@ -146,6 +155,8 @@ def generate() -> str:
             lines.append(READINESS_HEADER.format(target=(DRAFT or LATEST).version))
         elif group_name == PACKAGING_GROUP:
             lines.append(PACKAGING_HEADER)
+        elif group_name == "security":
+            lines.append(SECURITY_HEADER)
         else:
             lines.append(f"## {group_name.replace('_', ' ').title()}\n\n")
         lines.append("| Rule ID | Name | Severity | Applies to |\n")
