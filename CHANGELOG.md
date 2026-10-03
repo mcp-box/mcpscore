@@ -13,16 +13,18 @@ catalog gains up to 9 points of assessable Security & Auth.
 
 ### Added
 
-- `catalog_hidden_unicode` (HIGH): no instructions, names, titles,
-  descriptions, schema strings, URIs, `websiteUrl` or icon URLs (not `data:`
-  payloads) may carry characters a reader cannot
-  see: Unicode tag characters outside a well-formed emoji tag sequence
-  (UTS #51 §2.8), bidirectional embeddings, overrides and isolates
-  (CVE-2021-42574), control characters other than tab and line breaks, and
-  runs of two or more zero-width characters, directional marks, soft hyphens
-  or variation selectors, in any mix. A single one, as emoji, right-to-left
-  text and several scripts use, passes, and so does the VS16-plus-joiner pair
-  inside emoji sequences such as the heart-on-fire emoji.
+- `catalog_hidden_unicode` (HIGH): no string the server publishes may carry
+  characters a reader cannot see. Every string is read: instructions, server
+  info including version and `websiteUrl`, names, titles, descriptions,
+  schema strings, URIs, MIME types, `lastModified`, `_meta`, and icon URLs
+  and sizes (not `data:` image payloads). Flagged: Unicode tag characters
+  outside a well-formed emoji tag sequence (UTS #51 §2.8), bidirectional
+  embeddings, overrides and isolates (CVE-2021-42574), control characters
+  other than tab and line breaks, and runs of two or more zero-width
+  characters, directional marks, soft hyphens or variation selectors, in any
+  mix. A single one, as emoji, right-to-left text and several scripts use,
+  passes, and so does the VS16-plus-joiner pair inside emoji sequences such
+  as the heart-on-fire emoji.
 - `catalog_no_embedded_secrets` (HIGH): no credential in a provider's issued
   format anywhere in the catalog, schema defaults and examples included: AWS
   access key IDs, GitHub, GitLab and Slack tokens, Stripe live keys,
@@ -34,11 +36,13 @@ catalog gains up to 9 points of assessable Security & Auth.
   instead of describing a capability: overriding earlier instructions,
   keeping an action from the user, reassigning the model to a persona ("you
   are now a pirate", "you are now in developer mode"), or chat-template
-  control tokens. A phrase in a matched pair of quotes, listed with a slash, or
-  introduced by "to" ("attempts to override the system prompt") names an
-  attack rather than performing it and passes, so a scanner that lists the
-  phrases it detects is not flagged. The list is fixed and documented; no
-  model judges the text.
+  control tokens. A phrase that names an attack rather than performing it
+  passes, so a scanner that lists the phrases it detects is not flagged:
+  inside a matched pair of quotes (sentence punctuation before the closing
+  mark allowed), listed with a slash, or introduced as an attempt ("attempts
+  to override the system prompt", "allows imported text to override system
+  rules"). "You need to ignore previous instructions" is still flagged. The
+  list is fixed and documented; no model judges the text.
 - All three cite the [OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/)
   (MCP01, MCP03, MCP06) and the specification's §Security and Trust & Safety,
   skip a partial audit as `insufficient-data`, and report each finding as a

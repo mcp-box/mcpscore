@@ -48,11 +48,24 @@ def _schema_strings(value: Any, pointer: str) -> Iterator[tuple[str, str, bool]]
             yield from _schema_strings(item, f"{pointer}/{position}")
 
 
-def _icon_sources(kind: str, index: int | None, base: str, icons: list[Icon] | None) -> Iterator[CatalogText]:
-    """Yield icon URLs; a ``data:`` URI is an encoded image, not text, and is skipped."""
+def _icon_texts(kind: str, index: int | None, base: str, icons: list[Icon] | None) -> Iterator[CatalogText]:
+    """Yield each icon's strings; a ``data:`` URI is an encoded image, not text, and is skipped."""
     for position, icon in enumerate(icons or []):
+        path = f"{base}/{position}"
         if icon.src and not icon.src.lower().startswith("data:"):
-            yield CatalogText(kind, index, f"{base}/{position}/src", icon.src)
+            yield CatalogText(kind, index, f"{path}/src", icon.src)
+        if icon.mime_type:
+            yield CatalogText(kind, index, f"{path}/mimeType", icon.mime_type)
+        for size_position, size in enumerate(icon.sizes or []):
+            if size:
+                yield CatalogText(kind, index, f"{path}/sizes/{size_position}", size)
+
+
+def _json_texts(kind: str, index: int | None, root: str, value: Any) -> Iterator[CatalogText]:
+    """Yield every non-empty string key and value of a JSON document such as a schema or ``_meta``."""
+    for path, text, in_key in _schema_strings(value, root):
+        if text:
+            yield CatalogText(kind, index, path, text, in_key)
 
 
 def catalog_texts(audit_data: AuditData) -> Iterator[CatalogText]:
@@ -73,25 +86,25 @@ def catalog_texts(audit_data: AuditData) -> Iterator[CatalogText]:
             {
                 "/serverInfo/name": info.name,
                 "/serverInfo/title": info.title,
+                "/serverInfo/version": info.version,
                 "/serverInfo/description": info.description,
                 "/serverInfo/websiteUrl": info.website_url,
             },
         )
-        yield from _icon_sources("server", None, "/serverInfo/icons", info.icons)
+        yield from _icon_texts("server", None, "/serverInfo/icons", info.icons)
     for index, tool in enumerate(audit_data.tools or []):
         annotations_title = tool.annotations.title if tool.annotations else None
         fields = {"/name": tool.name, "/title": tool.title, "/description": tool.description}
         yield from entries("tool", index, {**fields, "/annotations/title": annotations_title})
-        yield from _icon_sources("tool", index, "/icons", tool.icons)
-        for root, schema in (("/inputSchema", tool.input_schema), ("/outputSchema", tool.output_schema)):
-            for path, text, in_key in _schema_strings(schema, root):
-                if text:
-                    yield CatalogText("tool", index, path, text, in_key)
+        yield from _icon_texts("tool", index, "/icons", tool.icons)
+        for root, document in (("/inputSchema", tool.input_schema), ("/outputSchema", tool.output_schema)):
+            yield from _json_texts("tool", index, root, document)
+        yield from _json_texts("tool", index, "/_meta", tool.meta)
     for index, prompt in enumerate(audit_data.prompts or []):
         yield from entries(
             "prompt", index, {"/name": prompt.name, "/title": prompt.title, "/description": prompt.description}
         )
-        yield from _icon_sources("prompt", index, "/icons", prompt.icons)
+        yield from _icon_texts("prompt", index, "/icons", prompt.icons)
         for position, argument in enumerate(prompt.arguments or []):
             base = f"/arguments/{position}"
             yield from entries(
@@ -103,14 +116,26 @@ def catalog_texts(audit_data: AuditData) -> Iterator[CatalogText]:
                     f"{base}/description": argument.description,
                 },
             )
-    for index, resource in enumerate(audit_data.resources or []):
-        fields = {"/uri": resource.uri, "/name": resource.name, "/title": resource.title}
-        yield from entries("resource", index, {**fields, "/description": resource.description})
-        yield from _icon_sources("resource", index, "/icons", resource.icons)
-    for index, template in enumerate(audit_data.resource_templates or []):
-        fields = {"/uriTemplate": template.uri_template, "/name": template.name, "/title": template.title}
-        yield from entries("resource_template", index, {**fields, "/description": template.description})
-        yield from _icon_sources("resource_template", index, "/icons", template.icons)
+        yield from _json_texts("prompt", index, "/_meta", prompt.meta)
+    resources = [("/uri", item, item.uri) for item in audit_data.resources or []]
+    templates = [("/uriTemplate", item, item.uri_template) for item in audit_data.resource_templates or []]
+    for kind, items in (("resource", resources), ("resource_template", templates)):
+        for index, (uri_path, item, uri) in enumerate(items):
+            last_modified = item.annotations.last_modified if item.annotations else None
+            yield from entries(
+                kind,
+                index,
+                {
+                    uri_path: uri,
+                    "/name": item.name,
+                    "/title": item.title,
+                    "/description": item.description,
+                    "/mimeType": item.mime_type,
+                    "/annotations/lastModified": last_modified,
+                },
+            )
+            yield from _icon_texts(kind, index, "/icons", item.icons)
+            yield from _json_texts(kind, index, "/_meta", item.meta)
 
 
 def _publishable_path(path: str) -> tuple[str, bool]:
@@ -429,14 +454,26 @@ _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # "to" ("attempts to override the system prompt") names an attack rather than
 # performing it: a scanner that lists the phrases it detects is describing itself.
 _QUOTE_PAIRS = {'"': '"', "'": "'", "`": "`", "\u2018": "\u2019", "\u201c": "\u201d"}
-_INFINITIVE_RE = re.compile(r"\bto\s+$", re.IGNORECASE)
+# "attempts to override", "allow imported text to override": the phrase is what
+# something tries or is let to do. "You need to ignore …" is still a directive.
+_DESCRIBED_RE = re.compile(
+    r"\b(?:attempts?|attempting|attempted|tries|trying|tried|try|aims?|seeks?|designed|meant|intended|used)\s+to\s+$"
+    r"|\b(?:allows?|allowing|lets?|letting|causes?|causing|tricks?|tricking|forces?|forcing|gets?|getting)"
+    r"\s+(?:\S+\s+){1,3}to\s+$",
+    re.IGNORECASE,
+)
+_CLOSING_PUNCTUATION = ".,;:!?\u2026"
 
 
 def _is_mention(text: str, start: int, end: int) -> bool:
     before = text[start - 1] if start > 0 else ""
-    after = text[end] if end < len(text) else ""
+    close = end
+    while close < len(text) and text[close] in _CLOSING_PUNCTUATION:
+        close += 1
+    after = text[close] if close < len(text) else ""
     quoted = before in _QUOTE_PAIRS and after == _QUOTE_PAIRS[before]
-    return quoted or "/" in (before, after) or _INFINITIVE_RE.search(text[max(0, start - 16) : start]) is not None
+    listed = "/" in (before, text[end] if end < len(text) else "")
+    return quoted or listed or _DESCRIBED_RE.search(text[max(0, start - 60) : start]) is not None
 
 
 def injection_classes(text: str) -> list[str]:
