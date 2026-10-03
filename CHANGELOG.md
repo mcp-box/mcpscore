@@ -14,7 +14,8 @@ catalog gains up to 9 points of assessable Security & Auth.
 ### Added
 
 - `catalog_hidden_unicode` (HIGH): no instructions, names, titles,
-  descriptions, schema strings or URIs may carry characters a reader cannot
+  descriptions, schema strings, URIs, `websiteUrl` or icon URLs (not `data:`
+  payloads) may carry characters a reader cannot
   see: Unicode tag characters outside a well-formed emoji tag sequence
   (UTS #51 §2.8), bidirectional embeddings, overrides and isolates
   (CVE-2021-42574), control characters other than tab and line breaks, and
@@ -25,13 +26,14 @@ catalog gains up to 9 points of assessable Security & Auth.
   format anywhere in the catalog, schema defaults and examples included: AWS
   access key IDs, GitHub, GitLab and Slack tokens, Stripe live keys,
   Anthropic, OpenAI and Google API keys, private-key headers, JWTs and long
-  bearer tokens (any casing of the scheme). Documentation samples
-  (`EXAMPLE`, `your…`, `xxxx`, jwt.io's token) and low-entropy values pass.
+  bearer tokens (any casing of the scheme). AWS's and jwt.io's documentation
+  samples, values with a placeholder word (`YOUR_TOKEN`, `<example>`, `xxxx`)
+  and low-entropy values pass.
 - `catalog_prompt_injection_phrasing` (HIGH): no text that directs the model
   instead of describing a capability: overriding earlier instructions,
   keeping an action from the user, reassigning the model to a persona ("you
   are now a pirate", "you are now in developer mode"), or chat-template
-  control tokens. A phrase quoted on both sides, listed with a slash, or
+  control tokens. A phrase in a matched pair of quotes, listed with a slash, or
   introduced by "to" ("attempts to override the system prompt") names an
   attack rather than performing it and passes, so a scanner that lists the
   phrases it detects is not flagged. The list is fixed and documented; no
@@ -43,7 +45,9 @@ catalog gains up to 9 points of assessable Security & Auth.
   matched text, so a report cannot repeat a secret or an injected
   instruction. A path that would pass through a flagged schema key stops
   above it and carries `path_truncated`. A partially collected catalog is
-  judged on what was collected and listed under `details.incomplete_listings`.
+  judged on what was collected and listed under `details.incomplete_listings`;
+  a listing that came back empty without finishing is not evidence, so a
+  server with nothing else to judge is skipped.
 
 ## [1.21.2] - 2026-09-30
 

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import re
 from typing import Any, ClassVar
 
+from mcp_types import Icon
+
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
 from .catalog_diagnostics import catalog_result, field_issue, pointer_token
 from .registry import register_rule
@@ -46,6 +48,13 @@ def _schema_strings(value: Any, pointer: str) -> Iterator[tuple[str, str, bool]]
             yield from _schema_strings(item, f"{pointer}/{position}")
 
 
+def _icon_sources(kind: str, index: int | None, base: str, icons: list[Icon] | None) -> Iterator[CatalogText]:
+    """Yield icon URLs; a ``data:`` URI is an encoded image, not text, and is skipped."""
+    for position, icon in enumerate(icons or []):
+        if icon.src and not icon.src.lower().startswith("data:"):
+            yield CatalogText(kind, index, f"{base}/{position}/src", icon.src)
+
+
 def catalog_texts(audit_data: AuditData) -> Iterator[CatalogText]:
     """Yield every publisher-controlled string the audit collected."""
 
@@ -65,12 +74,15 @@ def catalog_texts(audit_data: AuditData) -> Iterator[CatalogText]:
                 "/serverInfo/name": info.name,
                 "/serverInfo/title": info.title,
                 "/serverInfo/description": info.description,
+                "/serverInfo/websiteUrl": info.website_url,
             },
         )
+        yield from _icon_sources("server", None, "/serverInfo/icons", info.icons)
     for index, tool in enumerate(audit_data.tools or []):
         annotations_title = tool.annotations.title if tool.annotations else None
         fields = {"/name": tool.name, "/title": tool.title, "/description": tool.description}
         yield from entries("tool", index, {**fields, "/annotations/title": annotations_title})
+        yield from _icon_sources("tool", index, "/icons", tool.icons)
         for root, schema in (("/inputSchema", tool.input_schema), ("/outputSchema", tool.output_schema)):
             for path, text, in_key in _schema_strings(schema, root):
                 if text:
@@ -79,6 +91,7 @@ def catalog_texts(audit_data: AuditData) -> Iterator[CatalogText]:
         yield from entries(
             "prompt", index, {"/name": prompt.name, "/title": prompt.title, "/description": prompt.description}
         )
+        yield from _icon_sources("prompt", index, "/icons", prompt.icons)
         for position, argument in enumerate(prompt.arguments or []):
             base = f"/arguments/{position}"
             yield from entries(
@@ -93,9 +106,11 @@ def catalog_texts(audit_data: AuditData) -> Iterator[CatalogText]:
     for index, resource in enumerate(audit_data.resources or []):
         fields = {"/uri": resource.uri, "/name": resource.name, "/title": resource.title}
         yield from entries("resource", index, {**fields, "/description": resource.description})
+        yield from _icon_sources("resource", index, "/icons", resource.icons)
     for index, template in enumerate(audit_data.resource_templates or []):
         fields = {"/uriTemplate": template.uri_template, "/name": template.name, "/title": template.title}
         yield from entries("resource_template", index, {**fields, "/description": template.description})
+        yield from _icon_sources("resource_template", index, "/icons", template.icons)
 
 
 def _publishable_path(path: str) -> tuple[str, bool]:
@@ -124,8 +139,16 @@ class CatalogSecurityRule(BaseRule):
     fix: ClassVar[str]
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when no session data was collected, as in a partial audit."""
-        collected = any(getattr(audit_data, listing) is not None for listing in _LISTINGS)
+        """Skip when no session data was collected, as in a partial audit.
+
+        A listing that came back empty without finishing is no evidence of a
+        clean catalog, so it does not count as collected.
+        """
+        collected = any(
+            getattr(audit_data, listing) is not None
+            and (getattr(audit_data, listing) or listing not in audit_data.incomplete_listings)
+            for listing in _LISTINGS
+        )
         has_server_text = audit_data.server_info is not None or audit_data.instructions is not None
         if audit_data.partial or not (collected or has_server_text):
             return SKIP_REASON_INSUFFICIENT_DATA
@@ -292,7 +315,14 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 # The documentation samples that look like credentials but grant nothing:
 # AWS's published example key and jwt.io's sample token.
-_PLACEHOLDER_RE = re.compile(r"example|placeholder|your|xxxx|0{8}|eyJzdWIiOiIxMjM0NTY3ODkwIi", re.IGNORECASE)
+_DOCUMENTATION_SAMPLES = ("AKIAIOSFODNN7EXAMPLE", "eyJzdWIiOiIxMjM0NTY3ODkwIi")
+# A placeholder is a whole word ("YOUR_API_TOKEN", "<example>", "xxxx"), never a
+# substring of a random value, which can contain "your" by chance.
+_PLACEHOLDER_RE = re.compile(r"(?<![a-z0-9])(?:example|placeholder|your|x{4,})(?![a-z])", re.IGNORECASE)
+
+
+def _is_placeholder(value: str) -> bool:
+    return any(sample in value for sample in _DOCUMENTATION_SAMPLES) or _PLACEHOLDER_RE.search(value) is not None
 
 
 def secret_classes(text: str) -> list[str]:
@@ -301,7 +331,7 @@ def secret_classes(text: str) -> list[str]:
     for pattern, name in _SECRET_PATTERNS:
         for match in pattern.finditer(text):
             value = match.group(0)
-            if not _PLACEHOLDER_RE.search(value) and len(set(value[-16:])) > 4:
+            if not _is_placeholder(value) and len(set(value[-16:])) > 4:
                 found.append(name)
     return found
 
@@ -388,14 +418,14 @@ _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # A phrase wrapped in quotes on both sides, listed with a slash, or introduced by
 # "to" ("attempts to override the system prompt") names an attack rather than
 # performing it: a scanner that lists the phrases it detects is describing itself.
-_QUOTE_MARKS = frozenset("\"'`\u2018\u2019\u201c\u201d")
+_QUOTE_PAIRS = {'"': '"', "'": "'", "`": "`", "\u2018": "\u2019", "\u201c": "\u201d"}
 _INFINITIVE_RE = re.compile(r"\bto\s+$", re.IGNORECASE)
 
 
 def _is_mention(text: str, start: int, end: int) -> bool:
     before = text[start - 1] if start > 0 else ""
     after = text[end] if end < len(text) else ""
-    quoted = before in _QUOTE_MARKS and after in _QUOTE_MARKS
+    quoted = before in _QUOTE_PAIRS and after == _QUOTE_PAIRS[before]
     return quoted or "/" in (before, after) or _INFINITIVE_RE.search(text[max(0, start - 16) : start]) is not None
 
 
