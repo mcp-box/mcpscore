@@ -7,8 +7,11 @@ icon: "shield-halved"
 The [OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/) names the
 ten security risks that matter most for MCP. mcpscore checks the part of each
 risk that is visible on a running server, from outside, without calling a
-tool. Those checks are the Security & Auth category of the score. This page
-maps each risk to the rules that cover it and says where the coverage stops.
+tool. Most of those checks are the Security & Auth category of the score. Two
+come from elsewhere: one Primitives rule, and the
+[package audit](/package-audits), which scores a published package instead of
+a running server. This page maps each risk to the rules that cover it and says
+where the coverage stops.
 
 ```bash
 # Score a deployed server; Security & Auth runs on every audit
@@ -45,10 +48,10 @@ code, configuration or the client can show.
 
 | OWASP risk | What mcpscore checks | Rules | Coverage |
 |---|---|---|---|
-| MCP01:2025 Token Mismanagement & Secret Exposure | Credentials in a provider's format anywhere in the catalog. Credentials, file paths and stack traces in error responses. Sensitive tool parameters mirrored into HTTP headers. | `catalog_no_embedded_secrets`, `security_error_data_leak`, `tools_mcp_headers_not_sensitive` | Partial |
+| MCP01:2025 Token Mismanagement & Secret Exposure | Credentials in a provider's format anywhere in the catalog. Credentials, file paths and stack traces in error responses. Sensitive tool parameters mirrored into HTTP headers. | `catalog_no_embedded_secrets`, `security_error_data_leak`, `tools_mcp_headers_not_sensitive` (Primitives) | Partial |
 | MCP02:2025 Privilege Escalation via Scope Creep | Whether a server behind a login advertises its OAuth scopes | `auth_scopes_advertised` | Minimal |
 | MCP03:2025 Tool Poisoning | Hidden characters and prompt-injection phrasing in every string the server publishes | `catalog_hidden_unicode`, `catalog_prompt_injection_phrasing` | Partial |
-| MCP04:2025 Software Supply Chain Attacks & Dependency Tampering | For a [package audit](/package-audits): the package resolves, the version is published and not withdrawn, the source repository and license are declared | six `package_*` rules | Metadata only |
+| MCP04:2025 Software Supply Chain Attacks & Dependency Tampering | For a [package audit](/package-audits): the package resolves, the version is published and not withdrawn, the source repository and license are declared | six `package_*` rules (package audit, scored on its own) | Metadata only |
 | MCP05:2025 Command Injection & Execution | Nothing | None | Not covered |
 | MCP06:2025 Prompt Injection via Contextual Payloads | The catalog-text checks from MCP03, for text that reaches the model before any tool runs | `catalog_prompt_injection_phrasing`, `catalog_hidden_unicode` | Partial |
 | MCP07:2025 Insufficient Authentication & Authorization | HTTPS with a verified certificate. `Origin` validation against DNS rebinding. On a server behind a login: the `WWW-Authenticate` challenge, resource metadata, authorization-server metadata, HTTPS throughout and PKCE `S256` | `security_tls_enabled`, `security_origin_validation`, eight `auth_*` rules | Partial |
