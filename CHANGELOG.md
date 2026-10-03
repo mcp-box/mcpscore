@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-10-03
+
 Three Security & Auth rules read the text a server publishes in its catalog,
-the text that reaches the model before any tool runs. Every server with a
-catalog gains up to 9 points of assessable Security & Auth.
+the text that reaches the model before any tool runs, and a new docs page maps
+the Security & Auth checks to the OWASP MCP Top 10.
+
+Score movement: every full audit gains 9 points of maximum score (three HIGH
+rules), and 9 points of score when the catalog passes them. DeepWiki goes from
+78/94 (83%) to 87/103 (84%). The percentage a `--fail-under` gate compares
+rises for a server that passes the new rules and falls for one that fails
+them. Partial audits are unchanged, because the new rules skip as
+`insufficient-data`. Compare scores across versions by `rule_id`, as the
+[stability contract](https://docs.mcpscore.dev/stability) describes.
 
 ### Added
 
@@ -55,6 +65,15 @@ catalog gains up to 9 points of assessable Security & Auth.
   judged on what was collected and listed under `details.incomplete_listings`;
   a listing that came back empty without finishing is not evidence, so a
   server with nothing else to judge is skipped.
+
+### Docs
+
+- [OWASP MCP Top 10 coverage](https://docs.mcpscore.dev/security): each OWASP
+  risk mapped to the rules that cover it, with a coverage level and what an
+  audit from outside cannot see. Linked from the methodology and the rules
+  reference.
+- Example scores across the docs and README show the new rules: DeepWiki
+  87/103, and +9/+9 on every full-audit example.
 
 ## [1.21.2] - 2026-09-30
 
@@ -1846,7 +1865,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.21.2...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.22.0...HEAD
+[1.22.0]: https://github.com/mcp-box/mcpscore/compare/v1.21.2...v1.22.0
 [1.21.2]: https://github.com/mcp-box/mcpscore/compare/v1.21.1...v1.21.2
 [1.21.1]: https://github.com/mcp-box/mcpscore/compare/v1.21.0...v1.21.1
 [1.21.0]: https://github.com/mcp-box/mcpscore/compare/v1.20.0...v1.21.0
