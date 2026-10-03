@@ -53,7 +53,7 @@ code, configuration or the client can show.
 | MCP03:2025 Tool Poisoning | Hidden characters and prompt-injection phrasing in every string the server publishes | `catalog_hidden_unicode`, `catalog_prompt_injection_phrasing` | Partial |
 | MCP04:2025 Software Supply Chain Attacks & Dependency Tampering | For a [package audit](/package-audits): the package resolves, the version is published and not withdrawn, the source repository and license are declared | six `package_*` rules (package audit, scored on its own) | Metadata only |
 | MCP05:2025 Command Injection & Execution | Nothing | None | Not covered |
-| MCP06:2025 Prompt Injection via Contextual Payloads | The catalog-text checks from MCP03, for text that reaches the model before any tool runs | `catalog_prompt_injection_phrasing`, `catalog_hidden_unicode` | Partial |
+| MCP06:2025 Prompt Injection via Contextual Payloads (its detail page: Intent Flow Subversion) | The catalog-text checks from MCP03, for text that reaches the model before any tool runs | `catalog_prompt_injection_phrasing`, `catalog_hidden_unicode` | Partial |
 | MCP07:2025 Insufficient Authentication & Authorization | HTTPS with a verified certificate. `Origin` validation against DNS rebinding. On a server behind a login: the `WWW-Authenticate` challenge, resource metadata, authorization-server metadata, HTTPS throughout and PKCE `S256` | `security_tls_enabled`, `security_origin_validation`, eight `auth_*` rules | Partial |
 | MCP08:2025 Lack of Audit and Telemetry | Nothing | None | Not covered |
 | MCP09:2025 Shadow MCP Servers | Nothing | None | Not covered |
