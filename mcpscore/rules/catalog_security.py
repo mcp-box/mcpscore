@@ -457,9 +457,9 @@ _QUOTE_PAIRS = {'"': '"', "'": "'", "`": "`", "\u2018": "\u2019", "\u201c": "\u2
 # "attempts to override", "allow imported text to override": the phrase is what
 # something tries or is let to do. "You need to ignore …" is still a directive.
 _DESCRIBED_RE = re.compile(
-    r"\b(?:attempts?|attempting|attempted|tries|trying|tried|try|aims?|seeks?|designed|meant|intended|used)\s+to\s+$"
+    r"\b(?:attempts?|attempting|attempted|tries|trying|tried|try|aims?|seeks?|designed|meant|intended|used)\s+to\s+\Z"
     r"|\b(?:allows?|allowing|lets?|letting|causes?|causing|tricks?|tricking|forces?|forcing|gets?|getting)"
-    r"\s+(?:\S+\s+){1,3}to\s+$",
+    r"\s+(?:\S+\s+){1,3}to\s+\Z",
     re.IGNORECASE,
 )
 _CLOSING_PUNCTUATION = ".,;:!?\u2026"
