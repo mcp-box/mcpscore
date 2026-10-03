@@ -32,7 +32,7 @@ mcpscore https://mcp.deepwiki.com/mcp
 Audit finished. Final score: 87/103
 ```
 
-Every line above is a Security & Auth rule. The `auth_*` rules skip because
+Every rule line above is a Security & Auth rule. The `auth_*` rules skip because
 DeepWiki serves anonymous requests, so there is no authorization flow to
 grade. A server behind a login grades them; see
 [authenticated servers](/authenticated-servers).
@@ -148,8 +148,17 @@ critical, high, medium and low bands next to your other security alerts.
 
 ```bash
 # Findings to code scanning; the JSON report still goes to stdout
-mcpscore https://your-server.example/mcp --json --sarif mcpscore.sarif
+mcpscore https://mcp.deepwiki.com/mcp --json --sarif mcpscore.sarif
 ```
+
+```text
+...
+Audit finished. Final score: 87/103
+SARIF written to mcpscore.sarif (13 findings)
+```
+
+In that file, the `security_origin_validation` finding has level `error` and
+`security-severity` `7.0`, which code scanning files as high.
 
 The [CLI reference](/cli#sarif-for-github-code-scanning) has the full mapping.
 The [GitHub Action](/github-action#send-findings-to-code-scanning) writes the
