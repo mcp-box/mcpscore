@@ -77,7 +77,7 @@ mcpscore http://127.0.0.1:8765/mcp
 ❌ Number of tools without behavior annotations: 1. This is an optional quality recommendation. ...
 ❌ tools/list returned a page for an invalid cursor instead of JSON-RPC -32602.
 ...
-Audit finished. Final score: 122/151
+Audit finished. Final score: 131/160
 ```
 
 Every failed rule prints a `Fix:` line under it. The four steps below turn
@@ -114,7 +114,7 @@ Restart the server and audit it again:
 ✅ serverInfo.websiteUrl is present (URL not fetched or validated).
 ✅ Server declares 1 icon(s) with an https:// or data: src prefix (content not checked).
 ...
-Audit finished. Final score: 130/151
+Audit finished. Final score: 139/160
 ```
 
 Eight points. An [icon](https://modelcontextprotocol.io/specification/2025-11-25/basic#icons) passes only when its `src` starts with `https://` or
@@ -156,7 +156,7 @@ def search_notes(
 ✅ All tools declare behavior annotations.
 ✅ All statically reachable tool inputs are documented.
 ...
-Audit finished. Final score: 135/151
+Audit finished. Final score: 144/160
 ```
 
 Annotations must describe what the tool does. Set `readOnlyHint` to true
@@ -216,7 +216,7 @@ The audit agrees:
 ```text
 ✅ Streamable HTTP rejects an invalid foreign Origin with HTTP 403.
 ...
-Audit finished. Final score: 138/151
+Audit finished. Final score: 147/160
 ```
 
 `allowed_hosts` is enforced too: a request whose `Host` header is not in the
@@ -286,10 +286,10 @@ mcp = MCPServer(
 ✅ resources/templates/list rejects invalid pagination cursors with JSON-RPC -32602.
 ✅ prompts/list rejects invalid pagination cursors with JSON-RPC -32602.
 ...
-Audit finished. Final score: 142/151
+Audit finished. Final score: 151/160
 ```
 
-That's it. Four changes took the server from 122/151 to 142/151. If your
+That's it. Four changes took the server from 131/160 to 151/160. If your
 server does paginate, validate the cursor where you decode it and raise the
 same error when decoding fails.
 

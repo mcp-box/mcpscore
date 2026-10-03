@@ -51,7 +51,7 @@ Server requires authentication (HTTP 401): https://api.githubcopilot.com/mcp/
 Server requires authentication — running a partial audit of the observable surface.
 (Pass a token with --token or --header to audit behind the gate.)
 ...
-Audit finished. PARTIAL score: 24/27 from 10 of 79 checks — not comparable to a full audit.
+Audit finished. PARTIAL score: 24/27 from 10 of 82 checks — not comparable to a full audit.
 ```
 
 **Cause:** the server answered `401` or `403` without credentials. This is
@@ -298,9 +298,9 @@ the [CLI reference](/cli).
 **Symptom:** the audit completes, then `Gate failed —` and exit code `3`:
 
 ```text
-Audit finished. Final score: 78/94
+Audit finished. Final score: 87/103
 ...
-Gate failed — --fail-under 90: score 78/94 (83%) is below the required 90%
+Gate failed — --fail-under 90: score 87/103 (84%) is below the required 90%
 ```
 
 **Cause:** the score, as a rounded percentage, is below `--fail-under`; or

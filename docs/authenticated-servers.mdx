@@ -18,7 +18,7 @@ Using 1 custom header(s).
 Attempting Streamable HTTP connection...
 Connected to the MCP server: https://api.githubcopilot.com/mcp/
 ...
-Audit finished. Final score: 202/218
+Audit finished. Final score: 211/227
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
 ```
 
@@ -46,7 +46,7 @@ mcpscore https://api.githubcopilot.com/mcp/
 ...
 ⚠️  Partial audit (Server requires authentication (HTTP 401); scored the unauthenticated surface only — pass a token to audit behind the gate.).
 Only the auth, TLS, and transport surface was scored — not comparable to a full audit.
-Audit finished. PARTIAL score: 24/27 from 10 of 79 checks — not comparable to a full audit.
+Audit finished. PARTIAL score: 24/27 from 10 of 82 checks — not comparable to a full audit.
 ```
 
 This is a partial audit. It covers TLS, the 401 challenge, the
@@ -54,7 +54,7 @@ This is a partial audit. It covers TLS, the 401 challenge, the
 names. Those are real findings about your auth posture, and a missing PKCE
 advertisement shows up here without any credential.
 
-The score line says `PARTIAL` and `from 10 of 79 checks` on purpose. A
+The score line says `PARTIAL` and `from 10 of 82 checks` on purpose. A
 bare `24/27` reads as a near-perfect result when pasted into a chat. A
 partial score and a full score are not comparable.
 
@@ -82,7 +82,7 @@ mcpscore https://api.githubcopilot.com/mcp/ --token "$(gh auth token)"
 ```text
 Using 1 custom header(s).
 ...
-Audit finished. Final score: 202/218
+Audit finished. Final score: 211/227
 ```
 
 The `PARTIAL` marker is gone and the check count is back to the full rule

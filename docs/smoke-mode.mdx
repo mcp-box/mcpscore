@@ -26,7 +26,7 @@ mcpscore path/to/your/server.py --smoke --call-all
 ```text
 Running smoke checks — invoking tools/call, as requested with --smoke...
 
-Audit finished. Final score: 66/96
+Audit finished. Final score: 75/105
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
 
 Smoke checks (tools/call): 4 passed, 2 failed, 3 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
@@ -125,7 +125,7 @@ def add(a: int, b: int) -> int:
 Run the same command again:
 
 ```text
-Audit finished. Final score: 107/126
+Audit finished. Final score: 116/135
 ...
 Smoke checks (tools/call): 2 passed, 1 failed, 0 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
   Tools called: 1 of 1 (a tool counts as called once the server answered a tools/call for it)
@@ -143,7 +143,7 @@ tool that answers gets a `returned` line: the number and types of content
 blocks, whether `structuredContent` was present, whether the result was
 flagged `isError`, and the first 80 characters of text.
 
-The annotation also raised the score from 105/126 to 107/126, because
+The annotation also raised the score from 114/135 to 116/135, because
 `tools_annotations_present` now passes. The same annotation tells every
 client that `add` does not modify its environment, and your smoke run now
 covers it.
@@ -188,13 +188,13 @@ mcpscore --fail-under 80 --smoke --stdio uv run server.py
 | `3` | Score below 80. Takes precedence when both gates fail |
 | `4` | Score fine, but a smoke check failed |
 
-Raise the threshold to 90 against the 83% server from Step 1 and both gates
+Raise the threshold to 90 against the 84% server from Step 1 and both gates
 fail. The score gate wins:
 
 ```text
-Audit finished. Final score: 105/126
+Audit finished. Final score: 114/135
 Smoke checks (tools/call): 0 passed, 1 failed, 2 skipped — only readOnlyHint: true tools called (see --call-all). Never counted in the score.
-Gate failed — --fail-under 90: score 105/126 (83%) is below the required 90%
+Gate failed — --fail-under 90: score 114/135 (84%) is below the required 90%
 ```
 
 Skips never gate. A server with no `readOnlyHint: true` tools and a correct

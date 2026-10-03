@@ -24,7 +24,7 @@ Config: mcpscore.toml — 1 rule off, 1 re-ranked, gate at CRITICAL
 ...
 ⏭️ Skipping rule 'server_websiteurl_present': disabled-by-config
 ...
-Audit finished. Final score: 105/128 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
+Audit finished. Final score: 114/137 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
 Gate failed — [gate] fail_on = "critical": 1 failed rule at or above CRITICAL: server_title_present
 ```
 
@@ -35,7 +35,7 @@ gate names the rule that failed the build.
 
 The steps below build that file against the one-tool server from
 [smoke mode](/smoke-mode#smoke-test-your-own-server). With no configuration it
-scores `105/126`, and two of its failed rules are `server_websiteurl_present`
+scores `114/135`, and two of its failed rules are `server_websiteurl_present`
 and `server_title_present`. Every `rule_id` is in the [rules reference](/rules).
 
 Create `mcpscore.toml` in the directory you run mcpscore from, or anywhere
@@ -56,11 +56,11 @@ mcpscore --stdio uv run server.py
 Config: mcpscore.toml — 1 rule off
 ...
 ⏭️ Skipping rule 'server_websiteurl_present': disabled-by-config
-Audit finished. Final score: 105/125 (mcpscore.toml: 1 rule off)
+Audit finished. Final score: 114/134 (mcpscore.toml: 1 rule off)
 ```
 
 The first line says which file was applied. The rule no longer runs, so its
-point leaves the maximum: `126` becomes `125`. It appears in the report's
+point leaves the maximum: `135` becomes `134`. It appears in the report's
 `skipped_rules` with reason `disabled-by-config`.
 
 ### Step 2: Re-rank a rule
@@ -78,10 +78,10 @@ server_title_present = "critical"    # our agent picks servers by title
 ```text
 Config: mcpscore.toml — 1 rule off, 1 re-ranked
 ...
-Audit finished. Final score: 105/128 (mcpscore.toml: 1 rule off, 1 re-ranked)
+Audit finished. Final score: 114/137 (mcpscore.toml: 1 rule off, 1 re-ranked)
 ```
 
-The rule still fails, so the score stays at `105` and the maximum grows by 3.
+The rule still fails, so the score stays at `114` and the maximum grows by 3.
 The weights are 1, 2, 3 and 5 points for `low`, `medium`, `high` and
 `critical`.
 
@@ -100,7 +100,7 @@ fail_on = "critical"   # any failed rule at or above CRITICAL fails the build
 ```
 
 ```text
-Audit finished. Final score: 105/128 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
+Audit finished. Final score: 114/137 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
 Gate failed — [gate] fail_on = "critical": 1 failed rule at or above CRITICAL: server_title_present
 ```
 
@@ -121,7 +121,7 @@ mcp = MCPServer("Basic Server", title="Basic Server")
 ```text
 ✅ Server title is present: "Basic Server" (presence checked only).
 ...
-Audit finished. Final score: 110/128 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
+Audit finished. Final score: 119/137 (mcpscore.toml: 1 rule off, 1 re-ranked, gate at CRITICAL)
 ```
 
 The exit code is `0`. The rule your team cares most about now guards every
@@ -172,7 +172,7 @@ mcpscore --no-config --stdio uv run server.py
 ```
 
 ```text
-Audit finished. Final score: 105/126
+Audit finished. Final score: 114/135
 ```
 
 ## What it changes, and what it doesn't

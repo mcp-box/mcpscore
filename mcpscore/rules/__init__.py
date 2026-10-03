@@ -38,6 +38,11 @@ from .capabilities import (
     CapabilityToolsListChangedRule,
     CapabilityToolsPresentRule,
 )
+from .catalog_security import (
+    CatalogHiddenUnicodeRule,
+    CatalogNoEmbeddedSecretsRule,
+    CatalogPromptInjectionPhrasingRule,
+)
 from .catalog_stability import (
     PromptsCatalogConnectionIndependentRule,
     ResourcesCatalogConnectionIndependentRule,
@@ -175,6 +180,9 @@ __all__ = (
     "CapabilityResourcesPresentRule",
     "CapabilityToolsListChangedRule",
     "CapabilityToolsPresentRule",
+    "CatalogHiddenUnicodeRule",
+    "CatalogNoEmbeddedSecretsRule",
+    "CatalogPromptInjectionPhrasingRule",
     "DeprecatedFeaturesReadinessRule",
     "DeprecatedVersionRule",
     "ErrorCodeMigrationReadinessRule",

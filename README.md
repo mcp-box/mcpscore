@@ -45,7 +45,7 @@ Starting the audit...
 ❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding. Observed HTTP status: 200.
   Fix: Validate supplied Origin headers against the origins allowed for this endpoint. Return HTTP 403 for invalid origins; do not allow every origin to satisfy browser requests.
 ...
-Audit finished. Final score: 78/94
+Audit finished. Final score: 87/103
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
 Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 20 checks assessed)
 ```
@@ -53,9 +53,9 @@ Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 
 That's it. The server has a score.
 
 Each ✅ or ❌ is one rule: one check, like `security_origin_validation`, that
-passed or failed. Every ❌ carries a `Fix:` line. `78/94` means the server
-earned 78 of the 94 points its rules can award. Rules that cannot apply to
-this server are skipped and left out of the 94, so a server is never
+passed or failed. Every ❌ carries a `Fix:` line. `87/103` means the server
+earned 87 of the 103 points its rules can award. Rules that cannot apply to
+this server are skipped and left out of the 103, so a server is never
 penalized for a feature it does not have.
 
 ## Audit a server on your machine
@@ -70,7 +70,7 @@ mcpscore path/to/server.py
 ```text
 Transport: stdio
 ...
-Audit finished. Final score: 131/155
+Audit finished. Final score: 140/164
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: dual-era
 ```
 
@@ -106,9 +106,9 @@ When the score is below the threshold, the last line says so and the exit
 code is `3`:
 
 ```text
-Audit finished. Final score: 78/94
+Audit finished. Final score: 87/103
 ...
-Gate failed — --fail-under 90: score 78/94 (83%) is below the required 90%
+Gate failed — --fail-under 90: score 87/103 (84%) is below the required 90%
 ```
 
 A refactor that drops a tool description now fails the pull request instead
