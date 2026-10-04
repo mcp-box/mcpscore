@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: ["22.23.2"]
+        node-version: ["22.23.3"]
         include:
           # Compatibility coverage for the declared minimum major version.
           - os: ubuntu-latest
@@ -112,6 +112,6 @@ jobs:
       - name: Audit workflows with zizmor
         # Pinned so new zizmor audits can't fail PRs on unchanged code; the canary
         # workflow runs the latest zizmor to surface new findings on a schedule.
-        run: uvx zizmor==1.30.0 --no-progress .github/workflows/
+        run: uvx zizmor==1.30.1 --no-progress .github/workflows/
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

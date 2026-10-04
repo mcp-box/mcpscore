@@ -27,7 +27,7 @@ packages = ["mcpscore"]
 
 [project]
 name = "mcpscore"
-version = "1.22.0"
+version = "1.22.1"
 description = "Audit an MCP server and get a scored, actionable quality report in seconds."
 authors = [{ name = "Alex Akimov"}]
 license = "MIT"
@@ -67,8 +67,8 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "mcp==2.2.0",
-    "httpx2>=2.5.0",
+    "mcp==2.3.0",
+    "httpx2>=2.10.0",
     "jsonschema>=4.21",
 ]
 
@@ -84,7 +84,7 @@ mcpscore = "mcpscore.cli:main"
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.411",
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",

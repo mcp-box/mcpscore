@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.1] - 2026-10-04
+
+The MCP Python SDK moves to 2.3.0, so servers that reject an empty `_meta`
+can now be listed and audited in full. No rule or report changes; scores move
+only for those servers.
+
+### Changed
+
+- **MCP Python SDK bumped to `mcp==2.3.0`** (from 2.2.0), with the
+  `httpx2` floor raised to `>=2.10.0`, which 2.3.0 requires. No engine
+  change was needed: the full gate, the 20-server acceptance corpus and the
+  DeepWiki live invariant (87/103) are identical. One SDK behaviour change
+  can move outcomes on affected live servers:
+  - **Empty `_meta` and `params` are no longer sent** on 2025-11-25 and older
+    connections. 2.2.0 sent `"_meta": {}` on `initialize` and every list
+    request, and some servers reject it; their listings now succeed and they
+    get a full audit. Re-auditing 248 servers whose listings failed in the
+    September corpus scan, two now list their catalogs consistently, and
+    nothing regressed beyond the servers' own intermittent errors.
+  - An interactive `--oauth` login no longer counts against request timeouts,
+    so a slow browser sign-in no longer ends the audit.
+- **Dependencies refreshed.** The lockfile picks up ruff 0.16.10, filelock,
+  platformdirs and virtualenv patch releases. CI's pinned zizmor moves to
+  1.30.1, which the scheduled canary has run green, and the CI and docs
+  Node 22 lanes move to 22.23.3.
+
 ## [1.22.0] - 2026-10-03
 
 Three Security & Auth rules read the text a server publishes in its catalog,
@@ -1865,7 +1891,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.22.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.22.1...HEAD
+[1.22.1]: https://github.com/mcp-box/mcpscore/compare/v1.22.0...v1.22.1
 [1.22.0]: https://github.com/mcp-box/mcpscore/compare/v1.21.2...v1.22.0
 [1.21.2]: https://github.com/mcp-box/mcpscore/compare/v1.21.1...v1.21.2
 [1.21.1]: https://github.com/mcp-box/mcpscore/compare/v1.21.0...v1.21.1
