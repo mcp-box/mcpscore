@@ -1,8 +1,8 @@
 name: Canary
 
 # Daily lanes against the newest resolvable dependencies, the mcp 2.x pre-releases
-# (advisory), and the latest zizmor, so upstream breakage and new workflow audits
-# surface here instead of on unrelated PRs.
+# (advisory), the latest zizmor and the latest Mintlify CLI, so upstream breakage and
+# new workflow audits surface here instead of on unrelated PRs.
 on:
   schedule:
     - cron: "0 5 * * *"
@@ -39,6 +39,20 @@ jobs:
         run: uvx zizmor --no-progress .github/workflows/
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  mint-latest:
+    name: Latest Mintlify broken-links check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: "22.23.3"
+      - name: Check for broken links with the latest mint
+        working-directory: docs
+        run: npx --yes mint broken-links
 
   mcp-sdk-v2-beta:
     name: mcp SDK 2.x beta (advisory)
