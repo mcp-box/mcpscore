@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.2] - 2026-10-13
+
+Maintenance release. No rule, report or score changes.
+
+### Changed
+
+- **Dependencies refreshed.** The lockfile picks up pydantic 2.14.1
+  (pydantic-core 2.50.1), truststore 0.10.5, rpds-py 2026.9.1 and patch
+  releases of filelock, platformdirs, tomli, virtualenv and others. The
+  `mcp==2.3.0` pin is unchanged; it is still the latest SDK.
+- **Release workflow action pins** now carry exact version comments
+  (`upload-artifact` v7.0.1, `download-artifact` v8.0.1), which the latest
+  zizmor requires after both floating tags moved on 2026-10-07.
+
 ## [1.22.1] - 2026-10-04
 
 The MCP Python SDK moves to 2.3.0, so servers that reject an empty `_meta`
@@ -1891,7 +1905,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.22.1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.22.2...HEAD
+[1.22.2]: https://github.com/mcp-box/mcpscore/compare/v1.22.1...v1.22.2
 [1.22.1]: https://github.com/mcp-box/mcpscore/compare/v1.22.0...v1.22.1
 [1.22.0]: https://github.com/mcp-box/mcpscore/compare/v1.21.2...v1.22.0
 [1.21.2]: https://github.com/mcp-box/mcpscore/compare/v1.21.1...v1.21.2
