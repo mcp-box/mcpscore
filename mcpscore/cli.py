@@ -23,6 +23,8 @@ from mcpscore.sarif import build_sarif
 from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from mcpscore import MCPTransportType
     from mcpscore.mcp_client import ConnectionFailure
 
@@ -282,6 +284,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
+
+
+def parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse the command line, giving --stdio every token after it verbatim, ``--`` included.
+
+    argparse's REMAINDER handling of ``--`` differs across Python versions;
+    splitting here keeps the --stdio command the same on all of them.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    options = argv[: argv.index("--")] if "--" in argv else argv
+    if "--stdio" not in options:
+        return build_parser().parse_args(argv)
+    split = argv.index("--stdio") + 1
+    args = build_parser().parse_args(argv[:split])
+    args.stdio = argv[split:]
+    return args
 
 
 def parse_header(raw: str) -> tuple[str, str]:
@@ -969,7 +987,7 @@ async def async_main() -> None:
     """
     # Parse before greeting: --version and --help exit during parsing, and
     # neither should be preceded by a banner.
-    args = build_parser().parse_args()
+    args = parse_cli_args()
     configure_logging(verbose=args.verbose)
 
     # Resolve the target before greeting: an invalid target/--stdio combination

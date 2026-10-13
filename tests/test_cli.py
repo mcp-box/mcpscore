@@ -31,6 +31,7 @@ from mcpscore.cli import (
     log_audit_outcome,
     main,
     misplaced_stdio_options,
+    parse_cli_args,
     parse_env_vars,
     resolve_target,
     run_package_audit,
@@ -1805,14 +1806,38 @@ class TestStdioCommandCliFlow:
     def test_misplaced_stdio_options(self, stdio: list[str] | None, expected: list[str]) -> None:
         assert misplaced_stdio_options(stdio) == expected
 
-    def test_double_dash_ends_the_stdio_command_before_any_warning(self) -> None:
-        """The --stdio command ends at ``--`` (argparse): what follows is the target, never server arguments."""
-        args = build_parser().parse_args(["--stdio", "srv", "--", "--smoke"])
-        assert args.stdio == ["srv"]
-        assert args.target == "--smoke"
-        assert misplaced_stdio_options(args.stdio) == []
-        with pytest.raises(ValueError, match="either a target or --stdio"):
+    def test_double_dash_after_stdio_goes_to_the_server(self) -> None:
+        """``--`` after --stdio is part of the server command, on every Python version."""
+        args = parse_cli_args(["--json", "--stdio", "srv", "--", "--smoke"])
+        assert args.json is True
+        assert args.stdio == ["srv", "--", "--smoke"]
+        assert args.target is None
+        assert resolve_target(args) == StdioCommand(command="srv", args=("--", "--smoke"))
+
+    def test_stdio_takes_the_rest_of_the_command_line_verbatim(self) -> None:
+        args = parse_cli_args(["--fail-under", "80", "--stdio", "uv", "run", "server.py", "--stdio", "-v"])
+        assert args.fail_under == 80
+        assert args.stdio == ["uv", "run", "server.py", "--stdio", "-v"]
+        assert args.verbose is False
+
+    def test_stdio_alone_is_an_empty_command(self) -> None:
+        args = parse_cli_args(["--stdio"])
+        assert args.stdio == []
+        with pytest.raises(ValueError, match="--stdio needs a command"):
             resolve_target(args)
+
+    def test_stdio_after_double_dash_is_the_target(self) -> None:
+        args = parse_cli_args(["--", "--stdio"])
+        assert args.target == "--stdio"
+        assert args.stdio is None
+
+    def test_parse_cli_args_without_stdio_matches_build_parser(self) -> None:
+        argv = ["https://example.com/mcp", "--json", "--fail-under", "90"]
+        assert vars(parse_cli_args(argv)) == vars(build_parser().parse_args(argv))
+
+    def test_parse_cli_args_reads_sys_argv_by_default(self) -> None:
+        with patch.object(sys, "argv", ["mcpscore", "--stdio", "srv", "--", "x"]):
+            assert parse_cli_args().stdio == ["srv", "--", "x"]
 
     def test_warning_names_several_options_in_the_plural(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="mcpscore.cli"):

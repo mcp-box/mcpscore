@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Python 3.14 and 3.15 support.** Both are tested in CI on Linux, macOS and
+  Windows and listed in the package classifiers. No dependency changes were
+  needed.
+
+### Changed
+
+- **`--` after `--stdio` now goes to the server command** on every Python
+  version, so `mcpscore --stdio ./server -- --flag` runs `./server -- --flag`.
+  Before, Python 3.11–3.14 ended the command at `--` and treated what followed
+  as the audit target, which always failed with "give either a target or
+  --stdio"; Python 3.15's argparse already passed it through. mcpscore now
+  splits the command line itself, so the result no longer depends on the
+  Python version.
+
 ## [1.22.2] - 2026-10-13
 
 Maintenance release. No rule, report or score changes.
