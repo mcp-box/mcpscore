@@ -286,19 +286,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _stdio_option_index(parser: argparse.ArgumentParser, argv: list[str]) -> int | None:
+    """Return the index of the token argparse reads as --stdio, or None.
+
+    Accepts the spellings argparse does: ``--stdio``, ``--stdio=CMD`` and an
+    unambiguous prefix such as ``--std``. Tokens after a bare ``--`` are positional.
+    """
+    # argparse exposes no public list of option strings; this is the one it matches prefixes against.
+    long_options = [option for option in parser._option_string_actions if option.startswith("--")]
+    for index, arg in enumerate(argv):
+        if arg == "--":
+            return None
+        name = arg.partition("=")[0]
+        if name == "--stdio":
+            return index
+        is_prefix = parser.allow_abbrev and len(name) > 2 and "--stdio".startswith(name)
+        if is_prefix and [option for option in long_options if option.startswith(name)] == ["--stdio"]:
+            return index
+    return None
+
+
 def parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse the command line, giving --stdio every token after it verbatim, ``--`` included.
 
     argparse's REMAINDER handling of ``--`` differs across Python versions;
     splitting here keeps the --stdio command the same on all of them.
+    ``--stdio=CMD ARGS`` gives the command ``CMD ARGS``.
     """
+    parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
-    options = argv[: argv.index("--")] if "--" in argv else argv
-    if "--stdio" not in options:
-        return build_parser().parse_args(argv)
-    split = argv.index("--stdio") + 1
-    args = build_parser().parse_args(argv[:split])
-    args.stdio = argv[split:]
+    index = _stdio_option_index(parser, argv)
+    if index is None:
+        return parser.parse_args(argv)
+    _, has_value, value = argv[index].partition("=")
+    args = parser.parse_args([*argv[:index], "--stdio"])
+    args.stdio = ([value] if has_value else []) + argv[index + 1 :]
     return args
 
 

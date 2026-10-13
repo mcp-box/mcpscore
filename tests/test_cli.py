@@ -1820,6 +1820,29 @@ class TestStdioCommandCliFlow:
         assert args.stdio == ["uv", "run", "server.py", "--stdio", "-v"]
         assert args.verbose is False
 
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["--stdio=srv", "--", "--flag"], ["srv", "--", "--flag"]),
+            (["--stdio=srv", "a"], ["srv", "a"]),
+            (["--stdio=", "srv"], ["", "srv"]),
+            (["--std", "srv", "--", "--flag"], ["srv", "--", "--flag"]),
+            (["--stdi=srv", "x"], ["srv", "x"]),
+            (["--json", "--st", "srv", "--json"], ["srv", "--json"]),
+        ],
+    )
+    def test_every_spelling_of_stdio_takes_the_rest_verbatim(self, argv: list[str], expected: list[str]) -> None:
+        """``--stdio=CMD`` and unambiguous prefixes behave like ``--stdio``, on every Python version."""
+        args = parse_cli_args(argv)
+        assert args.stdio == expected
+        assert args.target is None
+
+    def test_ambiguous_prefix_is_left_to_argparse(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as exc:
+            parse_cli_args(["--s", "srv"])
+        assert exc.value.code == 1
+        assert "--s" in capsys.readouterr().err
+
     def test_stdio_alone_is_an_empty_command(self) -> None:
         args = parse_cli_args(["--stdio"])
         assert args.stdio == []

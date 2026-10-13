@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as the audit target, which always failed with "give either a target or
   --stdio"; Python 3.15's argparse already passed it through. mcpscore now
   splits the command line itself, so the result no longer depends on the
-  Python version.
+  Python version. The same holds for `--stdio=CMD` and abbreviations such as
+  `--std`: `mcpscore --stdio=./server --flag` runs `./server --flag`, where it
+  used to stop with a usage error.
 
 ## [1.22.2] - 2026-10-13
 
