@@ -598,7 +598,7 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
         The probe tries the MCP discovery order (RFC 8414 and OpenID Connect,
         with path insertion for an issuer with a path) and accepts a document
         only when its ``issuer`` is identical to the listed issuer (RFC 8414
-        §3.3). It must advertise the authorization and token endpoints;
+        §3.3), apart from a trailing slash, which is reported. It must advertise the authorization and token endpoints;
         without it the flow is undiscoverable.
 
         Args:
@@ -614,6 +614,7 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
         has_endpoints = details.get("auth_server_has_endpoints") is True
         passed = present and has_endpoints
         mismatch = details.get("auth_server_issuer_mismatch")
+        declared = details.get("auth_server_issuer_declared")
         if details.get("auth_server_metadata_blocked"):
             message = f"❌ Issuer {evidence_preview(issuer)} is a non-public address that remote clients cannot reach"
         elif not present and isinstance(mismatch, dict):
@@ -627,6 +628,11 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
             message = (
                 f"❌ Issuer {evidence_preview(issuer)} metadata lacks string "
                 "authorization_endpoint or token_endpoint fields"
+            )
+        elif isinstance(declared, str):
+            message = (
+                f"✅ Issuer {evidence_preview(issuer)} metadata includes string authorization and token endpoints "
+                f"(it declares issuer {evidence_preview(declared)}, which differs only by a trailing slash)"
             )
         else:
             message = f"✅ Issuer {evidence_preview(issuer)} metadata includes string authorization and token endpoints"
@@ -644,6 +650,7 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
                 "present": present,
                 "has_endpoints": has_endpoints,
                 "issuer_mismatch": mismatch,
+                "declared_issuer": declared,
             },
             suggested_fix=(
                 ("Advertise the issuer's public HTTPS identifier in authorization_servers.")

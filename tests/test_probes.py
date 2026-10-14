@@ -2506,6 +2506,39 @@ class TestAuthServerDiscoveryOrder:
         }
         assert "auth_server_metadata_error" not in details
 
+    @pytest.mark.parametrize(
+        ("listed", "declared"),
+        [("https://auth.example", "https://auth.example/"), ("https://auth.example/", "https://auth.example")],
+    )
+    async def test_issuer_differing_only_by_trailing_slash_is_accepted_and_recorded(self, listed, declared):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={**AS_METADATA, "issuer": declared})
+
+        details: dict = {}
+        async with _client(handler) as client:
+            await _fetch_auth_server_metadata(client, listed, URL, details)
+        assert details["auth_server_metadata_present"] is True
+        assert details["auth_server_issuer_declared"] == declared
+        assert "auth_server_issuer_mismatch" not in details
+
+    async def test_issuer_with_two_extra_slashes_is_still_a_mismatch(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={**AS_METADATA, "issuer": "https://auth.example//"})
+
+        details: dict = {}
+        async with _client(handler) as client:
+            await _fetch_auth_server_metadata(client, "https://auth.example", URL, details)
+        assert details["auth_server_metadata_present"] is False
+
+    async def test_identical_issuer_records_no_declared_value(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json=AS_METADATA)
+
+        details: dict = {}
+        async with _client(handler) as client:
+            await _fetch_auth_server_metadata(client, "https://auth.example", URL, details)
+        assert "auth_server_issuer_declared" not in details
+
     async def test_a_later_location_with_the_right_issuer_is_accepted(self):
         def handler(request: httpx2.Request) -> httpx2.Response:
             if request.url.path == "/.well-known/oauth-authorization-server":

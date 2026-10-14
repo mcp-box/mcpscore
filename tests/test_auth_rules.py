@@ -378,6 +378,13 @@ class TestAuthServerMetadataPresent:
         assert result.passed is False
         assert "endpoint" in result.message
 
+    def test_passes_and_reports_issuer_differing_only_by_trailing_slash(self):
+        meta = _full_metadata(auth_server_issuer_declared="https://auth.example/")
+        result = AuthServerMetadataPresentRule().check(_data(_unauth(), meta))
+        assert result.passed is True
+        assert "trailing slash" in result.message
+        assert result.details["declared_issuer"] == "https://auth.example/"
+
     def test_skips_when_no_authorization_server(self):
         meta = _full_metadata(servers=[], auth_server_issuer=None)
         assert AuthServerMetadataPresentRule().skip_reason(_data(_unauth(), meta)) == SKIP_REASON_INSUFFICIENT_DATA

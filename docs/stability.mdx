@@ -400,7 +400,8 @@ publish it.
 - Issuer metadata is looked up in the
   [MCP discovery order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery),
   including path insertion for an issuer with a path. A document counts only
-  when its `issuer` is identical to the listed issuer. A failure lists the
+  when its `issuer` is identical to the listed issuer; a difference in the
+  trailing slash alone is accepted and reported. A failure lists the
   locations tried; it does not prove that no valid document exists elsewhere.
 - Discovery URLs that point a public server at loopback, link-local or private
   addresses are reported, not fetched.

@@ -1533,6 +1533,11 @@ def _auth_server_metadata_urls(issuer: str) -> list[str]:
     ]
 
 
+def _differs_only_by_trailing_slash(declared: object, issuer: str) -> bool:
+    """Return whether ``declared`` equals ``issuer`` apart from one trailing slash."""
+    return isinstance(declared, str) and (declared == f"{issuer}/" or f"{declared}/" == issuer)
+
+
 async def _fetch_auth_server_metadata(
     client: httpx2.AsyncClient, issuer: str, target_url: str, details: dict[str, Any]
 ) -> None:
@@ -1546,7 +1551,9 @@ async def _fetch_auth_server_metadata(
     A document counts only when its ``issuer`` is identical to the issuer the
     location was built from (RFC 8414 §3.3, OpenID Connect Discovery §4.3);
     clients must not use any other, so a mismatch is recorded in
-    ``auth_server_issuer_mismatch`` and the next location is tried.
+    ``auth_server_issuer_mismatch`` and the next location is tried. A
+    difference in the trailing slash alone is tolerated and recorded in
+    ``auth_server_issuer_declared``.
 
     An authorization server that cannot be reached at all (DNS failure,
     refused connection, timeout, TLS error, unusable URL) leaves
@@ -1577,9 +1584,11 @@ async def _fetch_auth_server_metadata(
         if metadata is None:
             continue
         declared = metadata.get("issuer")
-        if declared != issuer:
+        if declared != issuer and not _differs_only_by_trailing_slash(declared, issuer):
             details.setdefault("auth_server_issuer_mismatch", {"metadata_url": candidate, "issuer": declared})
             continue
+        if declared != issuer:
+            details["auth_server_issuer_declared"] = declared
         methods = metadata.get("code_challenge_methods_supported")
         details["auth_server_metadata_url"] = candidate
         details["auth_server_metadata_present"] = True
