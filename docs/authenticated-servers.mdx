@@ -39,23 +39,24 @@ mcpscore https://api.githubcopilot.com/mcp/
 ```text
 ✅ Server uses HTTPS with valid TLS (TLSv1.3).
 ✅ The observed HTTP 401 response carries a non-empty WWW-Authenticate challenge.
-✅ Protected resource metadata identifies "https://api.githubcopilot.com/mcp".
+✅ Protected resource metadata identifies "https://api.githubcopilot.com/mcp/".
 ✅ All 1 authorization server(s) use HTTPS.
+✅ HTTP 401 challenge references metadata served at "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/".
 ...
-❌ The authorization server does not advertise PKCE with S256 (code_challenge_methods_supported).
+✅ The authorization server advertises PKCE with S256.
 ...
 ⚠️  Partial audit (Server requires authentication (HTTP 401); scored the unauthenticated surface only — pass a token to audit behind the gate.).
 Only the auth, TLS, and transport surface was scored — not comparable to a full audit.
-Audit finished. PARTIAL score: 24/27 from 10 of 82 checks — not comparable to a full audit.
+Audit finished. PARTIAL score: 27/27 from 10 of 82 checks — not comparable to a full audit.
 ```
 
 This is a partial audit. It covers TLS, the 401 challenge, the
 [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata, and the authorization server that metadata
-names. Those are real findings about your auth posture, and a missing PKCE
-advertisement shows up here without any credential.
+names. Those are real findings about your auth posture: a missing PKCE
+advertisement, for example, shows up here without any credential.
 
 The score line says `PARTIAL` and `from 10 of 82 checks` on purpose. A
-bare `24/27` reads as a near-perfect result when pasted into a chat. A
+bare `27/27` reads as a perfect result when pasted into a chat. A
 partial score and a full score are not comparable.
 
 A partial audit cannot pass a threshold. Add `--fail-under` and it fails:
@@ -184,7 +185,7 @@ Nothing else changes. With the [GitHub Action](/github-action):
 Gate a server behind auth with `--fail-under` in `args`, as shown. If the
 secret is missing or expired, the run becomes a partial audit and
 `--fail-under` fails the job with exit `3`. The Action's `min-score` input
-compares the percentage only, so a partial `24/27` passes it at 89%.
+compares the percentage only, so a partial `27/27` passes it at 100%.
 
 ## Options
 

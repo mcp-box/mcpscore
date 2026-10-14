@@ -1,6 +1,12 @@
 """Tests for the auth-posture rules (RFC 9728 protected resource metadata)."""
 
-from mcpscore.probes import PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED, ProbeOutcome, ProbeResult
+from mcpscore.probes import (
+    PROBE_AUTH_METADATA,
+    PROBE_UNAUTHENTICATED,
+    ProbeOutcome,
+    ProbeResult,
+    www_authenticate_param,
+)
 from mcpscore.rules import AuditData
 from mcpscore.rules.auth import (
     AuthAuthorizationServersHttpsRule,
@@ -211,77 +217,128 @@ class TestAuthorizationServersHttps:
         assert result.details["invalid"] == [None, 123]
 
 
+def _challenged(
+    url: str = METADATA_URL, *, status: int | None = 200, resource: str | None = URL, **observed: object
+) -> ProbeResult:
+    """Build a metadata probe that followed the challenge's resource_metadata URL."""
+    probe = _full_metadata()
+    probe.details["challenge_metadata_url"] = url
+    if status is not None:
+        probe.details["challenge_metadata_http_status"] = status
+        probe.details["challenge_metadata_resource"] = resource
+    probe.details.update(observed)
+    return probe
+
+
+def _versioned(unauth: ProbeResult, metadata: ProbeResult | None, version: str | None) -> AuditData:
+    data = _data(unauth, metadata)
+    data.protocol_version = version
+    return data
+
+
 class TestChallengeReferencesMetadata:
-    def test_passes_when_challenge_points_at_metadata(self):
+    def test_passes_when_challenge_url_serves_metadata(self):
         unauth = _unauth(www_authenticate=f'Bearer resource_metadata="{METADATA_URL}"')
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+        data = _data(unauth, _challenged())
+        assert AuthChallengeReferencesMetadataRule().skip_reason(data) is None
+        result = AuthChallengeReferencesMetadataRule().check(data)
         assert result.passed is True
 
-    def test_fails_without_resource_metadata_param(self):
-        unauth = _unauth(www_authenticate='Bearer realm="mcp"')
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
-        assert result.passed is False
+    def test_passes_on_cross_origin_url_that_serves_metadata(self):
+        """RFC 9728 §5.1 does not require the metadata on the server's origin."""
+        elsewhere = "https://metadata.example/prm/mcp"
+        unauth = _unauth(www_authenticate=f'Bearer resource_metadata="{elsewhere}"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _challenged(elsewhere)))
+        assert result.passed is True
 
-    def test_fails_on_cross_origin_reference(self):
-        unauth = _unauth(www_authenticate='Bearer resource_metadata="https://evil.example/.well-known/x"')
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+    def test_fails_when_challenge_url_serves_no_metadata(self):
+        unauth = _unauth(www_authenticate=f'Bearer resource_metadata="{METADATA_URL}"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _challenged(status=404, resource=None)))
         assert result.passed is False
-        assert "not on this server's origin" in result.message
+        assert "did not serve RFC 9728 metadata (HTTP 404)" in result.message
 
-    def test_passes_on_same_origin_different_path(self):
-        # Root PRM form in the header while the probe discovered the path-aware
-        # form — both valid RFC 9728 locations on the same origin.
-        unauth = _unauth(
-            www_authenticate='Bearer resource_metadata="https://server.example/.well-known/oauth-protected-resource"'
+    def test_fails_on_url_that_is_not_http(self):
+        unauth = _unauth(www_authenticate='Bearer resource_metadata="/.well-known/oauth-protected-resource"')
+        data = _data(
+            unauth, _challenged("/.well-known/oauth-protected-resource", status=None, challenge_metadata_invalid=True)
         )
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
-        assert result.passed is True
+        assert AuthChallengeReferencesMetadataRule().skip_reason(data) is None
+        result = AuthChallengeReferencesMetadataRule().check(data)
+        assert result.passed is False
+        assert "not an absolute http(s) URL" in result.message
+
+    def test_fails_on_url_at_a_non_public_address(self):
+        internal = "http://169.254.169.254/latest"
+        unauth = _unauth(www_authenticate=f'Bearer resource_metadata="{internal}"')
+        data = _data(unauth, _challenged(internal, status=None, challenge_metadata_blocked=True))
+        assert AuthChallengeReferencesMetadataRule().skip_reason(data) is None
+        result = AuthChallengeReferencesMetadataRule().check(data)
+        assert result.passed is False
+        assert "non-public address" in result.message
+
+    def test_skips_when_challenge_url_was_unreachable(self):
+        unauth = _unauth(www_authenticate=f'Bearer resource_metadata="{METADATA_URL}"')
+        data = _data(unauth, _challenged(status=None, challenge_metadata_error="ConnectError"))
+        assert AuthChallengeReferencesMetadataRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_skips_when_the_probe_did_not_follow_the_challenge(self):
+        unauth = _unauth(www_authenticate=f'Bearer resource_metadata="{METADATA_URL}"')
+        assert AuthChallengeReferencesMetadataRule().skip_reason(_data(unauth)) == SKIP_REASON_INSUFFICIENT_DATA
+        assert (
+            AuthChallengeReferencesMetadataRule().skip_reason(_data(unauth, _full_metadata()))
+            == SKIP_REASON_INSUFFICIENT_DATA
+        )
 
     def test_skips_when_no_challenge_header(self):
-        # No metadata probe needed: this rule requires only the unauthenticated probe.
         data = _data(_unauth(www_authenticate=None))
         assert AuthChallengeReferencesMetadataRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
-    def test_passes_on_unquoted_parameter(self):
-        """Stripe's real header form: a bare, unquoted resource_metadata value.
+    def test_missing_parameter_is_not_applicable_when_well_known_discovery_is_allowed(self):
+        """From 2025-11-25 a server may rely on well-known discovery alone."""
+        unauth = _unauth(www_authenticate='Bearer realm="mcp"')
+        for version in (None, "2025-11-25", "2026-07-28"):
+            data = _versioned(unauth, _full_metadata(), version)
+            assert AuthChallengeReferencesMetadataRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
 
-        RFC 7235 §2.1 wants a quoted-string for a URL value, but deployed
-        servers send it bare and clients read it — scoring that as "no
-        resource_metadata parameter" reports a failure no client experiences.
-        """
-        unauth = _unauth(www_authenticate=f"Bearer resource_metadata={METADATA_URL}")
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
+    def test_missing_parameter_fails_on_2025_06_18(self):
+        unauth = _unauth(www_authenticate='Bearer realm="mcp"')
+        data = _versioned(unauth, _full_metadata(), "2025-06-18")
+        assert AuthChallengeReferencesMetadataRule().skip_reason(data) is None
+        result = AuthChallengeReferencesMetadataRule().check(data)
+        assert result.passed is False
+        assert "which 2025-06-18 requires" in result.message
+
+    def test_missing_parameter_on_403_is_not_applicable_on_any_version(self):
+        """The resource_metadata requirement is attached to 401 responses only."""
+        unauth = _unauth(status=403, www_authenticate='Bearer error="insufficient_scope"')
+        data = _versioned(unauth, _full_metadata(), "2025-06-18")
+        assert AuthChallengeReferencesMetadataRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_unquoted_parameter_is_followed(self):
+        unauth = _unauth(www_authenticate=f'Bearer resource_metadata={METADATA_URL}, error="invalid_token"')
+        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _challenged()))
         assert result.passed is True
         assert result.details is not None
         assert result.details["resource_metadata"] == METADATA_URL
+
+
+class TestWwwAuthenticateParam:
+    def test_quoted_value(self):
+        assert www_authenticate_param(f'Bearer resource_metadata="{METADATA_URL}"', "resource_metadata") == METADATA_URL
+
+    def test_unquoted_value(self):
+        """Deployed servers send the URL bare; RFC 7235 §2.1 wants it quoted, clients read both."""
+        assert www_authenticate_param(f"Bearer resource_metadata={METADATA_URL}", "resource_metadata") == METADATA_URL
 
     def test_unquoted_value_stops_at_parameter_separator(self):
-        """A bare value ends at the auth-param comma, not at the end of the header."""
-        unauth = _unauth(www_authenticate=f'Bearer resource_metadata={METADATA_URL}, error="invalid_token"')
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
-        assert result.passed is True
-        assert result.details is not None
-        assert result.details["resource_metadata"] == METADATA_URL
-
-    def test_unquoted_cross_origin_is_still_caught(self):
-        """Tolerating the bare form must not weaken the cross-origin check."""
-        unauth = _unauth(www_authenticate="Bearer resource_metadata=https://evil.example/.well-known/x")
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
-        assert result.passed is False
-        assert "not on this server's origin" in result.message
+        header = f'Bearer resource_metadata={METADATA_URL}, error="invalid_token"'
+        assert www_authenticate_param(header, "resource_metadata") == METADATA_URL
 
     def test_param_name_is_matched_case_insensitively(self):
-        """RFC 7235 §2.1: auth-param names are case-insensitive."""
-        unauth = _unauth(www_authenticate=f'Bearer Resource_Metadata="{METADATA_URL}"')
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
-        assert result.passed is True
+        assert www_authenticate_param(f'Bearer Resource_Metadata="{METADATA_URL}"', "resource_metadata") == METADATA_URL
 
     def test_similarly_named_parameter_is_not_mistaken_for_the_real_one(self):
-        """``xresource_metadata`` is a different parameter and must not match."""
-        unauth = _unauth(www_authenticate='Bearer xresource_metadata="https://evil.example/x"')
-        result = AuthChallengeReferencesMetadataRule().check(_data(unauth, _full_metadata()))
-        assert result.passed is False
-        assert "no resource_metadata parameter" in result.message
+        assert www_authenticate_param('Bearer xresource_metadata="https://evil.example/x"', "resource_metadata") is None
 
 
 class TestMetadataHttps:

@@ -45,9 +45,13 @@ from mcpscore.probes import (
     UNKNOWN_METHOD_PREFIX,
     ProbeOutcome,
     ProbeResult,
+    _auth_server_metadata_urls,
     _collect_catalog_identities,
+    _discovery_url_blocked,
     _fetch_auth_server_metadata,
     _HttpTarget,
+    _is_local_host,
+    _probe_auth_metadata,
     _probe_catalog_connection_independence,
     _traverse_cache_scope_surface,
     _well_known_urls,
@@ -1533,7 +1537,7 @@ class TestAuthMetadataProbe:
         """
         details: dict[str, object] = {}
         async with httpx2.AsyncClient(follow_redirects=True) as client:
-            await _fetch_auth_server_metadata(client, issuer, details)
+            await _fetch_auth_server_metadata(client, issuer, URL, details)
         assert details["auth_server_issuer"] == issuer
         assert details["auth_server_metadata_present"] is False
         assert details["auth_server_metadata_error"] == "InvalidURL"
@@ -2331,3 +2335,231 @@ class TestSameOriginRedirectPolicy:
 
         assert foreign_hits == []
         assert results[PROBE_DISCOVER].details["http_status"] == 307
+
+
+AS_METADATA = {
+    "issuer": "https://auth.example",
+    "authorization_endpoint": "https://auth.example/authorize",
+    "token_endpoint": "https://auth.example/token",
+    "code_challenge_methods_supported": ["S256"],
+}
+
+
+async def _auth_metadata(handler, challenge: str | None, url: str = URL) -> tuple[ProbeResult, list[str]]:
+    """Run the metadata probe against ``handler`` with an observed challenge; return result and GET URLs."""
+    seen: list[str] = []
+
+    def logging_handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "GET":
+            seen.append(str(request.url))
+        return handler(request)
+
+    async with _client(logging_handler) as client:
+        result = await _probe_auth_metadata(_HttpTarget(client, url, challenge))
+    return result, seen
+
+
+class TestChallengeDiscovery:
+    async def test_challenge_url_is_followed_before_well_known(self):
+        """A client uses the challenge's resource_metadata first, wherever it is hosted."""
+        elsewhere = "https://metadata.example/prm"
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if str(request.url) == elsewhere:
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": AUTH_SERVERS})
+            if request.url.host == "auth.example" and request.url.path == "/.well-known/oauth-authorization-server":
+                return httpx2.Response(200, json=AS_METADATA)
+            return httpx2.Response(404)
+
+        result, seen = await _auth_metadata(handler, f'Bearer resource_metadata="{elsewhere}"')
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert seen[0] == elsewhere
+        assert result.details["discovery"] == "challenge"
+        assert result.details["metadata_url"] == elsewhere
+        assert result.details["challenge_metadata_http_status"] == 200
+        assert result.details["challenge_metadata_resource"] == URL
+        assert result.details["auth_server_metadata_present"] is True
+
+    async def test_falls_back_to_well_known_when_challenge_url_serves_nothing(self):
+        broken = "https://server.example/missing"
+        result, seen = await _auth_metadata(_modern_server_handler, f'Bearer resource_metadata="{broken}"')
+        assert seen[0] == broken
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["discovery"] == "well-known"
+        assert result.details["challenge_metadata_url"] == broken
+        assert result.details["challenge_metadata_http_status"] == 405
+        assert result.details["challenge_metadata_resource"] is None
+
+    async def test_unreachable_challenge_url_is_recorded_and_discovery_continues(self):
+        broken = "https://down.example/prm"
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.host == "down.example":
+                raise httpx2.ConnectError("refused")
+            return _modern_server_handler(request)
+
+        result, _seen = await _auth_metadata(handler, f'Bearer resource_metadata="{broken}"')
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["challenge_metadata_error"] == "ConnectError"
+        assert "challenge_metadata_http_status" not in result.details
+        assert broken in result.details["unreachable_locations"]
+
+    async def test_non_public_challenge_url_of_a_public_server_is_not_fetched(self):
+        internal = "http://169.254.169.254/latest/meta-data"
+        result, seen = await _auth_metadata(_modern_server_handler, f'Bearer resource_metadata="{internal}"')
+        assert internal not in seen
+        assert result.details["challenge_metadata_blocked"] is True
+        assert result.details["discovery"] == "well-known"
+
+    async def test_local_server_may_name_a_local_challenge_url(self):
+        local_url = "http://127.0.0.1:8000/mcp"
+        local_prm = "http://localhost:9000/prm"
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if str(request.url) == local_prm:
+                return httpx2.Response(200, json={"resource": local_url})
+            return httpx2.Response(404)
+
+        result, seen = await _auth_metadata(handler, f'Bearer resource_metadata="{local_prm}"', url=local_url)
+        assert seen[0] == local_prm
+        assert result.details["discovery"] == "challenge"
+
+    async def test_relative_challenge_url_is_recorded_invalid(self):
+        result, seen = await _auth_metadata(_modern_server_handler, 'Bearer resource_metadata="/prm"')
+        assert result.details["challenge_metadata_invalid"] is True
+        assert all(not url.endswith("/prm") for url in seen)
+
+    async def test_run_all_probes_feeds_the_observed_challenge_to_discovery(self):
+        """The metadata probe follows the challenge from the unauthenticated probe's own response."""
+        elsewhere = "https://metadata.example/prm"
+        requests: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            requests.append(request)
+            if request.method == "GET" and str(request.url) == elsewhere:
+                return httpx2.Response(200, json={"resource": URL})
+            if request.method == "GET":
+                return httpx2.Response(404)
+            return httpx2.Response(401, headers={"WWW-Authenticate": f'Bearer resource_metadata="{elsewhere}"'})
+
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            results = await run_all_probes(URL, client=client)
+
+        assert results[PROBE_AUTH_METADATA].details["discovery"] == "challenge"
+        fetched = [r for r in requests if str(r.url) == elsewhere]
+        assert fetched
+        assert all("Authorization" not in r.headers for r in fetched)
+        assert list(results) == list(PROBE_IDS)
+
+
+class TestAuthServerDiscoveryOrder:
+    def test_issuer_without_path(self):
+        assert _auth_server_metadata_urls("https://auth.example.com") == [
+            "https://auth.example.com/.well-known/oauth-authorization-server",
+            "https://auth.example.com/.well-known/openid-configuration",
+        ]
+
+    def test_issuer_with_path_uses_insertion_then_appending(self):
+        """MCP Authorization Server Metadata Discovery: the three-step order for a path issuer."""
+        assert _auth_server_metadata_urls("https://auth.example.com/tenant1") == [
+            "https://auth.example.com/.well-known/oauth-authorization-server/tenant1",
+            "https://auth.example.com/.well-known/openid-configuration/tenant1",
+            "https://auth.example.com/tenant1/.well-known/openid-configuration",
+        ]
+
+    def test_trailing_slash_on_issuer_is_not_doubled(self):
+        assert _auth_server_metadata_urls("https://auth.example.com/tenant1/")[0] == (
+            "https://auth.example.com/.well-known/oauth-authorization-server/tenant1"
+        )
+
+    async def test_path_issuer_metadata_is_found_by_path_insertion(self):
+        issuer = "https://auth.example/tenant1"
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path == "/.well-known/oauth-authorization-server/tenant1":
+                return httpx2.Response(200, json={**AS_METADATA, "issuer": issuer})
+            return httpx2.Response(404)
+
+        details: dict = {}
+        async with _client(handler) as client:
+            await _fetch_auth_server_metadata(client, issuer, URL, details)
+        assert details["auth_server_metadata_present"] is True
+        assert (
+            details["auth_server_metadata_url"] == "https://auth.example/.well-known/oauth-authorization-server/tenant1"
+        )
+
+    async def test_metadata_with_a_different_issuer_is_rejected(self):
+        """RFC 8414 §3.3: the document's issuer must be identical to the one the URL was built from."""
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={**AS_METADATA, "issuer": "https://honest.example"})
+
+        details: dict = {}
+        async with _client(handler) as client:
+            await _fetch_auth_server_metadata(client, "https://auth.example", URL, details)
+        assert details["auth_server_metadata_present"] is False
+        assert details["auth_server_issuer_mismatch"] == {
+            "metadata_url": "https://auth.example/.well-known/oauth-authorization-server",
+            "issuer": "https://honest.example",
+        }
+        assert "auth_server_metadata_error" not in details
+
+    async def test_a_later_location_with_the_right_issuer_is_accepted(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path == "/.well-known/oauth-authorization-server":
+                return httpx2.Response(200, json={**AS_METADATA, "issuer": "https://elsewhere.example"})
+            return httpx2.Response(200, json=AS_METADATA)
+
+        details: dict = {}
+        async with _client(handler) as client:
+            await _fetch_auth_server_metadata(client, "https://auth.example", URL, details)
+        assert details["auth_server_metadata_present"] is True
+        assert details["auth_server_metadata_url"] == "https://auth.example/.well-known/openid-configuration"
+
+    async def test_non_public_issuer_of_a_public_server_is_not_fetched(self):
+        seen: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(str(request.url))
+            return httpx2.Response(200, json=AS_METADATA)
+
+        details: dict = {}
+        async with _client(handler) as client:
+            await _fetch_auth_server_metadata(client, "http://10.0.0.5", URL, details)
+        assert seen == []
+        assert details["auth_server_metadata_blocked"] is True
+        assert details["auth_server_metadata_present"] is False
+
+
+class TestDiscoveryUrlGuard:
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "localhost",
+            "LOCALHOST.",
+            "api.localhost",
+            "printer.local",
+            "db.internal",
+            "127.0.0.1",
+            "10.1.2.3",
+            "169.254.169.254",
+            "[::1]",
+            "fd00::1",
+        ],
+    )
+    def test_local_hosts(self, host: str):
+        assert _is_local_host(host) is True
+
+    @pytest.mark.parametrize("host", ["auth.example.com", "8.8.8.8", "2606:4700:4700::1111", None, ""])
+    def test_public_hosts(self, host: str | None):
+        assert _is_local_host(host) is False
+
+    def test_blocks_only_when_a_public_target_names_a_local_url(self):
+        assert _discovery_url_blocked("http://127.0.0.1/prm", "https://server.example/mcp") is True
+        assert _discovery_url_blocked("http://127.0.0.1/prm", "http://localhost:8000/mcp") is False
+        assert _discovery_url_blocked("https://auth.example/", "https://server.example/mcp") is False
+
+    def test_unparsable_url_is_left_to_the_fetch(self):
+        assert _discovery_url_blocked("http://[::1", "https://server.example/mcp") is False
