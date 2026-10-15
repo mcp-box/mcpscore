@@ -87,6 +87,17 @@ def as_dict(obj: Any) -> dict[str, Any] | dict | MappingProxyType[str, Any] | di
 
 
 @pytest.fixture(autouse=True)
+def _no_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit tests hermetic: resolve every host name to one public address instead of asking DNS."""
+    from mcpscore import probes
+
+    async def resolve_public(host: str) -> list[str] | None:
+        return ["93.184.215.14"]
+
+    monkeypatch.setattr(probes, "_resolve_host", resolve_public)
+
+
+@pytest.fixture(autouse=True)
 def _no_network_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep unit tests hermetic: stub BOTH of the auditor's probe runners.
 

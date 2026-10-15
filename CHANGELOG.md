@@ -38,7 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     issuer that differs only by a trailing slash is accepted, and the result
     names the declared value.
   - Discovery URLs that point a public server at a loopback, link-local or
-    private address are reported, not fetched.
+    private address are reported, not fetched. Host names are resolved
+    first, and one non-public address is enough to block the URL.
   - In a sample of 161 auth-gated public servers, this change raised 14
     scores and lowered 5. The drops are 3 issuers on a different host than
     the metadata declares; one issuer published

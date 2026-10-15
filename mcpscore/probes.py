@@ -38,6 +38,7 @@ import ipaddress
 import json
 import logging
 import re
+import socket
 from subprocess import DEVNULL
 import time
 from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
@@ -1461,25 +1462,82 @@ def _is_local_host(host: str | None) -> bool:
     if lowered in _LOCAL_HOSTNAMES or lowered.endswith(_LOCAL_HOSTNAME_SUFFIXES):
         return True
     try:
-        return not ipaddress.ip_address(lowered.strip("[]")).is_global
+        return not _is_global_ip(ipaddress.ip_address(lowered.strip("[]")))
     except ValueError:
         return False
 
 
-def _discovery_url_blocked(url: str, target_url: str) -> bool:
+def _is_global_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether an address is globally routable, judging an IPv4-mapped IPv6 address by its IPv4 form."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global
+
+
+_DNS_TIMEOUT_SECONDS = 5.0
+
+
+async def _resolve_host(host: str) -> list[str] | None:
+    """Return the addresses a host name resolves to: empty when it does not resolve, None when the lookup times out."""
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(host, None, type=socket.SOCK_STREAM), timeout=_DNS_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        return None
+    except (OSError, UnicodeError):
+        return []
+    return [str(info[4][0]) for info in infos]
+
+
+async def _host_is_public(host: str | None) -> bool | None:
+    """Whether a host is public: literals and internal names without DNS, other names by every resolved address.
+
+    Returns None when a name does not resolve, so the fetch reports the failure.
+    A lookup that times out counts as non-public: a slow answer could still
+    reach the fetch, so the guard cannot vouch for the host.
+    """
+    if not host:
+        return None
+    if _is_local_host(host):
+        return False
+    try:
+        return _is_global_ip(ipaddress.ip_address(host.strip("[]")))
+    except ValueError:
+        pass
+    resolved = await _resolve_host(host)
+    if resolved is None:
+        return False
+    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for address in resolved:
+        try:
+            addresses.append(ipaddress.ip_address(address.split("%", 1)[0]))
+        except ValueError:
+            continue
+    if not addresses:
+        return None
+    return all(_is_global_ip(ip) for ip in addresses)
+
+
+async def _discovery_url_blocked(url: str, target_url: str) -> bool:
     """Whether a server-supplied discovery URL points a public target at a non-public host.
 
     The challenge's ``resource_metadata`` and the listed issuers are chosen by
     the audited server, so following them must not turn an audit of a public
-    server into a request to loopback, link-local or private addresses. A
-    target that is itself local may name local discovery URLs.
+    server into a request to loopback, link-local or private addresses. Names
+    are resolved, and any non-public address blocks the URL. A target that is
+    itself non-public may name non-public discovery URLs. The check resolves
+    before the fetch connects, so it does not stop DNS rebinding.
     """
     try:
         host = urlsplit(url).hostname
         target_host = urlsplit(target_url).hostname
     except ValueError:
         return False
-    return _is_local_host(host) and not _is_local_host(target_host)
+    if await _host_is_public(host) is not False:
+        return False
+    return await _host_is_public(target_host) is True
 
 
 def www_authenticate_param(header: str, param: str) -> str | None:
@@ -1570,7 +1628,7 @@ async def _fetch_auth_server_metadata(
     """
     details["auth_server_issuer"] = issuer
     details["auth_server_metadata_present"] = False
-    if _discovery_url_blocked(issuer, target_url):
+    if await _discovery_url_blocked(issuer, target_url):
         details["auth_server_metadata_blocked"] = True
         return
     reached = False
@@ -1601,7 +1659,7 @@ async def _fetch_auth_server_metadata(
         details["auth_server_metadata_error"] = last_error
 
 
-def _metadata_candidates(target: _HttpTarget, details: dict[str, Any]) -> tuple[list[str], str | None]:
+async def _metadata_candidates(target: _HttpTarget, details: dict[str, Any]) -> tuple[list[str], str | None]:
     """Protected-resource metadata locations in the order an MCP client tries them.
 
     A ``resource_metadata`` URL in the observed challenge comes first, then the
@@ -1618,7 +1676,7 @@ def _metadata_candidates(target: _HttpTarget, details: dict[str, Any]) -> tuple[
         details["challenge_metadata_url"] = referenced
         if not _is_http_url(referenced):
             details["challenge_metadata_invalid"] = True
-        elif _discovery_url_blocked(referenced, target.url):
+        elif await _discovery_url_blocked(referenced, target.url):
             details["challenge_metadata_blocked"] = True
         else:
             challenge_url = referenced
@@ -1651,7 +1709,7 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
     distinguishable from one that simply answered 404.
     """
     details: dict[str, Any] = {"urls_tried": []}
-    candidates, challenge_url = _metadata_candidates(target, details)
+    candidates, challenge_url = await _metadata_candidates(target, details)
     reached = False
     last_error: str | None = None
     for candidate in candidates:

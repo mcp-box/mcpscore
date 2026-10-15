@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+import socket
 
 import httpx2
 import pytest
 
+from mcpscore import probes
 from mcpscore.probes import (
     ERROR_HEADER_MISMATCH,
     ERROR_INVALID_PARAMS,
@@ -51,8 +53,10 @@ from mcpscore.probes import (
     _fetch_auth_server_metadata,
     _HttpTarget,
     _is_local_host,
+    _metadata_candidates,
     _probe_auth_metadata,
     _probe_catalog_connection_independence,
+    _resolve_host,
     _traverse_cache_scope_surface,
     _well_known_urls,
     not_applicable_results,
@@ -2589,10 +2593,94 @@ class TestDiscoveryUrlGuard:
     def test_public_hosts(self, host: str | None):
         assert _is_local_host(host) is False
 
-    def test_blocks_only_when_a_public_target_names_a_local_url(self):
-        assert _discovery_url_blocked("http://127.0.0.1/prm", "https://server.example/mcp") is True
-        assert _discovery_url_blocked("http://127.0.0.1/prm", "http://localhost:8000/mcp") is False
-        assert _discovery_url_blocked("https://auth.example/", "https://server.example/mcp") is False
+    def test_ipv4_mapped_ipv6_is_judged_by_its_ipv4_form(self):
+        assert _is_local_host("[::ffff:10.0.0.1]") is True
+        assert _is_local_host("::ffff:8.8.8.8") is False
 
-    def test_unparsable_url_is_left_to_the_fetch(self):
-        assert _discovery_url_blocked("http://[::1", "https://server.example/mcp") is False
+    async def test_blocks_only_when_a_public_target_names_a_local_url(self):
+        assert await _discovery_url_blocked("http://127.0.0.1/prm", "https://server.example/mcp") is True
+        assert await _discovery_url_blocked("http://127.0.0.1/prm", "http://localhost:8000/mcp") is False
+        assert await _discovery_url_blocked("https://auth.example/", "https://server.example/mcp") is False
+
+    async def test_unparsable_url_is_left_to_the_fetch(self):
+        assert await _discovery_url_blocked("http://[::1", "https://server.example/mcp") is False
+
+    @staticmethod
+    def _resolve(monkeypatch: pytest.MonkeyPatch, table: dict[str, list[str]]) -> None:
+        async def resolve(host: str) -> list[str]:
+            return table.get(host, [])
+
+        monkeypatch.setattr(probes, "_resolve_host", resolve)
+
+    async def test_name_resolving_to_a_private_address_is_blocked(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(monkeypatch, {"meta.attacker.example": ["10.0.0.7"], "server.example": ["93.184.215.14"]})
+        assert await _discovery_url_blocked("https://meta.attacker.example/prm", "https://server.example/mcp") is True
+
+    async def test_any_private_address_among_several_blocks(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(
+            monkeypatch,
+            {"meta.example": ["93.184.215.14", "fe80::1%en0"], "server.example": ["93.184.215.14"]},
+        )
+        assert await _discovery_url_blocked("https://meta.example/prm", "https://server.example/mcp") is True
+
+    async def test_private_target_may_name_private_discovery_hosts(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(monkeypatch, {"auth.corp.example": ["10.0.0.8"], "mcp.corp.example": ["10.0.0.9"]})
+        assert await _discovery_url_blocked("https://auth.corp.example/", "https://mcp.corp.example/mcp") is False
+
+    async def test_unresolvable_names_are_left_to_the_fetch(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(monkeypatch, {"server.example": ["93.184.215.14"]})
+        assert await _discovery_url_blocked("https://gone.example/prm", "https://server.example/mcp") is False
+        self._resolve(monkeypatch, {"meta.example": ["10.0.0.7"]})
+        assert await _discovery_url_blocked("https://meta.example/prm", "https://gone.example/mcp") is False
+
+    async def test_lookup_that_times_out_is_blocked(self, monkeypatch: pytest.MonkeyPatch):
+        async def resolve(host: str) -> list[str] | None:
+            return None if host == "slow.example" else ["93.184.215.14"]
+
+        monkeypatch.setattr(probes, "_resolve_host", resolve)
+        assert await _discovery_url_blocked("https://slow.example/prm", "https://server.example/mcp") is True
+
+    async def test_unparsable_resolved_addresses_are_ignored(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(monkeypatch, {"meta.example": ["not-an-ip"], "server.example": ["93.184.215.14"]})
+        assert await _discovery_url_blocked("https://meta.example/prm", "https://server.example/mcp") is False
+
+    async def test_challenge_url_resolving_privately_is_reported_not_fetched(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(monkeypatch, {"meta.attacker.example": ["127.0.0.1"], "server.example": ["93.184.215.14"]})
+        seen: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(str(request.url))
+            return httpx2.Response(404)
+
+        details: dict = {}
+        challenge = 'Bearer resource_metadata="https://meta.attacker.example/prm"'
+        async with _client(handler) as client:
+            target = _HttpTarget(client, URL, auth_challenge=challenge)
+            candidates, challenge_url = await _metadata_candidates(target, details)
+        assert details["challenge_metadata_blocked"] is True
+        assert challenge_url is None
+        assert "https://meta.attacker.example/prm" not in candidates
+
+
+class TestResolveHost:
+    async def test_resolves_a_numeric_host_without_dns(self):
+        assert "127.0.0.1" in await _resolve_host("127.0.0.1")
+
+    async def test_resolution_failure_is_empty(self, monkeypatch: pytest.MonkeyPatch):
+
+        async def fail(*args: object, **kwargs: object) -> list[object]:
+            raise socket.gaierror("no such host")
+
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "getaddrinfo", fail)
+        assert await _resolve_host("gone.example") == []
+
+    async def test_lookup_timeout_is_none(self, monkeypatch: pytest.MonkeyPatch):
+        async def hang(*args: object, **kwargs: object) -> list[object]:
+            await asyncio.sleep(10)
+            return []
+
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "getaddrinfo", hang)
+        monkeypatch.setattr(probes, "_DNS_TIMEOUT_SECONDS", 0.01)
+        assert await _resolve_host("slow.example") is None
