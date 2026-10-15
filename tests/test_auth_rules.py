@@ -344,6 +344,17 @@ class TestWwwAuthenticateParam:
     def test_param_name_is_matched_case_insensitively(self):
         assert www_authenticate_param(f'Bearer Resource_Metadata="{METADATA_URL}"', "resource_metadata") == METADATA_URL
 
+    def test_parameter_like_text_inside_a_quoted_value_is_ignored(self):
+        header = (
+            'Bearer error_description="see resource_metadata=https://meta.example/decoy, retry", '
+            'resource_metadata="https://meta.example/real"'
+        )
+        assert www_authenticate_param(header, "resource_metadata") == "https://meta.example/real"
+
+    def test_quoted_pairs_are_unescaped(self):
+        """RFC 7230 §3.2.6: a backslash quotes the next character inside a quoted-string."""
+        assert www_authenticate_param('Bearer realm="a \\"q\\" b"', "realm") == 'a "q" b'
+
     def test_similarly_named_parameter_is_not_mistaken_for_the_real_one(self):
         assert www_authenticate_param('Bearer xresource_metadata="https://evil.example/x"', "resource_metadata") is None
 

@@ -2442,10 +2442,19 @@ class TestChallengeDiscovery:
         assert result.details["discovery"] == "challenge"
         assert "challenge_metadata_invalid" not in result.details
 
-    async def test_malformed_challenge_url_is_recorded_invalid_not_unreachable(self):
-        result, _seen = await _auth_metadata(_modern_server_handler, 'Bearer resource_metadata="http://[::1"')
+    @pytest.mark.parametrize("reference", ["http://[::1", "http://ex\u00e4mple..com/prm"])
+    async def test_malformed_challenge_url_is_recorded_invalid_not_unreachable(self, reference: str):
+        """The second host parses but fails IDNA encoding, so only the fetch can reject it."""
+        result, _seen = await _auth_metadata(_modern_server_handler, f'Bearer resource_metadata="{reference}"')
         assert result.details["challenge_metadata_invalid"] is True
         assert "challenge_metadata_error" not in result.details
+
+    @pytest.mark.parametrize("reference", ["https://", "https:///prm", "http://:8080/prm"])
+    async def test_challenge_url_without_a_host_is_recorded_invalid(self, reference: str):
+        result, seen = await _auth_metadata(_modern_server_handler, f'Bearer resource_metadata="{reference}"')
+        assert result.details["challenge_metadata_invalid"] is True
+        assert "challenge_metadata_error" not in result.details
+        assert reference not in seen
 
     async def test_relative_challenge_url_is_recorded_invalid(self):
         result, seen = await _auth_metadata(_modern_server_handler, 'Bearer resource_metadata="/prm"')
@@ -2653,6 +2662,37 @@ class TestDiscoveryUrlGuard:
         self._resolve(monkeypatch, {"meta.example": ["93.184.215.14", "10.0.0.7"], "mcp.corp.example": ["10.0.0.9"]})
         assert await _discovery_url_refusal("https://meta.example/prm", "https://server.example/mcp") == "private"
         assert await _discovery_url_refusal("https://meta.example/prm", "https://mcp.corp.example/mcp") is None
+
+    @pytest.mark.parametrize("answer", [["93.184.215.14", "10.0.0.9"], None])
+    async def test_challenge_url_on_the_target_origin_is_never_refused(
+        self, monkeypatch: pytest.MonkeyPatch, answer: list[str] | None
+    ):
+        """The audit already connects to the target, so its own well-known URL is fetched once, as the challenge."""
+
+        async def resolve(host: str) -> list[str] | None:
+            return answer
+
+        monkeypatch.setattr(probes, "_resolve_host", resolve)
+        own = _well_known_urls(URL)[0]
+        seen: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(str(request.url))
+            return httpx2.Response(200, json={"resource": URL}) if str(request.url) == own else httpx2.Response(404)
+
+        details: dict = {}
+        async with _client(handler) as client:
+            candidates, challenge_url = await _metadata_candidates(
+                _HttpTarget(client, URL, f'Bearer resource_metadata="{own}"'), details
+            )
+        assert challenge_url == own
+        assert candidates.count(own) == 1
+        assert "challenge_metadata_blocked" not in details
+        assert "challenge_metadata_error" not in details
+
+    async def test_same_host_on_another_port_is_not_the_target_origin(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(monkeypatch, {"server.example": ["93.184.215.14", "10.0.0.9"]})
+        assert await _discovery_url_refusal("https://server.example:8443/prm", URL) == "private"
 
     async def test_challenge_lookup_timeout_is_an_error_not_a_block(self, monkeypatch: pytest.MonkeyPatch):
         async def resolve(host: str) -> list[str] | None:

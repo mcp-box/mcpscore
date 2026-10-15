@@ -1526,13 +1526,32 @@ async def _classify_host(host: str | None) -> _HostClass:
     return "private" if public == 0 else "mixed"
 
 
+def _origin(url: str) -> tuple[str, str, int | None] | None:
+    """Return a URL's scheme, host and effective port, or None when it has no host."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if not parts.hostname:
+        return None
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, port if port is not None else {"https": 443, "http": 80}.get(scheme)
+
+
+def _is_fetchable_url(value: object) -> bool:
+    """Whether a value is an http(s) URL with a host."""
+    return _is_http_url(value) and _origin(cast("str", value)) is not None
+
+
 async def _discovery_url_refusal(url: str, target_url: str) -> Literal["private", "timeout"] | None:
     """Why a server-supplied discovery URL must not be fetched, or None when it may be.
 
     The challenge's ``resource_metadata`` and the listed issuers are chosen by
     the audited server, so following them must not turn an audit of a public
     server into a request to loopback, link-local or private addresses. A
-    discovery host with any non-public address is refused as ``"private"``,
+    URL on the target's own origin is never refused: the audit connects there
+    anyway. Any other discovery host with a non-public address is refused as ``"private"``,
     and one whose lookup times out as ``"timeout"``, unless every address of
     the target is non-public. A discovery name that does not resolve is left
     to the fetch. The check resolves before the fetch connects, so it does not
@@ -1543,12 +1562,18 @@ async def _discovery_url_refusal(url: str, target_url: str) -> Literal["private"
         target_host = urlsplit(target_url).hostname
     except ValueError:
         return None
+    if _origin(url) == _origin(target_url):
+        return None
     discovery = await _classify_host(host)
     if discovery not in ("private", "mixed", "timeout"):
         return None
     if await _classify_host(target_host) == "private":
         return None
     return "timeout" if discovery == "timeout" else "private"
+
+
+_AUTH_PARAM = re.compile(r"([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*=\s*(?:\"((?:[^\"\\]|\\.)*)\"|([^\s,\"]+))")
+_QUOTED_PAIR = re.compile(r"\\(.)")
 
 
 def www_authenticate_param(header: str, param: str) -> str | None:
@@ -1560,19 +1585,17 @@ def www_authenticate_param(header: str, param: str) -> str | None:
     anyway and clients read it fine, so the bare form is accepted too.
 
     The bare value ends at the next comma or whitespace, the auth-param
-    separators. Param names are matched case-insensitively (RFC 7235 §2.1) and
-    only at a parameter boundary, so ``xresource_metadata=`` is not mistaken
-    for ``resource_metadata=``.
+    separators. Parameters are read as whole name/value pairs, so text inside
+    another quoted value is never taken for a parameter, and
+    ``xresource_metadata=`` is not mistaken for ``resource_metadata=``. Param
+    names are matched case-insensitively (RFC 7235 §2.1).
     """
-    pattern = re.compile(
-        rf"(?:^|[\s,]){re.escape(param)}\s*=\s*(?:\"([^\"]*)\"|([^\s,]+))",
-        re.IGNORECASE,
-    )
-    match = pattern.search(header)
-    if match is None:
-        return None
-    quoted, bare = match.groups()
-    return quoted if quoted is not None else bare
+    wanted = param.lower()
+    for match in _AUTH_PARAM.finditer(header):
+        name, quoted, bare = match.groups()
+        if name.lower() == wanted:
+            return _QUOTED_PAIR.sub(r"\1", quoted) if quoted is not None else bare
+    return None
 
 
 def _auth_server_metadata_urls(issuer: str) -> list[str]:
@@ -1689,8 +1712,9 @@ async def _metadata_candidates(target: _HttpTarget, details: dict[str, Any]) -> 
     referenced = www_authenticate_param(target.auth_challenge, "resource_metadata") if target.auth_challenge else None
     if referenced is not None:
         details["challenge_metadata_url"] = referenced
-        refusal = await _discovery_url_refusal(referenced, target.url) if _is_http_url(referenced) else None
-        if not _is_http_url(referenced):
+        fetchable = _is_fetchable_url(referenced)
+        refusal = await _discovery_url_refusal(referenced, target.url) if fetchable else None
+        if not fetchable:
             details["challenge_metadata_invalid"] = True
         elif refusal == "timeout":
             details["challenge_metadata_error"] = _DNS_TIMEOUT_ERROR
