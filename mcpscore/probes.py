@@ -41,7 +41,7 @@ import re
 import socket
 from subprocess import DEVNULL
 import time
-from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -1446,8 +1446,8 @@ async def _try_get_json_anonymous(
 
 
 def _is_http_url(value: object) -> bool:
-    """Whether a value is an http(s) URL string."""
-    return isinstance(value, str) and value.startswith(("https://", "http://"))
+    """Whether a value is an http(s) URL string; the scheme is case-insensitive."""
+    return isinstance(value, str) and value.lower().startswith(("https://", "http://"))
 
 
 _LOCAL_HOSTNAMES = ("localhost",)
@@ -1491,24 +1491,25 @@ async def _resolve_host(host: str) -> list[str] | None:
     return [str(info[4][0]) for info in infos]
 
 
-async def _host_is_public(host: str | None) -> bool | None:
-    """Whether a host is public: literals and internal names without DNS, other names by every resolved address.
+_HostClass = Literal["public", "private", "unresolved", "timeout"]
 
-    Returns None when a name does not resolve, so the fetch reports the failure.
-    A lookup that times out counts as non-public: a slow answer could still
-    reach the fetch, so the guard cannot vouch for the host.
+
+async def _classify_host(host: str | None) -> _HostClass:
+    """Classify a host: literals and internal names without DNS, other names by every resolved address.
+
+    A name is private when any address it resolves to is not globally routable.
     """
     if not host:
-        return None
+        return "unresolved"
     if _is_local_host(host):
-        return False
+        return "private"
     try:
-        return _is_global_ip(ipaddress.ip_address(host.strip("[]")))
+        return "public" if _is_global_ip(ipaddress.ip_address(host.strip("[]"))) else "private"
     except ValueError:
         pass
     resolved = await _resolve_host(host)
     if resolved is None:
-        return False
+        return "timeout"
     addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for address in resolved:
         try:
@@ -1516,28 +1517,30 @@ async def _host_is_public(host: str | None) -> bool | None:
         except ValueError:
             continue
     if not addresses:
-        return None
-    return all(_is_global_ip(ip) for ip in addresses)
+        return "unresolved"
+    return "public" if all(_is_global_ip(ip) for ip in addresses) else "private"
 
 
 async def _discovery_url_blocked(url: str, target_url: str) -> bool:
-    """Whether a server-supplied discovery URL points a public target at a non-public host.
+    """Whether a server-supplied discovery URL may point the audit at a non-public host.
 
     The challenge's ``resource_metadata`` and the listed issuers are chosen by
     the audited server, so following them must not turn an audit of a public
-    server into a request to loopback, link-local or private addresses. Names
-    are resolved, and any non-public address blocks the URL. A target that is
-    itself non-public may name non-public discovery URLs. The check resolves
-    before the fetch connects, so it does not stop DNS rebinding.
+    server into a request to loopback, link-local or private addresses. A
+    discovery host that is private, or whose lookup times out, is blocked
+    unless the target is confirmed private; a target whose lookup fails or
+    times out gets no exemption. A discovery name that does not resolve is
+    left to the fetch. The check resolves before the fetch connects, so it
+    does not stop DNS rebinding.
     """
     try:
         host = urlsplit(url).hostname
         target_host = urlsplit(target_url).hostname
     except ValueError:
         return False
-    if await _host_is_public(host) is not False:
+    if await _classify_host(host) not in ("private", "timeout"):
         return False
-    return await _host_is_public(target_host) is True
+    return await _classify_host(target_host) != "private"
 
 
 def www_authenticate_param(header: str, param: str) -> str | None:
@@ -1719,7 +1722,9 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
         if error is not None:
             last_error = error
             details.setdefault("unreachable_locations", []).append(candidate)
-            if is_challenge:
+            if is_challenge and error == "InvalidURL":
+                details["challenge_metadata_invalid"] = True
+            elif is_challenge:
                 details["challenge_metadata_error"] = error
             continue
         reached = True

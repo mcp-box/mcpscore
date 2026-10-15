@@ -2428,6 +2428,25 @@ class TestChallengeDiscovery:
         assert seen[0] == local_prm
         assert result.details["discovery"] == "challenge"
 
+    async def test_uppercase_scheme_challenge_url_is_followed(self):
+        """RFC 3986 §3.1: schemes are case-insensitive."""
+        upper = "HTTPS://metadata.example/prm"
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if str(request.url) == "https://metadata.example/prm":
+                return httpx2.Response(200, json={"resource": URL})
+            return httpx2.Response(404)
+
+        result, seen = await _auth_metadata(handler, f'Bearer resource_metadata="{upper}"')
+        assert seen[0] == "https://metadata.example/prm"
+        assert result.details["discovery"] == "challenge"
+        assert "challenge_metadata_invalid" not in result.details
+
+    async def test_malformed_challenge_url_is_recorded_invalid_not_unreachable(self):
+        result, _seen = await _auth_metadata(_modern_server_handler, 'Bearer resource_metadata="http://[::1"')
+        assert result.details["challenge_metadata_invalid"] is True
+        assert "challenge_metadata_error" not in result.details
+
     async def test_relative_challenge_url_is_recorded_invalid(self):
         result, seen = await _auth_metadata(_modern_server_handler, 'Bearer resource_metadata="/prm"')
         assert result.details["challenge_metadata_invalid"] is True
@@ -2627,11 +2646,24 @@ class TestDiscoveryUrlGuard:
         self._resolve(monkeypatch, {"auth.corp.example": ["10.0.0.8"], "mcp.corp.example": ["10.0.0.9"]})
         assert await _discovery_url_blocked("https://auth.corp.example/", "https://mcp.corp.example/mcp") is False
 
-    async def test_unresolvable_names_are_left_to_the_fetch(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_unresolvable_discovery_name_is_left_to_the_fetch(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(monkeypatch, {"server.example": ["93.184.215.14"]})
         assert await _discovery_url_blocked("https://gone.example/prm", "https://server.example/mcp") is False
+
+    async def test_target_that_does_not_resolve_gets_no_private_exemption(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(monkeypatch, {"meta.example": ["10.0.0.7"]})
-        assert await _discovery_url_blocked("https://meta.example/prm", "https://gone.example/mcp") is False
+        assert await _discovery_url_blocked("https://meta.example/prm", "https://gone.example/mcp") is True
+        assert await _discovery_url_blocked("http://169.254.169.254/prm", "https://gone.example/mcp") is True
+
+    async def test_target_lookup_timeout_gets_no_private_exemption(self, monkeypatch: pytest.MonkeyPatch):
+        async def resolve(host: str) -> list[str] | None:
+            return None
+
+        monkeypatch.setattr(probes, "_resolve_host", resolve)
+        assert await _discovery_url_blocked("http://169.254.169.254/prm", "https://server.example/mcp") is True
+
+    async def test_target_without_a_host_gets_no_private_exemption(self):
+        assert await _discovery_url_blocked("http://127.0.0.1/prm", "https:///mcp") is True
 
     async def test_lookup_that_times_out_is_blocked(self, monkeypatch: pytest.MonkeyPatch):
         async def resolve(host: str) -> list[str] | None:

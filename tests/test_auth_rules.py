@@ -191,6 +191,10 @@ class TestProtectedResourceMetadata:
 
 
 class TestAuthorizationServersHttps:
+    def test_uppercase_scheme_passes(self):
+        data = _data(_unauth(), _metadata(servers=["HTTPS://auth.example"]))
+        assert AuthAuthorizationServersHttpsRule().check(data).passed is True
+
     def test_all_https_passes(self):
         data = _data(_unauth(), _metadata(servers=["https://auth.example", "https://sso.example"]))
         result = AuthAuthorizationServersHttpsRule().check(data)
@@ -342,6 +346,10 @@ class TestWwwAuthenticateParam:
 
 
 class TestMetadataHttps:
+    def test_uppercase_scheme_passes(self):
+        meta = _full_metadata(metadata_url="HTTPS://metadata.example/prm")
+        assert AuthMetadataHttpsRule().check(_data(_unauth(), meta)).passed is True
+
     def test_passes_for_https(self):
         result = AuthMetadataHttpsRule().check(_data(_unauth(), _full_metadata()))
         assert result.passed is True
