@@ -1,5 +1,7 @@
 """Tests for the auth-posture rules (RFC 9728 protected resource metadata)."""
 
+import time
+
 import pytest
 
 from mcpscore.probes import (
@@ -350,6 +352,13 @@ class TestWwwAuthenticateParam:
             'resource_metadata="https://meta.example/real"'
         )
         assert www_authenticate_param(header, "resource_metadata") == "https://meta.example/real"
+
+    @pytest.mark.parametrize("filler", ["a" * 200_000, "a=" * 100_000, '"' + "a " * 100_000])
+    def test_long_server_supplied_header_parses_in_linear_time(self, filler: str):
+        """A backtracking parser takes minutes on these; the bounded one takes milliseconds."""
+        started = time.perf_counter()
+        assert www_authenticate_param(f"Bearer {filler}", "resource_metadata") is None
+        assert time.perf_counter() - started < 1.0
 
     def test_quoted_pairs_are_unescaped(self):
         """RFC 7230 §3.2.6: a backslash quotes the next character inside a quoted-string."""

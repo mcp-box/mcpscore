@@ -1572,7 +1572,11 @@ async def _discovery_url_refusal(url: str, target_url: str) -> Literal["private"
     return "timeout" if discovery == "timeout" else "private"
 
 
-_AUTH_PARAM = re.compile(r"([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*=\s*(?:\"((?:[^\"\\]|\\.)*)\"|([^\s,\"]+))")
+# A name starts only at the header start or after whitespace or a comma, and every
+# quantifier is possessive, so a long server-supplied header parses in linear time.
+_AUTH_PARAM = re.compile(
+    r"(?:^|(?<=[\s,]))([!#$%&'*+.^_`|~0-9A-Za-z-]++)\s*+=\s*+(?:\"((?:[^\"\\]|\\.)*+)\"|([^\s,\"]++))"
+)
 _QUOTED_PAIR = re.compile(r"\\(.)")
 
 
