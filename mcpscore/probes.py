@@ -1491,13 +1491,15 @@ async def _resolve_host(host: str) -> list[str] | None:
     return [str(info[4][0]) for info in infos]
 
 
-_HostClass = Literal["public", "private", "unresolved", "timeout"]
+_HostClass = Literal["public", "private", "mixed", "unresolved", "timeout"]
+_DNS_TIMEOUT_ERROR = "DNSTimeout"
 
 
 async def _classify_host(host: str | None) -> _HostClass:
     """Classify a host: literals and internal names without DNS, other names by every resolved address.
 
-    A name is private when any address it resolves to is not globally routable.
+    A name is public when every address it resolves to is globally routable,
+    private when none is, and mixed otherwise.
     """
     if not host:
         return "unresolved"
@@ -1518,29 +1520,35 @@ async def _classify_host(host: str | None) -> _HostClass:
             continue
     if not addresses:
         return "unresolved"
-    return "public" if all(_is_global_ip(ip) for ip in addresses) else "private"
+    public = sum(_is_global_ip(ip) for ip in addresses)
+    if public == len(addresses):
+        return "public"
+    return "private" if public == 0 else "mixed"
 
 
-async def _discovery_url_blocked(url: str, target_url: str) -> bool:
-    """Whether a server-supplied discovery URL may point the audit at a non-public host.
+async def _discovery_url_refusal(url: str, target_url: str) -> Literal["private", "timeout"] | None:
+    """Why a server-supplied discovery URL must not be fetched, or None when it may be.
 
     The challenge's ``resource_metadata`` and the listed issuers are chosen by
     the audited server, so following them must not turn an audit of a public
     server into a request to loopback, link-local or private addresses. A
-    discovery host that is private, or whose lookup times out, is blocked
-    unless the target is confirmed private; a target whose lookup fails or
-    times out gets no exemption. A discovery name that does not resolve is
-    left to the fetch. The check resolves before the fetch connects, so it
-    does not stop DNS rebinding.
+    discovery host with any non-public address is refused as ``"private"``,
+    and one whose lookup times out as ``"timeout"``, unless every address of
+    the target is non-public. A discovery name that does not resolve is left
+    to the fetch. The check resolves before the fetch connects, so it does not
+    stop DNS rebinding.
     """
     try:
         host = urlsplit(url).hostname
         target_host = urlsplit(target_url).hostname
     except ValueError:
-        return False
-    if await _classify_host(host) not in ("private", "timeout"):
-        return False
-    return await _classify_host(target_host) != "private"
+        return None
+    discovery = await _classify_host(host)
+    if discovery not in ("private", "mixed", "timeout"):
+        return None
+    if await _classify_host(target_host) == "private":
+        return None
+    return "timeout" if discovery == "timeout" else "private"
 
 
 def www_authenticate_param(header: str, param: str) -> str | None:
@@ -1631,7 +1639,11 @@ async def _fetch_auth_server_metadata(
     """
     details["auth_server_issuer"] = issuer
     details["auth_server_metadata_present"] = False
-    if await _discovery_url_blocked(issuer, target_url):
+    refusal = await _discovery_url_refusal(issuer, target_url)
+    if refusal == "timeout":
+        details["auth_server_metadata_error"] = _DNS_TIMEOUT_ERROR
+        return
+    if refusal is not None:
         details["auth_server_metadata_blocked"] = True
         return
     reached = False
@@ -1677,9 +1689,12 @@ async def _metadata_candidates(target: _HttpTarget, details: dict[str, Any]) -> 
     referenced = www_authenticate_param(target.auth_challenge, "resource_metadata") if target.auth_challenge else None
     if referenced is not None:
         details["challenge_metadata_url"] = referenced
+        refusal = await _discovery_url_refusal(referenced, target.url) if _is_http_url(referenced) else None
         if not _is_http_url(referenced):
             details["challenge_metadata_invalid"] = True
-        elif await _discovery_url_blocked(referenced, target.url):
+        elif refusal == "timeout":
+            details["challenge_metadata_error"] = _DNS_TIMEOUT_ERROR
+        elif refusal is not None:
             details["challenge_metadata_blocked"] = True
         else:
             challenge_url = referenced

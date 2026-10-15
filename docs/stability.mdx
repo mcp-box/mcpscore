@@ -404,8 +404,8 @@ publish it.
   trailing slash alone is accepted and reported. A failure lists the
   locations tried; it does not prove that no valid document exists elsewhere.
 - Discovery URLs that point a public server at loopback, link-local or private
-  addresses are reported, not fetched. Host names are resolved first; a
-  lookup that times out is treated as non-public.
+  addresses are reported, not fetched. Host names are resolved first. A
+  lookup that times out is not fetched either, and is reported as unreachable.
 </Accordion>
 
 <Accordion title="Technical details: package evidence">

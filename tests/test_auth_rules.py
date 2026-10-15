@@ -1,5 +1,7 @@
 """Tests for the auth-posture rules (RFC 9728 protected resource metadata)."""
 
+import pytest
+
 from mcpscore.probes import (
     PROBE_AUTH_METADATA,
     PROBE_UNAUTHENTICATED,
@@ -280,9 +282,10 @@ class TestChallengeReferencesMetadata:
         assert result.passed is False
         assert "non-public address" in result.message
 
-    def test_skips_when_challenge_url_was_unreachable(self):
+    @pytest.mark.parametrize("error", ["ConnectError", "DNSTimeout"])
+    def test_skips_when_challenge_url_was_unreachable(self, error: str):
         unauth = _unauth(www_authenticate=f'Bearer resource_metadata="{METADATA_URL}"')
-        data = _data(unauth, _challenged(status=None, challenge_metadata_error="ConnectError"))
+        data = _data(unauth, _challenged(status=None, challenge_metadata_error=error))
         assert AuthChallengeReferencesMetadataRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
     def test_skips_when_the_probe_did_not_follow_the_challenge(self):

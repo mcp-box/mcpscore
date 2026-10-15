@@ -49,7 +49,7 @@ from mcpscore.probes import (
     ProbeResult,
     _auth_server_metadata_urls,
     _collect_catalog_identities,
-    _discovery_url_blocked,
+    _discovery_url_refusal,
     _fetch_auth_server_metadata,
     _HttpTarget,
     _is_local_host,
@@ -2617,12 +2617,12 @@ class TestDiscoveryUrlGuard:
         assert _is_local_host("::ffff:8.8.8.8") is False
 
     async def test_blocks_only_when_a_public_target_names_a_local_url(self):
-        assert await _discovery_url_blocked("http://127.0.0.1/prm", "https://server.example/mcp") is True
-        assert await _discovery_url_blocked("http://127.0.0.1/prm", "http://localhost:8000/mcp") is False
-        assert await _discovery_url_blocked("https://auth.example/", "https://server.example/mcp") is False
+        assert await _discovery_url_refusal("http://127.0.0.1/prm", "https://server.example/mcp") == "private"
+        assert await _discovery_url_refusal("http://127.0.0.1/prm", "http://localhost:8000/mcp") is None
+        assert await _discovery_url_refusal("https://auth.example/", "https://server.example/mcp") is None
 
     async def test_unparsable_url_is_left_to_the_fetch(self):
-        assert await _discovery_url_blocked("http://[::1", "https://server.example/mcp") is False
+        assert await _discovery_url_refusal("http://[::1", "https://server.example/mcp") is None
 
     @staticmethod
     def _resolve(monkeypatch: pytest.MonkeyPatch, table: dict[str, list[str]]) -> None:
@@ -2633,48 +2633,85 @@ class TestDiscoveryUrlGuard:
 
     async def test_name_resolving_to_a_private_address_is_blocked(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(monkeypatch, {"meta.attacker.example": ["10.0.0.7"], "server.example": ["93.184.215.14"]})
-        assert await _discovery_url_blocked("https://meta.attacker.example/prm", "https://server.example/mcp") is True
+        assert (
+            await _discovery_url_refusal("https://meta.attacker.example/prm", "https://server.example/mcp") == "private"
+        )
 
     async def test_any_private_address_among_several_blocks(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(
             monkeypatch,
             {"meta.example": ["93.184.215.14", "fe80::1%en0"], "server.example": ["93.184.215.14"]},
         )
-        assert await _discovery_url_blocked("https://meta.example/prm", "https://server.example/mcp") is True
+        assert await _discovery_url_refusal("https://meta.example/prm", "https://server.example/mcp") == "private"
+
+    async def test_target_with_mixed_addresses_gets_no_private_exemption(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(monkeypatch, {"server.example": ["93.184.215.14", "10.0.0.9"]})
+        refusal = await _discovery_url_refusal("http://169.254.169.254/latest/meta-data", "https://server.example/mcp")
+        assert refusal == "private"
+
+    async def test_discovery_host_with_mixed_addresses_is_refused(self, monkeypatch: pytest.MonkeyPatch):
+        self._resolve(monkeypatch, {"meta.example": ["93.184.215.14", "10.0.0.7"], "mcp.corp.example": ["10.0.0.9"]})
+        assert await _discovery_url_refusal("https://meta.example/prm", "https://server.example/mcp") == "private"
+        assert await _discovery_url_refusal("https://meta.example/prm", "https://mcp.corp.example/mcp") is None
+
+    async def test_challenge_lookup_timeout_is_an_error_not_a_block(self, monkeypatch: pytest.MonkeyPatch):
+        async def resolve(host: str) -> list[str] | None:
+            return None if host == "slow.example" else ["93.184.215.14"]
+
+        monkeypatch.setattr(probes, "_resolve_host", resolve)
+        details: dict = {}
+        challenge = 'Bearer resource_metadata="https://slow.example/prm"'
+        async with _client(lambda _request: httpx2.Response(404)) as client:
+            candidates, challenge_url = await _metadata_candidates(_HttpTarget(client, URL, challenge), details)
+        assert details["challenge_metadata_error"] == "DNSTimeout"
+        assert "challenge_metadata_blocked" not in details
+        assert challenge_url is None
+        assert "https://slow.example/prm" not in candidates
+
+    async def test_issuer_lookup_timeout_is_an_error_not_a_block(self, monkeypatch: pytest.MonkeyPatch):
+        async def resolve(host: str) -> list[str] | None:
+            return None if host == "slow.example" else ["93.184.215.14"]
+
+        monkeypatch.setattr(probes, "_resolve_host", resolve)
+        details: dict = {}
+        async with _client(lambda _request: httpx2.Response(404)) as client:
+            await _fetch_auth_server_metadata(client, "https://slow.example", URL, details)
+        assert details["auth_server_metadata_error"] == "DNSTimeout"
+        assert "auth_server_metadata_blocked" not in details
 
     async def test_private_target_may_name_private_discovery_hosts(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(monkeypatch, {"auth.corp.example": ["10.0.0.8"], "mcp.corp.example": ["10.0.0.9"]})
-        assert await _discovery_url_blocked("https://auth.corp.example/", "https://mcp.corp.example/mcp") is False
+        assert await _discovery_url_refusal("https://auth.corp.example/", "https://mcp.corp.example/mcp") is None
 
     async def test_unresolvable_discovery_name_is_left_to_the_fetch(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(monkeypatch, {"server.example": ["93.184.215.14"]})
-        assert await _discovery_url_blocked("https://gone.example/prm", "https://server.example/mcp") is False
+        assert await _discovery_url_refusal("https://gone.example/prm", "https://server.example/mcp") is None
 
     async def test_target_that_does_not_resolve_gets_no_private_exemption(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(monkeypatch, {"meta.example": ["10.0.0.7"]})
-        assert await _discovery_url_blocked("https://meta.example/prm", "https://gone.example/mcp") is True
-        assert await _discovery_url_blocked("http://169.254.169.254/prm", "https://gone.example/mcp") is True
+        assert await _discovery_url_refusal("https://meta.example/prm", "https://gone.example/mcp") == "private"
+        assert await _discovery_url_refusal("http://169.254.169.254/prm", "https://gone.example/mcp") == "private"
 
     async def test_target_lookup_timeout_gets_no_private_exemption(self, monkeypatch: pytest.MonkeyPatch):
         async def resolve(host: str) -> list[str] | None:
             return None
 
         monkeypatch.setattr(probes, "_resolve_host", resolve)
-        assert await _discovery_url_blocked("http://169.254.169.254/prm", "https://server.example/mcp") is True
+        assert await _discovery_url_refusal("http://169.254.169.254/prm", "https://server.example/mcp") == "private"
 
     async def test_target_without_a_host_gets_no_private_exemption(self):
-        assert await _discovery_url_blocked("http://127.0.0.1/prm", "https:///mcp") is True
+        assert await _discovery_url_refusal("http://127.0.0.1/prm", "https:///mcp") == "private"
 
     async def test_lookup_that_times_out_is_blocked(self, monkeypatch: pytest.MonkeyPatch):
         async def resolve(host: str) -> list[str] | None:
             return None if host == "slow.example" else ["93.184.215.14"]
 
         monkeypatch.setattr(probes, "_resolve_host", resolve)
-        assert await _discovery_url_blocked("https://slow.example/prm", "https://server.example/mcp") is True
+        assert await _discovery_url_refusal("https://slow.example/prm", "https://server.example/mcp") == "timeout"
 
     async def test_unparsable_resolved_addresses_are_ignored(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(monkeypatch, {"meta.example": ["not-an-ip"], "server.example": ["93.184.215.14"]})
-        assert await _discovery_url_blocked("https://meta.example/prm", "https://server.example/mcp") is False
+        assert await _discovery_url_refusal("https://meta.example/prm", "https://server.example/mcp") is None
 
     async def test_challenge_url_resolving_privately_is_reported_not_fetched(self, monkeypatch: pytest.MonkeyPatch):
         self._resolve(monkeypatch, {"meta.attacker.example": ["127.0.0.1"], "server.example": ["93.184.215.14"]})
