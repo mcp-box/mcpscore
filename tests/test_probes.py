@@ -19,6 +19,7 @@ from mcpscore.probes import (
     ORIGIN_PROBE_VALUE,
     PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
+    PROBE_GET_STREAM,
     PROBE_GET_STREAM_REMOVED,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
@@ -37,6 +38,7 @@ from mcpscore.probes import (
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
     PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_RESOURCES_INVALID_CURSOR,
+    PROBE_SESSION_DELETE,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
@@ -56,6 +58,7 @@ from mcpscore.probes import (
     _metadata_candidates,
     _probe_auth_metadata,
     _probe_catalog_connection_independence,
+    _probe_origin_validation,
     _resolve_host,
     _traverse_cache_scope_surface,
     _well_known_urls,
@@ -83,6 +86,22 @@ def _rpc_result(request_id, result: dict):
 AUTH_SERVERS = ["https://auth.example"]
 
 
+def _modern_envelope_response(request: httpx2.Request, body: dict) -> httpx2.Response | None:
+    """Answer what the envelope alone decides: invalid JSON-RPC, SEP-2243 header mismatch, a notification."""
+    if body.get("jsonrpc") != "2.0":
+        return _rpc_error(None, -32600, "Invalid Request")
+    method = body["method"]
+    params = body.get("params", {})
+    expected_name = params.get("uri") if method == "resources/read" else params.get("name")
+    if (
+        request.headers.get("MCP-Protocol-Version") is None
+        or request.headers.get("Mcp-Method") != method
+        or (method in {"resources/read", "prompts/get"} and request.headers.get("Mcp-Name") != expected_name)
+    ):
+        return _rpc_error(body.get("id"), ERROR_HEADER_MISMATCH, "HeaderMismatch")
+    return httpx2.Response(202) if "id" not in body else None
+
+
 def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
     """Simulate a server implementing the 2026-07-28 behaviors the probes check."""
     if request.method == "GET":
@@ -99,18 +118,11 @@ def _modern_server_handler(request: httpx2.Request) -> httpx2.Response:
     if isinstance(body, list):
         return _rpc_error(None, -32600, "Batch requests are not supported")
     request_id = body.get("id")
+    envelope = _modern_envelope_response(request, body)
+    if envelope is not None:
+        return envelope
     method = body["method"]
     meta = body.get("params", {}).get("_meta", {})
-
-    # SEP-2243: missing or mismatched request metadata → HeaderMismatch.
-    params = body.get("params", {})
-    expected_name = params.get("uri") if method == "resources/read" else params.get("name")
-    if (
-        request.headers.get("MCP-Protocol-Version") is None
-        or request.headers.get("Mcp-Method") != method
-        or (method in {"resources/read", "prompts/get"} and request.headers.get("Mcp-Name") != expected_name)
-    ):
-        return _rpc_error(request_id, ERROR_HEADER_MISMATCH, "HeaderMismatch")
 
     # Unknown protocol version → 400 + UnsupportedProtocolVersion
     if meta.get(f"{META_PREFIX}protocolVersion") == "2099-01-01":
@@ -200,12 +212,15 @@ async def test_modern_server_supports_all_probed_behaviors():
     results = await _run(_modern_server_handler)
 
     assert set(results) == set(PROBE_IDS)
-    absent_catalogs = {
+    not_applicable = {
         PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
         PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+        # Legacy-session probes: a modern-only server serves no `initialize`.
+        PROBE_GET_STREAM,
+        PROBE_SESSION_DELETE,
     }
     for probe_id in PROBE_IDS:
-        expected = ProbeOutcome.NOT_APPLICABLE if probe_id in absent_catalogs else ProbeOutcome.SUPPORTED
+        expected = ProbeOutcome.NOT_APPLICABLE if probe_id in not_applicable else ProbeOutcome.SUPPORTED
         assert results[probe_id].outcome is expected, probe_id
 
     discover = results[PROBE_DISCOVER].details
@@ -369,9 +384,8 @@ async def test_origin_probe_reports_the_json_rpc_error_when_no_control_is_served
 
 async def test_origin_probe_judges_a_legacy_server_through_initialize():
     deletes: list[str] = []
-    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes))
-
-    origin = results[PROBE_ORIGIN_VALIDATION]
+    async with _client(_stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes)) as client:
+        origin = await _probe_origin_validation(_HttpTarget(client, URL))
     assert origin.outcome is ProbeOutcome.SUPPORTED
     assert origin.details["control_shape"] == "legacy-initialize"
     assert origin.details["modern_control_http_status"] == 400
@@ -384,9 +398,10 @@ async def test_origin_probe_judges_a_legacy_server_through_initialize():
 async def test_origin_probe_survives_a_failed_session_delete():
     """Closing the handshake session is a courtesy; its failure never changes the verdict."""
     deletes: list[str] = []
-    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes, delete_fails=True))
-
-    origin = results[PROBE_ORIGIN_VALIDATION]
+    async with _client(
+        _stateful_legacy_handler(rejects_foreign_origin=True, deletes=deletes, delete_fails=True)
+    ) as client:
+        origin = await _probe_origin_validation(_HttpTarget(client, URL))
     assert origin.outcome is ProbeOutcome.SUPPORTED
     assert origin.details["control_shape"] == "legacy-initialize"
     assert deletes == ["sess-1"]
@@ -445,23 +460,19 @@ async def test_origin_probe_session_delete_carries_the_negotiated_version_and_no
             )
         return _rpc_error(body.get("id"), -32600, "Bad Request: no session")
 
-    async with (
-        httpx2.AsyncClient(
-            transport=httpx2.MockTransport(handler), headers={"Origin": "https://caller.example"}
-        ) as client,
-        httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as fresh_client,
-    ):
-        results = await run_all_probes(URL, client=client, fresh_client=fresh_client)
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), headers={"Origin": "https://caller.example"}
+    ) as client:
+        origin = await _probe_origin_validation(_HttpTarget(client, URL))
 
-    assert results[PROBE_ORIGIN_VALIDATION].outcome is ProbeOutcome.SUPPORTED
+    assert origin.outcome is ProbeOutcome.SUPPORTED
     assert deletes == [{"session": "sess-9", "version": "2025-06-18", "origin": None}]
 
 
 async def test_origin_probe_fails_a_legacy_server_that_accepts_any_origin():
     deletes: list[str] = []
-    results = await _run(_stateful_legacy_handler(rejects_foreign_origin=False, deletes=deletes))
-
-    origin = results[PROBE_ORIGIN_VALIDATION]
+    async with _client(_stateful_legacy_handler(rejects_foreign_origin=False, deletes=deletes)) as client:
+        origin = await _probe_origin_validation(_HttpTarget(client, URL))
     assert origin.outcome is ProbeOutcome.UNSUPPORTED
     assert origin.details["control_shape"] == "legacy-initialize"
     assert origin.details["http_status"] == 200

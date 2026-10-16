@@ -31,6 +31,19 @@ RULES = {r.rule_id: r for r in create_all_rules() if type(r).__module__.rsplit("
 URL = "https://example.com/mcp"
 
 
+def _generic_probe(probe_id: str, failure: bool) -> ProbeResult:
+    outcome = ProbeOutcome.UNSUPPORTED if failure else ProbeOutcome.SUPPORTED
+    return ProbeResult(probe_id, outcome, {"http_status": 200, "error_code": -32603})
+
+
+_PROBE_FIXTURES = {
+    # Judged only when the request was refused; the code decides.
+    "transport_invalid_request_error_code": lambda probe_id, failure: ProbeResult(
+        probe_id, ProbeOutcome.SUPPORTED, {"http_status": 400, "error_code": -32700 if failure else -32600}
+    ),
+}
+
+
 def data_for(rule_id: str, *, failure: bool) -> AuditData:
     """Build server observations, keeping the rule's own verdict out of the fixture."""
     probes = modern_probes()
@@ -81,11 +94,7 @@ def data_for(rule_id: str, *, failure: bool) -> AuditData:
         else getattr(rule, "probe_id", None)
     )
     if probe_id and (failure or probe_id not in probes):
-        probes[probe_id] = ProbeResult(
-            probe_id,
-            ProbeOutcome.UNSUPPORTED if failure else ProbeOutcome.SUPPORTED,
-            {"http_status": 200, "error_code": -32603},
-        )
+        probes[probe_id] = _PROBE_FIXTURES.get(rule_id, _generic_probe)(probe_id, failure)
     if rule_id == "protocol_version_supported_versions_include_negotiated":
         data.session_protocol_version = "2025-11-25" if failure else "2026-07-28"
     if not failure:
@@ -161,8 +170,8 @@ def test_each_rule_guidance_contract(rule_id, failure, monkeypatch):
         assert "suggested_fix" not in wire
 
 
-def test_inventory_covers_all_45_rules():
-    assert len(RULES) == 45
+def test_inventory_covers_all_50_rules():
+    assert len(RULES) == 50
     assert sum(r.group_name == "readiness" for r in RULES.values()) == 20
     assert sum(r.group_name == "security" for r in RULES.values()) == 12
 

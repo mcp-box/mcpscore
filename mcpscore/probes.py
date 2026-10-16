@@ -31,7 +31,7 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
 import ipaddress
@@ -163,6 +163,10 @@ PROBE_PAGINATION_CACHE_SCOPE = "probe_pagination_cache_scope"
 PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT = "probe_tools_catalog_connection_independent"
 PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT = "probe_resources_catalog_connection_independent"
 PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT = "probe_prompts_catalog_connection_independent"
+PROBE_NOTIFICATION_ACCEPTED = "probe_notification_accepted"
+PROBE_INVALID_REQUEST = "probe_invalid_request"
+PROBE_GET_STREAM = "probe_get_stream"
+PROBE_SESSION_DELETE = "probe_session_delete"
 
 _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -188,6 +192,10 @@ _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_PAGINATION_CACHE_SCOPE,
+    PROBE_NOTIFICATION_ACCEPTED,
+    PROBE_INVALID_REQUEST,
+    PROBE_GET_STREAM,
+    PROBE_SESSION_DELETE,
 )
 CATALOG_CONNECTION_PROBE_IDS: tuple[str, ...] = (
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
@@ -210,6 +218,10 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_AUTH_METADATA,
         PROBE_ORIGIN_VALIDATION,
         PROBE_MALFORMED_JSON,
+        PROBE_NOTIFICATION_ACCEPTED,
+        PROBE_INVALID_REQUEST,
+        PROBE_GET_STREAM,
+        PROBE_SESSION_DELETE,
     }
 )
 """Probes whose *subject* is an HTTP construct, so they cannot run over stdio.
@@ -218,8 +230,9 @@ Not "probes that happen to use HTTP" — every probe does that over an HTTP
 target. These ask questions that only exist in HTTP: required/mirrored request
 headers, the removed GET stream and ``Mcp-Session-Id``, the unauthenticated
 status and ``WWW-Authenticate`` challenge, RFC 9728/8414 well-known documents,
-``Origin`` validation against DNS rebinding, and raw malformed HTTP request
-bodies. Over stdio they record
+``Origin`` validation against DNS rebinding, raw malformed HTTP request
+bodies, and the Streamable HTTP envelope (notification ``202``, the GET
+stream, session ``DELETE``, invalid JSON-RPC bodies). Over stdio they record
 ``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
 malformed wire input through the SDK transport.
 """
@@ -329,6 +342,8 @@ class _HttpProbeResponse(_ProbeResponse):
     """
 
     status_code: int
+    final_url: str | None = None
+    """URL that answered, after any same-origin redirect the request followed."""
 
 
 CLIENT_NAME = "mcpscore"
@@ -495,6 +510,7 @@ class _HttpTarget:
             status_code=response.status_code,
             headers=dict(response.headers),
             payload=_parse_payload(response),
+            final_url=str(response.url),
         )
 
     async def post_raw(
@@ -592,8 +608,12 @@ class _HttpTarget:
 
     async def get_status(self, headers: dict[str, str]) -> _HttpProbeResponse:
         """GET the endpoint and close without consuming a possible legacy SSE stream."""
+        return await self.request_status("GET", headers)
+
+    async def request_status(self, method: str, headers: dict[str, str]) -> _HttpProbeResponse:
+        """Send a bodiless request and close without consuming the response body."""
         async with self.client.stream(
-            "GET",
+            method,
             self.url,
             headers=headers,
             timeout=PROBE_TIMEOUT_S,
@@ -2044,6 +2064,239 @@ async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
     return _malformed_json_result(response, control, raw_body, unobservable_reason)
 
 
+@dataclass(frozen=True)
+class _LegacySession:
+    """A stateful-lifecycle session a probe opened with ``initialize`` and ``notifications/initialized``."""
+
+    initialize: _HttpProbeResponse
+    headers: dict[str, str]
+    """POST headers for requests inside the session: negotiated version and any session ID."""
+
+    session_id: str | None
+    initialized: _HttpProbeResponse
+    initialized_body: str | None
+
+
+async def _open_legacy_session(
+    target: _HttpTarget, request_id: int
+) -> tuple[_LegacySession | None, _HttpProbeResponse, _HttpTarget]:
+    """Open a legacy session the way every 2025 client does; None when ``initialize`` is not served.
+
+    ``initialize`` follows a same-origin redirect, as the audit's own session
+    does, and every later request goes to the URL that answered. The
+    ``notifications/initialized`` that completes the handshake is sent as a
+    raw POST so its status and body can be judged. Returns the session, the
+    ``initialize`` response, and the target to use from here on.
+    """
+    response = await target.post(_legacy_initialize_body(request_id), _legacy_headers())
+    if response.final_url and response.final_url != target.url:
+        target = replace(target, url=response.final_url)
+    negotiated = (response.result or {}).get("protocolVersion")
+    if not 200 <= response.status_code < 300 or not isinstance(negotiated, str):
+        return None, response, target
+    headers = {**_legacy_headers(), "MCP-Protocol-Version": negotiated}
+    session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    notification = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+    initialized, body, _unobservable = await target.post_raw(notification, headers)
+    return _LegacySession(response, headers, session_id, initialized, body), response, target
+
+
+def _legacy_unavailable(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
+    """NOT_APPLICABLE for a session probe whose ``initialize`` was refused."""
+    reason = (
+        "initialize is access-controlled"
+        if response.status_code in AUTH_GATED_STATUSES
+        else f"initialize was not served (HTTP {response.status_code}); no legacy session to probe"
+    )
+    details = {"initialize_http_status": response.status_code, "reason": reason}
+    return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+
+
+def _redirected(probe_id: str, status: int, details: dict[str, Any]) -> ProbeResult | None:
+    """NOT_APPLICABLE when the answer is a redirect the probe did not follow: it never reached the endpoint."""
+    if 300 <= status < 400:
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, {**details, "reason": "endpoint redirects"})
+    return None
+
+
+def _notification_outcome(status: int, body: str | None) -> ProbeOutcome:
+    """Judge a notification POST: ``202`` with no body, or an HTTP error status, both conform."""
+    if status == 202:
+        return ProbeOutcome.SUPPORTED if not (body or "").strip() else ProbeOutcome.UNSUPPORTED
+    return ProbeOutcome.SUPPORTED if status >= 400 else ProbeOutcome.UNSUPPORTED
+
+
+async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
+    """POST a JSON-RPC notification and check the transport's answer.
+
+    Every Streamable HTTP revision says a notification the server accepts MUST
+    get ``202 Accepted`` with no body, and one it cannot accept an HTTP error
+    status. The notification is the ``notifications/initialized`` that
+    completes a legacy handshake; a server without the legacy lifecycle gets a
+    stateless 2026-07-28 ``notifications/cancelled`` instead.
+    """
+    session, response, target = await _open_legacy_session(target, 23)
+    if session is not None:
+        await target.end_session(session.initialize)
+        status, body, shape = session.initialized.status_code, session.initialized_body, "legacy-initialized"
+    elif response.status_code in AUTH_GATED_STATUSES:
+        return _legacy_unavailable(PROBE_NOTIFICATION_ACCEPTED, response)
+    else:
+        version = _target_version()
+        method = "notifications/cancelled"
+        notification = {"jsonrpc": "2.0", "method": method, "params": {"requestId": "mcpscore-probe"}}
+        sent, body, _unobservable = await target.post_raw(
+            json.dumps(notification).encode(), _request_headers(version, method)
+        )
+        status, shape = sent.status_code, "modern-cancelled"
+        if status in AUTH_GATED_STATUSES:
+            return ProbeResult(
+                PROBE_NOTIFICATION_ACCEPTED,
+                ProbeOutcome.NOT_APPLICABLE,
+                {"http_status": status, "reason": "notification POST is access-controlled"},
+            )
+    details: dict[str, Any] = {"http_status": status, "body_present": bool((body or "").strip()), "shape": shape}
+    redirected = _redirected(PROBE_NOTIFICATION_ACCEPTED, status, details)
+    if redirected is not None:
+        return redirected
+    return ProbeResult(PROBE_NOTIFICATION_ACCEPTED, _notification_outcome(status, body), details)
+
+
+INVALID_REQUEST_METHOD = 24
+"""The ``method`` of the invalid-request probe; JSON-RPC 2.0 requires a string."""
+
+
+async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
+    """Send a well-formed JSON body that is not a valid JSON-RPC 2.0 request.
+
+    The body is a correct request except that ``method`` is a number;
+    JSON-RPC 2.0 calls that an Invalid Request (-32600), and no handler can
+    serve it. A control with ``"2.0"`` must be
+    served first, so a server that refuses everything is not credited with a
+    refusal. In a legacy session the request is ``ping``; without the legacy
+    lifecycle it is a stateless ``server/discover``. Details record whether
+    the invalid request was served or never answered (``timed_out``), the
+    error code, and whether the response id is the request's or null.
+    """
+    session, response, target = await _open_legacy_session(target, 29)
+    if session is not None:
+        headers, body = session.headers, {"jsonrpc": "2.0", "id": 25, "method": "ping"}
+        shape = "legacy-ping"
+    elif response.status_code in AUTH_GATED_STATUSES:
+        return _legacy_unavailable(PROBE_INVALID_REQUEST, response)
+    else:
+        version = _target_version()
+        headers = _request_headers(version, "server/discover")
+        body, shape = _request_body("server/discover", 25, _modern_meta(version)), "modern-discover"
+    try:
+        control = await target.post(body, headers, follow_redirects=False)
+        details: dict[str, Any] = {"control_http_status": control.status_code, "shape": shape}
+        if control.status_code in AUTH_GATED_STATUSES or control.result is None:
+            details["reason"] = "control request was not served; invalid-request handling not observable"
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
+        invalid = {**body, "method": INVALID_REQUEST_METHOD, "id": 24}
+        try:
+            rejected = await target.post(invalid, headers, follow_redirects=False)
+        except httpx2.ReadTimeout:
+            # The control was just answered, so silence here is the server's, not the network's.
+            details["timed_out"] = True
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.UNSUPPORTED, details)
+    finally:
+        if session is not None:
+            await target.end_session(session.initialize)
+    details.update(_base_details(rejected))
+    redirected = _redirected(PROBE_INVALID_REQUEST, rejected.status_code, details)
+    if redirected is not None:
+        return redirected
+    served = rejected.result is not None
+    details["served"] = served
+    if rejected.error is not None:
+        response_id = rejected.payload.get("id") if isinstance(rejected.payload, dict) else None
+        details["id_echoed_or_null"] = response_id in (None, 24)
+    if served or rejected.status_code >= 500:
+        outcome = ProbeOutcome.UNSUPPORTED
+    elif rejected.error is not None or rejected.status_code >= 400:
+        outcome = ProbeOutcome.SUPPORTED
+    else:
+        outcome = ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_INVALID_REQUEST, outcome, details)
+
+
+async def _probe_get_stream(target: _HttpTarget) -> ProbeResult:
+    """GET the endpoint inside a legacy session: an SSE stream or ``405``.
+
+    From 2025-03-26 through 2025-11-25 the server MUST answer a GET either with
+    ``Content-Type: text/event-stream`` or ``405 Method Not Allowed``. The
+    stream is closed as soon as the headers arrive.
+    """
+    session, response, target = await _open_legacy_session(target, 26)
+    if session is None:
+        return _legacy_unavailable(PROBE_GET_STREAM, response)
+    headers = {"Accept": "text/event-stream", "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"]}
+    if session.session_id:
+        headers["Mcp-Session-Id"] = session.session_id
+    try:
+        got = await target.get_status(headers)
+    finally:
+        await target.end_session(session.initialize)
+    content_type = next((v for k, v in got.headers.items() if k.lower() == "content-type"), "")
+    details: dict[str, Any] = {"http_status": got.status_code, "content_type": content_type or None}
+    if got.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "GET is access-controlled"
+        return ProbeResult(PROBE_GET_STREAM, ProbeOutcome.NOT_APPLICABLE, details)
+    redirected = _redirected(PROBE_GET_STREAM, got.status_code, details)
+    if redirected is not None:
+        return redirected
+    is_stream = 200 <= got.status_code < 300 and content_type.lower().startswith("text/event-stream")
+    outcome = ProbeOutcome.SUPPORTED if got.status_code == 405 or is_stream else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_GET_STREAM, outcome, details)
+
+
+async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
+    """DELETE a session the probe opened, then check the session is gone.
+
+    A client SHOULD end a session with DELETE, and the server MAY refuse with
+    ``405``. A server that accepts it has terminated the session, after which
+    it MUST answer requests carrying that session ID with ``404``; a ``ping``
+    in the deleted session checks that. Applies only when ``initialize``
+    issued a session ID, and only when the session is gone afterwards: a
+    server that accepts the DELETE and keeps serving the session has not
+    terminated it.
+    """
+    session, response, target = await _open_legacy_session(target, 27)
+    if session is None:
+        return _legacy_unavailable(PROBE_SESSION_DELETE, response)
+    if not session.session_id:
+        return ProbeResult(
+            PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, {"reason": "initialize issued no session ID"}
+        )
+    deleted = await target.request_status(
+        "DELETE",
+        {"Mcp-Session-Id": session.session_id, "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"]},
+    )
+    details: dict[str, Any] = {"http_status": deleted.status_code}
+    if deleted.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "DELETE is access-controlled"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
+    redirected = _redirected(PROBE_SESSION_DELETE, deleted.status_code, details)
+    if redirected is not None:
+        return redirected
+    if deleted.status_code == 405:
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.SUPPORTED, details)
+    if not 200 <= deleted.status_code < 300:
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.UNSUPPORTED, details)
+    after = await target.post({"jsonrpc": "2.0", "id": 28, "method": "ping"}, session.headers, follow_redirects=False)
+    details["after_delete_http_status"] = after.status_code
+    if after.result is not None:
+        # The 404 requirement binds a terminated session, and this one was kept.
+        details["reason"] = "session is still served after DELETE; no terminated session to observe"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
+    outcome = ProbeOutcome.SUPPORTED if after.status_code == 404 else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_SESSION_DELETE, outcome, details)
+
+
 _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {
     PROBE_DISCOVER: _probe_discover,
     PROBE_STATELESS_LIST: _probe_stateless_list,
@@ -2072,6 +2325,10 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_AUTH_METADATA: _probe_auth_metadata,
     PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
     PROBE_MALFORMED_JSON: _probe_malformed_json,
+    PROBE_NOTIFICATION_ACCEPTED: _probe_notification_accepted,
+    PROBE_INVALID_REQUEST: _probe_invalid_request,
+    PROBE_GET_STREAM: _probe_get_stream,
+    PROBE_SESSION_DELETE: _probe_session_delete,
 }
 """Probes whose subject is an HTTP construct (see HTTP_ONLY_PROBE_IDS)."""
 

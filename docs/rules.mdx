@@ -152,6 +152,11 @@ rules to the OWASP risks and lists what an audit from outside cannot see.
 | Rule ID | Name | Severity | Applies to |
 |---|---|---|---|
 | `transport_streamable_http` | Streamable HTTP Transport | LOW (1) | all versions |
+| `transport_notification_accepted` | Notification Answered With 202 | LOW (1) | 2025-03-26 and later |
+| `transport_invalid_request_rejected` | Invalid JSON-RPC Request Rejected | MEDIUM (2) | 2025-03-26 and later |
+| `transport_invalid_request_error_code` | Invalid Request Answered With -32600 | LOW (1) | 2025-03-26 and later |
+| `transport_get_stream_contract` | GET Stream Or 405 | LOW (1) | 2025-03-26 to 2025-11-25 |
+| `transport_session_delete` | Session DELETE Honoured | LOW (1) | 2025-03-26 to 2025-11-25 |
 
 ## Resources
 

@@ -157,6 +157,11 @@ from .tools import (
     ToolsTitlePresentRule,
 )
 from .transport import (
+    GetStreamContractRule,
+    InvalidRequestErrorCodeRule,
+    InvalidRequestRejectedRule,
+    NotificationAcceptedRule,
+    SessionDeleteRule,
     StreamableHTTPTransportRule,
 )
 
@@ -187,14 +192,18 @@ __all__ = (
     "DeprecatedVersionRule",
     "ErrorCodeMigrationReadinessRule",
     "ErrorDataLeakRule",
+    "GetStreamContractRule",
     "GetStreamRemovedReadinessRule",
     "HeaderValidationReadinessRule",
+    "InvalidRequestErrorCodeRule",
+    "InvalidRequestRejectedRule",
     "LatestVersionRule",
     "MalformedRequestHandlingRule",
     "MetaValidationReadinessRule",
     "MissingMethodHeaderReadinessRule",
     "MissingProtocolVersionHeaderReadinessRule",
     "NoSessionIdReadinessRule",
+    "NotificationAcceptedRule",
     "OriginHeaderValidationRule",
     "PackageDescriptionPresentRule",
     "PackageLicenseDeclaredRule",
@@ -247,6 +256,7 @@ __all__ = (
     "ServerTitlePresentRule",
     "ServerVersionPresentRule",
     "ServerWebsiteUrlPresentRule",
+    "SessionDeleteRule",
     "SkippedRule",
     "StatelessRequestReadinessRule",
     "StreamableHTTPTransportRule",
