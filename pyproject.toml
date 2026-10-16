@@ -92,7 +92,7 @@ dev = [
     "pytest-cov>=7.1.0",
     # uv.lock is the pin. The pre-commit hook runs this same ruff from the venv, so
     # the hook, `make lint` and CI cannot disagree.
-    "ruff>=0.16.5,<0.17",
+    "ruff>=0.16.5,<0.18",
     # Declared so a clean `uv sync --all-groups` provides the pre-commit that
     # `make all` runs; exact for the same reason as ruff.
     "pre-commit==4.6.2",

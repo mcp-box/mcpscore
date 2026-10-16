@@ -107,8 +107,8 @@ servers and for servers behind a login.
   used to stop with a usage error.
 - **Dependencies refreshed.** The lockfile picks up starlette 1.8.0 and patch
   or minor releases of distlib, filelock, platformdirs, pluggy,
-  python-discovery and virtualenv. The `mcp==2.3.0` pin is unchanged; it is
-  still the latest SDK.
+  python-discovery and virtualenv, and the development linter moves to ruff
+  0.17.1. The `mcp==2.3.0` pin is unchanged; it is still the latest SDK.
 
 ## [1.22.2] - 2026-10-13
 
