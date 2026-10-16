@@ -55,7 +55,7 @@ from mcp.client.stdio import stdio_client
 from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
 
-from mcpscore.redirects import send_within_origin
+from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
 from mcpscore.spec import DRAFT, LATEST, SPEC_VERSIONS, Era, Lifecycle
 from mcpscore.tls import async_client
@@ -441,6 +441,43 @@ def _parse_payload_text(text: str, content_type: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+_SSE_READ_LIMIT = 65_536
+"""Bytes of an SSE answer read while waiting for the JSON-RPC response before giving up."""
+
+
+class _StreamDeadline(httpx2.ReadTimeout):
+    """No matching JSON-RPC response arrived within the deadline or byte cap."""
+
+    def __init__(self, headers: dict[str, str], request: httpx2.Request) -> None:
+        super().__init__("no matching JSON-RPC response before the deadline", request=request)
+        self.headers = headers
+
+
+async def _read_sse_response(response: httpx2.Response, request_id: object) -> dict[str, Any] | None:
+    """Return the first SSE event that answers ``request_id``; raise TimeoutError past the byte cap."""
+    data: list[str] = []
+    read = 0
+    async for line in response.aiter_lines():
+        read += len(line) + 1
+        if read > _SSE_READ_LIMIT:
+            raise TimeoutError
+        if line.startswith("data:"):
+            data.append(line[len("data:") :].strip())
+            continue
+        if line or not data:
+            continue
+        try:
+            message = json.loads("\n".join(data))
+        except (json.JSONDecodeError, ValueError):
+            message = None
+        data = []
+        if not isinstance(message, dict) or not ("result" in message or "error" in message):
+            continue
+        if message.get("id") == request_id or (message.get("id") is None and "error" in message):
+            return message
+    return None
+
+
 def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
     """Extract the JSON-RPC message from a JSON or SSE response body."""
     return _parse_payload_text(response.text, response.headers.get("content-type", ""))
@@ -512,6 +549,47 @@ class _HttpTarget:
             payload=_parse_payload(response),
             final_url=str(response.url),
         )
+
+    async def post_rpc(
+        self, body: dict, headers: dict[str, str], *, follow_redirects: bool = True
+    ) -> _HttpProbeResponse:
+        """POST one JSON-RPC request and read only until its response arrives.
+
+        A JSON answer is read whole. An SSE answer is read event by event,
+        skipping priming events and notifications, until a message carrying
+        the request's ``id`` (or an error with a null ``id``), and then
+        closed, so a stream kept open with heartbeats cannot stall the probe.
+        The whole exchange shares one deadline and a byte cap; past either,
+        ``_StreamDeadline`` is raised carrying the response headers, so a
+        caller can still close a session they allocated.
+        """
+        request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
+        response: httpx2.Response | None = None
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_S):
+                response = (
+                    await send_within_origin(self.client, request, stream=True)
+                    if follow_redirects
+                    else await self.client.send(request, follow_redirects=False, stream=True)
+                )
+                if "text/event-stream" in response.headers.get("content-type", "").lower():
+                    payload = await _read_sse_response(response, body.get("id"))
+                else:
+                    payload = _parse_payload_text(
+                        (await response.aread()).decode("utf-8", errors="replace"),
+                        response.headers.get("content-type", ""),
+                    )
+                return _HttpProbeResponse(
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    payload=payload,
+                    final_url=str(response.url),
+                )
+        except TimeoutError as exc:
+            raise _StreamDeadline(dict(response.headers) if response is not None else {}, request) from exc
+        finally:
+            if response is not None:
+                await response.aclose()
 
     async def post_raw(
         self, content: bytes, headers: dict[str, str], *, body_limit: Callable[[int], int] | None = None
@@ -2105,11 +2183,17 @@ async def _open_legacy_session(
     raw POST so its status and body can be judged. Returns the session, the
     ``initialize`` response, and the target to use from here on.
     """
-    response = await target.post(_legacy_initialize_body(request_id), _legacy_headers())
+    try:
+        response = await target.post_rpc(_legacy_initialize_body(request_id), _legacy_headers())
+    except _StreamDeadline as exc:
+        await target.end_session(_HttpProbeResponse(status_code=200, headers=exc.headers, payload=None))
+        raise
     if response.final_url and response.final_url != target.url:
         target = replace(target, url=response.final_url)
     negotiated = (response.result or {}).get("protocolVersion")
     if not 200 <= response.status_code < 300 or not isinstance(negotiated, str):
+        # A session ID may have been issued with an answer the probe cannot use; close it.
+        await target.end_session(response)
         return None, response, target
     headers = {**_legacy_headers(), "MCP-Protocol-Version": negotiated}
     session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
@@ -2158,7 +2242,7 @@ def _legacy_unavailable(probe_id: str, response: _HttpProbeResponse) -> ProbeRes
 
 def _redirected(probe_id: str, status: int, details: dict[str, Any]) -> ProbeResult | None:
     """NOT_APPLICABLE when the answer is a redirect the probe did not follow: it never reached the endpoint."""
-    if 300 <= status < 400:
+    if status in REDIRECT_STATUSES:
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, {**details, "reason": "endpoint redirects"})
     return None
 
@@ -2247,18 +2331,18 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
         headers = _request_headers(version, "server/discover")
         body, shape = _request_body("server/discover", 25, _modern_meta(version)), "modern-discover"
     try:
-        control = await target.post(body, headers, follow_redirects=False)
+        control = await target.post_rpc(body, headers, follow_redirects=False)
         details: dict[str, Any] = {"control_http_status": control.status_code, "shape": shape}
         if control.status_code in AUTH_GATED_STATUSES or control.result is None:
             details["reason"] = "control request was not served; invalid-request handling not observable"
             return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
         invalid = {**body, "method": INVALID_REQUEST_METHOD, "id": 24}
         try:
-            rejected = await target.post(invalid, headers, follow_redirects=False)
+            rejected = await target.post_rpc(invalid, headers, follow_redirects=False)
         except httpx2.ReadTimeout:
             # Silence is the server's only if the session still answers a control afterwards;
             # otherwise the timeout propagates and the runner records ERROR.
-            again = await target.post({**body, "id": 30}, headers, follow_redirects=False)
+            again = await target.post_rpc({**body, "id": 30}, headers, follow_redirects=False)
             if again.result is None:
                 raise
             details["timed_out"] = True
@@ -2359,7 +2443,9 @@ async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
         return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.SUPPORTED, details)
     if not 200 <= deleted.status_code < 300:
         return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.UNSUPPORTED, details)
-    after = await target.post({"jsonrpc": "2.0", "id": 28, "method": "ping"}, session.headers, follow_redirects=False)
+    after = await target.post_rpc(
+        {"jsonrpc": "2.0", "id": 28, "method": "ping"}, session.headers, follow_redirects=False
+    )
     details["after_delete_http_status"] = after.status_code
     if after.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "request after DELETE is access-controlled"

@@ -8,6 +8,7 @@ import json
 import httpx2
 import pytest
 
+from mcpscore import probes
 from mcpscore.probes import (
     INVALID_REQUEST_METHOD,
     ProbeOutcome,
@@ -578,3 +579,114 @@ class TestAccessControlAfterTheControl:
         result = await _run(_probe_session_delete, answers)
         assert result.outcome is ProbeOutcome.NOT_APPLICABLE
         assert result.details["reason"] == reason
+
+
+def _sse(*events: bytes, stay_open: bool = False) -> httpx2.Response:
+    async def body():
+        for event in events:
+            yield event
+        if stay_open:
+            while True:
+                yield b": heartbeat\n\n"
+                await asyncio.sleep(0.01)
+
+    return httpx2.Response(
+        200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "sse-1"}, content=body()
+    )
+
+
+INIT_RESULT = b'data: {"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-11-25"}}\n\n'
+
+
+class TestSseAnswers:
+    """Session requests answered over SSE are read up to their own response, never to EOF."""
+
+    @staticmethod
+    def _server(initialize) -> LegacyServer:
+        server = LegacyServer()
+        original = server.__call__
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "POST" and json.loads(request.content).get("method") == "initialize":
+                server.requests.append(request)
+                return initialize(json.loads(request.content)["id"])
+            return original(request)
+
+        server.handler = handler  # type: ignore[attr-defined]
+        return server
+
+    async def test_priming_event_and_notification_before_the_result(self):
+        server = self._server(
+            lambda rid: _sse(
+                b"id: prime-1\ndata:\n\n",
+                b'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}\n\n',
+                INIT_RESULT % rid,
+            )
+        )
+        result = await asyncio.wait_for(_run(_probe_get_stream, server.handler), timeout=2)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert server.requests[-1].headers["Mcp-Session-Id"] == "sse-1"
+
+    async def test_result_followed_by_endless_heartbeats(self):
+        server = self._server(lambda rid: _sse(INIT_RESULT % rid, stay_open=True))
+        result = await asyncio.wait_for(_run(_probe_session_delete, server.handler), timeout=2)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+    async def test_stream_that_never_answers_hits_the_deadline_and_closes_the_session(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
+        server = self._server(lambda _rid: _sse(stay_open=True))
+        with pytest.raises(httpx2.ReadTimeout):
+            await asyncio.wait_for(_run(_probe_get_stream, server.handler), timeout=2)
+        assert server.methods()[-1] == "DELETE"
+        assert server.requests[-1].headers["Mcp-Session-Id"] == "sse-1"
+
+    async def test_byte_cap_ends_a_stream_without_an_answer(self, monkeypatch):
+        monkeypatch.setattr(probes, "_SSE_READ_LIMIT", 64)
+        server = self._server(lambda _rid: _sse(stay_open=True))
+        with pytest.raises(httpx2.ReadTimeout):
+            await asyncio.wait_for(_run(_probe_get_stream, server.handler), timeout=2)
+        assert server.methods()[-1] == "DELETE"
+
+    async def test_unparsable_events_are_skipped(self):
+        server = self._server(lambda rid: _sse(b"data: not json\n\n", INIT_RESULT % rid))
+        result = await asyncio.wait_for(_run(_probe_get_stream, server.handler), timeout=2)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+    async def test_stream_ending_without_an_answer_is_not_a_session(self):
+        server = self._server(lambda _rid: _sse(b'data: {"jsonrpc":"2.0","id":999,"result":{}}\n\n'))
+        result = await asyncio.wait_for(_run(_probe_get_stream, server.handler), timeout=2)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert server.methods()[-1] == "DELETE"
+
+    async def test_error_with_a_null_id_answers_the_invalid_request(self):
+        server = LegacyServer(invalid=_sse(b'data: {"jsonrpc":"2.0","id":null,"error":{"code":-32600}}\n\n'))
+        result = await asyncio.wait_for(_run(_probe_invalid_request, server), timeout=2)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["error_code"] == -32600
+
+
+async def test_unusable_initialize_answer_with_a_session_id_is_closed():
+    server = LegacyServer()
+
+    def no_version(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST" and json.loads(request.content).get("method") == "initialize":
+            server.requests.append(request)
+            return httpx2.Response(200, headers={"Mcp-Session-Id": "sess-x"}, json={"jsonrpc": "2.0", "id": 1})
+        return server(request)
+
+    result = await _run(_probe_get_stream, no_version)
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert server.methods() == ["POST initialize", "DELETE"]
+
+
+class TestNotModifiedIsJudged:
+    """304 is not a redirect: it is judged like any other wrong answer."""
+
+    async def test_get(self):
+        assert (
+            await _run(_probe_get_stream, LegacyServer(get=httpx2.Response(304)))
+        ).outcome is ProbeOutcome.UNSUPPORTED
+
+    async def test_notification(self):
+        server = LegacyServer(notification=httpx2.Response(304))
+        assert (await _run(_probe_notification_accepted, server)).outcome is ProbeOutcome.UNSUPPORTED
