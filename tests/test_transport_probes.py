@@ -1137,6 +1137,19 @@ class TestCapAndDeadlineKeepWhatArrived:
         assert "timed_out" not in result.details
         assert [m for m in server.methods() if m == "POST ping"] == ["POST ping"]
 
+    @pytest.mark.parametrize(("status", "outcome"), [(400, ProbeOutcome.SUPPORTED), (500, ProbeOutcome.UNSUPPORTED)])
+    async def test_error_status_whose_body_read_times_out_is_judged_by_its_status(self, status, outcome):
+        async def stalls():
+            yield b'{"jsonrpc":'
+            raise httpx2.ReadTimeout("idle")
+
+        invalid = httpx2.Response(status, headers={"Content-Type": "application/json"}, content=stalls())
+        server = LegacyServer(invalid=invalid)
+        result = await asyncio.wait_for(_run(_probe_invalid_request, server), timeout=2)
+        assert result.outcome is outcome
+        assert result.details["body_unobservable"] == "unfinished"
+        assert "timed_out" not in result.details
+
     async def test_success_status_with_an_unfinished_body_still_needs_the_second_control(self, monkeypatch):
         monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
         server = LegacyServer(invalid=_open_sse_response(200, first=b": still thinking\n\n"))

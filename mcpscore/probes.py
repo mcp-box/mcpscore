@@ -640,8 +640,8 @@ class _HttpTarget:
         ``id``), and then closed, so a stream kept open with heartbeats cannot
         stall the probe. Bytes are counted before they are buffered, and the
         exchange shares one deadline. Past the deadline ``_StreamDeadline`` is
-        raised, unless an error status already arrived: that answer is
-        returned with ``unobservable="unfinished"``. An answer that is
+        raised, unless an error status already arrived: that answer, like one
+        whose body read times out, is returned with ``unobservable="unfinished"``. An answer that is
         content-encoded or exceeds the byte cap is returned with no payload and
         ``unobservable`` set, never as a timeout.
         With ``close_session_on_failure``, a session ID the answer issued is
@@ -692,16 +692,17 @@ class _HttpTarget:
                         status_code=response.status_code, headers=dict(response.headers), payload=None
                     )
                     await answered.end_session(issued)
+            timed_out = isinstance(exc, (TimeoutError, httpx2.ReadTimeout))
+            if timed_out and response is not None and response.status_code >= 400:
+                # The status already arrived and says the request was refused; only the body is missing.
+                return _HttpProbeResponse(
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    payload=None,
+                    final_url=str(response.url),
+                    unobservable="unfinished",
+                )
             if isinstance(exc, TimeoutError):
-                if response is not None and response.status_code >= 400:
-                    # The status already arrived and says the request was refused; only the body is missing.
-                    return _HttpProbeResponse(
-                        status_code=response.status_code,
-                        headers=dict(response.headers),
-                        payload=None,
-                        final_url=str(response.url),
-                        unobservable="unfinished",
-                    )
                 raise _StreamDeadline(request) from exc
             raise
         finally:
