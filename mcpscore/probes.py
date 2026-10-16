@@ -578,6 +578,10 @@ class _HttpTarget:
                         truncated = True
                         break
                     body.extend(chunk)
+                    if body_limit is not None and len(body) >= limit:
+                        # The caller needs no more; waiting for the next chunk could block on an open stream.
+                        truncated = True
+                        break
         if encoded:
             return (
                 _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),

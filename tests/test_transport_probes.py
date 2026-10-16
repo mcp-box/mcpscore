@@ -21,14 +21,14 @@ from mcpscore.probes import (
 URL = "https://server.example/mcp"
 
 
-async def _open_sse():
-    """Yield one SSE event, then never end the body."""
-    yield b"data: {}\n\n"
+async def _open_sse(first: bytes = b"data: {}\n\n"):
+    """Yield one chunk, then never end the body."""
+    yield first
     await asyncio.Event().wait()
 
 
-def _open_sse_response(status: int = 200) -> httpx2.Response:
-    return httpx2.Response(status, headers={"Content-Type": "text/event-stream"}, content=_open_sse())
+def _open_sse_response(status: int = 200, first: bytes = b"data: {}\n\n") -> httpx2.Response:
+    return httpx2.Response(status, headers={"Content-Type": "text/event-stream"}, content=_open_sse(first))
 
 
 @dataclass
@@ -179,6 +179,12 @@ class TestNotificationAccepted:
 
     async def test_202_opening_a_stream_fails_on_its_first_byte(self):
         server = LegacyServer(notification=_open_sse_response(202))
+        result = await asyncio.wait_for(_run(_probe_notification_accepted, server), timeout=2)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["body_present"] is True
+
+    async def test_202_sending_exactly_one_byte_then_staying_open_fails(self):
+        server = LegacyServer(notification=_open_sse_response(202, first=b"\n"))
         result = await asyncio.wait_for(_run(_probe_notification_accepted, server), timeout=2)
         assert result.outcome is ProbeOutcome.UNSUPPORTED
         assert result.details["body_present"] is True
