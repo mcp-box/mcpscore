@@ -219,6 +219,11 @@ class TestInvalidRequestErrorCode:
         assert result.passed is True
         assert "header validation with -32020" in result.message
 
+    def test_skips_when_the_refusal_could_not_be_read(self):
+        details = {"http_status": 400, "body_unobservable": "encoded", "shape": "legacy-ping"}
+        data = _data(PROBE_INVALID_REQUEST, ProbeOutcome.SUPPORTED, details)
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
     @pytest.mark.parametrize("details", [{"served": True}, {"http_status": 500}, {"timed_out": True}])
     def test_skips_when_the_request_was_not_refused(self, details):
         data = _data(PROBE_INVALID_REQUEST, ProbeOutcome.UNSUPPORTED, details)

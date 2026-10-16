@@ -336,12 +336,15 @@ class InvalidRequestErrorCodeRule(_TransportProbeRule):
         return RuleSeverity.LOW
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Also skip when the request was not refused: ``transport_invalid_request_rejected`` fails that."""
+        """Also skip when the request was not refused (the rejection rule fails that) or the refusal was unreadable."""
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
-        if self._probe(audit_data).outcome is not ProbeOutcome.SUPPORTED:
+        probe = self._probe(audit_data)
+        if probe.outcome is not ProbeOutcome.SUPPORTED:
             return SKIP_REASON_NOT_APPLICABLE
+        if probe.details.get("body_unobservable"):
+            return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
     def check(self, audit_data: AuditData) -> RuleResult:

@@ -345,6 +345,9 @@ class _HttpProbeResponse(_ProbeResponse):
     final_url: str | None = None
     """URL that answered, after any same-origin redirect the request followed."""
 
+    unobservable: str | None = None
+    """Why the body could not be read (``"encoded"``, ``"capped"``); None when it was. Payload is then None."""
+
 
 CLIENT_NAME = "mcpscore"
 """How mcpscore identifies itself to servers, in every lifecycle.
@@ -446,41 +449,80 @@ _RPC_READ_LIMIT = 65_536
 
 
 class _StreamDeadline(httpx2.ReadTimeout):
-    """No matching JSON-RPC response arrived within the deadline or byte cap."""
+    """No matching JSON-RPC response arrived before the deadline."""
 
     def __init__(self, request: httpx2.Request) -> None:
         super().__init__("no matching JSON-RPC response before the deadline", request=request)
 
 
+class _ReadCapReached(Exception):  # noqa: N818 — a signal, not an error condition
+    """The answer exceeded ``_RPC_READ_LIMIT`` before the response was found."""
+
+
 async def _bounded_chunks(response: httpx2.Response) -> AsyncIterator[bytes]:
-    """Yield an identity body as received, counting bytes before anything is buffered; TimeoutError past the cap.
+    """Yield an identity body as received, counting bytes before anything is buffered.
 
     Callers only use this on a response without content-encoding, so
     ``aiter_bytes`` decodes nothing and yields the chunks as they arrive.
+    Raises ``_ReadCapReached`` past the cap.
     """
     read = 0
     async for chunk in response.aiter_bytes():
         read += len(chunk)
         if read > _RPC_READ_LIMIT:
-            raise TimeoutError
+            raise _ReadCapReached
         yield chunk
 
 
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def _take_lines(buffer: bytearray, *, final: bool) -> list[str]:
+    """Remove and decode complete lines; CR, LF and CRLF all end one (WHATWG SSE line rules).
+
+    A CR at the end of the buffer may be the first half of a CRLF split across
+    chunks, so it waits for the next chunk unless the body has ended.
+    """
+    lines: list[str] = []
+    while True:
+        ends = [i for i in (buffer.find(b"\r"), buffer.find(b"\n")) if i >= 0]
+        if not ends:
+            break
+        end = min(ends)
+        skip = 1
+        if buffer[end] == 0x0D:
+            if end + 1 == len(buffer) and not final:
+                break
+            if end + 1 < len(buffer) and buffer[end + 1] == 0x0A:
+                skip = 2
+        lines.append(bytes(buffer[:end]).decode("utf-8", errors="replace"))
+        del buffer[: end + skip]
+    if final and buffer:
+        lines.append(bytes(buffer).decode("utf-8", errors="replace"))
+        buffer.clear()
+    return lines
+
+
 async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
-    """Yield the body's lines, decoded only once complete, so a multibyte character is never split."""
+    """Yield an SSE body's lines, decoded only once complete, without a leading UTF-8 BOM."""
     buffer = bytearray()
+    bom_checked = False
     async for chunk in _bounded_chunks(response):
         buffer.extend(chunk)
-        while (end := buffer.find(b"\n")) >= 0:
-            line = bytes(buffer[:end]).rstrip(b"\r")
-            del buffer[: end + 1]
-            yield line.decode("utf-8", errors="replace")
-    if buffer:
-        yield bytes(buffer).decode("utf-8", errors="replace")
+        if not bom_checked:
+            if len(buffer) < len(_UTF8_BOM) and _UTF8_BOM.startswith(bytes(buffer)):
+                continue
+            if buffer.startswith(_UTF8_BOM):
+                del buffer[: len(_UTF8_BOM)]
+            bom_checked = True
+        for line in _take_lines(buffer, final=False):
+            yield line
+    for line in _take_lines(buffer, final=True):
+        yield line
 
 
 async def _read_sse_response(response: httpx2.Response, request_id: object) -> dict[str, Any] | None:
-    """Return the first SSE event that answers ``request_id``; raise TimeoutError past the byte cap."""
+    """Return the first SSE event that answers ``request_id``; raise ``_ReadCapReached`` past the byte cap."""
     data: list[str] = []
     async for line in _bounded_lines(response):
         if line.startswith("data:"):
@@ -588,10 +630,11 @@ class _HttpTarget:
         until a message carrying the request's ``id`` (or an error with a null
         ``id``), and then closed, so a stream kept open with heartbeats cannot
         stall the probe. Bytes are counted before they are buffered, and the
-        exchange shares one deadline; past either, ``_StreamDeadline`` is
-        raised. With ``close_session_on_failure``, a session ID the answer
-        issued is closed at the URL that answered before any failure
-        propagates.
+        exchange shares one deadline. Past the deadline ``_StreamDeadline`` is
+        raised; an answer that is content-encoded or exceeds the byte cap is
+        returned with no payload and ``unobservable`` set, never as a timeout.
+        With ``close_session_on_failure``, a session ID the answer issued is
+        closed at the URL that answered before any failure propagates.
         """
         request = self.client.build_request(
             "POST",
@@ -610,18 +653,24 @@ class _HttpTarget:
                 )
                 content_type = response.headers.get("content-type", "")
                 encoding = response.headers.get("content-encoding", "").strip().lower()
-                if encoding not in ("", "identity"):
-                    payload = None
-                elif "text/event-stream" in content_type.lower():
-                    payload = await _read_sse_response(response, body.get("id"))
-                else:
-                    raw = b"".join([chunk async for chunk in _bounded_chunks(response)])
-                    payload = _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type)
+                payload: dict[str, Any] | None = None
+                unobservable: str | None = None
+                try:
+                    if encoding not in ("", "identity"):
+                        unobservable = "encoded"
+                    elif "text/event-stream" in content_type.lower():
+                        payload = await _read_sse_response(response, body.get("id"))
+                    else:
+                        raw = b"".join([chunk async for chunk in _bounded_chunks(response)])
+                        payload = _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type)
+                except _ReadCapReached:
+                    unobservable = "capped"
                 return _HttpProbeResponse(
                     status_code=response.status_code,
                     headers=dict(response.headers),
                     payload=payload,
                     final_url=str(response.url),
+                    unobservable=unobservable,
                 )
         except Exception as exc:
             if response is not None:
@@ -2277,11 +2326,12 @@ async def _incomplete_handshake(probe_id: str, session: _LegacySession, target: 
 
 def _legacy_unavailable(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
     """NOT_APPLICABLE for a session probe whose ``initialize`` was refused."""
-    reason = (
-        "initialize is access-controlled"
-        if response.status_code in AUTH_GATED_STATUSES
-        else f"initialize was not served (HTTP {response.status_code}); no legacy session to probe"
-    )
+    if response.status_code in AUTH_GATED_STATUSES:
+        reason = "initialize is access-controlled"
+    elif response.unobservable:
+        reason = f"initialize answer not observable ({response.unobservable})"
+    else:
+        reason = f"initialize was not served (HTTP {response.status_code}); no legacy session to probe"
     details = {"initialize_http_status": response.status_code, "reason": reason}
     return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
 
@@ -2315,7 +2365,7 @@ async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
         await target.end_session(session.initialize)
         status, body, shape = session.initialized.status_code, session.initialized_body, "legacy-initialized"
         unobservable = session.initialized_unobservable
-    elif response.status_code in AUTH_GATED_STATUSES:
+    elif response.status_code in AUTH_GATED_STATUSES or response.unobservable:
         return _legacy_unavailable(PROBE_NOTIFICATION_ACCEPTED, response)
     else:
         version = _target_version()
@@ -2350,17 +2400,51 @@ INVALID_REQUEST_METHOD = 24
 """The ``method`` of the invalid-request probe; JSON-RPC 2.0 requires a string."""
 
 
+def _judge_invalid_answer(rejected: _HttpProbeResponse, details: dict[str, Any]) -> ProbeResult:
+    """Judge the answer to the invalid request; ``details`` already holds the control's observations."""
+    details.update(_base_details(rejected))
+    if rejected.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "invalid request was refused by access control; validation not observable"
+        return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
+    redirected = _redirected(PROBE_INVALID_REQUEST, rejected.status_code, details)
+    if redirected is not None:
+        return redirected
+    if rejected.unobservable:
+        # The status still decides a crash or a refusal; the body, and so the error code, is unknown.
+        details["body_unobservable"] = rejected.unobservable
+        if rejected.status_code >= 500:
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.UNSUPPORTED, details)
+        if rejected.status_code >= 400:
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.SUPPORTED, details)
+        details["reason"] = f"answer to the invalid request not observable ({rejected.unobservable})"
+        return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
+    served = rejected.result is not None
+    details["served"] = served
+    if rejected.error is not None:
+        response_id = rejected.payload.get("id") if isinstance(rejected.payload, dict) else None
+        details["id_echoed_or_null"] = response_id in (None, 24)
+    if served or rejected.status_code >= 500:
+        outcome = ProbeOutcome.UNSUPPORTED
+    elif rejected.error is not None or rejected.status_code >= 400:
+        outcome = ProbeOutcome.SUPPORTED
+    else:
+        outcome = ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_INVALID_REQUEST, outcome, details)
+
+
 async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
     """Send a well-formed JSON body that is not a valid JSON-RPC 2.0 request.
 
     The body is a correct request except that ``method`` is a number;
     JSON-RPC 2.0 calls that an Invalid Request (-32600), and no handler can
-    serve it. A control with ``"2.0"`` must be
-    served first, so a server that refuses everything is not credited with a
-    refusal. In a legacy session the request is ``ping``; without the legacy
-    lifecycle it is a stateless ``server/discover``. A timeout counts as no
-    answer (``timed_out``) only when a second control, sent afterwards, is
-    served; otherwise it is an error. Details also record whether the invalid
+    serve it. The same request with a valid method must be served first, so
+    a server that refuses everything is not credited with a refusal. In a
+    legacy session the request is ``ping``; without the legacy lifecycle it
+    is a stateless ``server/discover``. A timeout counts as no answer
+    (``timed_out``) only when a second control, sent afterwards, is served;
+    otherwise it is an error. An answer that cannot be read (compressed, or
+    over the byte cap) is judged by its status alone, and its code is left
+    unknown (``body_unobservable``). Details also record whether the invalid
     request was served, the error code, and whether the response id is the
     request's or null.
     """
@@ -2370,7 +2454,7 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
     if session is not None:
         headers, body = session.headers, {"jsonrpc": "2.0", "id": 25, "method": "ping"}
         shape = "legacy-ping"
-    elif response.status_code in AUTH_GATED_STATUSES:
+    elif response.status_code in AUTH_GATED_STATUSES or response.unobservable:
         return _legacy_unavailable(PROBE_INVALID_REQUEST, response)
     else:
         version = _target_version()
@@ -2380,7 +2464,11 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
         control = await target.post_rpc(body, headers, follow_redirects=False)
         details: dict[str, Any] = {"control_http_status": control.status_code, "shape": shape}
         if control.status_code in AUTH_GATED_STATUSES or control.result is None:
-            details["reason"] = "control request was not served; invalid-request handling not observable"
+            details["reason"] = (
+                f"control answer not observable ({control.unobservable})"
+                if control.unobservable
+                else "control request was not served; invalid-request handling not observable"
+            )
             return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
         invalid = {**body, "method": INVALID_REQUEST_METHOD, "id": 24}
         try:
@@ -2396,25 +2484,7 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
     finally:
         if session is not None:
             await target.end_session(session.initialize)
-    details.update(_base_details(rejected))
-    if rejected.status_code in AUTH_GATED_STATUSES:
-        details["reason"] = "invalid request was refused by access control; validation not observable"
-        return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
-    redirected = _redirected(PROBE_INVALID_REQUEST, rejected.status_code, details)
-    if redirected is not None:
-        return redirected
-    served = rejected.result is not None
-    details["served"] = served
-    if rejected.error is not None:
-        response_id = rejected.payload.get("id") if isinstance(rejected.payload, dict) else None
-        details["id_echoed_or_null"] = response_id in (None, 24)
-    if served or rejected.status_code >= 500:
-        outcome = ProbeOutcome.UNSUPPORTED
-    elif rejected.error is not None or rejected.status_code >= 400:
-        outcome = ProbeOutcome.SUPPORTED
-    else:
-        outcome = ProbeOutcome.UNSUPPORTED
-    return ProbeResult(PROBE_INVALID_REQUEST, outcome, details)
+    return _judge_invalid_answer(rejected, details)
 
 
 async def _probe_get_stream(target: _HttpTarget) -> ProbeResult:
@@ -2499,6 +2569,9 @@ async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
     redirected = _redirected(PROBE_SESSION_DELETE, after.status_code, details)
     if redirected is not None:
         return redirected
+    if after.unobservable and after.status_code != 404:
+        details["reason"] = f"answer after DELETE not observable ({after.unobservable})"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
     if after.result is not None:
         # The 404 requirement binds a terminated session, and this one was kept.
         details["reason"] = "session is still served after DELETE; no terminated session to observe"

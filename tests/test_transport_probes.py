@@ -643,8 +643,9 @@ class TestSseAnswers:
     async def test_byte_cap_ends_a_stream_without_an_answer(self, monkeypatch):
         monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 64)
         server = self._server(lambda _rid: _sse(stay_open=True))
-        with pytest.raises(httpx2.ReadTimeout):
-            await asyncio.wait_for(_run(_probe_get_stream, server.handler), timeout=2)
+        result = await asyncio.wait_for(_run(_probe_get_stream, server.handler), timeout=2)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "initialize answer not observable (capped)"
         assert server.methods()[-1] == "DELETE"
 
     async def test_unparsable_events_are_skipped(self):
@@ -718,8 +719,9 @@ class TestBoundedAnswers:
         answer = lambda _rid: httpx2.Response(  # noqa: E731
             200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "big"}, content=body()
         )
-        with pytest.raises(httpx2.ReadTimeout):
-            await asyncio.wait_for(_run(_probe_get_stream, self._initialize_answers(server, answer)), timeout=2)
+        result = await asyncio.wait_for(_run(_probe_get_stream, self._initialize_answers(server, answer)), timeout=2)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "initialize answer not observable (capped)"
         assert server.requests[-1].method == "DELETE"
         assert server.requests[-1].headers["Mcp-Session-Id"] == "big"
 
@@ -745,8 +747,9 @@ class TestBoundedAnswers:
         answer = lambda _rid: httpx2.Response(  # noqa: E731
             200, headers={"Content-Type": "text/event-stream"}, content=("data: " + "漢" * 20 + "\n").encode()
         )
-        with pytest.raises(httpx2.ReadTimeout):
-            await _run(_probe_get_stream, self._initialize_answers(server, answer))
+        result = await asyncio.wait_for(_run(_probe_get_stream, self._initialize_answers(server, answer)), timeout=2)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "initialize answer not observable (capped)"
 
     async def test_read_error_mid_body_closes_the_session_and_propagates(self):
         server = LegacyServer()
@@ -778,8 +781,9 @@ class TestBoundedAnswers:
         monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 64)
         server = LegacyServer()
         answer = lambda _rid: httpx2.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"pad": "x" * 200}})  # noqa: E731
-        with pytest.raises(httpx2.ReadTimeout):
-            await _run(_probe_get_stream, self._initialize_answers(server, answer))
+        result = await asyncio.wait_for(_run(_probe_get_stream, self._initialize_answers(server, answer)), timeout=2)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "initialize answer not observable (capped)"
 
     async def test_encoded_answer_is_not_decoded(self):
         server = LegacyServer()
@@ -817,3 +821,122 @@ class TestBoundedAnswers:
         with pytest.raises(httpx2.ReadError):
             await _run(_probe_invalid_request, server)
         assert server.methods()[-1] == "DELETE"
+
+
+class TestSseLineEndings:
+    """WHATWG SSE: CR, LF and CRLF all end a line, and a leading UTF-8 BOM is ignored."""
+
+    @staticmethod
+    def _chunks(*chunks: bytes) -> httpx2.Response:
+        async def body():
+            for chunk in chunks:
+                yield chunk
+
+        return httpx2.Response(
+            200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "le"}, content=body()
+        )
+
+    @staticmethod
+    def _event(rid: int, newline: bytes) -> bytes:
+        message = json.dumps({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-11-25"}})
+        return b"id: 1" + newline + b"data: " + message.encode() + newline + newline
+
+    @pytest.mark.parametrize("newline", [b"\r", b"\n", b"\r\n"])
+    async def test_every_line_ending(self, newline):
+        server = LegacyServer()
+        answer = lambda rid: self._chunks(self._event(rid, newline))  # noqa: E731
+        result = await _run(_probe_get_stream, TestBoundedAnswers._initialize_answers(server, answer))
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+    async def test_crlf_split_across_chunks(self):
+        server = LegacyServer()
+
+        def answer(rid: int) -> httpx2.Response:
+            event = self._event(rid, b"\r\n")
+            first_cr = event.index(b"\r") + 1
+            return self._chunks(event[:first_cr], event[first_cr:])
+
+        result = await _run(_probe_get_stream, TestBoundedAnswers._initialize_answers(server, answer))
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+    @pytest.mark.parametrize("split", [0, 1, 2, 3])
+    async def test_leading_bom_whole_or_split(self, split):
+        server = LegacyServer()
+
+        def answer(rid: int) -> httpx2.Response:
+            stream = b"\xef\xbb\xbf" + self._event(rid, b"\n")
+            return self._chunks(stream[:split], stream[split:]) if split else self._chunks(stream)
+
+        result = await _run(_probe_get_stream, TestBoundedAnswers._initialize_answers(server, answer))
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+
+class TestUnobservableAnswers:
+    """A compressed or over-cap answer is not evidence; only a status that decides alone is judged."""
+
+    @staticmethod
+    def _gzip(status: int) -> httpx2.Response:
+        return httpx2.Response(status, headers={"Content-Encoding": "gzip"}, content=gzip.compress(b'{"error":{}}'))
+
+    async def test_compressed_refusal_counts_as_rejected_without_a_code(self):
+        result = await _run(_probe_invalid_request, LegacyServer(invalid=self._gzip(400)))
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["body_unobservable"] == "encoded"
+        assert "error_code" not in result.details
+
+    async def test_compressed_success_is_not_judged(self):
+        result = await _run(_probe_invalid_request, LegacyServer(invalid=self._gzip(200)))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "answer to the invalid request not observable (encoded)"
+
+    async def test_compressed_crash_still_fails_on_its_status(self):
+        result = await _run(_probe_invalid_request, LegacyServer(invalid=self._gzip(502)))
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+
+    async def test_over_cap_refusal_is_rejected_not_a_timeout(self, monkeypatch):
+        monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 400)
+        big = httpx2.Response(400, json={"jsonrpc": "2.0", "id": 24, "error": {"code": -32600, "data": "x" * 1000}})
+        server = LegacyServer(invalid=big)
+        result = await _run(_probe_invalid_request, server)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["body_unobservable"] == "capped"
+        assert "timed_out" not in result.details
+        assert [m for m in server.methods() if m == "POST ping"] == ["POST ping"]
+
+    async def test_compressed_control_is_not_judged(self):
+        server = LegacyServer(ping=self._gzip(200))
+        result = await _run(_probe_invalid_request, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "control answer not observable (encoded)"
+
+    async def test_compressed_initialize_is_not_a_stateless_server(self):
+        server = LegacyServer()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "POST" and json.loads(request.content).get("method") == "initialize":
+                server.requests.append(request)
+                return self._gzip(200)
+            return server(request)
+
+        for probe in (_probe_notification_accepted, _probe_invalid_request):
+            result = await _run(probe, handler)
+            assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+            assert result.details["reason"] == "initialize answer not observable (encoded)"
+
+    async def test_compressed_answer_after_delete_is_not_judged(self):
+        server = LegacyServer(honours_delete=False, ping=self._gzip(200))
+        result = await _run(_probe_session_delete, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "answer after DELETE not observable (encoded)"
+
+    async def test_compressed_404_after_delete_still_passes(self):
+        server = LegacyServer()
+
+        def gzip_404(request: httpx2.Request) -> httpx2.Response:
+            response = server(request)
+            if response.status_code == 404:
+                return httpx2.Response(404, headers={"Content-Encoding": "gzip"}, content=gzip.compress(b"gone"))
+            return response
+
+        result = await _run(_probe_session_delete, gzip_404)
+        assert result.outcome is ProbeOutcome.SUPPORTED
