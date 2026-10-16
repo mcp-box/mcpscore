@@ -13,6 +13,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows and listed in the package classifiers. No dependency changes were
   needed.
 
+### Fixed
+
+- **Authorization discovery follows the spec, so three auth rules stop failing
+  correctly configured servers.** Scores change for servers behind a login.
+  - The probe now reads the challenge's `resource_metadata` URL first,
+    wherever it is hosted, then the RFC 9728 well-known locations, the order
+    an MCP client uses. `auth_challenge_references_metadata` passes when that
+    URL serves the metadata. It no longer fails metadata hosted on another
+    origin, which RFC 9728 §5.1 allows.
+  - From 2025-11-25 a server may publish its metadata at a well-known
+    location instead of naming it in the 401 challenge. A challenge without
+    `resource_metadata` now skips `auth_challenge_references_metadata` as
+    not applicable, unless the server negotiated 2025-06-18, which requires
+    the parameter. A 403 response is never held to the 401 requirement.
+  - Authorization server metadata is looked up in the MCP discovery order,
+    including path insertion for an issuer with a path, such as
+    `https://github.com/login/oauth`. GitHub's MCP server used to fail
+    `auth_server_metadata_pkce`, and Stripe's failed
+    `auth_server_metadata_present`; both now pass.
+  - A metadata document counts only when its `issuer` is identical to the
+    listed issuer (RFC 8414 §3.3). Clients must reject any other, so
+    `auth_server_metadata_present` now fails one and names both values. An
+    issuer that differs only by a trailing slash is accepted, and the result
+    names the declared value.
+  - Discovery URLs that point a public server at a loopback, link-local or
+    private address are reported, not fetched. Host names are resolved
+    first, and one non-public address is enough to block the URL. A
+    malformed challenge URL now fails `auth_challenge_references_metadata`
+    instead of being skipped as unreachable, and URL schemes are matched
+    case-insensitively, so `HTTPS://` is accepted.
+  - In a sample of 161 auth-gated public servers, this change raised 14
+    scores and lowered 5. The drops are 3 issuers on a different host than
+    the metadata declares; one issuer published
+    only at a location outside the MCP discovery order; and one challenge
+    URL whose metadata names a different resource.
+
 ### Changed
 
 - **`--` after `--stdio` now goes to the server command** on every Python

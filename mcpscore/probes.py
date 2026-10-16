@@ -34,11 +34,14 @@ import asyncio
 from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
+import ipaddress
 import json
 import logging
+import re
+import socket
 from subprocess import DEVNULL
 import time
-from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -224,7 +227,10 @@ malformed wire input through the SDK transport.
 STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in _SINGLE_TARGET_PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
 """Probes that run over stdio — the ones judging JSON-RPC, not HTTP."""
 
-_ANONYMOUS_PROBE_IDS = frozenset({PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA})
+_AUTH_DISCOVERY_PROBE_IDS = (PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA)
+"""Probes run in order, so metadata discovery can follow the observed challenge."""
+
+_ANONYMOUS_PROBE_IDS = frozenset(_AUTH_DISCOVERY_PROBE_IDS)
 """Probes that must see the server as an unauthenticated client does.
 
 These run on a client that carries none of the caller's headers: --header may
@@ -446,6 +452,8 @@ class _HttpTarget:
 
     client: httpx2.AsyncClient
     url: str
+    auth_challenge: str | None = None
+    """``WWW-Authenticate`` observed by the unauthenticated probe, for discovery that follows it."""
 
     async def post(
         self,
@@ -1438,26 +1446,210 @@ async def _try_get_json_anonymous(
 
 
 def _is_http_url(value: object) -> bool:
-    """Whether a value is an http(s) URL string."""
-    return isinstance(value, str) and value.startswith(("https://", "http://"))
+    """Whether a value is an http(s) URL string; the scheme is case-insensitive."""
+    return isinstance(value, str) and value.lower().startswith(("https://", "http://"))
+
+
+_LOCAL_HOSTNAMES = ("localhost",)
+_LOCAL_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal")
+
+
+def _is_local_host(host: str | None) -> bool:
+    """Whether a host is a loopback/private literal IP or an internal-only name (no DNS lookup)."""
+    if not host:
+        return False
+    lowered = host.lower().rstrip(".")
+    if lowered in _LOCAL_HOSTNAMES or lowered.endswith(_LOCAL_HOSTNAME_SUFFIXES):
+        return True
+    try:
+        return not _is_global_ip(ipaddress.ip_address(lowered.strip("[]")))
+    except ValueError:
+        return False
+
+
+def _is_global_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether an address is globally routable, judging an IPv4-mapped IPv6 address by its IPv4 form."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global
+
+
+_DNS_TIMEOUT_SECONDS = 5.0
+
+
+async def _resolve_host(host: str) -> list[str] | None:
+    """Return the addresses a host name resolves to: empty when it does not resolve, None when the lookup times out."""
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(
+            loop.getaddrinfo(host, None, type=socket.SOCK_STREAM), timeout=_DNS_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        return None
+    except (OSError, UnicodeError):
+        return []
+    return [str(info[4][0]) for info in infos]
+
+
+_HostClass = Literal["public", "private", "mixed", "unresolved", "timeout"]
+_DNS_TIMEOUT_ERROR = "DNSTimeout"
+
+
+async def _classify_host(host: str | None) -> _HostClass:
+    """Classify a host: literals and internal names without DNS, other names by every resolved address.
+
+    A name is public when every address it resolves to is globally routable,
+    private when none is, and mixed otherwise.
+    """
+    if not host:
+        return "unresolved"
+    if _is_local_host(host):
+        return "private"
+    try:
+        return "public" if _is_global_ip(ipaddress.ip_address(host.strip("[]"))) else "private"
+    except ValueError:
+        pass
+    resolved = await _resolve_host(host)
+    if resolved is None:
+        return "timeout"
+    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for address in resolved:
+        try:
+            addresses.append(ipaddress.ip_address(address.split("%", 1)[0]))
+        except ValueError:
+            continue
+    if not addresses:
+        return "unresolved"
+    public = sum(_is_global_ip(ip) for ip in addresses)
+    if public == len(addresses):
+        return "public"
+    return "private" if public == 0 else "mixed"
+
+
+def _origin(url: str) -> tuple[str, str, int | None] | None:
+    """Return a URL's scheme, host and effective port, or None when it has no host."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if not parts.hostname:
+        return None
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, port if port is not None else {"https": 443, "http": 80}.get(scheme)
+
+
+def _is_fetchable_url(value: object) -> bool:
+    """Whether a value is an http(s) URL with a host."""
+    return _is_http_url(value) and _origin(cast("str", value)) is not None
+
+
+async def _discovery_url_refusal(url: str, target_url: str) -> Literal["private", "timeout"] | None:
+    """Why a server-supplied discovery URL must not be fetched, or None when it may be.
+
+    The challenge's ``resource_metadata`` and the listed issuers are chosen by
+    the audited server, so following them must not turn an audit of a public
+    server into a request to loopback, link-local or private addresses. A
+    URL on the target's own origin is never refused: the audit connects there
+    anyway. Any other discovery host with a non-public address is refused as ``"private"``,
+    and one whose lookup times out as ``"timeout"``, unless every address of
+    the target is non-public. A discovery name that does not resolve is left
+    to the fetch. The check resolves before the fetch connects, so it does not
+    stop DNS rebinding.
+    """
+    try:
+        host = urlsplit(url).hostname
+        target_host = urlsplit(target_url).hostname
+    except ValueError:
+        return None
+    if _origin(url) == _origin(target_url):
+        return None
+    discovery = await _classify_host(host)
+    if discovery not in ("private", "mixed", "timeout"):
+        return None
+    if await _classify_host(target_host) == "private":
+        return None
+    return "timeout" if discovery == "timeout" else "private"
+
+
+# A name starts only at the header start or after whitespace or a comma, and every
+# quantifier is possessive, so a long server-supplied header parses in linear time.
+_AUTH_PARAM = re.compile(
+    r"(?:^|(?<=[\s,]))([!#$%&'*+.^_`|~0-9A-Za-z-]++)\s*+=\s*+(?:\"((?:[^\"\\]|\\.)*+)\"|([^\s,\"]++))"
+)
+_QUOTED_PAIR = re.compile(r"\\(.)")
+
+
+def www_authenticate_param(header: str, param: str) -> str | None:
+    """Extract an auth-param from a challenge, accepting the quoted and bare forms.
+
+    RFC 7235 §2.1 defines an auth-param value as ``token / quoted-string``, and
+    a URL contains ``:`` and ``/`` — delimiters that are not valid ``token``
+    characters — so strictly it must be quoted. Deployed servers send it bare
+    anyway and clients read it fine, so the bare form is accepted too.
+
+    The bare value ends at the next comma or whitespace, the auth-param
+    separators. Parameters are read as whole name/value pairs, so text inside
+    another quoted value is never taken for a parameter, and
+    ``xresource_metadata=`` is not mistaken for ``resource_metadata=``. Param
+    names are matched case-insensitively (RFC 7235 §2.1).
+    """
+    wanted = param.lower()
+    for match in _AUTH_PARAM.finditer(header):
+        name, quoted, bare = match.groups()
+        if name.lower() == wanted:
+            return _QUOTED_PAIR.sub(r"\1", quoted) if quoted is not None else bare
+    return None
 
 
 def _auth_server_metadata_urls(issuer: str) -> list[str]:
-    """RFC 8414 / OIDC well-known locations for an authorization server issuer."""
-    base = issuer.rstrip("/")
+    """Return an issuer's authorization server metadata locations, in the MCP discovery order.
+
+    An issuer with a path component gets RFC 8414 path insertion, OpenID
+    Connect path insertion, then OpenID Connect path appending; an issuer
+    without one gets the RFC 8414 and OpenID Connect root locations (MCP
+    Authorization, Authorization Server Metadata Discovery, 2025-11-25+).
+    """
+    try:
+        parts = urlsplit(issuer)
+    except ValueError:
+        # Unparsable: keep plain candidates so the fetch records InvalidURL as a finding.
+        parts = None
+    origin = f"{parts.scheme}://{parts.netloc}" if parts else issuer.rstrip("/")
+    path = parts.path.rstrip("/") if parts else ""
+    if not path:
+        return [
+            f"{origin}/.well-known/oauth-authorization-server",
+            f"{origin}/.well-known/openid-configuration",
+        ]
     return [
-        f"{base}/.well-known/oauth-authorization-server",
-        f"{base}/.well-known/openid-configuration",
+        f"{origin}/.well-known/oauth-authorization-server{path}",
+        f"{origin}/.well-known/openid-configuration{path}",
+        f"{origin}{path}/.well-known/openid-configuration",
     ]
 
 
-async def _fetch_auth_server_metadata(client: httpx2.AsyncClient, issuer: str, details: dict[str, Any]) -> None:
-    """Fetch the authorization server's RFC 8414 metadata; record posture in details.
+def _differs_only_by_trailing_slash(declared: object, issuer: str) -> bool:
+    """Return whether ``declared`` equals ``issuer`` apart from one trailing slash."""
+    return isinstance(declared, str) and (declared == f"{issuer}/" or f"{declared}/" == issuer)
 
-    Records whether the metadata document was found, whether it advertises the
-    required authorization/token endpoints, and whether it advertises PKCE with
-    S256 (`code_challenge_methods_supported`) — the OAuth security BCP (RFC
-    9700) / MCP-auth requirement.
+
+async def _fetch_auth_server_metadata(
+    client: httpx2.AsyncClient, issuer: str, target_url: str, details: dict[str, Any]
+) -> None:
+    """Fetch the authorization server's metadata; record posture in details.
+
+    Records whether a usable metadata document was found, whether it
+    advertises the required authorization/token endpoints, and whether it
+    advertises PKCE with S256 (`code_challenge_methods_supported`) — the OAuth
+    security BCP (RFC 9700) / MCP-auth requirement.
+
+    A document counts only when its ``issuer`` is identical to the issuer the
+    location was built from (RFC 8414 §3.3, OpenID Connect Discovery §4.3);
+    clients must not use any other, so a mismatch is recorded in
+    ``auth_server_issuer_mismatch`` and the next location is tried. A
+    difference in the trailing slash alone is tolerated and recorded in
+    ``auth_server_issuer_declared``.
 
     An authorization server that cannot be reached at all (DNS failure,
     refused connection, timeout, TLS error, unusable URL) leaves
@@ -1474,6 +1666,13 @@ async def _fetch_auth_server_metadata(client: httpx2.AsyncClient, issuer: str, d
     """
     details["auth_server_issuer"] = issuer
     details["auth_server_metadata_present"] = False
+    refusal = await _discovery_url_refusal(issuer, target_url)
+    if refusal == "timeout":
+        details["auth_server_metadata_error"] = _DNS_TIMEOUT_ERROR
+        return
+    if refusal is not None:
+        details["auth_server_metadata_blocked"] = True
+        return
     reached = False
     last_error: str | None = None
     for candidate in _auth_server_metadata_urls(issuer):
@@ -1484,6 +1683,12 @@ async def _fetch_auth_server_metadata(client: httpx2.AsyncClient, issuer: str, d
         reached = True
         if metadata is None:
             continue
+        declared = metadata.get("issuer")
+        if declared != issuer and not _differs_only_by_trailing_slash(declared, issuer):
+            details.setdefault("auth_server_issuer_mismatch", {"metadata_url": candidate, "issuer": declared})
+            continue
+        if declared != issuer:
+            details["auth_server_issuer_declared"] = declared
         methods = metadata.get("code_challenge_methods_supported")
         details["auth_server_metadata_url"] = candidate
         details["auth_server_metadata_present"] = True
@@ -1496,18 +1701,53 @@ async def _fetch_auth_server_metadata(client: httpx2.AsyncClient, issuer: str, d
         details["auth_server_metadata_error"] = last_error
 
 
+async def _metadata_candidates(target: _HttpTarget, details: dict[str, Any]) -> tuple[list[str], str | None]:
+    """Protected-resource metadata locations in the order an MCP client tries them.
+
+    A ``resource_metadata`` URL in the observed challenge comes first, then the
+    RFC 9728 well-known locations (MCP Authorization, Protected Resource
+    Metadata Discovery Requirements). The challenge URL is recorded in
+    ``challenge_metadata_url`` whether or not it is fetched: an unusable or
+    blocked one is that rule's finding. Returns the candidates and the
+    challenge URL when it is among them.
+    """
+    candidates: list[str] = []
+    challenge_url: str | None = None
+    referenced = www_authenticate_param(target.auth_challenge, "resource_metadata") if target.auth_challenge else None
+    if referenced is not None:
+        details["challenge_metadata_url"] = referenced
+        fetchable = _is_fetchable_url(referenced)
+        refusal = await _discovery_url_refusal(referenced, target.url) if fetchable else None
+        if not fetchable:
+            details["challenge_metadata_invalid"] = True
+        elif refusal == "timeout":
+            details["challenge_metadata_error"] = _DNS_TIMEOUT_ERROR
+        elif refusal is not None:
+            details["challenge_metadata_blocked"] = True
+        else:
+            challenge_url = referenced
+            candidates.append(referenced)
+    for candidate in _well_known_urls(target.url):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates, challenge_url
+
+
 async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
     """Fetch the auth-discovery chain (RFC 9728 PRM → RFC 8414 AS metadata).
 
     Observation probe feeding the auth-posture rules: SUPPORTED when a
-    well-known location returns HTTP 200 with a JSON object carrying the
-    REQUIRED ``resource`` field (RFC 9728 §2); details record what was found
-    where, plus the authorization server's endpoint/PKCE posture. Servers
-    without authentication commonly 404 here — the dependent rules skip unless
-    the endpoint demanded auth in the first place.
+    location returns HTTP 200 with a JSON object carrying the REQUIRED
+    ``resource`` field (RFC 9728 §2); details record what was found where, how
+    it was discovered (``discovery``: challenge or well-known), plus the
+    authorization server's endpoint/PKCE posture. When the challenge names a
+    metadata URL, what that URL served is recorded under ``challenge_metadata_*``
+    even if discovery falls through to a well-known location. Servers without
+    authentication commonly 404 here — the dependent rules skip unless the
+    endpoint demanded auth in the first place.
 
-    A transport error on one well-known location does not abort discovery of
-    the next, but "every location failed to connect" stays ERROR rather than
+    A transport error on one location does not abort discovery of the next,
+    but "every location failed to connect" stays ERROR rather than
     UNSUPPORTED: an unreachable host is *unverified*, not proof that the
     server publishes no metadata, and the dependent rules must skip rather
     than fail it. Locations that could not be contacted are listed in
@@ -1515,34 +1755,44 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
     distinguishable from one that simply answered 404.
     """
     details: dict[str, Any] = {"urls_tried": []}
+    candidates, challenge_url = await _metadata_candidates(target, details)
     reached = False
     last_error: str | None = None
-    for candidate in _well_known_urls(target.url):
+    for candidate in candidates:
         details["urls_tried"].append(candidate)
         status, metadata, error = await _try_get_json_anonymous(target.client, candidate)
+        is_challenge = candidate == challenge_url
         if error is not None:
             last_error = error
             details.setdefault("unreachable_locations", []).append(candidate)
+            if is_challenge and error == "InvalidURL":
+                details["challenge_metadata_invalid"] = True
+            elif is_challenge:
+                details["challenge_metadata_error"] = error
             continue
         reached = True
         details["http_status"] = status
-        if metadata is None:
+        resource = metadata.get("resource") if metadata is not None else None
+        if is_challenge:
+            details["challenge_metadata_http_status"] = status
+            details["challenge_metadata_resource"] = resource if isinstance(resource, str) else None
+        if not isinstance(resource, str):
             continue
-        if isinstance(metadata.get("resource"), str):
-            servers = metadata.get("authorization_servers")
-            servers = servers if isinstance(servers, list) else None
-            details["metadata_url"] = candidate
-            details["resource"] = metadata["resource"]
-            details["authorization_servers"] = servers
-            details["scopes_supported"] = metadata.get("scopes_supported")
-            # Walk to the first authorization server's RFC 8414 metadata. The
-            # document is public and fetched anonymously; whether the AS URL is
-            # HTTPS is scored separately by auth_authorization_servers_https, so
-            # observe http too rather than skipping the metadata check entirely.
-            first = next((s for s in (servers or []) if _is_http_url(s)), None)
-            if first is not None:
-                await _fetch_auth_server_metadata(target.client, first, details)
-            return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
+        assert metadata is not None  # noqa: S101 — a string resource implies a parsed document
+        servers = metadata.get("authorization_servers")
+        servers = servers if isinstance(servers, list) else None
+        details["metadata_url"] = candidate
+        details["discovery"] = "challenge" if is_challenge else "well-known"
+        details["resource"] = resource
+        details["authorization_servers"] = servers
+        details["scopes_supported"] = metadata.get("scopes_supported")
+        # Walk to the first authorization server's metadata. The document is
+        # public and fetched anonymously; whether the AS URL is HTTPS is scored
+        # separately by auth_authorization_servers_https, so observe http too.
+        first = next((s for s in (servers or []) if _is_http_url(s)), None)
+        if first is not None:
+            await _fetch_auth_server_metadata(target.client, first, target.url, details)
+        return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
     if not reached:
         # Keep what was established (urls_tried, unreachable_locations) — an
         # ERROR outcome is the case that most needs the diagnostic context.
@@ -1983,9 +2233,9 @@ async def run_all_probes(
     """
     failures = _ProbeFailureLog(url)
 
-    async def run_one(probe_id: str, http_client: httpx2.AsyncClient) -> ProbeResult:
+    async def run_one(probe_id: str, http_client: httpx2.AsyncClient, auth_challenge: str | None = None) -> ProbeResult:
         try:
-            result = await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url))
+            result = await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url, auth_challenge))
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
@@ -2011,9 +2261,25 @@ async def run_all_probes(
                 CATALOG_CONNECTION_PROBE_IDS,
             )
         )
-        results = await asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in _SINGLE_TARGET_PROBE_IDS))
+
+        async def run_auth_discovery() -> list[ProbeResult]:
+            # Metadata discovery follows the challenge the unauthenticated request received.
+            unauthenticated = await run_one(PROBE_UNAUTHENTICATED, select(PROBE_UNAUTHENTICATED))
+            challenge = unauthenticated.details.get("www_authenticate")
+            metadata = await run_one(
+                PROBE_AUTH_METADATA,
+                select(PROBE_AUTH_METADATA),
+                challenge if isinstance(challenge, str) else None,
+            )
+            return [unauthenticated, metadata]
+
+        independent = [probe_id for probe_id in _SINGLE_TARGET_PROBE_IDS if probe_id not in _AUTH_DISCOVERY_PROBE_IDS]
+        auth_results, results = await asyncio.gather(
+            run_auth_discovery(), asyncio.gather(*(run_one(probe_id, select(probe_id)) for probe_id in independent))
+        )
+        by_id = {result.probe_id: result for result in [*auth_results, *results]}
         return {
-            **{result.probe_id: result for result in results},
+            **{probe_id: by_id[probe_id] for probe_id in _SINGLE_TARGET_PROBE_IDS},
             **connection_results,
         }
 

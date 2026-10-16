@@ -51,6 +51,9 @@ def data_for(rule_id: str, *, failure: bool) -> AuditData:
         "auth_server_metadata_present": True,
         "auth_server_has_endpoints": True,
         "auth_server_pkce_s256": True,
+        "challenge_metadata_url": "https://example.com/.well-known/oauth-protected-resource",
+        "challenge_metadata_http_status": 200,
+        "challenge_metadata_resource": URL,
     }
     probes[PROBE_AUTH_METADATA] = ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, metadata)
     probes[PROBE_MALFORMED_JSON] = ProbeResult(
@@ -125,7 +128,8 @@ def _fail_auth(rule_id, probes, metadata):
     if rule_id == "auth_www_authenticate":
         probes[PROBE_UNAUTHENTICATED].details["www_authenticate"] = None
     elif rule_id == "auth_challenge_references_metadata":
-        probes[PROBE_UNAUTHENTICATED].details["www_authenticate"] = "Bearer"
+        metadata["challenge_metadata_http_status"] = 404
+        metadata["challenge_metadata_resource"] = None
     else:
         field, value = {
             "auth_protected_resource_metadata": ("resource", "https://other.example/mcp"),
@@ -253,9 +257,30 @@ def test_expected_error_preserves_transport_context(transport):
         ),
         (
             "auth_challenge_references_metadata",
-            PROBE_UNAUTHENTICATED,
-            {"www_authenticate": 'Bearer resource_metadata="https://other.example/metadata"'},
-            "alternative discovery",
+            PROBE_AUTH_METADATA,
+            {"challenge_metadata_blocked": True},
+            "public URL",
+        ),
+        (
+            "auth_challenge_references_metadata",
+            PROBE_AUTH_METADATA,
+            {"challenge_metadata_invalid": True},
+            "absolute HTTPS URL",
+        ),
+        (
+            "auth_server_metadata_present",
+            PROBE_AUTH_METADATA,
+            {
+                "auth_server_metadata_present": False,
+                "auth_server_issuer_mismatch": {"metadata_url": "https://auth.example.com/x", "issuer": "https://a/"},
+            },
+            "identical to the identifier",
+        ),
+        (
+            "auth_server_metadata_present",
+            PROBE_AUTH_METADATA,
+            {"auth_server_metadata_present": False, "auth_server_metadata_blocked": True},
+            "public HTTPS identifier",
         ),
     ],
 )
@@ -521,7 +546,7 @@ def test_auth_repairs_match_the_independent_checks():
     metadata = RULES["auth_challenge_references_metadata"].check(
         data_for("auth_challenge_references_metadata", failure=True)
     )
-    assert "Add a quoted resource_metadata URL" in metadata.suggested_fix
+    assert "Serve an anonymous HTTP 200 JSON document" in metadata.suggested_fix
     assert "review applicability" not in metadata.suggested_fix
     pkce = RULES["auth_server_metadata_pkce"].check(data_for("auth_server_metadata_pkce", failure=True))
     assert "implement S256 before advertising" in pkce.suggested_fix

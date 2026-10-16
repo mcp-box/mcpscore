@@ -388,15 +388,24 @@ publish it.
   authorization.
 - Modern-protocol hints keep valid legacy paths working. Readiness promotion
   into the main score is unchanged by hints.
-- Some predicates cover less discovery than the specifications allow. The
-  challenge-origin finding describes mcpscore's current comparison and does
-  not tell you to move valid metadata. The dated MCP specification permits
-  [challenge or well-known discovery](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements),
-  and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3)
-  requires resource identity validation. Issuer metadata failures likewise
-  list the locations tried, rather than proving that no valid document
-  exists. Closing these gaps is a correctness change to the rules, not a
-  change to the wording.
+- Authorization discovery follows the order a client uses: the challenge's
+  `resource_metadata` URL first, wherever it is hosted, then the
+  [well-known locations](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements).
+  The metadata it finds must name the audited endpoint as its `resource`
+  ([RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3)).
+- From 2025-11-25 on, a 401 challenge without `resource_metadata` is not a
+  finding on its own: the server may publish at a well-known location
+  instead, and `auth_protected_resource_metadata` judges whether it does. On
+  2025-06-18 the parameter is required.
+- Issuer metadata is looked up in the
+  [MCP discovery order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery),
+  including path insertion for an issuer with a path. A document counts only
+  when its `issuer` is identical to the listed issuer; a difference in the
+  trailing slash alone is accepted and reported. A failure lists the
+  locations tried; it does not prove that no valid document exists elsewhere.
+- Discovery URLs that point a public server at loopback, link-local or private
+  addresses are reported, not fetched. Host names are resolved first. A
+  lookup that times out is not fetched either, and is reported as unreachable.
 </Accordion>
 
 <Accordion title="Technical details: package evidence">

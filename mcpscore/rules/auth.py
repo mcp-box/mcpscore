@@ -8,21 +8,28 @@ and the rules skip as not-applicable rather than handing out free points.
 
 Normative basis (cited per rule, re-verify at spec-final): the MCP
 Authorization spec (2025-06-18 and later) makes MCP servers OAuth 2.0
-protected resources. Modern MCP permits challenge-based or well-known discovery;
-these existing rules assess both surfaces independently. RFC 9728 metadata has a
+protected resources. Since 2025-11-25 a server may publish its metadata through
+the challenge's ``resource_metadata`` URL or at an RFC 9728 well-known location;
+the probe follows them in the order a client does. RFC 9728 metadata has a
 ``resource`` value matching the server, and it MUST list at least one
 authorization server. The deeper rules follow the discovery chain to the
-authorization server's own RFC 8414 metadata and check it advertises PKCE
-(S256), per the OAuth security BCP (RFC 9700).
+authorization server's own metadata, validate its issuer, and check it
+advertises PKCE (S256), per the OAuth security BCP (RFC 9700).
 """
 
-import re
 from typing import ClassVar
-from urllib.parse import urlsplit
 
 from mcpscore.report_evidence import evidence_preview
+from mcpscore.spec import compare
 
-from ..probes import AUTH_GATED_STATUSES, PROBE_AUTH_METADATA, PROBE_UNAUTHENTICATED, ProbeOutcome, ProbeResult
+from ..probes import (
+    AUTH_GATED_STATUSES,
+    PROBE_AUTH_METADATA,
+    PROBE_UNAUTHENTICATED,
+    ProbeOutcome,
+    ProbeResult,
+    www_authenticate_param,
+)
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
     SKIP_REASON_NOT_APPLICABLE,
@@ -40,10 +47,18 @@ def _normalized(url: str) -> str:
     return url.rstrip("/")
 
 
-def _origin(url: str) -> str:
-    """Return the scheme://host[:port] origin of a URL, for same-origin comparison."""
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}"
+EITHER_DISCOVERY_SINCE = "2025-11-25"
+"""First revision where well-known discovery alone satisfies the server (challenge parameter optional)."""
+
+
+def _challenge_param_required(audit_data: AuditData) -> bool:
+    """Whether the negotiated revision requires ``resource_metadata`` in a 401 challenge.
+
+    2025-06-18 requires it; 2025-11-25 and later accept well-known discovery
+    instead. An unknown version is judged by the current revision.
+    """
+    version = audit_data.protocol_version
+    return version is not None and compare(version, EITHER_DISCOVERY_SINCE) < 0
 
 
 class AuthPostureBaseRule(BaseRule):
@@ -157,11 +172,13 @@ class AuthProtectedResourceMetadataRule(AuthPostureBaseRule):
         return RuleSeverity.HIGH
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """High check: the well-known metadata document exists and matches.
+        """High check: a discoverable metadata document exists and matches.
 
-        RFC 9728 requires the metadata's ``resource`` value to identify the
-        protected resource; a mismatched value sends clients to authenticate
-        for a different resource than the one they connected to.
+        The document is the one a client would use: the challenge's
+        ``resource_metadata`` URL when it serves metadata, otherwise the RFC
+        9728 well-known locations. RFC 9728 §3.3 requires its ``resource``
+        value to identify the protected resource; clients must not use a
+        document naming a different one.
 
         Args:
             audit_data: The collected server data for this audit
@@ -171,18 +188,24 @@ class AuthProtectedResourceMetadataRule(AuthPostureBaseRule):
 
         """
         probe = self._probe(audit_data, PROBE_AUTH_METADATA)
-        details = {"basis": "RFC 9728 §3 (well-known location), §2 (resource)", **probe.details}
+        details = {
+            "basis": (
+                "MCP Authorization (Protected Resource Metadata Discovery Requirements); "
+                "RFC 9728 §3 (well-known location), §3.3 (resource validation), §5.1 (resource_metadata)"
+            ),
+            **probe.details,
+        }
         if probe.outcome is not ProbeOutcome.SUPPORTED:
             return diagnostic_result(
                 rule_name=self.rule_name,
                 severity=self.severity,
                 passed=False,
-                message="❌ No usable RFC 9728 metadata was observed at the attempted well-known locations",
+                message="❌ No usable RFC 9728 metadata was observed at the challenge URL or the well-known locations",
                 details=details,
                 suggested_fix=(
                     "Serve an anonymous HTTP 200 JSON metadata document at the RFC 9728 well-known "
-                    "location, with resource identifying the MCP endpoint and authorization_servers naming"
-                    " its trusted issuers."
+                    "location or at a resource_metadata URL in the 401 challenge, with resource identifying "
+                    "the MCP endpoint and authorization_servers naming its trusted issuers."
                 ),
                 audit_data=audit_data,
             )
@@ -262,7 +285,9 @@ class AuthAuthorizationServersHttpsRule(AuthPostureBaseRule):
         servers = self._probe(audit_data, PROBE_AUTH_METADATA).details.get("authorization_servers") or []
         # An entry is valid only if it is a string on HTTPS; anything else
         # (plain HTTP, null, a number) is a malformed entry, not a pass.
-        invalid = [server for server in servers if not (isinstance(server, str) and server.startswith("https://"))]
+        invalid = [
+            server for server in servers if not (isinstance(server, str) and server.lower().startswith("https://"))
+        ]
         if not servers:
             passed = False
             message = "❌ Protected resource metadata lists no authorization servers to authenticate against"
@@ -318,35 +343,9 @@ class AuthMetadataBaseRule(AuthPostureBaseRule):
         return self._probe(audit_data, PROBE_AUTH_METADATA).details
 
 
-def _parse_www_authenticate_param(header: str, param: str) -> str | None:
-    """Extract an auth-param from a challenge, accepting the quoted and bare forms.
-
-    RFC 7235 §2.1 defines an auth-param value as ``token / quoted-string``, and
-    a URL contains ``:`` and ``/`` — delimiters that are not valid ``token``
-    characters — so strictly it must be quoted. Deployed servers send it bare
-    anyway (Stripe's MCP endpoint, verified 2026-07-25), and clients read it
-    fine, so scoring that as "no resource_metadata parameter" would report a
-    discovery failure no real client experiences.
-
-    The bare value ends at the next comma or whitespace, the auth-param
-    separators. Param names are matched case-insensitively (RFC 7235 §2.1) and
-    only at a parameter boundary, so ``xresource_metadata=`` is not mistaken
-    for ``resource_metadata=``.
-    """
-    pattern = re.compile(
-        rf"(?:^|[\s,]){re.escape(param)}\s*=\s*(?:\"([^\"]*)\"|([^\s,]+))",
-        re.IGNORECASE,
-    )
-    match = pattern.search(header)
-    if match is None:
-        return None
-    quoted, bare = match.groups()
-    return quoted if quoted is not None else bare
-
-
 @register_rule
 class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
-    """Medium check: the auth challenge points clients at the resource metadata."""
+    """Medium check: a challenge's ``resource_metadata`` URL serves the resource metadata."""
 
     rule_id = "auth_challenge_references_metadata"
     rule_order = 7
@@ -360,20 +359,40 @@ class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
         return RuleSeverity.MEDIUM
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when the challenge header is absent (AuthWwwAuthenticateRule's finding)."""
+        """Skip when the challenge carries no reference the spec requires, or nothing was observed.
+
+        A missing challenge header is AuthWwwAuthenticateRule's finding. A
+        challenge without ``resource_metadata`` is compliant on a 403, and from
+        2025-11-25 on a 401 too: the server may use well-known discovery, which
+        AuthProtectedResourceMetadataRule judges. A reference whose fetch never
+        completed is unverified.
+        """
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
-        challenge = self._probe(audit_data, PROBE_UNAUTHENTICATED).details.get("www_authenticate")
+        unauthenticated = self._probe(audit_data, PROBE_UNAUTHENTICATED).details
+        challenge = unauthenticated.get("www_authenticate")
         if not (isinstance(challenge, str) and challenge.strip()):
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if www_authenticate_param(challenge, "resource_metadata") is None:
+            if unauthenticated.get("http_status") == 401 and _challenge_param_required(audit_data):
+                return None
+            return SKIP_REASON_NOT_APPLICABLE
+        metadata = (audit_data.probes or {}).get(PROBE_AUTH_METADATA)
+        if metadata is None or "challenge_metadata_url" not in metadata.details:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        observed = metadata.details
+        if "challenge_metadata_error" in observed and "challenge_metadata_http_status" not in observed:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """Medium check: WWW-Authenticate carries resource_metadata (RFC 9728 §5.1).
+        """Medium check: the challenge's ``resource_metadata`` URL serves RFC 9728 metadata.
 
-        Without the ``resource_metadata`` parameter a client cannot discover
-        the protected-resource metadata from the challenge alone.
+        The URL may be on any host (RFC 9728 §5.1); what makes it usable is that
+        it returns a metadata document. Whether that document's ``resource``
+        identifies this server is AuthProtectedResourceMetadataRule's check. On
+        2025-06-18, a 401 challenge without the parameter fails.
 
         Args:
             audit_data: The collected server data for this audit
@@ -382,43 +401,61 @@ class AuthChallengeReferencesMetadataRule(AuthPostureBaseRule):
             RuleResult with the check outcome
 
         """
-        probe = self._probe(audit_data, PROBE_UNAUTHENTICATED)
-        status = probe.details.get("http_status")
-        challenge = str(probe.details.get("www_authenticate"))
-        referenced = _parse_www_authenticate_param(challenge, "resource_metadata")
-        # Preserve the existing origin predicate in this diagnostic-only change.
-        # RFC 9728 §3.3 requires resource identity validation; §5.1 does not
-        # itself require a same-origin challenge URL. Review this predicate
-        # separately rather than advising relocation of legitimate metadata.
+        status = self._probe(audit_data, PROBE_UNAUTHENTICATED).details.get("http_status")
+        challenge = str(self._probe(audit_data, PROBE_UNAUTHENTICATED).details.get("www_authenticate"))
+        referenced = www_authenticate_param(challenge, "resource_metadata")
+        observed = self._probe(audit_data, PROBE_AUTH_METADATA).details if referenced is not None else {}
+        fetched_status = observed.get("challenge_metadata_http_status")
+        suggested_fix: str | None = None
         if referenced is None:
             passed = False
-            message = f"❌ The HTTP {status} challenge has no resource_metadata parameter for discovering the metadata"
-        elif audit_data.url is not None and _origin(referenced) != _origin(audit_data.url):
+            message = f"❌ The HTTP {status} challenge has no resource_metadata parameter, which 2025-06-18 requires"
+            suggested_fix = (
+                "Add a quoted resource_metadata URL pointing to your protected-resource metadata in the "
+                "401 WWW-Authenticate challenge, or negotiate 2025-11-25 or later and serve the metadata "
+                "at the RFC 9728 well-known location."
+            )
+        elif observed.get("challenge_metadata_invalid"):
             passed = False
-            message = f"❌ Challenge resource_metadata {evidence_preview(referenced)} is not on this server's origin"
+            message = f"❌ Challenge resource_metadata {evidence_preview(referenced)} is not an absolute http(s) URL"
+            suggested_fix = "Set resource_metadata to the absolute HTTPS URL of your protected-resource metadata."
+        elif observed.get("challenge_metadata_blocked"):
+            passed = False
+            message = (
+                f"❌ Challenge resource_metadata {evidence_preview(referenced)} points at a non-public "
+                "address that remote clients cannot reach"
+            )
+            suggested_fix = (
+                "Point resource_metadata at the public URL of your protected-resource metadata. Check "
+                "proxy or public-URL configuration."
+            )
+        elif observed.get("challenge_metadata_resource") is None:
+            passed = False
+            message = (
+                f"❌ Challenge resource_metadata {evidence_preview(referenced)} did not serve RFC 9728 "
+                f"metadata (HTTP {fetched_status})"
+            )
+            suggested_fix = (
+                "Serve an anonymous HTTP 200 JSON document with a resource field at the resource_metadata "
+                "URL, or correct the URL in the challenge."
+            )
         else:
             passed = True
-            message = f"✅ HTTP {status} challenge references same-origin metadata {evidence_preview(referenced)}"
+            message = f"✅ HTTP {status} challenge references metadata served at {evidence_preview(referenced)}"
         return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"basis": "RFC 9728 §5.1 (resource_metadata parameter)", "resource_metadata": referenced},
-            suggested_fix=(
-                (
-                    "Add a quoted resource_metadata URL pointing to your protected-resource metadata "
-                    "in WWW-Authenticate to satisfy this check."
-                )
-                if referenced is None
-                else (
-                    "Verify that the challenge URL points to your intended metadata and its resource "
-                    "value identifies this endpoint. Consult the rule documentation for alternative "
-                    "discovery setups."
-                )
-            )
-            if not passed
-            else None,
+            details={
+                "basis": (
+                    "RFC 9728 §5.1 (resource_metadata parameter); MCP Authorization 2025-06-18 "
+                    "(Authorization Server Location), 2025-11-25+ (Protected Resource Metadata Discovery)"
+                ),
+                "resource_metadata": referenced,
+                "http_status": fetched_status,
+            },
+            suggested_fix=suggested_fix if not passed else None,
             audit_data=audit_data,
         )
 
@@ -454,7 +491,7 @@ class AuthMetadataHttpsRule(AuthMetadataBaseRule):
         details = self._metadata(audit_data)
         metadata_url = str(details.get("metadata_url", ""))
         resource = str(details.get("resource", ""))
-        insecure = [u for u in (metadata_url, resource) if not u.startswith("https://")]
+        insecure = [u for u in (metadata_url, resource) if not u.lower().startswith("https://")]
         passed = not insecure
         message = (
             "✅ The protected-resource metadata URL and resource identifier use HTTPS"
@@ -558,11 +595,13 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
         return None
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """High check: the authorization server's RFC 8414 metadata is reachable.
+        """High check: the authorization server's metadata is discoverable and valid.
 
-        It must advertise the authorization and token endpoints; clients
-        discover how to authorize and exchange tokens from this
-        document; without it the flow is undiscoverable.
+        The probe tries the MCP discovery order (RFC 8414 and OpenID Connect,
+        with path insertion for an issuer with a path) and accepts a document
+        only when its ``issuer`` is identical to the listed issuer (RFC 8414
+        §3.3), apart from a trailing slash, which is reported. It must advertise the authorization and token endpoints;
+        without it the flow is undiscoverable.
 
         Args:
             audit_data: The collected server data for this audit
@@ -576,12 +615,26 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
         present = details.get("auth_server_metadata_present") is True
         has_endpoints = details.get("auth_server_has_endpoints") is True
         passed = present and has_endpoints
-        if not present:
+        mismatch = details.get("auth_server_issuer_mismatch")
+        declared = details.get("auth_server_issuer_declared")
+        if details.get("auth_server_metadata_blocked"):
+            message = f"❌ Issuer {evidence_preview(issuer)} is a non-public address that remote clients cannot reach"
+        elif not present and isinstance(mismatch, dict):
+            message = (
+                f"❌ Metadata at {evidence_preview(mismatch.get('metadata_url'))} declares issuer "
+                f"{evidence_preview(mismatch.get('issuer'))}, not {evidence_preview(issuer)}; clients must reject it"
+            )
+        elif not present:
             message = f"❌ No usable discovery metadata was observed for issuer {evidence_preview(issuer)}"
         elif not has_endpoints:
             message = (
                 f"❌ Issuer {evidence_preview(issuer)} metadata lacks string "
                 "authorization_endpoint or token_endpoint fields"
+            )
+        elif isinstance(declared, str):
+            message = (
+                f"✅ Issuer {evidence_preview(issuer)} metadata includes string authorization and token endpoints "
+                f"(it declares issuer {evidence_preview(declared)}, which differs only by a trailing slash)"
             )
         else:
             message = f"✅ Issuer {evidence_preview(issuer)} metadata includes string authorization and token endpoints"
@@ -591,13 +644,25 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
             passed=passed,
             message=message,
             details={
-                "basis": "RFC 8414 §3 (well-known location), §2 (endpoints)",
+                "basis": (
+                    "RFC 8414 §3.1 (well-known location), §3.3 (issuer validation), §2 (endpoints); "
+                    "MCP Authorization (Authorization Server Metadata Discovery)"
+                ),
                 "issuer": issuer,
                 "present": present,
                 "has_endpoints": has_endpoints,
+                "issuer_mismatch": mismatch,
+                "declared_issuer": declared,
             },
             suggested_fix=(
-                ("Check DNS, TLS and network access to the selected issuer; no discovery location was reachable.")
+                ("Advertise the issuer's public HTTPS identifier in authorization_servers.")
+                if details.get("auth_server_metadata_blocked")
+                else (
+                    "Make the metadata's issuer identical to the identifier in authorization_servers, "
+                    "including any trailing slash, or list the issuer exactly as the metadata declares it."
+                )
+                if not present and isinstance(mismatch, dict)
+                else ("Check DNS, TLS and network access to the selected issuer; no discovery location was reachable.")
                 if details.get("auth_server_metadata_error") is not None
                 else ("Check the issuer discovery URLs and serve RFC 8414 or OpenID Connect JSON metadata.")
                 if not present
