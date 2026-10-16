@@ -2075,6 +2075,8 @@ class _LegacySession:
     session_id: str | None
     initialized: _HttpProbeResponse
     initialized_body: str | None
+    initialized_unobservable: str | None
+    """Why the ``notifications/initialized`` body could not be read (``post_raw``), or None."""
 
 
 async def _open_legacy_session(
@@ -2099,8 +2101,12 @@ async def _open_legacy_session(
     if session_id:
         headers["Mcp-Session-Id"] = session_id
     notification = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
-    initialized, body, _unobservable = await target.post_raw(notification, headers)
-    return _LegacySession(response, headers, session_id, initialized, body), response, target
+    try:
+        initialized, body, unobservable = await target.post_raw(notification, headers)
+    except Exception:
+        await target.end_session(response)
+        raise
+    return _LegacySession(response, headers, session_id, initialized, body, unobservable), response, target
 
 
 def _legacy_unavailable(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
@@ -2122,9 +2128,9 @@ def _redirected(probe_id: str, status: int, details: dict[str, Any]) -> ProbeRes
 
 
 def _notification_outcome(status: int, body: str | None) -> ProbeOutcome:
-    """Judge a notification POST: ``202`` with no body, or an HTTP error status, both conform."""
+    """Judge a notification POST: ``202`` with a zero-length body, or an HTTP error status, both conform."""
     if status == 202:
-        return ProbeOutcome.SUPPORTED if not (body or "").strip() else ProbeOutcome.UNSUPPORTED
+        return ProbeOutcome.SUPPORTED if body == "" else ProbeOutcome.UNSUPPORTED
     return ProbeOutcome.SUPPORTED if status >= 400 else ProbeOutcome.UNSUPPORTED
 
 
@@ -2133,7 +2139,8 @@ async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
 
     Every Streamable HTTP revision says a notification the server accepts MUST
     get ``202 Accepted`` with no body, and one it cannot accept an HTTP error
-    status. The notification is the ``notifications/initialized`` that
+    status. A 202 passes only with a zero-length body; one whose body could
+    not be read (content-encoded) is not judged. The notification is the ``notifications/initialized`` that
     completes a legacy handshake; a server without the legacy lifecycle gets a
     stateless 2026-07-28 ``notifications/cancelled`` instead.
     """
@@ -2141,13 +2148,14 @@ async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
     if session is not None:
         await target.end_session(session.initialize)
         status, body, shape = session.initialized.status_code, session.initialized_body, "legacy-initialized"
+        unobservable = session.initialized_unobservable
     elif response.status_code in AUTH_GATED_STATUSES:
         return _legacy_unavailable(PROBE_NOTIFICATION_ACCEPTED, response)
     else:
         version = _target_version()
         method = "notifications/cancelled"
         notification = {"jsonrpc": "2.0", "method": method, "params": {"requestId": "mcpscore-probe"}}
-        sent, body, _unobservable = await target.post_raw(
+        sent, body, unobservable = await target.post_raw(
             json.dumps(notification).encode(), _request_headers(version, method)
         )
         status, shape = sent.status_code, "modern-cancelled"
@@ -2157,10 +2165,18 @@ async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
                 ProbeOutcome.NOT_APPLICABLE,
                 {"http_status": status, "reason": "notification POST is access-controlled"},
             )
-    details: dict[str, Any] = {"http_status": status, "body_present": bool((body or "").strip()), "shape": shape}
+    details: dict[str, Any] = {
+        "http_status": status,
+        "body_present": None if body is None else body != "",
+        "shape": shape,
+    }
     redirected = _redirected(PROBE_NOTIFICATION_ACCEPTED, status, details)
     if redirected is not None:
         return redirected
+    if status == 202 and body is None:
+        # A compressed body was not decoded, so "no body" cannot be verified either way.
+        details["reason"] = f"202 body not observable ({unobservable or 'unread'})"
+        return ProbeResult(PROBE_NOTIFICATION_ACCEPTED, ProbeOutcome.NOT_APPLICABLE, details)
     return ProbeResult(PROBE_NOTIFICATION_ACCEPTED, _notification_outcome(status, body), details)
 
 
@@ -2176,9 +2192,11 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
     serve it. A control with ``"2.0"`` must be
     served first, so a server that refuses everything is not credited with a
     refusal. In a legacy session the request is ``ping``; without the legacy
-    lifecycle it is a stateless ``server/discover``. Details record whether
-    the invalid request was served or never answered (``timed_out``), the
-    error code, and whether the response id is the request's or null.
+    lifecycle it is a stateless ``server/discover``. A timeout counts as no
+    answer (``timed_out``) only when a second control, sent afterwards, is
+    served; otherwise it is an error. Details also record whether the invalid
+    request was served, the error code, and whether the response id is the
+    request's or null.
     """
     session, response, target = await _open_legacy_session(target, 29)
     if session is not None:
@@ -2200,7 +2218,11 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
         try:
             rejected = await target.post(invalid, headers, follow_redirects=False)
         except httpx2.ReadTimeout:
-            # The control was just answered, so silence here is the server's, not the network's.
+            # Silence is the server's only if the session still answers a control afterwards;
+            # otherwise the timeout propagates and the runner records ERROR.
+            again = await target.post({**body, "id": 30}, headers, follow_redirects=False)
+            if again.result is None:
+                raise
             details["timed_out"] = True
             return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.UNSUPPORTED, details)
     finally:

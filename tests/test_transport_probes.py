@@ -1,6 +1,7 @@
 """Probe tests for the Streamable HTTP envelope: notification 202, invalid requests, the GET stream, DELETE."""
 
 from dataclasses import dataclass, field
+import gzip
 import json
 
 import httpx2
@@ -123,6 +124,36 @@ class TestNotificationAccepted:
         result = await _run(_probe_notification_accepted, LegacyServer(notification=httpx2.Response(status)))
         assert result.outcome is ProbeOutcome.UNSUPPORTED
 
+    async def test_202_with_a_whitespace_body_fails(self):
+        result = await _run(_probe_notification_accepted, LegacyServer(notification=httpx2.Response(202, text="\n")))
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["body_present"] is True
+
+    async def test_202_with_an_encoded_body_is_not_judged(self):
+        encoded = httpx2.Response(202, headers={"Content-Encoding": "gzip"}, content=gzip.compress(b'{"result":{}}'))
+        result = await _run(_probe_notification_accepted, LegacyServer(notification=encoded))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["body_present"] is None
+        assert result.details["reason"] == "202 body not observable (encoded)"
+
+    async def test_stateless_202_with_an_encoded_body_is_not_judged(self):
+        encoded = httpx2.Response(202, headers={"Content-Encoding": "br"}, content=b"compressed")
+        result = await _run(_probe_notification_accepted, _modern_handler(notification=encoded))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+
+    async def test_failed_handshake_notification_still_closes_the_session(self):
+        server = LegacyServer()
+
+        def fails(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "POST" and json.loads(request.content).get("method") == "notifications/initialized":
+                server.requests.append(request)
+                raise httpx2.ReadTimeout("no answer", request=request)
+            return server(request)
+
+        with pytest.raises(httpx2.ReadTimeout):
+            await _run(_probe_get_stream, fails)
+        assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE"]
+
     async def test_an_error_status_is_a_conforming_refusal(self):
         result = await _run(_probe_notification_accepted, LegacyServer(notification=httpx2.Response(400)))
         assert result.outcome is ProbeOutcome.SUPPORTED
@@ -216,7 +247,42 @@ class TestInvalidRequest:
         result = await _run(_probe_invalid_request, hangs)
         assert result.outcome is ProbeOutcome.UNSUPPORTED
         assert result.details["timed_out"] is True
-        assert server.methods()[-1] == "DELETE"
+        # A second control after the timeout proves the session still answers.
+        assert server.methods()[-3:] == ["POST ping", "POST ping", "DELETE"]
+
+    async def test_no_answer_when_the_session_also_stops_answering_is_an_error(self):
+        server = LegacyServer()
+        timed_out = False
+
+        def everything_hangs_after(request: httpx2.Request) -> httpx2.Response:
+            nonlocal timed_out
+            if request.method == "POST" and json.loads(request.content).get("method") == INVALID_REQUEST_METHOD:
+                timed_out = True
+            if timed_out and request.method == "POST":
+                server.requests.append(request)
+                raise httpx2.ReadTimeout("no answer", request=request)
+            return server(request)
+
+        with pytest.raises(httpx2.ReadTimeout):
+            await _run(_probe_invalid_request, everything_hangs_after)
+        assert server.methods()[-3:] == [f"POST {INVALID_REQUEST_METHOD}", "POST ping", "DELETE"]
+
+    async def test_no_answer_followed_by_an_unserved_control_is_an_error(self):
+        server = LegacyServer()
+        timed_out = False
+
+        def refuses_after(request: httpx2.Request) -> httpx2.Response:
+            nonlocal timed_out
+            method = json.loads(request.content).get("method") if request.method == "POST" else None
+            if method == INVALID_REQUEST_METHOD:
+                timed_out = True
+                raise httpx2.ReadTimeout("no answer", request=request)
+            if timed_out and method == "ping":
+                return httpx2.Response(503)
+            return server(request)
+
+        with pytest.raises(httpx2.ReadTimeout):
+            await _run(_probe_invalid_request, refuses_after)
 
     async def test_unserved_control_is_not_applicable_and_the_session_is_closed(self):
         ping = httpx2.Response(200, json={"jsonrpc": "2.0", "id": 25, "error": {"code": -32601}})
