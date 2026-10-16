@@ -37,8 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     which a request in it must get HTTP 404
     ([Transports §Session Management](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#session-management)).
     A server that accepts the DELETE but keeps serving the session is not
-    judged. For both rules, a 404 is not judged when a ping shows the session
-    itself has expired.
+    judged.
+  - A 404 to the GET, the DELETE or the invalid request is not judged when a
+    ping in the same session also gets 404: the session itself has expired.
   - The probes open short sessions of their own with `initialize` and close
     them again; none of them calls a tool. They follow a same-origin redirect
     the way the audit's own session does.

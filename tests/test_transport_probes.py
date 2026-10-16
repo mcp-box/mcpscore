@@ -258,6 +258,24 @@ class TestInvalidRequest:
         result = await _run(_probe_invalid_request, LegacyServer(invalid=httpx2.Response(400, text="bad")))
         assert result.outcome is ProbeOutcome.SUPPORTED
 
+    async def test_404_for_a_session_expired_after_the_control_is_not_applicable(self):
+        server = LegacyServer()
+
+        def expires_at_invalid(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "POST" and json.loads(request.content).get("method") == INVALID_REQUEST_METHOD:
+                server.deleted = True
+            return server(request)
+
+        result = await _run(_probe_invalid_request, expires_at_invalid)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert "no longer exists" in result.details["reason"]
+        assert server.methods()[-2:] == ["POST ping", "DELETE"]
+
+    async def test_404_while_the_session_is_still_served_counts_as_rejected(self):
+        server = LegacyServer(invalid=httpx2.Response(404))
+        result = await _run(_probe_invalid_request, server)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
     async def test_served_fails(self):
         served = httpx2.Response(200, json={"jsonrpc": "2.0", "id": 24, "result": {}})
         result = await _run(_probe_invalid_request, LegacyServer(invalid=served))

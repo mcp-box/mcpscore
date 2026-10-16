@@ -2467,9 +2467,10 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
     (``timed_out``) only when a second control, sent afterwards, is served;
     otherwise it is an error. An answer that cannot be read (compressed, or
     over the byte cap) is judged by its status alone, and its code is left
-    unknown (``body_unobservable``). Details also record whether the invalid
-    request was served, the error code, and whether the response id is the
-    request's or null.
+    unknown (``body_unobservable``). A 404 in a legacy session is not judged
+    when a ``ping`` in it also gets 404: the session expired. Details also
+    record whether the invalid request was served, the error code, and
+    whether the response id is the request's or null.
     """
     session, response, target = await _open_legacy_session(target, 29)
     if session is not None and (incomplete := await _incomplete_handshake(PROBE_INVALID_REQUEST, session, target)):
@@ -2504,6 +2505,9 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
                 raise
             details["timed_out"] = True
             return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.UNSUPPORTED, details)
+        if session is not None and rejected.status_code == 404 and await _session_gone(target, session, 31):
+            details["reason"] = "session no longer exists; a ping in it was answered 404"
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
     finally:
         if session is not None:
             await target.end_session(session.initialize)
