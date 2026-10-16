@@ -2131,6 +2131,20 @@ def _notification_body_limit(status: int) -> int:
     return 1 if status == 202 else 0
 
 
+async def _incomplete_handshake(probe_id: str, session: _LegacySession, target: _HttpTarget) -> ProbeResult | None:
+    """Close the session and return NOT_APPLICABLE when ``notifications/initialized`` was not accepted.
+
+    A server may refuse requests in a session whose handshake never completed,
+    so nothing later in it says anything about the transport contract.
+    """
+    status = session.initialized.status_code
+    if 200 <= status < 300:
+        return None
+    await target.end_session(session.initialize)
+    details = {"initialized_http_status": status, "reason": "handshake notification was not accepted"}
+    return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+
+
 def _legacy_unavailable(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
     """NOT_APPLICABLE for a session probe whose ``initialize`` was refused."""
     reason = (
@@ -2221,6 +2235,8 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
     request's or null.
     """
     session, response, target = await _open_legacy_session(target, 29)
+    if session is not None and (incomplete := await _incomplete_handshake(PROBE_INVALID_REQUEST, session, target)):
+        return incomplete
     if session is not None:
         headers, body = session.headers, {"jsonrpc": "2.0", "id": 25, "method": "ping"}
         shape = "legacy-ping"
@@ -2251,6 +2267,9 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
         if session is not None:
             await target.end_session(session.initialize)
     details.update(_base_details(rejected))
+    if rejected.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "invalid request was refused by access control; validation not observable"
+        return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
     redirected = _redirected(PROBE_INVALID_REQUEST, rejected.status_code, details)
     if redirected is not None:
         return redirected
@@ -2278,6 +2297,8 @@ async def _probe_get_stream(target: _HttpTarget) -> ProbeResult:
     session, response, target = await _open_legacy_session(target, 26)
     if session is None:
         return _legacy_unavailable(PROBE_GET_STREAM, response)
+    if incomplete := await _incomplete_handshake(PROBE_GET_STREAM, session, target):
+        return incomplete
     headers = {"Accept": "text/event-stream", "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"]}
     if session.session_id:
         headers["Mcp-Session-Id"] = session.session_id
@@ -2313,6 +2334,8 @@ async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
     session, response, target = await _open_legacy_session(target, 27)
     if session is None:
         return _legacy_unavailable(PROBE_SESSION_DELETE, response)
+    if incomplete := await _incomplete_handshake(PROBE_SESSION_DELETE, session, target):
+        return incomplete
     if not session.session_id:
         return ProbeResult(
             PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, {"reason": "initialize issued no session ID"}
@@ -2338,6 +2361,12 @@ async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
         return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.UNSUPPORTED, details)
     after = await target.post({"jsonrpc": "2.0", "id": 28, "method": "ping"}, session.headers, follow_redirects=False)
     details["after_delete_http_status"] = after.status_code
+    if after.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "request after DELETE is access-controlled"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
+    redirected = _redirected(PROBE_SESSION_DELETE, after.status_code, details)
+    if redirected is not None:
+        return redirected
     if after.result is not None:
         # The 404 requirement binds a terminated session, and this one was kept.
         details["reason"] = "session is still served after DELETE; no terminated session to observe"

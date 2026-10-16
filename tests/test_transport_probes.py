@@ -531,3 +531,50 @@ class TestUnfollowedRedirect:
     async def test_delete(self):
         server = LegacyServer(delete_status=301)
         assert (await _run(_probe_session_delete, server)).outcome is ProbeOutcome.NOT_APPLICABLE
+
+
+class TestIncompleteHandshake:
+    """A refused ``notifications/initialized`` leaves no usable session: later checks are not judged."""
+
+    @pytest.mark.parametrize("probe", [_probe_invalid_request, _probe_get_stream, _probe_session_delete])
+    @pytest.mark.parametrize("status", [400, 307])
+    async def test_session_checks_skip_and_close_the_session(self, probe, status):
+        server = LegacyServer(notification=httpx2.Response(status, headers={"Location": "https://other.example/"}))
+        result = await _run(probe, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details == {
+            "initialized_http_status": status,
+            "reason": "handshake notification was not accepted",
+        }
+        assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE"]
+
+    async def test_the_notification_rule_still_judges_the_refusal(self):
+        result = await _run(_probe_notification_accepted, LegacyServer(notification=httpx2.Response(400)))
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+
+class TestAccessControlAfterTheControl:
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_invalid_request_refused_by_access_control_is_not_judged(self, status):
+        result = await _run(_probe_invalid_request, LegacyServer(invalid=httpx2.Response(status)))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert "access control" in result.details["reason"]
+
+    @pytest.mark.parametrize(
+        ("after", "reason"),
+        [
+            (httpx2.Response(401), "request after DELETE is access-controlled"),
+            (httpx2.Response(403), "request after DELETE is access-controlled"),
+            (httpx2.Response(307, headers={"Location": "https://other.example/"}), "endpoint redirects"),
+        ],
+    )
+    async def test_follow_up_after_delete_that_cannot_be_judged(self, after, reason):
+        server = LegacyServer()
+
+        def answers(request: httpx2.Request) -> httpx2.Response:
+            response = server(request)
+            return after if response.status_code == 404 else response
+
+        result = await _run(_probe_session_delete, answers)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == reason
