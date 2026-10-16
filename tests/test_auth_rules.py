@@ -353,7 +353,11 @@ class TestWwwAuthenticateParam:
         )
         assert www_authenticate_param(header, "resource_metadata") == "https://meta.example/real"
 
-    @pytest.mark.parametrize("filler", ["a" * 200_000, "a=" * 100_000, '"' + "a " * 100_000])
+    @pytest.mark.parametrize(
+        "filler",
+        ["a" * 200_000, "a=" * 100_000, '"' + "a " * 100_000],
+        ids=["long-token", "repeated-pairs", "unterminated-quote"],
+    )
     def test_long_server_supplied_header_parses_in_linear_time(self, filler: str):
         """A backtracking parser takes minutes on these; the bounded one takes milliseconds."""
         started = time.perf_counter()
