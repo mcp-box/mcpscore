@@ -6,10 +6,15 @@ from mcpscore.rules import (
     AuditData,
     BaseRule,
     ErrorDataLeakRule,
+    GetStreamContractRule,
+    InvalidRequestErrorCodeRule,
+    InvalidRequestRejectedRule,
     MalformedRequestHandlingRule,
+    NotificationAcceptedRule,
     OriginHeaderValidationRule,
     RuleResult,
     RuleSeverity,
+    SessionDeleteRule,
     StreamableHTTPTransportRule,
     TLSEnabledRule,
 )
@@ -150,6 +155,11 @@ class TestAuditorSkipsNonApplicableRules:
             ErrorDataLeakRule(),
             OriginHeaderValidationRule(),
             StreamableHTTPTransportRule(),
+            NotificationAcceptedRule(),
+            InvalidRequestRejectedRule(),
+            InvalidRequestErrorCodeRule(),
+            GetStreamContractRule(),
+            SessionDeleteRule(),
         ]
         auditor.audit_data = AuditData(transport_type=MCPTransportType.STDIO)
 
@@ -164,6 +174,11 @@ class TestAuditorSkipsNonApplicableRules:
             "security_error_data_leak": SKIP_REASON_NOT_APPLICABLE,
             "security_origin_validation": SKIP_REASON_NOT_APPLICABLE,
             "transport_streamable_http": SKIP_REASON_NOT_APPLICABLE,
+            "transport_notification_accepted": SKIP_REASON_NOT_APPLICABLE,
+            "transport_invalid_request_rejected": SKIP_REASON_NOT_APPLICABLE,
+            "transport_invalid_request_error_code": SKIP_REASON_NOT_APPLICABLE,
+            "transport_get_stream_contract": SKIP_REASON_NOT_APPLICABLE,
+            "transport_session_delete": SKIP_REASON_NOT_APPLICABLE,
         }
 
     def test_empty_catalog_quality_rules_are_skipped_and_score_zero_points(self):

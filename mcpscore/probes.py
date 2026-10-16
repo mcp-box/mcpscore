@@ -31,7 +31,7 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
 import ipaddress
@@ -44,7 +44,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 
     from mcp import StdioServerParameters
 from urllib.parse import urlsplit
@@ -55,7 +55,7 @@ from mcp.client.stdio import stdio_client
 from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
 
-from mcpscore.redirects import send_within_origin
+from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
 from mcpscore.spec import DRAFT, LATEST, SPEC_VERSIONS, Era, Lifecycle
 from mcpscore.tls import async_client
@@ -163,6 +163,10 @@ PROBE_PAGINATION_CACHE_SCOPE = "probe_pagination_cache_scope"
 PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT = "probe_tools_catalog_connection_independent"
 PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT = "probe_resources_catalog_connection_independent"
 PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT = "probe_prompts_catalog_connection_independent"
+PROBE_NOTIFICATION_ACCEPTED = "probe_notification_accepted"
+PROBE_INVALID_REQUEST = "probe_invalid_request"
+PROBE_GET_STREAM = "probe_get_stream"
+PROBE_SESSION_DELETE = "probe_session_delete"
 
 _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -188,6 +192,10 @@ _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_PAGINATION_CACHE_SCOPE,
+    PROBE_NOTIFICATION_ACCEPTED,
+    PROBE_INVALID_REQUEST,
+    PROBE_GET_STREAM,
+    PROBE_SESSION_DELETE,
 )
 CATALOG_CONNECTION_PROBE_IDS: tuple[str, ...] = (
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
@@ -210,6 +218,10 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_AUTH_METADATA,
         PROBE_ORIGIN_VALIDATION,
         PROBE_MALFORMED_JSON,
+        PROBE_NOTIFICATION_ACCEPTED,
+        PROBE_INVALID_REQUEST,
+        PROBE_GET_STREAM,
+        PROBE_SESSION_DELETE,
     }
 )
 """Probes whose *subject* is an HTTP construct, so they cannot run over stdio.
@@ -218,8 +230,9 @@ Not "probes that happen to use HTTP" — every probe does that over an HTTP
 target. These ask questions that only exist in HTTP: required/mirrored request
 headers, the removed GET stream and ``Mcp-Session-Id``, the unauthenticated
 status and ``WWW-Authenticate`` challenge, RFC 9728/8414 well-known documents,
-``Origin`` validation against DNS rebinding, and raw malformed HTTP request
-bodies. Over stdio they record
+``Origin`` validation against DNS rebinding, raw malformed HTTP request
+bodies, and the Streamable HTTP envelope (notification ``202``, the GET
+stream, session ``DELETE``, invalid JSON-RPC bodies). Over stdio they record
 ``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
 malformed wire input through the SDK transport.
 """
@@ -329,6 +342,14 @@ class _HttpProbeResponse(_ProbeResponse):
     """
 
     status_code: int
+    final_url: str | None = None
+    """URL that answered, after any same-origin redirect the request followed."""
+
+    unobservable: str | None = None
+    """Why the body could not be read (``"encoded"``, ``"capped"``, ``"unfinished"``); None when it was.
+
+    The payload is then None.
+    """
 
 
 CLIENT_NAME = "mcpscore"
@@ -426,6 +447,110 @@ def _parse_payload_text(text: str, content_type: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+_RPC_READ_LIMIT = 65_536
+"""Bytes of a JSON-RPC answer read while waiting for the response before giving up."""
+
+
+class _StreamDeadline(httpx2.ReadTimeout):
+    """No matching JSON-RPC response arrived before the deadline."""
+
+    def __init__(self, request: httpx2.Request) -> None:
+        super().__init__("no matching JSON-RPC response before the deadline", request=request)
+
+
+class _ReadCapReached(Exception):  # noqa: N818 — a signal, not an error condition
+    """The answer exceeded ``_RPC_READ_LIMIT`` before the response was found."""
+
+
+async def _bounded_chunks(response: httpx2.Response) -> AsyncIterator[bytes]:
+    """Yield an identity body as received, counting bytes before anything is buffered.
+
+    Callers only use this on a response without content-encoding, so
+    ``aiter_bytes`` decodes nothing and yields the chunks as they arrive.
+    Raises ``_ReadCapReached`` past the cap.
+    """
+    read = 0
+    async for chunk in response.aiter_bytes():
+        space = _RPC_READ_LIMIT - read
+        read += len(chunk)
+        if read > _RPC_READ_LIMIT:
+            # The allowed prefix may already hold the answer; how the bytes were chunked must not matter.
+            if space > 0:
+                yield chunk[:space]
+            raise _ReadCapReached
+        yield chunk
+
+
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def _take_lines(buffer: bytearray, skip_lf: bool) -> tuple[list[str], bool]:
+    """Remove and decode complete lines; CR, LF and CRLF all end one (WHATWG SSE line rules).
+
+    A CR ends its line at once, so a stream left open after a CR-terminated
+    event is never held back. ``skip_lf`` carries a CR at the end of one chunk
+    into the next, whose leading LF is then the CRLF's second half. Returns
+    the lines and the new ``skip_lf``.
+    """
+    lines: list[str] = []
+    while buffer:
+        if skip_lf:
+            skip_lf = False
+            if buffer[0] == 0x0A:
+                del buffer[:1]
+                continue
+        ends = [i for i in (buffer.find(b"\r"), buffer.find(b"\n")) if i >= 0]
+        if not ends:
+            break
+        end = min(ends)
+        lines.append(bytes(buffer[:end]).decode("utf-8", errors="replace"))
+        is_cr = buffer[end] == 0x0D
+        del buffer[: end + 1]
+        skip_lf = is_cr
+    return lines, skip_lf
+
+
+async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
+    """Yield an SSE body's lines, decoded only once complete, without a leading UTF-8 BOM."""
+    buffer = bytearray()
+    bom_checked = False
+    skip_lf = False
+    async for chunk in _bounded_chunks(response):
+        buffer.extend(chunk)
+        if not bom_checked:
+            if len(buffer) < len(_UTF8_BOM) and _UTF8_BOM.startswith(bytes(buffer)):
+                continue
+            if buffer.startswith(_UTF8_BOM):
+                del buffer[: len(_UTF8_BOM)]
+            bom_checked = True
+        lines, skip_lf = _take_lines(buffer, skip_lf)
+        for line in lines:
+            yield line
+    if buffer:
+        yield bytes(buffer).decode("utf-8", errors="replace")
+
+
+async def _read_sse_response(response: httpx2.Response, request_id: object) -> dict[str, Any] | None:
+    """Return the first SSE event that answers ``request_id``; raise ``_ReadCapReached`` past the byte cap."""
+    data: list[str] = []
+    async for line in _bounded_lines(response):
+        if line.startswith("data:"):
+            data.append(line[len("data:") :].strip())
+            continue
+        if line or not data:
+            continue
+        try:
+            message = json.loads("\n".join(data))
+        except (json.JSONDecodeError, ValueError):
+            message = None
+        data = []
+        if not isinstance(message, dict) or not ("result" in message or "error" in message):
+            continue
+        if message.get("id") == request_id or (message.get("id") is None and "error" in message):
+            return message
+    return None
+
+
 def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
     """Extract the JSON-RPC message from a JSON or SSE response body."""
     return _parse_payload_text(response.text, response.headers.get("content-type", ""))
@@ -495,10 +620,97 @@ class _HttpTarget:
             status_code=response.status_code,
             headers=dict(response.headers),
             payload=_parse_payload(response),
+            final_url=str(response.url),
         )
 
+    async def post_rpc(
+        self,
+        body: dict,
+        headers: dict[str, str],
+        *,
+        follow_redirects: bool = True,
+        close_session_on_failure: bool = False,
+    ) -> _HttpProbeResponse:
+        """POST one JSON-RPC request and read only until its response arrives.
+
+        The request asks for an identity body; a content-encoded answer is not
+        decoded and has no payload. A JSON answer is read whole. An SSE answer
+        is read event by event, skipping priming events and notifications,
+        until a message carrying the request's ``id`` (or an error with a null
+        ``id``), and then closed, so a stream kept open with heartbeats cannot
+        stall the probe. Bytes are counted before they are buffered, and the
+        exchange shares one deadline. Past the deadline ``_StreamDeadline`` is
+        raised, unless an error status already arrived: that answer, like one
+        whose body read times out, is returned with ``unobservable="unfinished"``. An answer that is
+        content-encoded or exceeds the byte cap is returned with no payload and
+        ``unobservable`` set, never as a timeout.
+        With ``close_session_on_failure``, a session ID the answer issued is
+        closed at the URL that answered before any failure propagates.
+        """
+        request = self.client.build_request(
+            "POST",
+            self.url,
+            json=body,
+            headers={**headers, "Accept-Encoding": "identity"},
+            timeout=PROBE_TIMEOUT_S,
+        )
+        response: httpx2.Response | None = None
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_S):
+                response = (
+                    await send_within_origin(self.client, request, stream=True)
+                    if follow_redirects
+                    else await self.client.send(request, follow_redirects=False, stream=True)
+                )
+                content_type = response.headers.get("content-type", "")
+                encoding = response.headers.get("content-encoding", "").strip().lower()
+                payload: dict[str, Any] | None = None
+                unobservable: str | None = None
+                try:
+                    if encoding not in ("", "identity"):
+                        unobservable = "encoded"
+                    elif "text/event-stream" in content_type.lower():
+                        payload = await _read_sse_response(response, body.get("id"))
+                    else:
+                        raw = b"".join([chunk async for chunk in _bounded_chunks(response)])
+                        payload = _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type)
+                except _ReadCapReached:
+                    unobservable = "capped"
+                return _HttpProbeResponse(
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    payload=payload,
+                    final_url=str(response.url),
+                    unobservable=unobservable,
+                )
+        except Exception as exc:
+            if response is not None:
+                await response.aclose()
+                if close_session_on_failure:
+                    answered = replace(self, url=str(response.url))
+                    issued = _HttpProbeResponse(
+                        status_code=response.status_code, headers=dict(response.headers), payload=None
+                    )
+                    await answered.end_session(issued)
+            timed_out = isinstance(exc, (TimeoutError, httpx2.ReadTimeout))
+            if timed_out and response is not None and response.status_code >= 400:
+                # The status already arrived and says the request was refused; only the body is missing.
+                return _HttpProbeResponse(
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    payload=None,
+                    final_url=str(response.url),
+                    unobservable="unfinished",
+                )
+            if isinstance(exc, TimeoutError):
+                raise _StreamDeadline(request) from exc
+            raise
+        finally:
+            if response is not None:
+                await response.aclose()
+
     async def post_raw(
-        self, content: bytes, headers: dict[str, str]
+        self, content: bytes, headers: dict[str, str], *, body_limit: Callable[[int], int] | None = None
     ) -> tuple[_HttpProbeResponse, str | None, str | None]:
         """POST an intentionally invalid raw body without following redirects.
 
@@ -515,6 +727,10 @@ class _HttpTarget:
         server compresses anyway (ignoring the identity request), the body is
         never fed to the decoder — that is where the bomb would inflate — and
         is reported unobservable.
+
+        ``body_limit`` maps the status to the bytes worth reading, for a caller
+        whose verdict needs less than the full body: 0 skips the body (an open
+        SSE stream is never drained), 1 tells empty from non-empty.
 
         Returns ``(response, body_text, unobservable_reason)``. ``body_text``
         is the bounded leak surface for ``security_error_data_leak`` (a
@@ -539,18 +755,29 @@ class _HttpTarget:
             encoded = encoding not in ("", "identity")
             body = bytearray()
             truncated = False
+            limit = _RAW_BODY_SCAN_LIMIT if body_limit is None else body_limit(status_code)
+            if limit == 0:
+                return (
+                    _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),
+                    None,
+                    "unread",
+                )
             if not encoded:
                 # No content-encoding, so aiter_bytes yields identity bytes and
                 # performs no decompression — bounding the chunks bounds peak
                 # memory. An encoded body is deliberately never iterated (the
                 # `async with` closes it without decoding).
                 async for chunk in response.aiter_bytes():
-                    space = _RAW_BODY_SCAN_LIMIT - len(body)
+                    space = limit - len(body)
                     if len(chunk) > space:
                         body.extend(chunk[:space])
                         truncated = True
                         break
                     body.extend(chunk)
+                    if body_limit is not None and len(body) >= limit:
+                        # The caller needs no more; waiting for the next chunk could block on an open stream.
+                        truncated = True
+                        break
         if encoded:
             return (
                 _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),
@@ -573,7 +800,8 @@ class _HttpTarget:
 
         Carries the negotiated ``MCP-Protocol-Version`` (a MUST on every request
         after ``initialize``) and no ``Origin``, so a conforming server has no
-        reason to refuse the cleanup.
+        reason to refuse the cleanup. The answer is closed once its headers
+        arrive, and the whole exchange shares one deadline.
         """
         session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
         if not session_id:
@@ -586,14 +814,20 @@ class _HttpTarget:
         try:
             request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
             request.headers.pop("Origin", None)
-            await self.client.send(request, follow_redirects=False)
+            async with asyncio.timeout(PROBE_TIMEOUT_S):
+                answer = await self.client.send(request, follow_redirects=False, stream=True)
+                await answer.aclose()
         except Exception:  # noqa: BLE001 — courtesy only; the observation is already made
             return
 
     async def get_status(self, headers: dict[str, str]) -> _HttpProbeResponse:
         """GET the endpoint and close without consuming a possible legacy SSE stream."""
+        return await self.request_status("GET", headers)
+
+    async def request_status(self, method: str, headers: dict[str, str]) -> _HttpProbeResponse:
+        """Send a bodiless request and close without consuming the response body."""
         async with self.client.stream(
-            "GET",
+            method,
             self.url,
             headers=headers,
             timeout=PROBE_TIMEOUT_S,
@@ -2044,6 +2278,372 @@ async def _probe_malformed_json(target: _HttpTarget) -> ProbeResult:
     return _malformed_json_result(response, control, raw_body, unobservable_reason)
 
 
+@dataclass(frozen=True)
+class _LegacySession:
+    """A stateful-lifecycle session a probe opened with ``initialize`` and ``notifications/initialized``."""
+
+    initialize: _HttpProbeResponse
+    headers: dict[str, str]
+    """POST headers for requests inside the session: negotiated version and any session ID."""
+
+    session_id: str | None
+    initialized: _HttpProbeResponse
+    initialized_body: str | None
+    initialized_unobservable: str | None
+    """Why the ``notifications/initialized`` body could not be read (``post_raw``), or None."""
+
+
+async def _open_legacy_session(
+    target: _HttpTarget, request_id: int
+) -> tuple[_LegacySession | None, _HttpProbeResponse, _HttpTarget]:
+    """Open a legacy session the way every 2025 client does; None when ``initialize`` is not served.
+
+    ``initialize`` follows a same-origin redirect, as the audit's own session
+    does, and every later request goes to the URL that answered. The
+    ``notifications/initialized`` that completes the handshake is sent as a
+    raw POST so its status and body can be judged. Returns the session, the
+    ``initialize`` response, and the target to use from here on.
+    """
+    response = await target.post_rpc(
+        _legacy_initialize_body(request_id), _legacy_headers(), close_session_on_failure=True
+    )
+    if response.final_url and response.final_url != target.url:
+        target = replace(target, url=response.final_url)
+    negotiated = (response.result or {}).get("protocolVersion")
+    if not 200 <= response.status_code < 300 or not isinstance(negotiated, str):
+        # A session ID may have been issued with an answer the probe cannot use; close it.
+        await target.end_session(response)
+        return None, response, target
+    headers = {**_legacy_headers(), "MCP-Protocol-Version": negotiated}
+    session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    notification = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+    try:
+        initialized, body, unobservable = await target.post_raw(
+            notification, headers, body_limit=_notification_body_limit
+        )
+    except Exception:
+        await target.end_session(response)
+        raise
+    return _LegacySession(response, headers, session_id, initialized, body, unobservable), response, target
+
+
+def _notification_body_limit(status: int) -> int:
+    """Only a 202 needs its body, and one byte decides whether it has one."""
+    return 1 if status == 202 else 0
+
+
+async def _incomplete_handshake(probe_id: str, session: _LegacySession, target: _HttpTarget) -> ProbeResult | None:
+    """Close the session and return NOT_APPLICABLE when ``notifications/initialized`` was not accepted.
+
+    A server may refuse requests in a session whose handshake never completed,
+    so nothing later in it says anything about the transport contract.
+    """
+    status = session.initialized.status_code
+    if 200 <= status < 300:
+        return None
+    await target.end_session(session.initialize)
+    details = {"initialized_http_status": status, "reason": "handshake notification was not accepted"}
+    return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+
+
+def _legacy_unavailable(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
+    """NOT_APPLICABLE for a session probe whose ``initialize`` was refused."""
+    if response.status_code in AUTH_GATED_STATUSES:
+        reason = "initialize is access-controlled"
+    elif response.unobservable:
+        reason = f"initialize answer not observable ({response.unobservable})"
+    else:
+        reason = f"initialize was not served (HTTP {response.status_code}); no legacy session to probe"
+    details = {"initialize_http_status": response.status_code, "reason": reason}
+    return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+
+
+def _redirected(probe_id: str, status: int, details: dict[str, Any]) -> ProbeResult | None:
+    """NOT_APPLICABLE when the answer is a redirect the probe did not follow: it never reached the endpoint."""
+    if status in REDIRECT_STATUSES:
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, {**details, "reason": "endpoint redirects"})
+    return None
+
+
+def _notification_outcome(status: int, body: str | None) -> ProbeOutcome:
+    """Judge a notification POST: ``202`` with a zero-length body, or an HTTP error status, both conform."""
+    if status == 202:
+        return ProbeOutcome.SUPPORTED if body == "" else ProbeOutcome.UNSUPPORTED
+    return ProbeOutcome.SUPPORTED if status >= 400 else ProbeOutcome.UNSUPPORTED
+
+
+async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
+    """POST a JSON-RPC notification and check the transport's answer.
+
+    Every Streamable HTTP revision says a notification the server accepts MUST
+    get ``202 Accepted`` with no body, and one it cannot accept an HTTP error
+    status. A 202 passes only with a zero-length body; one whose body could
+    not be read (content-encoded) is not judged. The notification is the ``notifications/initialized`` that
+    completes a legacy handshake; a server without the legacy lifecycle gets a
+    stateless 2026-07-28 ``notifications/cancelled`` instead.
+    """
+    session, response, target = await _open_legacy_session(target, 23)
+    if session is not None:
+        await target.end_session(session.initialize)
+        status, body, shape = session.initialized.status_code, session.initialized_body, "legacy-initialized"
+        unobservable = session.initialized_unobservable
+    elif response.status_code in AUTH_GATED_STATUSES or response.unobservable:
+        return _legacy_unavailable(PROBE_NOTIFICATION_ACCEPTED, response)
+    else:
+        version = _target_version()
+        method = "notifications/cancelled"
+        notification = {"jsonrpc": "2.0", "method": method, "params": {"requestId": "mcpscore-probe"}}
+        sent, body, unobservable = await target.post_raw(
+            json.dumps(notification).encode(), _request_headers(version, method), body_limit=_notification_body_limit
+        )
+        status, shape = sent.status_code, "modern-cancelled"
+        if status in AUTH_GATED_STATUSES:
+            return ProbeResult(
+                PROBE_NOTIFICATION_ACCEPTED,
+                ProbeOutcome.NOT_APPLICABLE,
+                {"http_status": status, "reason": "notification POST is access-controlled"},
+            )
+    details: dict[str, Any] = {
+        "http_status": status,
+        "body_present": None if body is None else body != "",
+        "shape": shape,
+    }
+    redirected = _redirected(PROBE_NOTIFICATION_ACCEPTED, status, details)
+    if redirected is not None:
+        return redirected
+    if status == 202 and body is None:
+        # A compressed body was not decoded, so "no body" cannot be verified either way.
+        details["reason"] = f"202 body not observable ({unobservable or 'unread'})"
+        return ProbeResult(PROBE_NOTIFICATION_ACCEPTED, ProbeOutcome.NOT_APPLICABLE, details)
+    return ProbeResult(PROBE_NOTIFICATION_ACCEPTED, _notification_outcome(status, body), details)
+
+
+INVALID_REQUEST_METHOD = 24
+"""The ``method`` of the invalid-request probe; JSON-RPC 2.0 requires a string."""
+
+
+def _judge_invalid_answer(rejected: _HttpProbeResponse, details: dict[str, Any]) -> ProbeResult:
+    """Judge the answer to the invalid request; ``details`` already holds the control's observations."""
+    details.update(_base_details(rejected))
+    if rejected.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "invalid request was refused by access control; validation not observable"
+        return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
+    redirected = _redirected(PROBE_INVALID_REQUEST, rejected.status_code, details)
+    if redirected is not None:
+        return redirected
+    if rejected.unobservable:
+        # The status still decides a crash or a refusal; the body, and so the error code, is unknown.
+        details["body_unobservable"] = rejected.unobservable
+        if rejected.status_code >= 500:
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.UNSUPPORTED, details)
+        if rejected.status_code >= 400:
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.SUPPORTED, details)
+        details["reason"] = f"answer to the invalid request not observable ({rejected.unobservable})"
+        return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
+    served = rejected.result is not None
+    details["served"] = served
+    if rejected.error is not None:
+        response_id = rejected.payload.get("id") if isinstance(rejected.payload, dict) else None
+        details["id_echoed_or_null"] = response_id in (None, 24)
+    if served or rejected.status_code >= 500:
+        outcome = ProbeOutcome.UNSUPPORTED
+    elif rejected.error is not None or rejected.status_code >= 400:
+        outcome = ProbeOutcome.SUPPORTED
+    else:
+        outcome = ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_INVALID_REQUEST, outcome, details)
+
+
+async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
+    """Send a well-formed JSON body that is not a valid JSON-RPC 2.0 request.
+
+    The body is a correct request except that ``method`` is a number;
+    JSON-RPC 2.0 calls that an Invalid Request (-32600), and no handler can
+    serve it. The same request with a valid method must be served first, so
+    a server that refuses everything is not credited with a refusal. In a
+    legacy session the request is ``ping``; without the legacy lifecycle it
+    is a stateless ``server/discover``. A timeout counts as no answer
+    (``timed_out``) only when a second control, sent afterwards, is served;
+    otherwise it is an error. An answer that cannot be read (compressed, or
+    over the byte cap) is judged by its status alone, and its code is left
+    unknown (``body_unobservable``). A 404 in a legacy session is not judged
+    when a ``ping`` in it also gets 404: the session expired. Details also
+    record whether the invalid request was served, the error code, and
+    whether the response id is the request's or null.
+    """
+    session, response, target = await _open_legacy_session(target, 29)
+    if session is not None and (incomplete := await _incomplete_handshake(PROBE_INVALID_REQUEST, session, target)):
+        return incomplete
+    if session is not None:
+        headers, body = session.headers, {"jsonrpc": "2.0", "id": 25, "method": "ping"}
+        shape = "legacy-ping"
+    elif response.status_code in AUTH_GATED_STATUSES or response.unobservable:
+        return _legacy_unavailable(PROBE_INVALID_REQUEST, response)
+    else:
+        version = _target_version()
+        headers = _request_headers(version, "server/discover")
+        body, shape = _request_body("server/discover", 25, _modern_meta(version)), "modern-discover"
+    try:
+        control = await target.post_rpc(body, headers, follow_redirects=False)
+        details: dict[str, Any] = {"control_http_status": control.status_code, "shape": shape}
+        if control.status_code in AUTH_GATED_STATUSES or control.result is None:
+            details["reason"] = (
+                f"control answer not observable ({control.unobservable})"
+                if control.unobservable
+                else "control request was not served; invalid-request handling not observable"
+            )
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
+        invalid = {**body, "method": INVALID_REQUEST_METHOD, "id": 24}
+        try:
+            rejected = await target.post_rpc(invalid, headers, follow_redirects=False)
+        except httpx2.ReadTimeout:
+            # Silence is the server's only if the session still answers a control afterwards;
+            # otherwise the timeout propagates and the runner records ERROR.
+            again = await target.post_rpc({**body, "id": 30}, headers, follow_redirects=False)
+            if again.result is None:
+                raise
+            details["timed_out"] = True
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.UNSUPPORTED, details)
+        if session is not None and rejected.status_code == 404 and await _session_gone(target, session, 31):
+            details["reason"] = "session no longer exists; a ping in it was answered 404"
+            return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
+    finally:
+        if session is not None:
+            await target.end_session(session.initialize)
+    return _judge_invalid_answer(rejected, details)
+
+
+async def _probe_get_stream(target: _HttpTarget) -> ProbeResult:
+    """GET the endpoint inside a legacy session: an SSE stream or ``405``.
+
+    From 2025-03-26 through 2025-11-25 the server MUST answer a GET either with
+    ``Content-Type: text/event-stream`` or ``405 Method Not Allowed``. The
+    stream is closed as soon as the headers arrive. A 404 is not judged when
+    a ``ping`` in the session also gets 404: the session expired, not the GET.
+    """
+    session, response, target = await _open_legacy_session(target, 26)
+    if session is None:
+        return _legacy_unavailable(PROBE_GET_STREAM, response)
+    if incomplete := await _incomplete_handshake(PROBE_GET_STREAM, session, target):
+        return incomplete
+    headers = {"Accept": "text/event-stream", "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"]}
+    if session.session_id:
+        headers["Mcp-Session-Id"] = session.session_id
+    try:
+        got = await target.get_status(headers)
+        gone = got.status_code == 404 and await _session_gone(target, session, 29)
+    finally:
+        await target.end_session(session.initialize)
+    content_type = next((v for k, v in got.headers.items() if k.lower() == "content-type"), "")
+    details: dict[str, Any] = {"http_status": got.status_code, "content_type": content_type or None}
+    if gone:
+        details["reason"] = "session no longer exists; a ping in it was answered 404"
+        return ProbeResult(PROBE_GET_STREAM, ProbeOutcome.NOT_APPLICABLE, details)
+    if got.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "GET is access-controlled"
+        return ProbeResult(PROBE_GET_STREAM, ProbeOutcome.NOT_APPLICABLE, details)
+    redirected = _redirected(PROBE_GET_STREAM, got.status_code, details)
+    if redirected is not None:
+        return redirected
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    is_stream = 200 <= got.status_code < 300 and media_type == "text/event-stream"
+    outcome = ProbeOutcome.SUPPORTED if got.status_code == 405 or is_stream else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_GET_STREAM, outcome, details)
+
+
+async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
+    """DELETE a session the probe opened, then check the session is gone.
+
+    A client SHOULD end a session with DELETE, and the server MAY refuse with
+    ``405``. A server that accepts it has terminated the session, after which
+    it MUST answer requests carrying that session ID with ``404``; a ``ping``
+    in the deleted session checks that. Applies only when ``initialize``
+    issued a session ID, and only when the session is gone afterwards: a
+    server that accepts the DELETE and keeps serving the session has not
+    terminated it. A 404 to the DELETE is judged only while the session is
+    still served; a session the server already dropped says nothing. Unless
+    the session is known to be closed, cleanup sends one more DELETE.
+    """
+    session, response, target = await _open_legacy_session(target, 27)
+    if session is None:
+        return _legacy_unavailable(PROBE_SESSION_DELETE, response)
+    if incomplete := await _incomplete_handshake(PROBE_SESSION_DELETE, session, target):
+        return incomplete
+    if not session.session_id:
+        return ProbeResult(
+            PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, {"reason": "initialize issued no session ID"}
+        )
+    closed = False
+    try:
+        result, closed = await _observe_session_delete(target, session)
+    finally:
+        if not closed:
+            await target.end_session(session.initialize)
+    return result
+
+
+async def _session_gone(target: _HttpTarget, session: _LegacySession, request_id: int) -> bool:
+    """Ping the session and report whether the server answers 404 because it no longer has it."""
+    if not session.session_id:
+        return False
+    answer = await target.post_rpc(
+        {"jsonrpc": "2.0", "id": request_id, "method": "ping"}, session.headers, follow_redirects=False
+    )
+    return answer.status_code == 404
+
+
+async def _observe_session_delete(target: _HttpTarget, session: _LegacySession) -> tuple[ProbeResult, bool]:
+    """Send the DELETE and judge it; also say whether the session is known to be closed (or cannot be)."""
+    deleted = await target.request_status(
+        "DELETE",
+        {
+            "Mcp-Session-Id": cast("str", session.session_id),
+            "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"],
+        },
+    )
+    details: dict[str, Any] = {"http_status": deleted.status_code}
+    if deleted.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "DELETE is access-controlled"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details), False
+    redirected = _redirected(PROBE_SESSION_DELETE, deleted.status_code, details)
+    if redirected is not None:
+        return redirected, False
+    if deleted.status_code == 405:
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.SUPPORTED, details), True
+    if deleted.status_code == 404 and await _session_gone(target, session, 28):
+        details["reason"] = "session no longer exists; a ping in it was answered 404"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details), True
+    if not 200 <= deleted.status_code < 300:
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.UNSUPPORTED, details), False
+    after = await target.post_rpc(
+        {"jsonrpc": "2.0", "id": 28, "method": "ping"}, session.headers, follow_redirects=False
+    )
+    details["after_delete_http_status"] = after.status_code
+    return _judge_after_delete(after, details), after.status_code == 404
+
+
+def _judge_after_delete(after: _HttpProbeResponse, details: dict[str, Any]) -> ProbeResult:
+    """Judge the answer to a ``ping`` in a session the server accepted to DELETE."""
+    if after.status_code in AUTH_GATED_STATUSES:
+        details["reason"] = "request after DELETE is access-controlled"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
+    redirected = _redirected(PROBE_SESSION_DELETE, after.status_code, details)
+    if redirected is not None:
+        return redirected
+    if after.unobservable and 200 <= after.status_code < 300:
+        # Only a success needs its body: it decides whether the session is still served.
+        details["reason"] = f"answer after DELETE not observable ({after.unobservable})"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
+    if after.result is not None:
+        # The 404 requirement binds a terminated session, and this one was kept.
+        details["reason"] = "session is still served after DELETE; no terminated session to observe"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
+    outcome = ProbeOutcome.SUPPORTED if after.status_code == 404 else ProbeOutcome.UNSUPPORTED
+    return ProbeResult(PROBE_SESSION_DELETE, outcome, details)
+
+
 _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeResult]]] = {
     PROBE_DISCOVER: _probe_discover,
     PROBE_STATELESS_LIST: _probe_stateless_list,
@@ -2072,6 +2672,10 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_AUTH_METADATA: _probe_auth_metadata,
     PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
     PROBE_MALFORMED_JSON: _probe_malformed_json,
+    PROBE_NOTIFICATION_ACCEPTED: _probe_notification_accepted,
+    PROBE_INVALID_REQUEST: _probe_invalid_request,
+    PROBE_GET_STREAM: _probe_get_stream,
+    PROBE_SESSION_DELETE: _probe_session_delete,
 }
 """Probes whose subject is an HTTP construct (see HTTP_ONLY_PROBE_IDS)."""
 

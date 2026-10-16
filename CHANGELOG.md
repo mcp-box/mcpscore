@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Five rules check the Streamable HTTP envelope on every remote server.**
+  They count in the Protocol category. Scores change for most HTTP servers,
+  mostly upward, because each new rule adds the points it awards to the
+  maximum. Each rule is skipped as not applicable when its probe cannot
+  observe the behaviour: the server refuses `initialize`, redirects to another
+  origin, or issues no session ID.
+  - `transport_notification_accepted` (LOW): a notification POST must get
+    HTTP 202 with no body, or an HTTP error status if the server refuses it
+    ([Transports §Sending Messages to the Server](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server),
+    and the same text in 2026-07-28). A 200, a 204, or a 202 with a body
+    fails.
+  - `transport_invalid_request_rejected` (MEDIUM): a request whose `method`
+    is a number must be rejected with a JSON-RPC error or an HTTP 4xx.
+    Serving it, crashing with a 5xx, or never answering fails.
+  - `transport_invalid_request_error_code` (LOW): the refusal must carry
+    `-32600` (Invalid Request), the code JSON-RPC 2.0 assigns. Several MCP
+    SDKs send `-32700` or `-32602` instead, so servers built on them fail this
+    rule until the SDK is fixed. On the stateless 2026-07-28 path, `-32020`
+    from header validation also passes. It is skipped when the request was
+    not refused, which the rule above already fails.
+  - `transport_get_stream_contract` (LOW, 2025-03-26 to 2025-11-25): a GET
+    must open a `text/event-stream` or return HTTP 405
+    ([Transports §Listening for Messages from the Server](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#listening-for-messages-from-the-server)).
+  - `transport_session_delete` (LOW, 2025-03-26 to 2025-11-25): DELETE with
+    `Mcp-Session-Id` must be refused with HTTP 405, or end the session, after
+    which a request in it must get HTTP 404
+    ([Transports §Session Management](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#session-management)).
+    A server that accepts the DELETE but keeps serving the session is not
+    judged.
+  - A 404 to the GET, the DELETE or the invalid request is not judged when a
+    ping in the same session also gets 404: the session itself has expired.
+  - The probes open short sessions of their own with `initialize` and close
+    them again; none of them calls a tool. They follow a same-origin redirect
+    the way the audit's own session does.
+  - In one URL per host from 4,869 public registry hosts, the failure rates
+    are 12.7% (notification), 4.7% (invalid request), 74.3% of the servers
+    that refuse it (error code), 19.9% (GET) and 20.3% of the 516 servers that
+    issue session IDs (DELETE). Servers on hosting
+    platforms fail at the same rates as servers on their own domains.
 - **Python 3.14 and 3.15 support.** Both are tested in CI on Linux, macOS and
   Windows and listed in the package classifiers. No dependency changes were
   needed.
