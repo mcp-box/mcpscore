@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-10-16
+
+Five new transport rules check the Streamable HTTP envelope, and
+authorization discovery now follows the spec. Scores change for most HTTP
+servers and for servers behind a login.
+
 ### Added
 
 - **Five rules check the Streamable HTTP envelope on every remote server.**
@@ -99,6 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Python version. The same holds for `--stdio=CMD` and abbreviations such as
   `--std`: `mcpscore --stdio=./server --flag` runs `./server --flag`, where it
   used to stop with a usage error.
+- **Dependencies refreshed.** The lockfile picks up starlette 1.8.0 and patch
+  or minor releases of distlib, filelock, platformdirs, pluggy,
+  python-discovery and virtualenv. The `mcp==2.3.0` pin is unchanged; it is
+  still the latest SDK.
 
 ## [1.22.2] - 2026-10-13
 
@@ -1998,7 +2008,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.22.2...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.23.0...HEAD
+[1.23.0]: https://github.com/mcp-box/mcpscore/compare/v1.22.2...v1.23.0
 [1.22.2]: https://github.com/mcp-box/mcpscore/compare/v1.22.1...v1.22.2
 [1.22.1]: https://github.com/mcp-box/mcpscore/compare/v1.22.0...v1.22.1
 [1.22.0]: https://github.com/mcp-box/mcpscore/compare/v1.21.2...v1.22.0
