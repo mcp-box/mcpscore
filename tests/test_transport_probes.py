@@ -848,6 +848,32 @@ class TestSseLineEndings:
         result = await _run(_probe_get_stream, TestBoundedAnswers._initialize_answers(server, answer))
         assert result.outcome is ProbeOutcome.SUPPORTED
 
+    @pytest.mark.parametrize("newline", [b"\r", b"\r\n", b"\n"])
+    async def test_complete_event_on_a_stream_left_open(self, newline):
+        server = LegacyServer()
+
+        def answer(rid: int) -> httpx2.Response:
+            async def body():
+                yield self._event(rid, newline)
+                await asyncio.Event().wait()
+
+            headers = {"Content-Type": "text/event-stream", "Mcp-Session-Id": "open"}
+            return httpx2.Response(200, headers=headers, content=body())
+
+        handler = TestBoundedAnswers._initialize_answers(server, answer)
+        result = await asyncio.wait_for(_run(_probe_get_stream, handler), timeout=2)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+    async def test_lone_cr_at_a_chunk_end_followed_by_another_line(self):
+        server = LegacyServer()
+
+        def answer(rid: int) -> httpx2.Response:
+            event = self._event(rid, b"\r")
+            return self._chunks(b"id: 0\r", b"data: x\r\r", event)
+
+        result = await _run(_probe_get_stream, TestBoundedAnswers._initialize_answers(server, answer))
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
     async def test_crlf_split_across_chunks(self):
         server = LegacyServer()
 

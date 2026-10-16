@@ -477,36 +477,37 @@ async def _bounded_chunks(response: httpx2.Response) -> AsyncIterator[bytes]:
 _UTF8_BOM = b"\xef\xbb\xbf"
 
 
-def _take_lines(buffer: bytearray, *, final: bool) -> list[str]:
+def _take_lines(buffer: bytearray, skip_lf: bool) -> tuple[list[str], bool]:
     """Remove and decode complete lines; CR, LF and CRLF all end one (WHATWG SSE line rules).
 
-    A CR at the end of the buffer may be the first half of a CRLF split across
-    chunks, so it waits for the next chunk unless the body has ended.
+    A CR ends its line at once, so a stream left open after a CR-terminated
+    event is never held back. ``skip_lf`` carries a CR at the end of one chunk
+    into the next, whose leading LF is then the CRLF's second half. Returns
+    the lines and the new ``skip_lf``.
     """
     lines: list[str] = []
-    while True:
+    while buffer:
+        if skip_lf:
+            skip_lf = False
+            if buffer[0] == 0x0A:
+                del buffer[:1]
+                continue
         ends = [i for i in (buffer.find(b"\r"), buffer.find(b"\n")) if i >= 0]
         if not ends:
             break
         end = min(ends)
-        skip = 1
-        if buffer[end] == 0x0D:
-            if end + 1 == len(buffer) and not final:
-                break
-            if end + 1 < len(buffer) and buffer[end + 1] == 0x0A:
-                skip = 2
         lines.append(bytes(buffer[:end]).decode("utf-8", errors="replace"))
-        del buffer[: end + skip]
-    if final and buffer:
-        lines.append(bytes(buffer).decode("utf-8", errors="replace"))
-        buffer.clear()
-    return lines
+        is_cr = buffer[end] == 0x0D
+        del buffer[: end + 1]
+        skip_lf = is_cr
+    return lines, skip_lf
 
 
 async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
     """Yield an SSE body's lines, decoded only once complete, without a leading UTF-8 BOM."""
     buffer = bytearray()
     bom_checked = False
+    skip_lf = False
     async for chunk in _bounded_chunks(response):
         buffer.extend(chunk)
         if not bom_checked:
@@ -515,10 +516,11 @@ async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
             if buffer.startswith(_UTF8_BOM):
                 del buffer[: len(_UTF8_BOM)]
             bom_checked = True
-        for line in _take_lines(buffer, final=False):
+        lines, skip_lf = _take_lines(buffer, skip_lf)
+        for line in lines:
             yield line
-    for line in _take_lines(buffer, final=True):
-        yield line
+    if buffer:
+        yield bytes(buffer).decode("utf-8", errors="replace")
 
 
 async def _read_sse_response(response: httpx2.Response, request_id: object) -> dict[str, Any] | None:
