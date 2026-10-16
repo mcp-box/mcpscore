@@ -955,6 +955,20 @@ class TestUnobservableAnswers:
         assert result.outcome is ProbeOutcome.NOT_APPLICABLE
         assert result.details["reason"] == "answer after DELETE not observable (encoded)"
 
+    @pytest.mark.parametrize("status", [400, 500])
+    async def test_unreadable_error_after_delete_still_fails_on_its_status(self, status):
+        server = LegacyServer()
+
+        def gzip_error(request: httpx2.Request) -> httpx2.Response:
+            response = server(request)
+            if response.status_code == 404:
+                return self._gzip(status)
+            return response
+
+        result = await _run(_probe_session_delete, gzip_error)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["after_delete_http_status"] == status
+
     async def test_compressed_404_after_delete_still_passes(self):
         server = LegacyServer()
 

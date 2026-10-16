@@ -2589,7 +2589,8 @@ async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
     redirected = _redirected(PROBE_SESSION_DELETE, after.status_code, details)
     if redirected is not None:
         return redirected
-    if after.unobservable and after.status_code != 404:
+    if after.unobservable and 200 <= after.status_code < 300:
+        # Only a success needs its body: it decides whether the session is still served.
         details["reason"] = f"answer after DELETE not observable ({after.unobservable})"
         return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
     if after.result is not None:
