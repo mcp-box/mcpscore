@@ -44,7 +44,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 
     from mcp import StdioServerParameters
 from urllib.parse import urlsplit
@@ -441,26 +441,48 @@ def _parse_payload_text(text: str, content_type: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-_SSE_READ_LIMIT = 65_536
-"""Bytes of an SSE answer read while waiting for the JSON-RPC response before giving up."""
+_RPC_READ_LIMIT = 65_536
+"""Bytes of a JSON-RPC answer read while waiting for the response before giving up."""
 
 
 class _StreamDeadline(httpx2.ReadTimeout):
     """No matching JSON-RPC response arrived within the deadline or byte cap."""
 
-    def __init__(self, headers: dict[str, str], request: httpx2.Request) -> None:
+    def __init__(self, request: httpx2.Request) -> None:
         super().__init__("no matching JSON-RPC response before the deadline", request=request)
-        self.headers = headers
+
+
+async def _bounded_chunks(response: httpx2.Response) -> AsyncIterator[bytes]:
+    """Yield an identity body as received, counting bytes before anything is buffered; TimeoutError past the cap.
+
+    Callers only use this on a response without content-encoding, so
+    ``aiter_bytes`` decodes nothing and yields the chunks as they arrive.
+    """
+    read = 0
+    async for chunk in response.aiter_bytes():
+        read += len(chunk)
+        if read > _RPC_READ_LIMIT:
+            raise TimeoutError
+        yield chunk
+
+
+async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
+    """Yield the body's lines, decoded only once complete, so a multibyte character is never split."""
+    buffer = bytearray()
+    async for chunk in _bounded_chunks(response):
+        buffer.extend(chunk)
+        while (end := buffer.find(b"\n")) >= 0:
+            line = bytes(buffer[:end]).rstrip(b"\r")
+            del buffer[: end + 1]
+            yield line.decode("utf-8", errors="replace")
+    if buffer:
+        yield bytes(buffer).decode("utf-8", errors="replace")
 
 
 async def _read_sse_response(response: httpx2.Response, request_id: object) -> dict[str, Any] | None:
     """Return the first SSE event that answers ``request_id``; raise TimeoutError past the byte cap."""
     data: list[str] = []
-    read = 0
-    async for line in response.aiter_lines():
-        read += len(line) + 1
-        if read > _SSE_READ_LIMIT:
-            raise TimeoutError
+    async for line in _bounded_lines(response):
         if line.startswith("data:"):
             data.append(line[len("data:") :].strip())
             continue
@@ -551,19 +573,33 @@ class _HttpTarget:
         )
 
     async def post_rpc(
-        self, body: dict, headers: dict[str, str], *, follow_redirects: bool = True
+        self,
+        body: dict,
+        headers: dict[str, str],
+        *,
+        follow_redirects: bool = True,
+        close_session_on_failure: bool = False,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
-        A JSON answer is read whole. An SSE answer is read event by event,
-        skipping priming events and notifications, until a message carrying
-        the request's ``id`` (or an error with a null ``id``), and then
-        closed, so a stream kept open with heartbeats cannot stall the probe.
-        The whole exchange shares one deadline and a byte cap; past either,
-        ``_StreamDeadline`` is raised carrying the response headers, so a
-        caller can still close a session they allocated.
+        The request asks for an identity body; a content-encoded answer is not
+        decoded and has no payload. A JSON answer is read whole. An SSE answer
+        is read event by event, skipping priming events and notifications,
+        until a message carrying the request's ``id`` (or an error with a null
+        ``id``), and then closed, so a stream kept open with heartbeats cannot
+        stall the probe. Bytes are counted before they are buffered, and the
+        exchange shares one deadline; past either, ``_StreamDeadline`` is
+        raised. With ``close_session_on_failure``, a session ID the answer
+        issued is closed at the URL that answered before any failure
+        propagates.
         """
-        request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
+        request = self.client.build_request(
+            "POST",
+            self.url,
+            json=body,
+            headers={**headers, "Accept-Encoding": "identity"},
+            timeout=PROBE_TIMEOUT_S,
+        )
         response: httpx2.Response | None = None
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
@@ -572,21 +608,33 @@ class _HttpTarget:
                     if follow_redirects
                     else await self.client.send(request, follow_redirects=False, stream=True)
                 )
-                if "text/event-stream" in response.headers.get("content-type", "").lower():
+                content_type = response.headers.get("content-type", "")
+                encoding = response.headers.get("content-encoding", "").strip().lower()
+                if encoding not in ("", "identity"):
+                    payload = None
+                elif "text/event-stream" in content_type.lower():
                     payload = await _read_sse_response(response, body.get("id"))
                 else:
-                    payload = _parse_payload_text(
-                        (await response.aread()).decode("utf-8", errors="replace"),
-                        response.headers.get("content-type", ""),
-                    )
+                    raw = b"".join([chunk async for chunk in _bounded_chunks(response)])
+                    payload = _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type)
                 return _HttpProbeResponse(
                     status_code=response.status_code,
                     headers=dict(response.headers),
                     payload=payload,
                     final_url=str(response.url),
                 )
-        except TimeoutError as exc:
-            raise _StreamDeadline(dict(response.headers) if response is not None else {}, request) from exc
+        except Exception as exc:
+            if response is not None:
+                await response.aclose()
+                if close_session_on_failure:
+                    answered = replace(self, url=str(response.url))
+                    issued = _HttpProbeResponse(
+                        status_code=response.status_code, headers=dict(response.headers), payload=None
+                    )
+                    await answered.end_session(issued)
+            if isinstance(exc, TimeoutError):
+                raise _StreamDeadline(request) from exc
+            raise
         finally:
             if response is not None:
                 await response.aclose()
@@ -2183,11 +2231,9 @@ async def _open_legacy_session(
     raw POST so its status and body can be judged. Returns the session, the
     ``initialize`` response, and the target to use from here on.
     """
-    try:
-        response = await target.post_rpc(_legacy_initialize_body(request_id), _legacy_headers())
-    except _StreamDeadline as exc:
-        await target.end_session(_HttpProbeResponse(status_code=200, headers=exc.headers, payload=None))
-        raise
+    response = await target.post_rpc(
+        _legacy_initialize_body(request_id), _legacy_headers(), close_session_on_failure=True
+    )
     if response.final_url and response.final_url != target.url:
         target = replace(target, url=response.final_url)
     negotiated = (response.result or {}).get("protocolVersion")

@@ -641,7 +641,7 @@ class TestSseAnswers:
         assert server.requests[-1].headers["Mcp-Session-Id"] == "sse-1"
 
     async def test_byte_cap_ends_a_stream_without_an_answer(self, monkeypatch):
-        monkeypatch.setattr(probes, "_SSE_READ_LIMIT", 64)
+        monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 64)
         server = self._server(lambda _rid: _sse(stay_open=True))
         with pytest.raises(httpx2.ReadTimeout):
             await asyncio.wait_for(_run(_probe_get_stream, server.handler), timeout=2)
@@ -690,3 +690,130 @@ class TestNotModifiedIsJudged:
     async def test_notification(self):
         server = LegacyServer(notification=httpx2.Response(304))
         assert (await _run(_probe_notification_accepted, server)).outcome is ProbeOutcome.UNSUPPORTED
+
+
+class TestBoundedAnswers:
+    """The byte cap applies before buffering, and an interrupted ``initialize`` still closes its session."""
+
+    @staticmethod
+    def _initialize_answers(server: LegacyServer, answer, path: str = "/mcp"):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "POST" and request.url.path == "/mcp" and path != "/mcp":
+                return httpx2.Response(308, headers={"Location": f"https://server.example{path}"})
+            if request.method == "POST" and json.loads(request.content).get("method") == "initialize":
+                server.requests.append(request)
+                return answer(json.loads(request.content)["id"])
+            return server(request)
+
+        return handler
+
+    async def test_oversized_unterminated_line_hits_the_cap(self, monkeypatch):
+        monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 64)
+        server = LegacyServer()
+
+        async def body():
+            yield b"data: " + b"x" * 200
+            await asyncio.Event().wait()
+
+        answer = lambda _rid: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "big"}, content=body()
+        )
+        with pytest.raises(httpx2.ReadTimeout):
+            await asyncio.wait_for(_run(_probe_get_stream, self._initialize_answers(server, answer)), timeout=2)
+        assert server.requests[-1].method == "DELETE"
+        assert server.requests[-1].headers["Mcp-Session-Id"] == "big"
+
+    async def test_multibyte_characters_split_across_chunks_are_decoded(self):
+        server = LegacyServer()
+
+        async def body(rid):
+            message = {"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2025-11-25", "n": "é漢"}}
+            event = f"data: {json.dumps(message, ensure_ascii=False)}\n\n".encode()
+            split = event.index("漢".encode()) + 1
+            yield event[:split]
+            yield event[split:]
+
+        answer = lambda rid: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "mb"}, content=body(rid)
+        )
+        result = await asyncio.wait_for(_run(_probe_get_stream, self._initialize_answers(server, answer)), timeout=2)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+    async def test_the_cap_counts_bytes_not_characters(self, monkeypatch):
+        monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 64)
+        server = LegacyServer()
+        answer = lambda _rid: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Type": "text/event-stream"}, content=("data: " + "漢" * 20 + "\n").encode()
+        )
+        with pytest.raises(httpx2.ReadTimeout):
+            await _run(_probe_get_stream, self._initialize_answers(server, answer))
+
+    async def test_read_error_mid_body_closes_the_session_and_propagates(self):
+        server = LegacyServer()
+
+        async def body():
+            yield b"id: prime\ndata:\n\n"
+            raise httpx2.ReadError("connection reset")
+
+        answer = lambda _rid: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "reset"}, content=body()
+        )
+        with pytest.raises(httpx2.ReadError):
+            await _run(_probe_get_stream, self._initialize_answers(server, answer))
+        assert server.requests[-1].method == "DELETE"
+        assert server.requests[-1].headers["Mcp-Session-Id"] == "reset"
+
+    async def test_redirected_initialize_deadline_closes_the_session_where_it_lives(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
+        server = LegacyServer()
+        answer = lambda _rid: _sse(stay_open=True)  # noqa: E731
+        with pytest.raises(httpx2.ReadTimeout):
+            await asyncio.wait_for(
+                _run(_probe_get_stream, self._initialize_answers(server, answer, path="/mcp/")), timeout=2
+            )
+        assert server.requests[-1].method == "DELETE"
+        assert server.requests[-1].url.path == "/mcp/"
+
+    async def test_oversized_json_answer_hits_the_cap(self, monkeypatch):
+        monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 64)
+        server = LegacyServer()
+        answer = lambda _rid: httpx2.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"pad": "x" * 200}})  # noqa: E731
+        with pytest.raises(httpx2.ReadTimeout):
+            await _run(_probe_get_stream, self._initialize_answers(server, answer))
+
+    async def test_encoded_answer_is_not_decoded(self):
+        server = LegacyServer()
+        answer = lambda _rid: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Encoding": "gzip", "Mcp-Session-Id": "gz"}, content=gzip.compress(b"{}")
+        )
+        result = await _run(_probe_get_stream, self._initialize_answers(server, answer))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert server.methods() == ["POST initialize", "DELETE"]
+
+    async def test_initialize_requests_an_identity_body(self):
+        server = LegacyServer()
+        await _run(_probe_get_stream, server)
+        assert server.requests[0].headers["Accept-Encoding"] == "identity"
+
+    async def test_stream_ending_mid_line_has_no_answer(self):
+        server = LegacyServer()
+        answer = lambda rid: httpx2.Response(  # noqa: E731
+            200,
+            headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "eof"},
+            content=(INIT_RESULT % rid).rstrip(b"\n"),
+        )
+        result = await _run(_probe_get_stream, self._initialize_answers(server, answer))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert server.methods()[-1] == "DELETE"
+
+    async def test_read_error_on_a_later_request_propagates_after_cleanup(self):
+        async def body():
+            yield b"id: prime\ndata:\n\n"
+            raise httpx2.ReadError("connection reset")
+
+        server = LegacyServer(
+            invalid=httpx2.Response(200, headers={"Content-Type": "text/event-stream"}, content=body())
+        )
+        with pytest.raises(httpx2.ReadError):
+            await _run(_probe_invalid_request, server)
+        assert server.methods()[-1] == "DELETE"
