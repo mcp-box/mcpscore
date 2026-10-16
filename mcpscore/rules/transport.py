@@ -392,7 +392,8 @@ class GetStreamContractRule(_TransportProbeRule):
     2025-03-26 through 2025-11-25: the server MUST answer a GET with
     ``Content-Type: text/event-stream`` or ``405 Method Not Allowed``.
     2026-07-28 removed the GET stream; ``readiness_2026_no_get_stream`` judges
-    that revision.
+    that revision. A 404 is not applicable when the session itself has
+    expired.
 
     Scoring: 1 point (LOW)
     """
@@ -459,7 +460,8 @@ class SessionDeleteRule(_TransportProbeRule):
     answer requests carrying its ID with 404; anything else (a 400 is common)
     stops clients from opening a new session. Only servers that issue a
     session ID are judged, and a server that accepts the DELETE but keeps
-    serving the session is not applicable: nothing was terminated.
+    serving the session is not applicable: nothing was terminated. So is a
+    404 to the DELETE when the session itself has expired.
 
     Scoring: 1 point (LOW)
     """

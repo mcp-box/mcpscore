@@ -466,6 +466,112 @@ class TestSessionDelete:
         assert result.outcome is ProbeOutcome.NOT_APPLICABLE
         assert result.details["initialize_http_status"] == 500
 
+    async def test_404_for_an_expired_session_is_not_applicable(self):
+        server = LegacyServer(delete_status=404)
+        server.deleted = False
+
+        def expired(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "DELETE":
+                server.deleted = True
+            return server(request)
+
+        result = await _run(_probe_session_delete, expired)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert "no longer exists" in result.details["reason"]
+        assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE", "POST ping"]
+
+    async def test_404_while_the_session_is_still_served_fails(self):
+        server = LegacyServer(delete_status=404)
+        result = await _run(_probe_session_delete, server)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert server.methods()[-1] == "DELETE"
+
+    @pytest.mark.parametrize("delete_status", [500, 400])
+    async def test_refused_delete_is_retried_as_cleanup(self, delete_status):
+        server = LegacyServer(delete_status=delete_status)
+        result = await _run(_probe_session_delete, server)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE", "DELETE"]
+
+    async def test_session_kept_after_delete_is_closed_again(self):
+        server = LegacyServer(honours_delete=False)
+        await _run(_probe_session_delete, server)
+        assert server.methods() == [
+            "POST initialize",
+            "POST notifications/initialized",
+            "DELETE",
+            "POST ping",
+            "DELETE",
+        ]
+
+    async def test_failed_follow_up_still_attempts_cleanup(self):
+        server = LegacyServer()
+
+        def ping_fails(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "POST" and json.loads(request.content).get("method") == "ping":
+                server.requests.append(request)
+                raise httpx2.ConnectError("reset", request=request)
+            return server(request)
+
+        with pytest.raises(httpx2.ConnectError):
+            await _run(_probe_session_delete, ping_fails)
+        assert server.methods()[-1] == "DELETE"
+
+
+class TestExpiredSessionOnGet:
+    async def test_404_for_an_expired_session_is_not_applicable(self):
+        server = LegacyServer(get=httpx2.Response(404))
+
+        def expires_at_get(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                server.deleted = True
+            return server(request)
+
+        result = await _run(_probe_get_stream, expires_at_get)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert "no longer exists" in result.details["reason"]
+        assert server.methods() == ["POST initialize", "POST notifications/initialized", "GET", "POST ping", "DELETE"]
+
+    async def test_404_while_the_session_is_still_served_fails(self):
+        server = LegacyServer(get=httpx2.Response(404))
+        result = await _run(_probe_get_stream, server)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert "POST ping" in server.methods()
+
+    async def test_session_less_404_fails_without_a_check(self):
+        server = LegacyServer(session_id=None, get=httpx2.Response(404))
+        result = await _run(_probe_get_stream, server)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert "POST ping" not in server.methods()
+
+
+class TestBoundedCleanup:
+    async def test_cleanup_answered_with_an_endless_stream_returns(self):
+        server = LegacyServer()
+
+        def streaming_delete(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "DELETE":
+                server.requests.append(request)
+                return _open_sse_response()
+            return server(request)
+
+        result = await asyncio.wait_for(_run(_probe_get_stream, streaming_delete), timeout=2)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert server.methods()[-1] == "DELETE"
+
+    async def test_cleanup_whose_headers_never_arrive_hits_the_deadline(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
+        server = LegacyServer()
+
+        async def silent_delete(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "DELETE":
+                server.requests.append(request)
+                await asyncio.Event().wait()
+            return server(request)
+
+        result = await asyncio.wait_for(_run(_probe_get_stream, silent_delete), timeout=2)
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
 
 class TestRedirectedEndpoint:
     """A same-origin redirect is followed once, as the audit's session does, and the probes stay on its target."""

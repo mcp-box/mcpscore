@@ -799,7 +799,8 @@ class _HttpTarget:
 
         Carries the negotiated ``MCP-Protocol-Version`` (a MUST on every request
         after ``initialize``) and no ``Origin``, so a conforming server has no
-        reason to refuse the cleanup.
+        reason to refuse the cleanup. The answer is closed once its headers
+        arrive, and the whole exchange shares one deadline.
         """
         session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
         if not session_id:
@@ -812,7 +813,9 @@ class _HttpTarget:
         try:
             request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
             request.headers.pop("Origin", None)
-            await self.client.send(request, follow_redirects=False)
+            async with asyncio.timeout(PROBE_TIMEOUT_S):
+                answer = await self.client.send(request, follow_redirects=False, stream=True)
+                await answer.aclose()
         except Exception:  # noqa: BLE001 — courtesy only; the observation is already made
             return
 
@@ -2512,7 +2515,8 @@ async def _probe_get_stream(target: _HttpTarget) -> ProbeResult:
 
     From 2025-03-26 through 2025-11-25 the server MUST answer a GET either with
     ``Content-Type: text/event-stream`` or ``405 Method Not Allowed``. The
-    stream is closed as soon as the headers arrive.
+    stream is closed as soon as the headers arrive. A 404 is not judged when
+    a ``ping`` in the session also gets 404: the session expired, not the GET.
     """
     session, response, target = await _open_legacy_session(target, 26)
     if session is None:
@@ -2524,10 +2528,14 @@ async def _probe_get_stream(target: _HttpTarget) -> ProbeResult:
         headers["Mcp-Session-Id"] = session.session_id
     try:
         got = await target.get_status(headers)
+        gone = got.status_code == 404 and await _session_gone(target, session, 29)
     finally:
         await target.end_session(session.initialize)
     content_type = next((v for k, v in got.headers.items() if k.lower() == "content-type"), "")
     details: dict[str, Any] = {"http_status": got.status_code, "content_type": content_type or None}
+    if gone:
+        details["reason"] = "session no longer exists; a ping in it was answered 404"
+        return ProbeResult(PROBE_GET_STREAM, ProbeOutcome.NOT_APPLICABLE, details)
     if got.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "GET is access-controlled"
         return ProbeResult(PROBE_GET_STREAM, ProbeOutcome.NOT_APPLICABLE, details)
@@ -2549,7 +2557,9 @@ async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
     in the deleted session checks that. Applies only when ``initialize``
     issued a session ID, and only when the session is gone afterwards: a
     server that accepts the DELETE and keeps serving the session has not
-    terminated it.
+    terminated it. A 404 to the DELETE is judged only while the session is
+    still served; a session the server already dropped says nothing. Unless
+    the session is known to be closed, cleanup sends one more DELETE.
     """
     session, response, target = await _open_legacy_session(target, 27)
     if session is None:
@@ -2560,29 +2570,57 @@ async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
         return ProbeResult(
             PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, {"reason": "initialize issued no session ID"}
         )
+    closed = False
     try:
-        deleted = await target.request_status(
-            "DELETE",
-            {"Mcp-Session-Id": session.session_id, "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"]},
-        )
-    except Exception:
-        await target.end_session(session.initialize)
-        raise
+        result, closed = await _observe_session_delete(target, session)
+    finally:
+        if not closed:
+            await target.end_session(session.initialize)
+    return result
+
+
+async def _session_gone(target: _HttpTarget, session: _LegacySession, request_id: int) -> bool:
+    """Ping the session and report whether the server answers 404 because it no longer has it."""
+    if not session.session_id:
+        return False
+    answer = await target.post_rpc(
+        {"jsonrpc": "2.0", "id": request_id, "method": "ping"}, session.headers, follow_redirects=False
+    )
+    return answer.status_code == 404
+
+
+async def _observe_session_delete(target: _HttpTarget, session: _LegacySession) -> tuple[ProbeResult, bool]:
+    """Send the DELETE and judge it; also say whether the session is known to be closed (or cannot be)."""
+    deleted = await target.request_status(
+        "DELETE",
+        {
+            "Mcp-Session-Id": cast("str", session.session_id),
+            "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"],
+        },
+    )
     details: dict[str, Any] = {"http_status": deleted.status_code}
     if deleted.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "DELETE is access-controlled"
-        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details), False
     redirected = _redirected(PROBE_SESSION_DELETE, deleted.status_code, details)
     if redirected is not None:
-        return redirected
+        return redirected, False
     if deleted.status_code == 405:
-        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.SUPPORTED, details)
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.SUPPORTED, details), True
+    if deleted.status_code == 404 and await _session_gone(target, session, 28):
+        details["reason"] = "session no longer exists; a ping in it was answered 404"
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details), True
     if not 200 <= deleted.status_code < 300:
-        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.UNSUPPORTED, details)
+        return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.UNSUPPORTED, details), False
     after = await target.post_rpc(
         {"jsonrpc": "2.0", "id": 28, "method": "ping"}, session.headers, follow_redirects=False
     )
     details["after_delete_http_status"] = after.status_code
+    return _judge_after_delete(after, details), after.status_code == 404
+
+
+def _judge_after_delete(after: _HttpProbeResponse, details: dict[str, Any]) -> ProbeResult:
+    """Judge the answer to a ``ping`` in a session the server accepted to DELETE."""
     if after.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "request after DELETE is access-controlled"
         return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
