@@ -966,3 +966,57 @@ class TestUnobservableAnswers:
 
         result = await _run(_probe_session_delete, gzip_404)
         assert result.outcome is ProbeOutcome.SUPPORTED
+
+
+class TestCapAndDeadlineKeepWhatArrived:
+    @pytest.mark.parametrize("coalesced", [False, True])
+    async def test_answer_inside_the_cap_is_found_however_it_is_chunked(self, monkeypatch, coalesced):
+        monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 400)
+        server = LegacyServer()
+
+        def answer(rid: int) -> httpx2.Response:
+            event = INIT_RESULT % rid
+            tail = b": " + b"x" * 1000 + b"\n"
+            chunks = [event + tail] if coalesced else [event, tail]
+
+            async def body():
+                for chunk in chunks:
+                    yield chunk
+
+            headers = {"Content-Type": "text/event-stream", "Mcp-Session-Id": "cap"}
+            return httpx2.Response(200, headers=headers, content=body())
+
+        result = await _run(_probe_get_stream, TestBoundedAnswers._initialize_answers(server, answer))
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+    @pytest.mark.parametrize(("status", "outcome"), [(400, ProbeOutcome.SUPPORTED), (500, ProbeOutcome.UNSUPPORTED)])
+    async def test_error_status_with_an_unfinished_body_is_judged_by_its_status(self, monkeypatch, status, outcome):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
+        server = LegacyServer(invalid=_open_sse_response(status, first=b": still thinking\n\n"))
+        result = await asyncio.wait_for(_run(_probe_invalid_request, server), timeout=2)
+        assert result.outcome is outcome
+        assert result.details["body_unobservable"] == "unfinished"
+        assert "timed_out" not in result.details
+        assert [m for m in server.methods() if m == "POST ping"] == ["POST ping"]
+
+    async def test_success_status_with_an_unfinished_body_still_needs_the_second_control(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
+        server = LegacyServer(invalid=_open_sse_response(200, first=b": still thinking\n\n"))
+        result = await asyncio.wait_for(_run(_probe_invalid_request, server), timeout=2)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["timed_out"] is True
+
+    async def test_a_chunk_arriving_after_the_cap_is_exactly_full(self, monkeypatch):
+        monkeypatch.setattr(probes, "_RPC_READ_LIMIT", 10)
+        server = LegacyServer()
+
+        def answer(_rid: int) -> httpx2.Response:
+            async def body():
+                yield b": 1234567\n"
+                yield b": more\n"
+
+            return httpx2.Response(200, headers={"Content-Type": "text/event-stream"}, content=body())
+
+        result = await _run(_probe_get_stream, TestBoundedAnswers._initialize_answers(server, answer))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "initialize answer not observable (capped)"

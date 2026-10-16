@@ -346,7 +346,10 @@ class _HttpProbeResponse(_ProbeResponse):
     """URL that answered, after any same-origin redirect the request followed."""
 
     unobservable: str | None = None
-    """Why the body could not be read (``"encoded"``, ``"capped"``); None when it was. Payload is then None."""
+    """Why the body could not be read (``"encoded"``, ``"capped"``, ``"unfinished"``); None when it was.
+
+    The payload is then None.
+    """
 
 
 CLIENT_NAME = "mcpscore"
@@ -468,8 +471,12 @@ async def _bounded_chunks(response: httpx2.Response) -> AsyncIterator[bytes]:
     """
     read = 0
     async for chunk in response.aiter_bytes():
+        space = _RPC_READ_LIMIT - read
         read += len(chunk)
         if read > _RPC_READ_LIMIT:
+            # The allowed prefix may already hold the answer; how the bytes were chunked must not matter.
+            if space > 0:
+                yield chunk[:space]
             raise _ReadCapReached
         yield chunk
 
@@ -633,8 +640,10 @@ class _HttpTarget:
         ``id``), and then closed, so a stream kept open with heartbeats cannot
         stall the probe. Bytes are counted before they are buffered, and the
         exchange shares one deadline. Past the deadline ``_StreamDeadline`` is
-        raised; an answer that is content-encoded or exceeds the byte cap is
-        returned with no payload and ``unobservable`` set, never as a timeout.
+        raised, unless an error status already arrived: that answer is
+        returned with ``unobservable="unfinished"``. An answer that is
+        content-encoded or exceeds the byte cap is returned with no payload and
+        ``unobservable`` set, never as a timeout.
         With ``close_session_on_failure``, a session ID the answer issued is
         closed at the URL that answered before any failure propagates.
         """
@@ -684,6 +693,15 @@ class _HttpTarget:
                     )
                     await answered.end_session(issued)
             if isinstance(exc, TimeoutError):
+                if response is not None and response.status_code >= 400:
+                    # The status already arrived and says the request was refused; only the body is missing.
+                    return _HttpProbeResponse(
+                        status_code=response.status_code,
+                        headers=dict(response.headers),
+                        payload=None,
+                        final_url=str(response.url),
+                        unobservable="unfinished",
+                    )
                 raise _StreamDeadline(request) from exc
             raise
         finally:
