@@ -1,5 +1,6 @@
 """Probe tests for the Streamable HTTP envelope: notification 202, invalid requests, the GET stream, DELETE."""
 
+import asyncio
 from dataclasses import dataclass, field
 import gzip
 import json
@@ -18,6 +19,16 @@ from mcpscore.probes import (
 )
 
 URL = "https://server.example/mcp"
+
+
+async def _open_sse():
+    """Yield one SSE event, then never end the body."""
+    yield b"data: {}\n\n"
+    await asyncio.Event().wait()
+
+
+def _open_sse_response(status: int = 200) -> httpx2.Response:
+    return httpx2.Response(status, headers={"Content-Type": "text/event-stream"}, content=_open_sse())
 
 
 @dataclass
@@ -153,6 +164,24 @@ class TestNotificationAccepted:
         with pytest.raises(httpx2.ReadTimeout):
             await _run(_probe_get_stream, fails)
         assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE"]
+
+    async def test_open_sse_answer_is_judged_from_its_status(self):
+        server = LegacyServer(notification=_open_sse_response())
+        result = await asyncio.wait_for(_run(_probe_notification_accepted, server), timeout=2)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details == {"http_status": 200, "body_present": None, "shape": "legacy-initialized"}
+
+    async def test_stateless_open_sse_answer_is_judged_from_its_status(self):
+        handler = _modern_handler(notification=_open_sse_response())
+        result = await asyncio.wait_for(_run(_probe_notification_accepted, handler), timeout=2)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["shape"] == "modern-cancelled"
+
+    async def test_202_opening_a_stream_fails_on_its_first_byte(self):
+        server = LegacyServer(notification=_open_sse_response(202))
+        result = await asyncio.wait_for(_run(_probe_notification_accepted, server), timeout=2)
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["body_present"] is True
 
     async def test_an_error_status_is_a_conforming_refusal(self):
         result = await _run(_probe_notification_accepted, LegacyServer(notification=httpx2.Response(400)))
@@ -329,7 +358,14 @@ class TestGetStream:
         assert result.outcome is ProbeOutcome.SUPPORTED
 
     @pytest.mark.parametrize(
-        "get", [httpx2.Response(200, json={"error": "use POST"}), httpx2.Response(404), httpx2.Response(500)]
+        "get",
+        [
+            httpx2.Response(200, json={"error": "use POST"}),
+            httpx2.Response(404),
+            httpx2.Response(500),
+            httpx2.Response(200, headers={"Content-Type": "text/event-streaming"}),
+            httpx2.Response(200, headers={"Content-Type": "text/event-stream+json"}),
+        ],
     )
     async def test_anything_else_fails(self, get):
         result = await _run(_probe_get_stream, LegacyServer(get=get))
@@ -366,6 +402,19 @@ class TestSessionDelete:
         delete = server.requests[2]
         assert delete.headers["Mcp-Session-Id"] == "sess-1"
         assert delete.headers["MCP-Protocol-Version"] == "2025-11-25"
+
+    async def test_failed_delete_still_attempts_cleanup(self):
+        server = LegacyServer()
+
+        def delete_fails(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "DELETE":
+                server.requests.append(request)
+                raise httpx2.ConnectError("reset", request=request)
+            return server(request)
+
+        with pytest.raises(httpx2.ConnectError):
+            await _run(_probe_session_delete, delete_fails)
+        assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE", "DELETE"]
 
     async def test_405_refusal_conforms(self):
         server = LegacyServer(delete_status=405)

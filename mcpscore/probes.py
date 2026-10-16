@@ -514,7 +514,7 @@ class _HttpTarget:
         )
 
     async def post_raw(
-        self, content: bytes, headers: dict[str, str]
+        self, content: bytes, headers: dict[str, str], *, body_limit: Callable[[int], int] | None = None
     ) -> tuple[_HttpProbeResponse, str | None, str | None]:
         """POST an intentionally invalid raw body without following redirects.
 
@@ -531,6 +531,10 @@ class _HttpTarget:
         server compresses anyway (ignoring the identity request), the body is
         never fed to the decoder — that is where the bomb would inflate — and
         is reported unobservable.
+
+        ``body_limit`` maps the status to the bytes worth reading, for a caller
+        whose verdict needs less than the full body: 0 skips the body (an open
+        SSE stream is never drained), 1 tells empty from non-empty.
 
         Returns ``(response, body_text, unobservable_reason)``. ``body_text``
         is the bounded leak surface for ``security_error_data_leak`` (a
@@ -555,13 +559,20 @@ class _HttpTarget:
             encoded = encoding not in ("", "identity")
             body = bytearray()
             truncated = False
+            limit = _RAW_BODY_SCAN_LIMIT if body_limit is None else body_limit(status_code)
+            if limit == 0:
+                return (
+                    _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),
+                    None,
+                    "unread",
+                )
             if not encoded:
                 # No content-encoding, so aiter_bytes yields identity bytes and
                 # performs no decompression — bounding the chunks bounds peak
                 # memory. An encoded body is deliberately never iterated (the
                 # `async with` closes it without decoding).
                 async for chunk in response.aiter_bytes():
-                    space = _RAW_BODY_SCAN_LIMIT - len(body)
+                    space = limit - len(body)
                     if len(chunk) > space:
                         body.extend(chunk[:space])
                         truncated = True
@@ -2102,11 +2113,18 @@ async def _open_legacy_session(
         headers["Mcp-Session-Id"] = session_id
     notification = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
     try:
-        initialized, body, unobservable = await target.post_raw(notification, headers)
+        initialized, body, unobservable = await target.post_raw(
+            notification, headers, body_limit=_notification_body_limit
+        )
     except Exception:
         await target.end_session(response)
         raise
     return _LegacySession(response, headers, session_id, initialized, body, unobservable), response, target
+
+
+def _notification_body_limit(status: int) -> int:
+    """Only a 202 needs its body, and one byte decides whether it has one."""
+    return 1 if status == 202 else 0
 
 
 def _legacy_unavailable(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
@@ -2156,7 +2174,7 @@ async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
         method = "notifications/cancelled"
         notification = {"jsonrpc": "2.0", "method": method, "params": {"requestId": "mcpscore-probe"}}
         sent, body, unobservable = await target.post_raw(
-            json.dumps(notification).encode(), _request_headers(version, method)
+            json.dumps(notification).encode(), _request_headers(version, method), body_limit=_notification_body_limit
         )
         status, shape = sent.status_code, "modern-cancelled"
         if status in AUTH_GATED_STATUSES:
@@ -2271,7 +2289,8 @@ async def _probe_get_stream(target: _HttpTarget) -> ProbeResult:
     redirected = _redirected(PROBE_GET_STREAM, got.status_code, details)
     if redirected is not None:
         return redirected
-    is_stream = 200 <= got.status_code < 300 and content_type.lower().startswith("text/event-stream")
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    is_stream = 200 <= got.status_code < 300 and media_type == "text/event-stream"
     outcome = ProbeOutcome.SUPPORTED if got.status_code == 405 or is_stream else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_GET_STREAM, outcome, details)
 
@@ -2294,10 +2313,14 @@ async def _probe_session_delete(target: _HttpTarget) -> ProbeResult:
         return ProbeResult(
             PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, {"reason": "initialize issued no session ID"}
         )
-    deleted = await target.request_status(
-        "DELETE",
-        {"Mcp-Session-Id": session.session_id, "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"]},
-    )
+    try:
+        deleted = await target.request_status(
+            "DELETE",
+            {"Mcp-Session-Id": session.session_id, "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"]},
+        )
+    except Exception:
+        await target.end_session(session.initialize)
+        raise
     details: dict[str, Any] = {"http_status": deleted.status_code}
     if deleted.status_code in AUTH_GATED_STATUSES:
         details["reason"] = "DELETE is access-controlled"
