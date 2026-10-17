@@ -177,15 +177,17 @@ Nothing else changes. With the [GitHub Action](/github-action):
 - uses: mcp-box/mcpscore-action@v1
   with:
     target: https://your-server.example/mcp
-    args: --fail-under 80
+    min-score: 80
   env:
     MCPSCORE_TOKEN: ${{ secrets.MCPSCORE_TOKEN }}
 ```
 
-Gate a server behind auth with `--fail-under` in `args`, as shown. If the
-secret is missing or expired, the run becomes a partial audit and
-`--fail-under` fails the job with exit `3`. The Action's `min-score` input
-compares the percentage only, so a partial `27/27` passes it at 100%.
+If the secret is missing or expired, the run becomes a partial audit and
+`min-score` fails the job, as `--fail-under` does on the command line:
+
+```text
+::error::min-score 80: this was a partial audit; its score covers only the observable surface and cannot demonstrate the threshold. Server requires authentication (HTTP 401); scored the unauthenticated surface only — pass a token to audit behind the gate. In this action, the credential goes in MCPSCORE_TOKEN or a header in `args`.
+```
 
 ## Options
 

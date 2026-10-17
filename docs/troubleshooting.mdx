@@ -72,6 +72,9 @@ score from ten checks cannot demonstrate a threshold:
 Gate failed — --fail-under 80: this was a partial audit — its score covers only the observable surface and cannot demonstrate the threshold; pass a credential to audit behind the gate (or drop --fail-under for partial audits)
 ```
 
+The [GitHub Action](/github-action)'s `min-score` fails a partial audit the
+same way.
+
 The whole flow, including OAuth sign-in, is in
 [Audit a server behind auth](/authenticated-servers).
 

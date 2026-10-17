@@ -188,10 +188,11 @@ whitespace, so write the header as one token with no space after the colon:
 ```
 
 <Note>
-Without a credential an auth-gated server gets a partial audit, and
-`min-score` is judged on that partial score, which covers only the auth, TLS,
-and transport surface. Pass a credential before trusting the gate. See
-[authenticated servers](/authenticated-servers).
+Without a credential an auth-gated server gets a partial audit. Its score
+covers only the auth, TLS, and transport surface, so a partial audit fails
+`min-score`, as it fails the CLI's `--fail-under`. A missing or expired
+secret fails the job instead of passing it. Action v1.3.0 and later, which
+`@v1` includes, behave this way. See [authenticated servers](/authenticated-servers).
 </Note>
 
 ### Turn rules off for this repository
@@ -338,7 +339,7 @@ mcpscore on PyPI. For reproducible runs, pin the action to a commit and
 | Input | Default | What it does |
 |---|---|---|
 | `target` | required | Server URL, or a local `.py` or `.js` path |
-| `min-score` | no gate | Fail the job when the main score percentage (0–100) is below this. With a `mcpscore.toml` in the checkout, that is the configured score |
+| `min-score` | no gate | Fail the job when the main score percentage (0–100) is below this, or when the audit was partial. With a `mcpscore.toml` in the checkout, that is the configured score |
 | `min-readiness` | no gate | Fail the job when the readiness percentage (0–100) is below this. Skipped when readiness was not assessed |
 | `comment` | `true` | Post or update the report comment on the pull request |
 | `args` | none | Extra arguments passed to the mcpscore CLI, split on whitespace. Write each as one token, for example `--header=X-Api-Key:$KEY` |
@@ -377,12 +378,13 @@ mcpscore on PyPI. For reproducible runs, pin the action to a commit and
   [GitHub Security Lab write-up](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/)
   explains the trap.
 
-**The job passes, but the comment says the audit was partial**
+**`::error::min-score 80: this was a partial audit; ...`**
 
-- Cause: the server needs a credential and the workflow passed none, so
-  `min-score` was judged on the observable surface only.
+- Cause: the server needs a credential and the workflow passed none, or the
+  server rejected it. The score covers only the observable surface.
 - Fix: export `MCPSCORE_TOKEN` from a secret, as above, so the gate judges the
-  full audit.
+  full audit. Secrets are not available on pull requests from forks, so drop
+  `min-score` for those runs.
 
 **`::error::mcpscore could not audit ./server.py (exit 2)`**
 
