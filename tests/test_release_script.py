@@ -170,10 +170,16 @@ class TestCheckTagAbsent:
 
 
 class TestCheckCiGreen:
-    def _stub_checks(self, monkeypatch: pytest.MonkeyPatch, runs: list[dict]) -> None:
-        import json
+    def _stub_checks(self, monkeypatch: pytest.MonkeyPatch, runs: list[dict]) -> list[tuple[str, ...]]:
+        """Stub gh as `--paginate --jq` prints it: one JSON object per line."""
+        calls: list[tuple[str, ...]] = []
 
-        monkeypatch.setattr(release, "run", lambda *_args, **_kwargs: json.dumps(runs))
+        def fake_run(*args: str, **_kwargs: object) -> str:
+            calls.append(args)
+            return "\n".join(json.dumps(r) for r in runs)
+
+        monkeypatch.setattr(release, "run", fake_run)
+        return calls
 
     @staticmethod
     def _run(name: str, conclusion: str, completed_at: str) -> dict:
@@ -224,6 +230,22 @@ class TestCheckCiGreen:
             [self._run("lint", "success", "2026-07-10T10:00:00Z"), copilot],
         )
         release.check_ci_green("abc123")  # must not raise
+
+    def test_reads_every_page_of_check_runs(self, monkeypatch: pytest.MonkeyPatch):
+        """The API pages at 30 runs; the request must ask gh for all of them."""
+        calls = self._stub_checks(monkeypatch, [self._run("lint", "success", "2026-07-10T10:00:00Z")])
+        release.check_ci_green("abc123")
+        (args,) = calls
+        assert "--paginate" in args
+        assert any(a.endswith("/commits/abc123/check-runs?per_page=100") for a in args)
+
+    def test_failure_beyond_first_page_blocks(self, monkeypatch: pytest.MonkeyPatch):
+        """A failing run listed after 30 green ones still blocks the release."""
+        runs = [self._run(f"job-{i}", "success", "2026-07-10T10:00:00Z") for i in range(30)]
+        runs.append(self._run("job-30", "failure", "2026-07-10T10:00:00Z"))
+        self._stub_checks(monkeypatch, runs)
+        with pytest.raises(SystemExit):
+            release.check_ci_green("abc123")
 
     def test_only_review_bot_checks_counts_as_no_ci(self, monkeypatch: pytest.MonkeyPatch):
         """With nothing but bot reviews on the commit, real CI has not run."""
