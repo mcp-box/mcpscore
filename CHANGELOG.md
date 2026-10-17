@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Three rules check tool annotations against what the tool says it does.**
+  They count in the Primitives category and judge only tools in their scope,
+  so a catalog without such tools skips them.
+  - `tools_annotations_destructive_declared` (HIGH): a tool whose name or
+    description says it deletes must not declare `readOnlyHint: true` or
+    `destructiveHint: false`. Clients may skip confirmation for those.
+  - `tools_annotations_read_only_declared` (LOW): an annotated tool that only
+    reads (`get_*`, `list_*`, `search_*`, ...) should declare `readOnlyHint`.
+    It defaults to false, so clients ask for confirmation they do not need.
+  - `tools_annotations_hints_consistent` (LOW): a read-only tool should not
+    also declare `destructiveHint: true`.
+
+  The name and description are read conservatively: an ambiguous verb, or a
+  description that says the tool does something else, leaves the tool
+  unjudged.
+
 ### Docs
 
 - The GitHub Action pages describe action v1.3.0: a partial audit now fails

@@ -209,7 +209,7 @@ More: [package audits](https://docs.mcpscore.dev/package-audits).
 
 ## What the score measures
 
-107 server rules in four categories:
+110 server rules in four categories:
 
 - **Protocol**: protocol version, server identity, capabilities, transport.
 - **Primitives**: tools, prompts, resources, and resource templates. Names,
