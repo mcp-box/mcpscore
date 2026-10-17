@@ -11,6 +11,8 @@ on:
       - "mcpscore/rules/**"
       - "mcpscore/spec.py"
       - ".github/workflows/docs.yml"
+  # Jobs run on pull_request only for fork PRs: a same-repo PR already gets the
+  # push run's checks on its head commit, and a second run doubles the jobs.
   push:
     # Every branch, so a branch pushed without an open PR is still checked.
     # Without this a merged-then-reused branch can reach a release unverified.
@@ -20,6 +22,7 @@ on:
       - "scripts/generate_rules_doc.py"
       - "mcpscore/rules/**"
       - "mcpscore/spec.py"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 concurrency:
@@ -37,6 +40,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

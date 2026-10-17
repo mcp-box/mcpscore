@@ -5,6 +5,8 @@ on:
     # Every branch, so a branch pushed without an open PR is still checked.
     # Without this a merged-then-reused branch can reach a release unverified.
     branches: ['**']
+  # Jobs run on pull_request only for fork PRs: a same-repo PR already gets the
+  # push run's checks on its head commit, and a second run doubles the jobs.
   pull_request:
     branches: [main]
 
@@ -23,6 +25,7 @@ permissions: {}
 jobs:
   npm-wrapper:
     name: npm wrapper / ${{ matrix.os }} / node${{ matrix.node-version }}
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -45,6 +48,7 @@ jobs:
       - run: npm --prefix npm test
 
   lint:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,6 +65,7 @@ jobs:
       - run: make precommit
 
   typecheck:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -76,6 +81,7 @@ jobs:
 
   test:
     name: Test / ${{ matrix.os }} / py${{ matrix.python-version }}
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -99,6 +105,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   workflow-security:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
