@@ -178,14 +178,17 @@ racy against the bots' review latency."""
 
 
 def check_ci_green(sha: str) -> None:
+    # --paginate: the endpoint returns 30 runs per page by default, and a failure
+    # past the first page would otherwise go unseen. --jq emits one object per line.
     raw = run(
         "gh",
         "api",
-        f"repos/{REPO}/commits/{sha}/check-runs",
+        "--paginate",
+        f"repos/{REPO}/commits/{sha}/check-runs?per_page=100",
         "--jq",
-        "[.check_runs[] | {name, status, conclusion, started_at, completed_at}]",
+        ".check_runs[] | {name, status, conclusion, started_at, completed_at}",
     )
-    runs = [r for r in json.loads(raw) if r["name"] not in REVIEW_BOT_CHECKS]
+    runs = [r for r in map(json.loads, raw.splitlines()) if r["name"] not in REVIEW_BOT_CHECKS]
     if not runs:
         fail("no CI check runs found for HEAD — has CI finished?")
 
