@@ -20,6 +20,7 @@ from .base import (
 from .catalog_diagnostics import catalog_result, field_issue, fields, pointer_token
 from .icon_validation import find_invalid_icons, icon_issues
 from .registry import register_rule
+from .tool_intent import ToolIntent, tool_intent
 
 
 class ToolsBaseRule(BaseRule):
@@ -1504,3 +1505,213 @@ def _legacy_locations(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
         {key: value for key, value in failure.items() if key not in {"_pointer", "_entity_index"}}
         for failure in failures
     ]
+
+
+_ANNOTATIONS_BASIS = "MCP 2025-11-25 Schema Reference §ToolAnnotations; Tools §Tool (annotations)"
+
+
+def _hint(tool: Tool, hint: str) -> bool | None:
+    return getattr(tool.annotations, hint, None) if tool.annotations is not None else None
+
+
+class _AnnotationConsistencyRule(ToolsBaseRule):
+    """Base for rules that compare a tool's declared hints with what it says it does.
+
+    Each rule judges only the tools in its scope and skips a catalog without any.
+    """
+
+    basis = _ANNOTATIONS_BASIS
+
+    @abstractmethod
+    def _in_scope(self, tool: Tool) -> bool:
+        """Whether this rule has anything to judge on ``tool``."""
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when no tool in the catalog is in this rule's scope."""
+        if reason := super().skip_reason(audit_data):
+            return reason
+        if not any(self._in_scope(tool) for tool in audit_data.tools or []):
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
+
+
+@register_rule
+class ToolsAnnotationsDestructiveDeclaredRule(_AnnotationConsistencyRule):
+    """High check: a tool that says it deletes must not declare itself read-only or non-destructive.
+
+    Clients may skip confirmation for a tool declared read-only or non-destructive. A delete tool that
+    declares either misleads that consent decision in the dangerous direction.
+    """
+
+    rule_id = "tools_annotations_destructive_declared"
+    rule_order = 18
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Delete tools must not be declared read-only or non-destructive"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def _in_scope(self, tool: Tool) -> bool:
+        return tool_intent(tool) is ToolIntent.DESTRUCTIVE
+
+    @staticmethod
+    def _understated(tool: Tool) -> bool:
+        return _hint(tool, "read_only_hint") is True or _hint(tool, "destructive_hint") is False
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """High check: Verify that no delete tool declares readOnlyHint true or destructiveHint false.
+
+        Args:
+            tools: The tools to validate
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        understated = [tool.name for tool in tools if self._in_scope(tool) and self._understated(tool)]
+        passed = not understated
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ Every delete tool is declared as one"
+                if passed
+                else f"❌ Delete tools declared read-only or non-destructive: {len(understated)}"
+            ),
+            details={"understated_tools": understated},
+            suggested_fix=(
+                "For a tool that deletes, set readOnlyHint to false and destructiveHint to true (or omit "
+                "destructiveHint, which defaults to true), so clients ask before calling it."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/annotations",
+                "destructive_tool_declared_safe",
+                "readOnlyHint false and destructiveHint true for a tool that deletes",
+                lambda tool: self._in_scope(tool) and self._understated(tool),
+            ),
+        )
+
+
+@register_rule
+class ToolsAnnotationsReadOnlyDeclaredRule(_AnnotationConsistencyRule):
+    """Low check: an annotated tool that only reads should declare readOnlyHint.
+
+    readOnlyHint defaults to false, so a reading tool that declares other hints but omits it is
+    treated as one that changes state, and clients ask for confirmation they do not need.
+    """
+
+    rule_id = "tools_annotations_read_only_declared"
+    rule_order = 19
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Annotated read tools should declare readOnlyHint"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _in_scope(self, tool: Tool) -> bool:
+        return _has_behavior_annotation(tool) and tool_intent(tool) is ToolIntent.READ
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Low check: Verify that annotated read tools declare readOnlyHint.
+
+        Args:
+            tools: The tools to validate
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        undeclared = [tool.name for tool in tools if self._in_scope(tool) and _hint(tool, "read_only_hint") is None]
+        passed = not undeclared
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ Every annotated read tool declares readOnlyHint"
+                if passed
+                else f"❌ Annotated read tools without readOnlyHint: {len(undeclared)}"
+            ),
+            details={"tools_without_read_only_hint": undeclared},
+            suggested_fix=(
+                "Set readOnlyHint to true on tools that only read. Leave it false for a tool that also "
+                "changes state, for example one that charges, creates a key or saves a result."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/annotations/readOnlyHint",
+                "read_tool_without_read_only_hint",
+                "readOnlyHint declared for a tool that only reads",
+                lambda tool: self._in_scope(tool) and _hint(tool, "read_only_hint") is None,
+            ),
+            recommendation=True,
+        )
+
+
+@register_rule
+class ToolsAnnotationsHintsConsistentRule(_AnnotationConsistencyRule):
+    """Low check: a read-only tool should not also declare destructiveHint true.
+
+    destructiveHint is meaningful only when readOnlyHint is false, so declaring both says two
+    opposite things about the same tool.
+    """
+
+    rule_id = "tools_annotations_hints_consistent"
+    rule_order = 20
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Read-only tools should not declare destructiveHint true"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def _in_scope(self, tool: Tool) -> bool:
+        return _hint(tool, "read_only_hint") is True
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Low check: Verify that no read-only tool declares destructiveHint true.
+
+        Args:
+            tools: The tools to validate
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        contradictory = [
+            tool.name for tool in tools if self._in_scope(tool) and _hint(tool, "destructive_hint") is True
+        ]
+        passed = not contradictory
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ No read-only tool declares destructiveHint true"
+                if passed
+                else f"❌ Read-only tools that also declare destructiveHint true: {len(contradictory)}"
+            ),
+            details={"contradictory_tools": contradictory},
+            suggested_fix=(
+                "Decide whether the tool changes state. If it only reads, drop destructiveHint. If it "
+                "can delete or overwrite, set readOnlyHint to false."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/annotations/destructiveHint",
+                "read_only_tool_declared_destructive",
+                "no destructiveHint true on a read-only tool",
+                lambda tool: self._in_scope(tool) and _hint(tool, "destructive_hint") is True,
+            ),
+            recommendation=True,
+        )

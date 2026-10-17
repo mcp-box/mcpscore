@@ -146,6 +146,9 @@ rules to the OWASP risks and lists what an audit from outside cannot see.
 | `tools_icons_valid` | Tools - Declared icons must be valid | LOW (1) | 2025-11-25 and later |
 | `tools_input_properties_documented` | Tools - Input properties should be documented | MEDIUM (2) | all versions |
 | `tools_output_schema_root_object` | Tools - Output schemas must be object-rooted on this revision | HIGH (3) | 2025-06-18 to 2025-11-25 |
+| `tools_annotations_destructive_declared` | Tools - Delete tools must not be declared read-only or non-destructive | HIGH (3) | all versions |
+| `tools_annotations_read_only_declared` | Tools - Annotated read tools should declare readOnlyHint | LOW (1) | all versions |
+| `tools_annotations_hints_consistent` | Tools - Read-only tools should not declare destructiveHint true | LOW (1) | all versions |
 
 ## Transport
 
