@@ -6,6 +6,7 @@ classified only when its leading verb is unambiguous; anything else is
 """
 
 from enum import StrEnum
+from itertools import pairwise
 import re
 
 from mcp_types import Tool
@@ -90,6 +91,9 @@ _CHANGE_WORDS = frozenset(
 )
 _ALL_VERBS = _READ_VERBS | _CHANGE_WORDS
 _LEAD_ADVERBS = frozenset({"permanently", "irreversibly", "completely", "safely"})
+# A tool that previews, simulates or plans an action does not perform it.
+_NON_MUTATING_QUALIFIERS = frozenset({"dry", "estimate", "plan", "preview", "simulate", "validate"})
+_CONJUNCTIONS = frozenset({"and", "or", "then"})
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _SEPARATORS = re.compile(r"[^A-Za-z0-9]+")
 _WORD = re.compile(r"[A-Za-z]+")
@@ -126,22 +130,38 @@ def _description_verb(description: str | None) -> str | None:
     return verb if verb in _ALL_VERBS else None
 
 
+def _description_words(description: str | None) -> list[str]:
+    return [word.lower() for word in _WORD.findall(description or "")[:8]]
+
+
+def _mixed_action(words: list[str]) -> bool:
+    """Whether the opening words join a second, changing action ("Get or create a user")."""
+    return any(word in _CONJUNCTIONS and _base_verb(following) in _CHANGE_WORDS for word, following in pairwise(words))
+
+
 def tool_intent(tool: Tool) -> ToolIntent:
     """Classify a tool as clearly reading, clearly destructive, or unknown.
 
-    A description that opens with a verb decides; the name decides otherwise. "delete_person_preview"
-    described as "Create a non-mutating snapshot" is not a delete.
+    A description that opens with a verb decides over the name: "delete_person_preview" described as
+    "Create a non-mutating snapshot" is not a delete. A preview or dry run of a delete is not one either.
     """
+    name_tokens = _name_tokens(tool.name)
     name_verb = _name_verb(tool.name)
     description_verb = _description_verb(tool.description)
+    opening = _description_words(tool.description)
+    if (set(name_tokens) | set(opening[:1])) & _NON_MUTATING_QUALIFIERS:
+        return ToolIntent.UNKNOWN
     if description_verb is not None:
-        destructive = description_verb in _DESTRUCTIVE_VERBS
+        # A description repeating the name's verb ("drop_table": "Drop a table.") keeps the name's evidence.
+        destructive = description_verb in _DESTRUCTIVE_VERBS or (
+            description_verb == name_verb and name_verb in _DESTRUCTIVE_NAME_ONLY
+        )
     else:
         destructive = name_verb in _DESTRUCTIVE_VERBS | _DESTRUCTIVE_NAME_ONLY
     if destructive:
         return ToolIntent.DESTRUCTIVE
     if name_verb in _READ_VERBS:
-        changes = set(_name_tokens(tool.name)) & _CHANGE_WORDS
-        if not changes and description_verb not in _CHANGE_WORDS:
+        changes = set(name_tokens) & _CHANGE_WORDS
+        if not changes and description_verb not in _CHANGE_WORDS and not _mixed_action(opening):
             return ToolIntent.READ
     return ToolIntent.UNKNOWN

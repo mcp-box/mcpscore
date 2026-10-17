@@ -48,6 +48,17 @@ def tool(name: str, description: str | None = None, **hints: Any) -> Tool:
         ("restore_drop", "Bring back an expired drop.", ToolIntent.UNKNOWN),
         ("clear_filters", "Wipe every predicate applied to a layer.", ToolIntent.UNKNOWN),
         ("wipe_disk", None, ToolIntent.DESTRUCTIVE),
+        # A description repeating the name's verb keeps a name-only verb's evidence.
+        ("drop_table", "Drop a database table.", ToolIntent.DESTRUCTIVE),
+        ("wipe_disk", "Wipe all data on the disk.", ToolIntent.DESTRUCTIVE),
+        # Previews and dry runs of a delete do not delete.
+        ("delete_file_preview", "Preview the effects of deleting a file without changing it.", ToolIntent.UNKNOWN),
+        ("delete_repo", "Preview what deleting the repository would remove.", ToolIntent.UNKNOWN),
+        ("dry_run_delete", None, ToolIntent.UNKNOWN),
+        # A description that joins a changing action is not a read.
+        ("get_user", "Get or create a user by ID.", ToolIntent.UNKNOWN),
+        ("list_jobs", "List jobs and cancel the stale ones.", ToolIntent.UNKNOWN),
+        ("search_docs", "Search the docs and return the best matches.", ToolIntent.READ),
         # A read verb with a change in the name or the description is not a read.
         ("get_or_create_user", None, ToolIntent.UNKNOWN),
         ("get_api_key", "Create a free API key for an email address.", ToolIntent.UNKNOWN),
