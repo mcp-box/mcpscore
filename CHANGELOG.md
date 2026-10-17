@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs
+
+- The GitHub Action pages describe action v1.3.0: a partial audit now fails
+  `min-score`, so the CI example for servers behind auth uses `min-score`
+  instead of the `args: --fail-under 80` workaround.
+
 ## [1.23.0] - 2026-10-16
 
 Five new transport rules check the Streamable HTTP envelope, and
