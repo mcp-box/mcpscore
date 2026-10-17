@@ -59,6 +59,12 @@ def tool(name: str, description: str | None = None, **hints: Any) -> Tool:
         ("get_user", "Get or create a user by ID.", ToolIntent.UNKNOWN),
         ("list_jobs", "List jobs and cancel the stale ones.", ToolIntent.UNKNOWN),
         ("search_docs", "Search the docs and return the best matches.", ToolIntent.READ),
+        # An explicit delete description wins over a qualifier that names the object.
+        ("delete_plan", "Delete a subscription plan permanently.", ToolIntent.DESTRUCTIVE),
+        ("delete_estimate", "Delete an estimate permanently.", ToolIntent.DESTRUCTIVE),
+        # A changing action anywhere in the description, conditional or late, makes a read unknown.
+        ("get_user", "Get the current user from the database and delete it.", ToolIntent.UNKNOWN),
+        ("get_user", "Get a user and, if absent, create it.", ToolIntent.UNKNOWN),
         # A read verb with a change in the name or the description is not a read.
         ("get_or_create_user", None, ToolIntent.UNKNOWN),
         ("get_api_key", "Create a free API key for an email address.", ToolIntent.UNKNOWN),
