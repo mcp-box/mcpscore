@@ -138,6 +138,9 @@ UNKNOWN_VERSION = "2099-01-01"
 MISSING_RESOURCE_URI = "resource://mcpscore/does-not-exist"
 """Deliberately nonexistent resource URI used by the missing-resource probe."""
 
+INVALID_TOKEN_PREFIX = "mcpscore-invalid-token-"  # noqa: S105 — a deliberately invalid token, not a secret
+"""Prefix of the fabricated bearer token; a random suffix makes each one impossible to have been issued."""
+
 INVALID_CURSOR_PREFIX = "mcpscore-invalid-cursor-"
 """Prefix for fabricated opaque cursors that cannot plausibly have been issued."""
 
@@ -153,6 +156,7 @@ PROBE_GET_STREAM_REMOVED = "probe_get_stream_removed"
 PROBE_UNKNOWN_VERSION = "probe_unknown_version"
 PROBE_MISSING_RESOURCE = "probe_missing_resource"
 PROBE_UNAUTHENTICATED = "probe_unauthenticated"
+PROBE_INVALID_TOKEN = "probe_invalid_token"  # noqa: S105 — a probe ID
 PROBE_SESSION_ID_ECHO = "probe_session_id_echo"
 PROBE_REMOVED_METHOD = "probe_removed_method"
 PROBE_AUTH_METADATA = "probe_auth_metadata"
@@ -188,6 +192,7 @@ _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_SESSION_ID_ECHO,
     PROBE_REMOVED_METHOD,
     PROBE_AUTH_METADATA,
+    PROBE_INVALID_TOKEN,
     PROBE_ORIGIN_VALIDATION,
     PROBE_UNKNOWN_METHOD,
     PROBE_MALFORMED_JSON,
@@ -220,6 +225,7 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_UNAUTHENTICATED,
         PROBE_SESSION_ID_ECHO,
         PROBE_AUTH_METADATA,
+        PROBE_INVALID_TOKEN,
         PROBE_ORIGIN_VALIDATION,
         PROBE_MALFORMED_JSON,
         PROBE_NOTIFICATION_ACCEPTED,
@@ -244,8 +250,8 @@ malformed wire input through the SDK transport.
 STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in _SINGLE_TARGET_PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
 """Probes that run over stdio — the ones judging JSON-RPC, not HTTP."""
 
-_AUTH_DISCOVERY_PROBE_IDS = (PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA)
-"""Probes run in order, so metadata discovery can follow the observed challenge."""
+_AUTH_DISCOVERY_PROBE_IDS = (PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA, PROBE_INVALID_TOKEN)
+"""Probes that run after the unauthenticated request, because they depend on what it observed."""
 
 _ANONYMOUS_PROBE_IDS = frozenset(_AUTH_DISCOVERY_PROBE_IDS)
 """Probes that must see the server as an unauthenticated client does.
@@ -1605,6 +1611,53 @@ async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
     return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)
 
 
+def _token_refused(response: _HttpProbeResponse) -> bool:
+    """Whether the answer refuses the bearer token: 401/403, or any 4xx with an RFC 6750 ``invalid_token`` challenge."""
+    if response.status_code in AUTH_GATED_STATUSES:
+        return True
+    challenge = response.headers.get("www-authenticate") or ""
+    return 400 <= response.status_code < 500 and www_authenticate_param(challenge, "error") == "invalid_token"
+
+
+async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
+    """Send the unauthenticated request again with a fabricated bearer token, then a legacy ``initialize``.
+
+    SUPPORTED: the token is refused (:func:`_token_refused`). UNSUPPORTED: a 2xx
+    answer, so the token got past the auth check. Any other 4xx says nothing,
+    because a legacy server past the check refuses the sessionless request too;
+    the ``initialize`` then decides. Redirects, timeouts, rate limits and 5xx are
+    NOT_APPLICABLE. Both requests are reads; a session opened for one is closed.
+    """
+    target_version = _target_version()
+    authorization = f"Bearer {INVALID_TOKEN_PREFIX}{uuid4().hex}"
+    attempts = (
+        (
+            "tools/list",
+            _request_body("tools/list", 7, _modern_meta(target_version)),
+            _request_headers(target_version, "tools/list"),
+        ),
+        ("initialize", _legacy_initialize_body(8), _legacy_headers()),
+    )
+    details: dict[str, Any] = {}
+    for method, body, headers in attempts:
+        response = await target.post(body, {**headers, "Authorization": authorization})
+        await target.end_session(response)
+        details = {**_base_details(response), "method": method}
+        status = response.status_code
+        if _token_refused(response):
+            details["www_authenticate"] = response.headers.get("www-authenticate")
+            return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.SUPPORTED, details)
+        if 200 <= status < 300:
+            return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, details)
+        redirected = _redirected(PROBE_INVALID_TOKEN, status, details)
+        if redirected is not None:
+            return redirected
+        if not 400 <= status < 500 or status in (408, 429):
+            break
+    details["reason"] = f"HTTP {details.get('http_status')} does not show whether the token was accepted"
+    return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.NOT_APPLICABLE, details)
+
+
 def observed_auth_status(probes: dict[str, ProbeResult] | None) -> int | None:
     """HTTP status of an auth gate the probes observed, or None if they saw no gate.
 
@@ -2689,6 +2742,7 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_UNAUTHENTICATED: _probe_unauthenticated,
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
+    PROBE_INVALID_TOKEN: _probe_invalid_token,
     PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
     PROBE_MALFORMED_JSON: _probe_malformed_json,
     PROBE_NOTIFICATION_ACCEPTED: _probe_notification_accepted,
@@ -2704,6 +2758,11 @@ _HTTP_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = {
     **_TRANSPORT_AGNOSTIC_PROBES,
     **_HTTP_ONLY_PROBES,
 }
+
+
+async def _not_gated(probe_id: str) -> ProbeResult:
+    """NOT_APPLICABLE for a probe that needs an unauthenticated request to have been refused."""
+    return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, {"reason": "the unauthenticated request was not refused"})
 
 
 def not_applicable_results(reason: str, probe_ids: Iterable[str] = PROBE_IDS) -> dict[str, ProbeResult]:
@@ -2889,12 +2948,20 @@ async def run_all_probes(
             # Metadata discovery follows the challenge the unauthenticated request received.
             unauthenticated = await run_one(PROBE_UNAUTHENTICATED, select(PROBE_UNAUTHENTICATED))
             challenge = unauthenticated.details.get("www_authenticate")
-            metadata = await run_one(
-                PROBE_AUTH_METADATA,
-                select(PROBE_AUTH_METADATA),
-                challenge if isinstance(challenge, str) else None,
+            # Without an observed answer the token probe still runs, so a network failure stays ERROR data.
+            gated = (
+                unauthenticated.outcome is not ProbeOutcome.SUPPORTED
+                or unauthenticated.details.get("http_status") in AUTH_GATED_STATUSES
             )
-            return [unauthenticated, metadata]
+            metadata, invalid_token = await asyncio.gather(
+                run_one(
+                    PROBE_AUTH_METADATA,
+                    select(PROBE_AUTH_METADATA),
+                    challenge if isinstance(challenge, str) else None,
+                ),
+                run_one(PROBE_INVALID_TOKEN, select(PROBE_INVALID_TOKEN)) if gated else _not_gated(PROBE_INVALID_TOKEN),
+            )
+            return [unauthenticated, metadata, invalid_token]
 
         independent = [probe_id for probe_id in _SINGLE_TARGET_PROBE_IDS if probe_id not in _AUTH_DISCOVERY_PROBE_IDS]
         auth_results, results = await asyncio.gather(

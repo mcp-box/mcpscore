@@ -6,6 +6,7 @@ import pytest
 
 from mcpscore.probes import (
     PROBE_AUTH_METADATA,
+    PROBE_INVALID_TOKEN,
     PROBE_UNAUTHENTICATED,
     ProbeOutcome,
     ProbeResult,
@@ -16,6 +17,7 @@ from mcpscore.rules.auth import (
     AuthAuthorizationServersHttpsRule,
     AuthChallengeReferencesMetadataRule,
     AuthClientRegistrationAdvertisedRule,
+    AuthInvalidTokenRejectedRule,
     AuthMetadataHttpsRule,
     AuthProtectedResourceMetadataRule,
     AuthScopesAdvertisedRule,
@@ -72,13 +74,20 @@ def _full_metadata(**extra: object) -> ProbeResult:
     return _metadata(**base)
 
 
-def _data(unauth: ProbeResult | None, metadata: ProbeResult | None = None) -> AuditData:
+def _token(outcome: ProbeOutcome = ProbeOutcome.SUPPORTED, status: int | None = 401) -> ProbeResult:
+    return ProbeResult(PROBE_INVALID_TOKEN, outcome, {"http_status": status})
+
+
+def _data(
+    unauth: ProbeResult | None, metadata: ProbeResult | None = None, token: ProbeResult | None = None
+) -> AuditData:
     probes = {}
     if unauth is not None:
         probes[PROBE_UNAUTHENTICATED] = unauth
     if metadata is not None:
         probes[PROBE_AUTH_METADATA] = metadata
-    return AuditData(url=URL, probes=probes or None)
+    probes[PROBE_INVALID_TOKEN] = token or _token()
+    return AuditData(url=URL, probes=probes)
 
 
 class TestSkipGating:
@@ -152,6 +161,7 @@ class TestCitations:
             AuthServerMetadataPresentRule,
             AuthServerPkceRule,
             AuthClientRegistrationAdvertisedRule,
+            AuthInvalidTokenRejectedRule,
         ):
             details = rule_cls().check(data).details
             assert details is not None
@@ -482,3 +492,58 @@ class TestAuthClientRegistrationAdvertised:
     def test_skips_for_open_servers(self):
         rule = AuthClientRegistrationAdvertisedRule()
         assert rule.skip_reason(_data(_unauth(status=200), _full_metadata())) == SKIP_REASON_NOT_APPLICABLE
+
+
+class TestInvalidTokenRejected:
+    rule = AuthInvalidTokenRejectedRule()
+
+    def test_is_high_security(self):
+        assert self.rule.severity is RuleSeverity.HIGH
+        assert self.rule.group_name == "security"
+
+    def test_401_passes(self):
+        result = self.rule.check(_data(_unauth(), token=_token(status=401)))
+
+        assert result.passed
+        assert "HTTP 401" in result.message
+        assert result.suggested_fix is None
+
+    @pytest.mark.parametrize("status", [400, 403])
+    def test_other_refusal_passes_and_names_401(self, status):
+        result = self.rule.check(_data(_unauth(), token=_token(status=status)))
+
+        assert result.passed
+        assert f"HTTP {status}" in result.message
+        assert "spec asks for HTTP 401" in result.message
+
+    @pytest.mark.parametrize("status", [200, 202])
+    def test_accepted_token_fails(self, status):
+        token = ProbeResult(
+            PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, {"http_status": status, "method": "initialize"}
+        )
+        result = self.rule.check(_data(_unauth(401), token=token))
+
+        assert not result.passed
+        assert f"initialize answered HTTP {status}" in result.message
+        assert "without a token gets HTTP 401" in result.message
+        assert result.details is not None
+        assert result.details["http_status"] == status
+        assert result.details["anonymous_http_status"] == 401
+        assert result.suggested_fix is not None
+        assert "HTTP 401" in result.suggested_fix
+
+    def test_open_server_is_not_applicable(self):
+        not_run = ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.NOT_APPLICABLE, {"reason": "not refused"})
+
+        assert self.rule.skip_reason(_data(_unauth(200, None), token=not_run)) == SKIP_REASON_NOT_APPLICABLE
+
+    @pytest.mark.parametrize("outcome", [ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE])
+    def test_unobserved_token_answer_is_insufficient_data(self, outcome):
+        data = _data(_unauth(), token=ProbeResult(PROBE_INVALID_TOKEN, outcome, {}))
+
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_failed_anonymous_request_is_insufficient_data(self):
+        errored = ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.ERROR, {"exception": "ConnectError"})
+
+        assert self.rule.skip_reason(_data(errored)) == SKIP_REASON_INSUFFICIENT_DATA

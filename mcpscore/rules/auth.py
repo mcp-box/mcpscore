@@ -15,7 +15,8 @@ the probe follows them in the order a client does. RFC 9728 metadata has a
 authorization server. The deeper rules follow the discovery chain to the
 authorization server's own metadata, validate its issuer, and check it
 advertises PKCE (S256), per the OAuth security BCP (RFC 9700), and a way for
-a client with no prior relationship to register.
+a client with no prior relationship to register. One rule sends a fabricated
+bearer token, which the server must refuse with 401.
 """
 
 from typing import ClassVar
@@ -26,6 +27,7 @@ from mcpscore.spec import compare
 from ..probes import (
     AUTH_GATED_STATUSES,
     PROBE_AUTH_METADATA,
+    PROBE_INVALID_TOKEN,
     PROBE_UNAUTHENTICATED,
     ProbeOutcome,
     ProbeResult,
@@ -826,6 +828,90 @@ class AuthClientRegistrationAdvertisedRule(AuthMetadataBaseRule):
                 "Fetch HTTPS client_id metadata documents and set client_id_metadata_document_supported: true in "
                 "the authorization server metadata, or expose an RFC 7591 registration_endpoint. An allowlist of "
                 "trusted client domains still works with either."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
+        )
+
+
+@register_rule
+class AuthInvalidTokenRejectedRule(AuthPostureBaseRule):
+    """High check: a fabricated bearer token is refused like a missing one."""
+
+    rule_id = "auth_invalid_token_rejected"
+    rule_order = 13
+    required_probe_ids = (PROBE_UNAUTHENTICATED, PROBE_INVALID_TOKEN)
+
+    @property
+    def rule_name(self) -> str:
+        return "Auth - Invalid Token Rejected"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip as not-applicable for a server that serves anonymous requests, before looking at the token probe."""
+        probes = audit_data.probes or {}
+        unauthenticated = probes.get(PROBE_UNAUTHENTICATED)
+        if (
+            unauthenticated is not None
+            and unauthenticated.outcome is ProbeOutcome.SUPPORTED
+            and unauthenticated.details.get("http_status") not in AUTH_GATED_STATUSES
+        ):
+            return SKIP_REASON_NOT_APPLICABLE
+        return super().skip_reason(audit_data)
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """High check: a request with a made-up bearer token is refused, not served.
+
+        A 2xx answer means the token got past the server's auth check. Invalid tokens
+        MUST receive HTTP 401; another refusal (403, or a 4xx with an ``invalid_token``
+        challenge) still keeps the server closed and passes, and the message names the
+        401 the spec asks for.
+
+        Args:
+            audit_data: The collected server data for this audit
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        probe = self._probe(audit_data, PROBE_INVALID_TOKEN)
+        status = probe.details.get("http_status")
+        anonymous_status = self._probe(audit_data, PROBE_UNAUTHENTICATED).details.get("http_status")
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        if passed and status == 401:
+            message = "✅ A fabricated bearer token was refused with HTTP 401"
+        elif passed:
+            message = (
+                f"✅ A fabricated bearer token was refused with HTTP {status}. "
+                "The spec asks for HTTP 401 on an invalid token"
+            )
+        else:
+            message = (
+                f"❌ A fabricated bearer token was accepted: {probe.details.get('method')} answered HTTP {status}, "
+                f"where a request without a token gets HTTP {anonymous_status}"
+            )
+        return diagnostic_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "basis": (
+                    "MCP Authorization (2025-06-18+) §Token Handling: invalid or expired tokens MUST "
+                    "receive HTTP 401; OAuth 2.1 §5.2 (token validation)"
+                ),
+                "method": probe.details.get("method"),
+                "http_status": status,
+                "anonymous_http_status": anonymous_status,
+            },
+            suggested_fix=(
+                "Validate every bearer token (signature or introspection, expiry, audience) before handling the "
+                "request, and answer an invalid one with HTTP 401. A failed check must never fall back to a "
+                "default identity."
             )
             if not passed
             else None,

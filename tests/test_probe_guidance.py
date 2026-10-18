@@ -11,6 +11,7 @@ from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
     PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
+    PROBE_INVALID_TOKEN,
     PROBE_MALFORMED_JSON,
     PROBE_PAGINATION_CACHE_SCOPE,
     PROBE_STATELESS_LIST,
@@ -55,6 +56,7 @@ def data_for(rule_id: str, *, failure: bool) -> AuditData:
             "www_authenticate": 'Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"',
         },
     )
+    probes[PROBE_INVALID_TOKEN] = ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.SUPPORTED, {"http_status": 401})
     metadata: dict[str, Any] = {
         "resource": URL,
         "metadata_url": "https://example.com/.well-known/oauth-protected-resource",
@@ -138,6 +140,8 @@ def data_for(rule_id: str, *, failure: bool) -> AuditData:
 def _fail_auth(rule_id, probes, metadata):
     if rule_id == "auth_www_authenticate":
         probes[PROBE_UNAUTHENTICATED].details["www_authenticate"] = None
+    elif rule_id == "auth_invalid_token_rejected":
+        probes[PROBE_INVALID_TOKEN] = ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, {"http_status": 200})
     elif rule_id == "auth_challenge_references_metadata":
         metadata["challenge_metadata_http_status"] = 404
         metadata["challenge_metadata_resource"] = None
@@ -173,10 +177,10 @@ def test_each_rule_guidance_contract(rule_id, failure, monkeypatch):
         assert "suggested_fix" not in wire
 
 
-def test_inventory_covers_all_51_rules():
-    assert len(RULES) == 51
+def test_inventory_covers_all_52_rules():
+    assert len(RULES) == 52
     assert sum(r.group_name == "readiness" for r in RULES.values()) == 20
-    assert sum(r.group_name == "security" for r in RULES.values()) == 13
+    assert sum(r.group_name == "security" for r in RULES.values()) == 14
 
 
 @pytest.mark.parametrize("outcome", [ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE])
