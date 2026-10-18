@@ -377,6 +377,12 @@ class TestGetStream:
         assert get.headers["Mcp-Session-Id"] == "sess-1"
         assert get.headers["MCP-Protocol-Version"] == "2025-11-25"
 
+    async def test_get_waits_past_a_30_second_keep_alive_for_the_headers(self):
+        server = LegacyServer()
+        await _run(_probe_get_stream, server)
+        assert server.requests[2].extensions["timeout"]["read"] > 30
+        assert server.requests[3].extensions["timeout"]["read"] == probes.PROBE_TIMEOUT_S
+
     async def test_event_stream_conforms(self):
         get = httpx2.Response(200, headers={"Content-Type": "text/event-stream; charset=utf-8"})
         result = await _run(_probe_get_stream, LegacyServer(get=get))

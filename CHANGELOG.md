@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   description that says the tool does something else, leaves the tool
   unjudged.
 
+### Fixed
+
+- **`transport_get_stream_contract` gives the same result on every run for
+  servers that send the GET stream's headers late.** Servlet-based servers,
+  such as those on the Java SDK, send the headers only with the stream's
+  first event, so a 10-second wait passed the rule on some runs and skipped
+  it on others. GET probes now wait up to 35 seconds. Servers that answer
+  right away are not affected.
+
 ### Docs
 
 - The GitHub Action pages describe action v1.3.0: a partial audit now fails
