@@ -3020,6 +3020,19 @@ class TestInvalidTokenProbe:
         assert result.outcome is ProbeOutcome.UNSUPPORTED
         assert result.details["anonymous_http_status"] == 401
 
+    async def test_token_requests_send_no_client_cookie(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "session=valid" in request.headers.get("Cookie", ""):
+                return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 7, "result": {"tools": []}})
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            return httpx2.Response(401, headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), cookies={"session": "valid"}) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
     async def test_session_opened_for_the_token_is_closed_with_the_token(self):
         sessions = {"abc"}
 

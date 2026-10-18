@@ -581,10 +581,15 @@ class _ProbeTarget(Protocol):
         raise NotImplementedError
 
 
-def _strip_credentials(request: httpx2.Request) -> None:
-    """Remove the client's ``Authorization`` and cookie-jar credentials from one built request."""
+def _strip_credentials(request: httpx2.Request, keep: dict[str, str] | None = None) -> None:
+    """Remove the client's ``Authorization`` and cookie-jar credentials from one built request.
+
+    An ``Authorization`` in ``keep`` (one the probe passed for this request) is put back.
+    """
     request.headers.pop("Authorization", None)
     request.headers.pop("Cookie", None)
+    if keep and "Authorization" in keep:
+        request.headers["Authorization"] = keep["Authorization"]
 
 
 @dataclass(frozen=True)
@@ -665,7 +670,8 @@ class _HttpTarget:
         With ``close_session_on_failure``, a session ID the answer issued is
         closed at the URL that answered before any failure propagates;
         ``cleanup_headers`` are added to that DELETE. With ``anonymous``, the
-        client's ``Authorization`` and cookies are removed from the request and its cleanup.
+        client's ``Authorization`` and cookies are removed from the request and its
+        cleanup; an ``Authorization`` passed in ``headers`` is kept.
         """
         request = self.client.build_request(
             "POST",
@@ -675,7 +681,7 @@ class _HttpTarget:
             timeout=PROBE_TIMEOUT_S,
         )
         if anonymous:
-            _strip_credentials(request)
+            _strip_credentials(request, headers)
         response: httpx2.Response | None = None
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
@@ -842,7 +848,7 @@ class _HttpTarget:
             request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
             request.headers.pop("Origin", None)
             if anonymous:
-                _strip_credentials(request)
+                _strip_credentials(request, extra_headers)
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 answer = await self.client.send(request, follow_redirects=False, stream=True)
                 await answer.aclose()
@@ -1663,9 +1669,14 @@ async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
     details: dict[str, Any] = {}
     for method, body, headers in attempts:
         response = await target.post_rpc(
-            body, {**headers, **token}, follow_redirects=False, close_session_on_failure=True, cleanup_headers=token
+            body,
+            {**headers, **token},
+            follow_redirects=False,
+            close_session_on_failure=True,
+            cleanup_headers=token,
+            anonymous=True,
         )
-        await target.end_session(response, token)
+        await target.end_session(response, token, anonymous=True)
         details = {**_base_details(response), "method": method}
         status = response.status_code
         if _token_refused(response):
