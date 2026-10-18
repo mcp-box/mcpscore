@@ -2925,6 +2925,7 @@ class TestInvalidTokenProbe:
         result = results[PROBE_INVALID_TOKEN]
         assert result.outcome is ProbeOutcome.UNSUPPORTED
         assert result.details["method"] == "initialize"
+        assert result.details["anonymous_http_status"] == 401
 
     @pytest.mark.parametrize("status", [400, 404])
     async def test_unexplained_4xx_is_not_applicable(self, status):
@@ -2942,6 +2943,25 @@ class TestInvalidTokenProbe:
 
         assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.NOT_APPLICABLE
         assert len(_token_requests(seen)) == 1
+
+    async def test_public_initialize_is_not_proof(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if request.method != "POST":
+                return httpx2.Response(405)
+            if json.loads(request.content).get("method") == "initialize":
+                return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "x"}})
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            return httpx2.Response(400)
+
+        results = await _run(handler)
+
+        result = results[PROBE_INVALID_TOKEN]
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["anonymous_http_status"] == 200
 
     async def test_session_opened_for_the_token_is_closed_with_the_token(self):
         sessions = {"abc"}

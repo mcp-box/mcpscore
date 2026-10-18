@@ -525,7 +525,7 @@ class TestInvalidTokenRejected:
 
         assert not result.passed
         assert f"initialize answered HTTP {status}" in result.message
-        assert "without a token gets HTTP 401" in result.message
+        assert "same request without a token gets HTTP 401" in result.message
         assert result.details is not None
         assert result.details["http_status"] == status
         assert result.details["anonymous_http_status"] == 401
@@ -547,3 +547,11 @@ class TestInvalidTokenRejected:
         errored = ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.ERROR, {"exception": "ConnectError"})
 
         assert self.rule.skip_reason(_data(errored)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_message_uses_the_initialize_control_status(self):
+        details = {"http_status": 200, "method": "initialize", "anonymous_http_status": 403}
+        token = ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, details)
+
+        result = self.rule.check(_data(_unauth(401), token=token))
+
+        assert "same request without a token gets HTTP 403" in result.message

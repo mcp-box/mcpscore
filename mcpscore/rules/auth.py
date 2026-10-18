@@ -880,7 +880,9 @@ class AuthInvalidTokenRejectedRule(AuthPostureBaseRule):
         """
         probe = self._probe(audit_data, PROBE_INVALID_TOKEN)
         status = probe.details.get("http_status")
-        anonymous_status = self._probe(audit_data, PROBE_UNAUTHENTICATED).details.get("http_status")
+        anonymous_status = probe.details.get(
+            "anonymous_http_status", self._probe(audit_data, PROBE_UNAUTHENTICATED).details.get("http_status")
+        )
         passed = probe.outcome is ProbeOutcome.SUPPORTED
         if passed and status == 401:
             message = "✅ A fabricated bearer token was refused with HTTP 401"
@@ -892,7 +894,7 @@ class AuthInvalidTokenRejectedRule(AuthPostureBaseRule):
         else:
             message = (
                 f"❌ A fabricated bearer token was accepted: {probe.details.get('method')} answered HTTP {status}, "
-                f"where a request without a token gets HTTP {anonymous_status}"
+                f"where the same request without a token gets HTTP {anonymous_status}"
             )
         return diagnostic_result(
             rule_name=self.rule_name,

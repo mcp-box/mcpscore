@@ -1629,10 +1629,11 @@ async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
     SUPPORTED: the token is refused (:func:`_token_refused`). UNSUPPORTED: a 2xx
     answer, so the token got past the auth check. Any other 4xx says nothing,
     because a legacy server past the check refuses the sessionless request too;
-    the ``initialize`` then decides. Redirects, timeouts, rate limits and 5xx are
-    NOT_APPLICABLE. Redirects are not followed, so the answer is the endpoint's own.
-    Both requests are reads, read only up to their response; a session opened for
-    one is closed with the same token.
+    the ``initialize`` then decides, but only when the same ``initialize`` without a
+    token is refused: a server may leave the handshake public and guard the reads.
+    Redirects, timeouts, rate limits and 5xx are NOT_APPLICABLE. Redirects are not
+    followed, so the answer is the endpoint's own. Every request is a read, read only
+    up to its response; a session opened for one is closed with the token it carried.
     """
     target_version = _target_version()
     token = {"Authorization": f"Bearer {INVALID_TOKEN_PREFIX}{uuid4().hex}"}
@@ -1656,6 +1657,8 @@ async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
             details["www_authenticate"] = response.headers.get("www-authenticate")
             return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.SUPPORTED, details)
         if 200 <= status < 300:
+            if method == "initialize":
+                return await _judge_served_initialize(target, details)
             return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, details)
         redirected = _redirected(PROBE_INVALID_TOKEN, status, details)
         if redirected is not None:
@@ -1663,6 +1666,19 @@ async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
         if not 400 <= status < 500 or status in (408, 429):
             break
     details["reason"] = f"HTTP {details.get('http_status')} does not show whether the token was accepted"
+    return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.NOT_APPLICABLE, details)
+
+
+async def _judge_served_initialize(target: _HttpTarget, details: dict[str, Any]) -> ProbeResult:
+    """Judge an ``initialize`` served with the fabricated token against the same request without one."""
+    control = await target.post_rpc(
+        _legacy_initialize_body(9), _legacy_headers(), follow_redirects=False, close_session_on_failure=True
+    )
+    await target.end_session(control)
+    details["anonymous_http_status"] = control.status_code
+    if _token_refused(control):
+        return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, details)
+    details["reason"] = f"initialize without a token gets HTTP {control.status_code}, so serving it proves nothing"
     return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.NOT_APPLICABLE, details)
 
 
