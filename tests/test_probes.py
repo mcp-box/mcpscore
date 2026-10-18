@@ -2943,13 +2943,69 @@ class TestInvalidTokenProbe:
         assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.NOT_APPLICABLE
         assert len(_token_requests(seen)) == 1
 
-    async def test_session_opened_for_the_token_is_closed(self):
-        seen: list[httpx2.Request] = []
-        answer = httpx2.Response(200, headers={"Mcp-Session-Id": "abc"}, json={"jsonrpc": "2.0", "id": 7, "result": {}})
-        await _run(_token_gate(answer, seen))
+    async def test_session_opened_for_the_token_is_closed_with_the_token(self):
+        sessions = {"abc"}
 
-        deletes = [r for r in seen if r.method == "DELETE" and r.headers.get("Mcp-Session-Id") == "abc"]
-        assert len(deletes) == 1
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            if request.method == "DELETE":
+                sessions.discard(request.headers.get("Mcp-Session-Id", ""))
+                return httpx2.Response(200)
+            return httpx2.Response(
+                200, headers={"Mcp-Session-Id": "abc"}, json={"jsonrpc": "2.0", "id": 7, "result": {}}
+            )
+
+        results = await _run(handler)
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.UNSUPPORTED
+        assert not sessions
+
+    async def test_same_origin_redirect_is_not_followed(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if request.url.path == "/public":
+                return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 7, "result": {"tools": []}})
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            return httpx2.Response(307, headers={"Location": "https://server.example/public"})
+
+        results = await _run(handler)
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert not any(
+            r.url.path == "/public" and INVALID_TOKEN_PREFIX in r.headers.get("Authorization", "") for r in seen
+        )
+
+    async def test_initialize_answered_on_an_open_stream_does_not_stall(self):
+        seen: list[httpx2.Request] = []
+
+        async def stream():
+            yield b'data: {"jsonrpc":"2.0","id":8,"result":{"protocolVersion":"2025-11-25"}}\n\n'
+            while True:
+                yield b": heartbeat\n\n"
+                await asyncio.sleep(0.01)
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if request.method == "DELETE":
+                return httpx2.Response(200)
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            if json.loads(request.content).get("method") == "initialize":
+                return httpx2.Response(
+                    200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "sse-1"}, content=stream()
+                )
+            return httpx2.Response(400)
+
+        async with _client(handler) as client:
+            result = await asyncio.wait_for(probes._probe_invalid_token(_HttpTarget(client, URL)), timeout=2)
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["method"] == "initialize"
+        assert any(r.method == "DELETE" and r.headers.get("Mcp-Session-Id") == "sse-1" for r in seen)
 
     async def test_open_server_gets_no_token(self):
         seen: list[httpx2.Request] = []

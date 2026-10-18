@@ -640,6 +640,7 @@ class _HttpTarget:
         *,
         follow_redirects: bool = True,
         close_session_on_failure: bool = False,
+        cleanup_headers: dict[str, str] | None = None,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -655,7 +656,8 @@ class _HttpTarget:
         content-encoded or exceeds the byte cap is returned with no payload and
         ``unobservable`` set, never as a timeout.
         With ``close_session_on_failure``, a session ID the answer issued is
-        closed at the URL that answered before any failure propagates.
+        closed at the URL that answered before any failure propagates;
+        ``cleanup_headers`` are added to that DELETE.
         """
         request = self.client.build_request(
             "POST",
@@ -701,7 +703,7 @@ class _HttpTarget:
                     issued = _HttpProbeResponse(
                         status_code=response.status_code, headers=dict(response.headers), payload=None
                     )
-                    await answered.end_session(issued)
+                    await answered.end_session(issued, cleanup_headers)
             timed_out = isinstance(exc, (TimeoutError, httpx2.ReadTimeout))
             if timed_out and response is not None and response.status_code >= 400:
                 # The status already arrived and says the request was refused; only the body is missing.
@@ -805,19 +807,21 @@ class _HttpTarget:
             "truncated" if truncated else None,
         )
 
-    async def end_session(self, response: _HttpProbeResponse) -> None:
+    async def end_session(self, response: _HttpProbeResponse, extra_headers: dict[str, str] | None = None) -> None:
         """Best-effort DELETE of a session a legacy ``initialize`` opened; never raises.
 
         Carries the negotiated ``MCP-Protocol-Version`` (a MUST on every request
         after ``initialize``) and no ``Origin``, so a conforming server has no
-        reason to refuse the cleanup. The answer is closed once its headers
-        arrive, and the whole exchange shares one deadline.
+        reason to refuse the cleanup. ``extra_headers`` carry a per-request
+        credential the session was opened with. The answer is closed once its
+        headers arrive, and the whole exchange shares one deadline.
         """
         session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
         if not session_id:
             return
         negotiated = (response.result or {}).get("protocolVersion")
         headers = {
+            **(extra_headers or {}),
             "Mcp-Session-Id": session_id,
             "MCP-Protocol-Version": negotiated if isinstance(negotiated, str) else LEGACY_INITIALIZE_VERSION,
         }
@@ -1626,10 +1630,12 @@ async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
     answer, so the token got past the auth check. Any other 4xx says nothing,
     because a legacy server past the check refuses the sessionless request too;
     the ``initialize`` then decides. Redirects, timeouts, rate limits and 5xx are
-    NOT_APPLICABLE. Both requests are reads; a session opened for one is closed.
+    NOT_APPLICABLE. Redirects are not followed, so the answer is the endpoint's own.
+    Both requests are reads, read only up to their response; a session opened for
+    one is closed with the same token.
     """
     target_version = _target_version()
-    authorization = f"Bearer {INVALID_TOKEN_PREFIX}{uuid4().hex}"
+    token = {"Authorization": f"Bearer {INVALID_TOKEN_PREFIX}{uuid4().hex}"}
     attempts = (
         (
             "tools/list",
@@ -1640,8 +1646,10 @@ async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
     )
     details: dict[str, Any] = {}
     for method, body, headers in attempts:
-        response = await target.post(body, {**headers, "Authorization": authorization})
-        await target.end_session(response)
+        response = await target.post_rpc(
+            body, {**headers, **token}, follow_redirects=False, close_session_on_failure=True, cleanup_headers=token
+        )
+        await target.end_session(response, token)
         details = {**_base_details(response), "method": method}
         status = response.status_code
         if _token_refused(response):
