@@ -602,3 +602,30 @@ def test_links_match_encoded_and_unicode_manifest_uris() -> None:
     result = RULES["skills_references_resolve"].check(data(entry))
     assert result.passed
     assert result.details["references_checked"] == 4
+
+
+@pytest.mark.parametrize("rule_id", ["skills_resources_manifest", "skills_name_matches_uri", "skills_name_valid"])
+def test_validators_skip_when_no_entry_is_comparable(rule_id: str) -> None:
+    audit = data(entries=["junk"], get_uri=None, get_entry=None)
+    assert RULES[rule_id].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+    assert RULES["skills_entries_well_formed"].skip_reason(audit) is None
+
+
+def test_empty_final_directory_segment_does_not_match() -> None:
+    entry = skill("foo")
+    entry["uri"] = "skill://foo//SKILL.md"
+    assert not RULES["skills_name_matches_uri"].check(data(entry)).passed
+
+
+def test_only_used_reference_definitions_count() -> None:
+    body = (
+        "Read the [guide][g], the [Notes][] and [shortcut].\n\n"
+        "[g]: references/GUIDE.md\n[notes]: references/NOTES.md\n[Shortcut]: references/SHORT.md\n"
+        "[unused]: references/OLD.md\n"
+    )
+    files = {"SKILL.md": skill_md("code-review", body=body)} | {
+        f"references/{name}.md": "x" for name in ("GUIDE", "NOTES", "SHORT")
+    }
+    result = RULES["skills_references_resolve"].check(data(skill("code-review", files)))
+    assert result.passed
+    assert result.details["references_checked"] == 3

@@ -20,6 +20,7 @@ from typing import Any, Protocol
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
+from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 from pydantic import ValidationError
 import yaml
 
@@ -129,7 +130,7 @@ def skill_path_name(uri: str) -> str | None:
         return None
     if not parts.scheme:
         return None
-    path = (parts.netloc + parts.path).strip("/")
+    path = (parts.netloc + parts.path).lstrip("/")
     # Split before decoding, so an encoded "/" cannot change which segment is the name.
     return unquote(path.rsplit("/", 1)[-1]) or None
 
@@ -225,8 +226,17 @@ def _json_scalar(value: Any) -> str:
 _LINK_RE = re.compile(r"!?\[[^\[\]\n]*\]\(\s*(?:<([^<>\n]+)>|([^()\[\]<>\s]+))(?:[ \t]+\"[^\"\n]{0,256}\")?\s*\)")
 
 
-_DEFINITION_RE = re.compile(r"^ {0,3}\[[^\[\]\n]+\]:[ \t]*(?:<([^<>\n]+)>|([^\s<>]+))", re.MULTILINE)
+_DEFINITION_RE = re.compile(r"^ {0,3}\[([^\[\]\n]+)\]:[ \t]*(?:<([^<>\n]+)>|([^\s<>]+))[^\n]*", re.MULTILINE)
 """A link reference definition, ``[label]: target``, whose target reference-style links use."""
+_REFERENCE_RE = re.compile(r"\[([^\[\]\n]+)\](?:\[([^\[\]\n]*)\])?")
+"""A full ``[text][label]``, collapsed ``[label][]`` or shortcut ``[label]`` reference-style link."""
+
+
+def _label(text: str) -> str:
+    """Normalise a link label the way Markdown matches them: case-insensitive, whitespace collapsed."""
+    return " ".join(text.split()).casefold()
+
+
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)[^`]+\1(?!`)")
 """An inline code span; a span that itself contains backticks is not recognised, which keeps matching linear."""
@@ -292,9 +302,21 @@ def relative_references(body: str) -> list[str]:
     """Return relative Markdown link targets in *body*'s prose (not code), without anchors or queries, in order."""
     targets = []
     prose = "\n\n".join(strip_inline_code(text) for _, text, is_code in markdown_blocks(body) if not is_code)
-    inline = ((m.group(1) or m.group(2), m.start()) for m in _LINK_RE.finditer(prose))
-    defined = ((m.group(1) or m.group(2), m.start()) for m in _DEFINITION_RE.finditer(prose))
-    for target, _ in sorted([*inline, *defined], key=lambda found: found[1]):
+    definitions: dict[str, str] = {}
+    for match in _DEFINITION_RE.finditer(prose):
+        definitions.setdefault(_label(match.group(1)), match.group(2) or match.group(3))
+    found = [(m.group(1) or m.group(2), m.start()) for m in _LINK_RE.finditer(prose)]
+    # Only definitions a reference-style link uses render as links; each counts once, at its first use.
+    usable = _DEFINITION_RE.sub("", prose)
+    used: set[str] = set()
+    for match in _REFERENCE_RE.finditer(usable):
+        if match.group(2) is None and usable[match.end() : match.end() + 1] == "(":
+            continue
+        label = _label(match.group(2) or match.group(1))
+        if label in definitions and label not in used:
+            used.add(label)
+            found.append((definitions[label], len(prose) + match.start()))
+    for target, _ in sorted(found, key=lambda item: item[1]):
         if target.startswith(("#", "/")) or _SCHEME_RE.match(target):
             continue
         target = target.split("#", 1)[0].split("?", 1)[0]
@@ -380,8 +402,10 @@ UNOBSERVED_OUTCOMES = frozenset({"timeout", "transport"})
 def _rpc_error(exc: Exception) -> dict[str, Any]:
     """Classify a failed call: a JSON-RPC error, a reply that did not validate, a timeout, or no answer at all."""
     code = getattr(exc, "code", None)
-    if isinstance(exc, TimeoutError) or code == -32001:
+    if isinstance(exc, TimeoutError) or code == REQUEST_TIMEOUT:
         return {"outcome": "timeout"}
+    if code == CONNECTION_CLOSED:
+        return {"outcome": "transport", "exception": "ConnectionClosed"}
     if isinstance(code, int):
         return {"outcome": "rpc_error", "error_code": code}
     if isinstance(exc, ValidationError):
@@ -409,6 +433,8 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence) -> None:
             evidence.entries = entries if page else None
             return
         entries.extend(skills)
+        # Visible after every page, so a collection deadline keeps the pages already received.
+        evidence.entries, evidence.list_incomplete = entries, True
         next_cursor = result.get("nextCursor")
         if not isinstance(next_cursor, str) or next_cursor in seen:
             evidence.entries = entries
@@ -495,9 +521,10 @@ async def collect_skills(session: SkillsSession, settings: dict[str, Any]) -> Sk
     except TimeoutError:
         # The deadline cancels the call in flight, so its own handler never records the outcome.
         evidence.budget_exhausted = True
-        if phase == "list":
+        if phase == "list" and evidence.entries is None:
             evidence.list_error = {"outcome": "timeout"}
-            evidence.entries = None
+        elif phase == "list":
+            evidence.list_incomplete = True
         elif phase == "get":
             evidence.get_error = {"outcome": "timeout"}
         logger.warning("Stopped collecting skills after %.0fs", COLLECTION_TIMEOUT_S)

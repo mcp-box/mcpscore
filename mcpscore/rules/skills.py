@@ -67,6 +67,10 @@ class SkillsBaseRule(BaseRule):
     needs_listing: ClassVar[bool] = True
     """The rule judges ``skills/list`` entries, so it skips when the listing is unavailable or empty."""
 
+    def judges(self, entry: Any) -> bool:
+        """Whether this rule has anything to judge in a raw listing entry; it skips when no entry qualifies."""
+        return isinstance(entry, dict)
+
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip unless the server declared the extension and its skills evidence was collected."""
         if audit_data.capabilities is None:
@@ -82,6 +86,8 @@ class SkillsBaseRule(BaseRule):
             if not evidence.entries:
                 # An empty listing is legal (SEP-2640 §Enumeration): no skill to judge, not a failure.
                 return SKIP_REASON_NOT_APPLICABLE
+            if not any(self.judges(entry) for entry in evidence.entries):
+                return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
     @staticmethod
@@ -295,6 +301,11 @@ class SkillsEntriesWellFormedRule(SkillsBaseRule):
     """Medium check: every listing entry has a string ``uri`` and frontmatter with ``name`` and ``description``."""
 
     rule_id = "skills_entries_well_formed"
+
+    def judges(self, entry: Any) -> bool:
+        """Judge every entry: one that is not an object is itself the finding."""
+        return True
+
     basis = f"{SEP} §Enumeration via skills/list (result fields), §Frontmatter; {AGENT_SKILLS} §Frontmatter"
     rule_order = 4
 
@@ -423,6 +434,17 @@ class SkillsNameMatchesUriRule(SkillsBaseRule):
     """Medium check: a skill's URI ends in ``<name>/SKILL.md``."""
 
     rule_id = "skills_name_matches_uri"
+
+    def judges(self, entry: Any) -> bool:
+        """Judge entries with a string URI and a string frontmatter name."""
+        frontmatter = entry.get("frontmatter") if isinstance(entry, dict) else None
+        return (
+            isinstance(entry, dict)
+            and isinstance(entry.get("uri"), str)
+            and isinstance(frontmatter, dict)
+            and isinstance(frontmatter.get("name"), str)
+        )
+
     basis = f"{SEP} §Resource Mapping (final skill-path segment MUST equal the frontmatter name), §Frontmatter"
     rule_order = 6
 
@@ -469,6 +491,12 @@ class SkillsNameValidRule(SkillsBaseRule):
     """Medium check: skill names follow the Agent Skills naming rules."""
 
     rule_id = "skills_name_valid"
+
+    def judges(self, entry: Any) -> bool:
+        """Judge entries with a non-empty string frontmatter name."""
+        frontmatter = entry.get("frontmatter") if isinstance(entry, dict) else None
+        return isinstance(frontmatter, dict) and isinstance(frontmatter.get("name"), str) and bool(frontmatter["name"])
+
     basis = f"{AGENT_SKILLS} §name field; {SEP} §Resource Mapping (the name MUST satisfy the naming rules)"
     rule_order = 7
 

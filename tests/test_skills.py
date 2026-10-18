@@ -509,3 +509,25 @@ class TestRobustness:
 
         blocks = markdown_blocks(f"one\n{control}\ntwo\n")
         assert any(control in text for _, text, _ in blocks)
+
+    async def test_closed_connection_is_no_answer(self):
+        from mcp_types import CONNECTION_CLOSED
+
+        evidence = await collect_skills(
+            FakeSession([], errors={"skills/list:": MCPError(code=CONNECTION_CLOSED, message="closed")}), {}
+        )
+        assert evidence.list_error == {"outcome": "transport", "exception": "ConnectionClosed"}
+
+    async def test_deadline_on_a_later_page_keeps_earlier_pages(self, monkeypatch):
+        monkeypatch.setattr(skills, "COLLECTION_TIMEOUT_S", 0.2)
+
+        class SlowSecondPage(FakeSession):
+            async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+                if params.get("cursor") == "1":
+                    await asyncio.sleep(5)
+                return await super().request_raw(method, params)
+
+        evidence = await collect_skills(SlowSecondPage([{"skills": [entry("a")], "nextCursor": "1"}]), {})
+        assert [e["uri"] for e in evidence.entries or []] == ["skill://a/SKILL.md"]
+        assert evidence.list_incomplete
+        assert evidence.list_error is None
