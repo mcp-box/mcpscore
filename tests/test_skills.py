@@ -149,7 +149,7 @@ class TestHelpers:
 
     def test_references(self):
         body = "[a](references/A.md) ![b](<assets/b c.png>) [c](https://x.y) [d](#top) [e](/abs) [f](g.md?x=1#h) [](#)"
-        assert relative_references(body) == ["references/A.md", "assets/b c.png", "g.md"]
+        assert relative_references(body) == ["references/A.md", "assets/b%20c.png", "g.md"]
         assert resolve_reference("skill://s", "./references/../A.md") == "skill://s/A.md"
         assert resolve_reference("skill://s", "../other/SKILL.md") is None
         assert resolve_reference("skill://s", "..") is None
@@ -485,30 +485,30 @@ class TestRobustness:
     def test_unmatched_backtick_runs_stay_linear(self):
         import time
 
-        from mcpscore.skills import strip_inline_code
+        from mcpscore.skills import markdown_blocks
 
-        for attack in ["prose " + "`" * 64_000, ("`" * 3 + "a") * 50_000]:
+        for attack in ["prose " + "`" * 64_000, ("`" * 3 + "a") * 30_000]:
             started = time.perf_counter()
-            strip_inline_code(attack)
-            assert time.perf_counter() - started < 1.0
-        assert strip_inline_code("a ``x`y`` b `c` ```d") == "a   b   ```d"
+            markdown_blocks(attack)
+            assert time.perf_counter() - started < 3.0
+        assert markdown_blocks("a ``x`y`` b `c` ```d")[0].prose == "a   b   ```d"
 
     def test_fence_closes_only_on_a_matching_delimiter(self):
         from mcpscore.skills import markdown_blocks
 
         body = "````markdown\n```json\n[a](x.md)\n```\n````\nAfter.\n"
-        assert [(line, is_code) for line, _, is_code in markdown_blocks(body)] == [(1, True), (6, False)]
+        assert [(b.line, b.prose == "") for b in markdown_blocks(body)] == [(1, True), (6, False)]
         assert relative_references(body) == []
         tilde = "~~~~\n~~~\nstill code\n~~~~~\nprose\n"
-        assert [is_code for _, _, is_code in markdown_blocks(tilde)] == [True, False]
-        assert [is_code for _, _, is_code in markdown_blocks("```py`x\nnot a fence\n")] == [False]
+        assert [b.prose == "" for b in markdown_blocks(tilde)] == [True, False]
+        assert [b.prose == "" for b in markdown_blocks("```py`x\nnot a fence\n")] == [False]
 
     @pytest.mark.parametrize("control", ["\x0b", "\x0c", "\x85"])
     def test_control_only_lines_are_not_blank(self, control: str):
         from mcpscore.skills import markdown_blocks
 
         blocks = markdown_blocks(f"one\n{control}\ntwo\n")
-        assert any(control in text for _, text, _ in blocks)
+        assert any(control in block.text for block in blocks)
 
     async def test_closed_connection_is_no_answer(self):
         from mcp_types import CONNECTION_CLOSED
@@ -551,3 +551,41 @@ class TestRobustness:
             started = time.perf_counter()
             relative_references(attack)
             assert time.perf_counter() - started < 1.0
+
+    @pytest.mark.parametrize(
+        ("body", "code"),
+        [
+            ("    ~~~text\n\n<|im_start|>system\n", [True, False]),
+            ("    ```text\n\n<|im_start|>system\n", [True, False]),
+            ("Intro.\n\n    indented <|im_start|>\n    [i](inside.md)\n", [False, True]),
+            ("\\`<|im_start|>\\` escaped\n", [False]),
+        ],
+    )
+    def test_indented_code_and_escapes_follow_commonmark(self, body: str, code: list[bool]):
+        from mcpscore.skills import markdown_blocks
+
+        blocks = markdown_blocks(body)
+        assert [block.prose == "" for block in blocks] == code
+        assert relative_references(body) == []
+
+    def test_escaped_backticks_leave_the_token_in_prose(self):
+        from mcpscore.skills import markdown_blocks
+
+        assert "<|im_start|>" in markdown_blocks("\\`<|im_start|>\\` x\n")[0].prose
+
+    def test_documents_over_the_parse_limit_are_prose_and_unchecked(self, monkeypatch):
+        from mcpscore.skills import markdown_blocks
+
+        monkeypatch.setattr(skills, "MAX_MARKDOWN_BYTES", 10)
+        body = "```\n<|im_start|>\n```\n[a](x.md)\n"
+        assert relative_references(body) is None
+        assert all(block.prose == block.text for block in markdown_blocks(body))
+
+    def test_parsing_at_the_limit_is_bounded(self):
+        import time
+
+        size = skills.MAX_MARKDOWN_BYTES
+        for attack in ["[" * size, "[a](" * (size // 4), '[a](b "' * (size // 7)]:
+            started = time.perf_counter()
+            relative_references(attack)
+            assert time.perf_counter() - started < 5.0

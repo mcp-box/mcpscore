@@ -10,8 +10,9 @@ frontmatter with ``yaml.safe_load`` and scanned, never executed or followed.
 
 import asyncio
 import base64
-from bisect import bisect_right
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import lru_cache
 import hashlib
 import json
 import logging
@@ -21,6 +22,8 @@ from typing import Any, Protocol
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 from pydantic import ValidationError
 import yaml
@@ -222,127 +225,103 @@ def _json_scalar(value: Any) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-# Each part stops at the next bracket, parenthesis or line end, so a failed match never rescans the rest of the
-# text: extraction stays linear on untrusted input full of unmatched brackets.
-_LINK_RE = re.compile(
-    r"!?\[[^\[\]\n]*\]\(\s*"
-    r"(?:<([^<>\n]+)>|((?:[^()\[\]<>\s]|\([^()\[\]<>\s]*\))+))"  # destination: one level of balanced parens
-    r"(?:[ \t]+(?:\"[^\"\n]{0,256}\"|'[^'\n]{0,256}'|\([^()\n]{0,256}\)))?"  # "title", 'title' or (title)
-    r"\s*\)"
-)
+_MARKDOWN = MarkdownIt("commonmark")
+"""CommonMark parser: decides what is code, prose or a link the way a renderer does."""
+
+MAX_MARKDOWN_BYTES = 128 * 1024
+"""Larger documents are not parsed: scanned line by line as prose, and their links are not checked."""
 
 
-_DEFINITION_RE = re.compile(r"^ {0,3}\[([^\[\]\n]+)\]:[ \t]*(?:<([^<>\n]+)>|([^\s<>]+))[^\n]*", re.MULTILINE)
-"""A link reference definition, ``[label]: target``, whose target reference-style links use."""
-_REFERENCE_RE = re.compile(r"\[([^\[\]\n]+)\](?:\[([^\[\]\n]*)\])?")
-"""A full ``[text][label]``, collapsed ``[label][]`` or shortcut ``[label]`` reference-style link."""
+def _parsable(body: str) -> bool:
+    return len(body.encode("utf-8")) <= MAX_MARKDOWN_BYTES
 
 
-def _label(text: str) -> str:
-    """Normalise a link label the way Markdown matches them: case-insensitive, whitespace collapsed."""
-    return " ".join(text.split()).casefold()
+@lru_cache(maxsize=64)
+def _parse(body: str) -> tuple[Token, ...]:
+    """Parse a document once per audit; the security and reference rules read the same tokens."""
+    return tuple(_MARKDOWN.parse(body))
 
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-_BACKTICK_RUN_RE = re.compile(r"`+")
-_FENCE_RE = re.compile(r"(`{3,}|~{3,})(.*)")
 
 
-def _fence_open(line: str) -> str | None:
-    """Return the opening delimiter of a fenced code block on *line*, or None."""
-    match = _FENCE_RE.fullmatch(line.lstrip())
-    if match is None or (match.group(1)[0] == "`" and "`" in match.group(2)):
-        return None
-    return match.group(1)
+@dataclass(frozen=True)
+class MarkdownBlock:
+    """One block of a Markdown document, with its source text and the prose a reader sees."""
+
+    line: int
+    """Line number of the block's first source line."""
+    text: str
+    """The block's source lines, exactly as written."""
+    prose: str
+    """The block's text outside code: empty for a code block, inline code spans removed from a paragraph."""
 
 
-def _fence_closes(line: str, opening: str) -> bool:
-    """Whether *line* closes a block opened by *opening*: the same character, at least as many, nothing else."""
-    stripped = line.strip()
-    return len(stripped) >= len(opening) and stripped == opening[0] * len(stripped)
-
-
-def markdown_blocks(body: str, first_line: int = 1) -> list[tuple[int, str, bool]]:
-    """Split Markdown into blocks: each fenced code block, and each paragraph of prose.
-
-    Returns (first line number, text, is code). Fence marker lines belong to their code block.
-    """
-    blocks: list[tuple[int, str, bool]] = []
-    current: list[str] = []
-    start = first_line
-    fence: str | None = None
-
-    def flush(*, is_code: bool) -> None:
-        if current:
-            blocks.append((start, "\n".join(current), is_code))
-            current.clear()
-
-    for number, line in enumerate(source_lines(body), start=first_line):
-        opening = _fence_open(line) if fence is None else None
-        if opening is not None:
-            flush(is_code=False)
-            fence, start = opening, number
-            current.append(line)
-        elif fence is not None:
-            current.append(line)
-            if _fence_closes(line, fence):
-                flush(is_code=True)
-                fence = None
-        elif not line.strip(" \t"):
-            flush(is_code=False)
+def _prose(inline: Token) -> str:
+    """Return the rendered text of an inline token with code spans replaced by a space."""
+    parts = []
+    for child in inline.children or []:
+        if child.type == "code_inline":
+            parts.append(" ")
+        elif child.type in ("softbreak", "hardbreak"):
+            parts.append("\n")
         else:
-            if not current:
-                start = number
-            current.append(line)
-    flush(is_code=fence is not None)
-    return blocks
-
-
-def strip_inline_code(text: str) -> str:
-    """Replace inline code spans with a space.
-
-    A span opens at a run of backticks and closes at the next run of exactly the same length, so ``a`b``
-    is one span; an opening run with no closing run is literal text. Each run is looked up once.
-    """
-    runs = [match.span() for match in _BACKTICK_RUN_RE.finditer(text)]
-    by_length: dict[int, list[int]] = {}
-    for index, (start, end) in enumerate(runs):
-        by_length.setdefault(end - start, []).append(index)
-    parts, position, index = [], 0, 0
-    while index < len(runs):
-        start, end = runs[index]
-        same = by_length[end - start]
-        following = bisect_right(same, index)
-        if following < len(same):
-            closing = same[following]
-            parts += [text[position:start], " "]
-            position, index = runs[closing][1], closing + 1
-        else:
-            index += 1
-    parts.append(text[position:])
+            parts.append(child.content)
     return "".join(parts)
 
 
-def relative_references(body: str) -> list[str]:
-    """Return relative Markdown link targets in *body*'s prose (not code), without anchors or queries, in order."""
-    targets = []
-    prose = "\n\n".join(strip_inline_code(text) for _, text, is_code in markdown_blocks(body) if not is_code)
-    definitions: dict[str, str] = {}
-    for match in _DEFINITION_RE.finditer(prose):
-        definitions.setdefault(_label(match.group(1)), match.group(2) or match.group(3))
-    found = [(m.group(1) or m.group(2), m.start()) for m in _LINK_RE.finditer(prose)]
-    # Only definitions a reference-style link uses render as links; each counts once, at its first use.
-    usable = _DEFINITION_RE.sub("", prose)
-    used: set[str] = set()
-    for match in _REFERENCE_RE.finditer(usable):
-        if match.group(2) is None and usable[match.end() : match.end() + 1] == "(":
+def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
+    """Split Markdown into code blocks, paragraphs and headings, and any other non-blank source lines.
+
+    Lines no block covers (link reference definitions, thematic breaks) are returned as prose blocks, so every
+    source line is in exactly one block. A document over ``MAX_MARKDOWN_BYTES`` is not parsed: all of it is prose.
+    """
+    lines = source_lines(body)
+    blocks: list[MarkdownBlock] = []
+    covered: set[int] = set()
+    tokens = _parse(body) if _parsable(body) else ()
+    for token in tokens:
+        if token.map is None or token.type not in ("fence", "code_block", "inline", "html_block"):
             continue
-        label = _label(match.group(2) or match.group(1))
-        if label in definitions and label not in used:
-            used.add(label)
-            found.append((definitions[label], len(prose) + match.start()))
-    for target, _ in sorted(found, key=lambda item: item[1]):
-        if target.startswith(("#", "/")) or _SCHEME_RE.match(target):
+        start, end = token.map
+        if covered.intersection(range(start, end)):
+            continue
+        covered.update(range(start, end))
+        text = "\n".join(lines[start:end])
+        prose = "" if token.type in ("fence", "code_block") else _prose(token) if token.type == "inline" else text
+        blocks.append(MarkdownBlock(first_line + start, text, prose))
+    run: list[int] = []
+    for number in [*range(len(lines)), len(lines)]:
+        if number < len(lines) and number not in covered and lines[number].strip(" \t"):
+            run.append(number)
+        elif run:
+            text = "\n".join(lines[run[0] : run[-1] + 1])
+            blocks.append(MarkdownBlock(first_line + run[0], text, text))
+            run = []
+    return sorted(blocks, key=lambda block: block.line)
+
+
+def _link_targets(tokens: list[Token]) -> Iterator[str]:
+    for token in tokens:
+        if token.type == "link_open":
+            yield str(token.attrs.get("href", ""))
+        elif token.type == "image":
+            yield str(token.attrs.get("src", ""))
+        if token.children:
+            yield from _link_targets(token.children)
+
+
+def relative_references(body: str) -> list[str] | None:
+    """Return the relative targets of the links and images *body* renders, without anchors or queries, in order.
+
+    Links inside code are not rendered, reference-style links resolve through their definitions, and an unused
+    definition renders nothing. None when the document is over ``MAX_MARKDOWN_BYTES`` and was not parsed.
+    """
+    if not _parsable(body):
+        return None
+    targets = []
+    for target in _link_targets(list(_parse(body))):
+        if not target or target.startswith(("#", "/")) or _SCHEME_RE.match(target):
             continue
         target = target.split("#", 1)[0].split("?", 1)[0]
         if target:

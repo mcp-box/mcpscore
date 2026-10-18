@@ -27,7 +27,6 @@ from ..skills import (
     skill_path_name,
     skill_root,
     split_frontmatter,
-    strip_inline_code,
 )
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -715,7 +714,12 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
         if (
             reason is None
             and evidence is not None
-            and not any(_skill_file(evidence, entry) and manifest(entry) for _, entry in _entries(evidence))
+            and not any(
+                (read := _skill_file(evidence, entry)) is not None
+                and manifest(entry)
+                and relative_references(_body(read.text or "")) is not None
+                for _, entry in _entries(evidence)
+            )
         ):
             return SKIP_REASON_INSUFFICIENT_DATA
         return reason
@@ -727,7 +731,7 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
         the agent.
         """
         evidence = self._evidence(audit_data)
-        issues, references = [], 0
+        issues, references, unparsed = [], 0, 0
         for index, entry in _entries(evidence):
             read, files = _skill_file(evidence, entry), manifest(entry)
             root = skill_root(entry["uri"]) if isinstance(entry.get("uri"), str) else None
@@ -738,9 +742,11 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
                 unquote(item["uri"]) for item in files if isinstance(item, dict) and isinstance(item.get("uri"), str)
             }
             ordered = sorted(listed)
-            split = split_frontmatter(read.text or "")
-            body = split[1] if split else read.text or ""
-            for target in relative_references(body):
+            targets = relative_references(_body(read.text or ""))
+            if targets is None:
+                unparsed += 1
+                continue
+            for target in targets:
                 references += 1
                 resolved = resolve_reference(unquote(root), unquote(target))
                 if resolved is None or not _lists_file_at_or_under(listed, ordered, resolved):
@@ -753,7 +759,7 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             message=f"✅ All {references} relative link(s) in SKILL.md files point at listed skill files"
             if passed
             else f"❌ Number of SKILL.md links to files the skill does not list: {len(issues)} of {references}",
-            details={"references_checked": references},
+            details={"references_checked": references, "skills_too_large_to_parse": unparsed},
             fix=(
                 "Link supporting files by their path relative to the skill root (references/GUIDE.md) and list each "
                 "linked file in the skill's resources."
@@ -762,8 +768,14 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
         )
 
 
-def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, str, bool]]:
-    """Yield (listing index, location, text, is code) for frontmatter strings and each read ``SKILL.md`` block.
+def _body(text: str) -> str:
+    """Return a ``SKILL.md`` body without its frontmatter."""
+    split = split_frontmatter(text)
+    return split[1] if split else text
+
+
+def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, str, str]]:
+    """Yield (listing index, location, text, prose) for frontmatter strings and each read ``SKILL.md`` block.
 
     ``SKILL.md`` is scanned a paragraph or fenced code block at a time, so a directive wrapped across lines is
     still one string; the location is the block's first line.
@@ -783,7 +795,7 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
 
     for index, entry in _entries(evidence):
         for path, text in strings(entry.get("frontmatter"), "/frontmatter"):
-            yield index, path, text, False
+            yield index, path, text, text
         read = _skill_file(evidence, entry)
         if read is not None:
             text = read.text or ""
@@ -791,12 +803,12 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
             # The frontmatter is scanned as YAML text, never as Markdown: a fence inside a block scalar must not
             # turn the body that follows into "code".
             if split is not None:
-                yield index, f"/{SKILL_FILE}#L2", split[0], False
+                yield index, f"/{SKILL_FILE}#L2", split[0], split[0]
                 body, first_line = split[1], split[0].count("\n") + 3
             else:
                 body, first_line = text, 1
-            for line, block, is_code in markdown_blocks(body, first_line):
-                yield index, f"/{SKILL_FILE}#L{line}", block, is_code
+            for block in markdown_blocks(body, first_line):
+                yield index, f"/{SKILL_FILE}#L{block.line}", block.text, block.prose
     # The sampled skills/get entry is its own snapshot: frontmatter that differs from the listing's is scanned
     # too, under its own location; identical frontmatter was already scanned.
     got = evidence.get_entry
@@ -804,7 +816,7 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
         listed = next(((i, e) for i, e in _entries(evidence) if e.get("uri") == got.get("uri")), None)
         if listed is None or not _json_equal(got.get("frontmatter"), listed[1].get("frontmatter")):
             for path, text in strings(got.get("frontmatter"), "/skills/get/frontmatter"):
-                yield listed[0] if listed else None, path, text, False
+                yield listed[0] if listed else None, path, text, text
 
 
 class SkillsSecurityRule(SkillsBaseRule):
@@ -838,10 +850,10 @@ class SkillsSecurityRule(SkillsBaseRule):
     def check(self, audit_data: AuditData) -> RuleResult:
         """Scan skill text and report locations (listing index and line), never the matched text."""
         issues, classes = [], set()
-        for index, path, text, in_code in _skill_texts(self._evidence(audit_data)):
+        for index, path, text, prose_text in _skill_texts(self._evidence(audit_data)):
             found = self.matches(text)
             if found and self.allowed_in_code:
-                prose = set() if in_code else set(self.matches(strip_inline_code(text)))
+                prose = set(self.matches(prose_text))
                 found = [name for name in found if name not in self.allowed_in_code or name in prose]
             if found:
                 classes.update(found)

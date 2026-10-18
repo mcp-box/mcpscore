@@ -33,8 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The audit's session now declares the Skills extension in `initialize`, so
   servers that expose skills only to clients that support them are scored
-  too. Modern-only servers skip the skills rules for now. PyYAML is a new
-  runtime dependency, used with `safe_load` to read skill frontmatter.
+  too. Modern-only servers skip the skills rules for now. PyYAML and
+  markdown-it-py are new runtime dependencies: skill frontmatter is read with
+  `safe_load`, and `SKILL.md` is parsed as CommonMark to tell code from prose
+  and find its links.
 
 ## [1.25.0] - 2026-10-18
 
