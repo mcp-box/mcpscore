@@ -552,7 +552,7 @@ def test_many_links_against_a_large_manifest_stay_fast() -> None:
 def test_deep_manifest_paths_do_not_blow_up_reference_checks() -> None:
     import time
 
-    deep = "/".join(["d"] * 4000) + "/f.md"
+    deep = "/".join(["d"] * 20000) + "/f.md"
     body = "[a](d/d/) [b](missing/)\n"
     entry = skill("code-review", {"SKILL.md": skill_md("code-review", body=body), deep: "x"})
     started = time.perf_counter()
