@@ -2026,6 +2026,20 @@ class TestAnonymousProbes:
         assert result.details["http_status"] == 401
         assert result.details["www_authenticate"] == "Bearer"
 
+    async def test_unauthenticated_probe_strips_cookies(self):
+        from mcpscore.probes import _probe_unauthenticated
+
+        seen: dict[str, str | None] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen["cookie"] = request.headers.get("Cookie")
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}, json={})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), cookies={"session": "s"}) as client:
+            await _probe_unauthenticated(_HttpTarget(client, URL))
+
+        assert seen["cookie"] is None
+
     async def test_unauthenticated_probe_survives_oauth_error_body(self):
         """An RFC 6750 401 body must not crash the probe.
 
@@ -2984,6 +2998,27 @@ class TestInvalidTokenProbe:
         assert result.outcome is ProbeOutcome.UNSUPPORTED
         assert result.details["anonymous_http_status"] == 401
         assert all("secret" not in r.headers.get("Authorization", "") for r in seen)
+
+    async def test_initialize_control_sends_no_cookie_the_token_earned(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "DELETE":
+                return httpx2.Response(200)
+            authed = "Authorization" in request.headers or "auth=1" in request.headers.get("Cookie", "")
+            if not authed:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            if json.loads(request.content).get("method") == "initialize":
+                return httpx2.Response(
+                    200,
+                    headers={"Set-Cookie": "auth=1; Path=/"},
+                    json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "x"}},
+                )
+            return httpx2.Response(400)
+
+        async with _client(handler) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["anonymous_http_status"] == 401
 
     async def test_session_opened_for_the_token_is_closed_with_the_token(self):
         sessions = {"abc"}

@@ -581,6 +581,12 @@ class _ProbeTarget(Protocol):
         raise NotImplementedError
 
 
+def _strip_credentials(request: httpx2.Request) -> None:
+    """Remove the client's ``Authorization`` and cookie-jar credentials from one built request."""
+    request.headers.pop("Authorization", None)
+    request.headers.pop("Cookie", None)
+
+
 @dataclass(frozen=True)
 class _HttpTarget:
     """A probe target reached over HTTP(S)."""
@@ -602,7 +608,7 @@ class _HttpTarget:
         """POST a probe request, optionally stripping headers from the final request.
 
         When ``anonymous``, remove any caller-supplied ``Authorization`` header
-        so the probe observes the server's unauthenticated behavior even when a
+        and cookies so the probe observes the server's unauthenticated behavior even when a
         token was provided via --token/--header. When ``run_all_probes`` created
         the clients itself, anonymous probes additionally run on a client that
         carries no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop
@@ -618,7 +624,7 @@ class _HttpTarget:
         """
         request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
         if anonymous:
-            request.headers.pop("Authorization", None)
+            _strip_credentials(request)
         for header in omit_headers:
             request.headers.pop(header, None)
         response = (
@@ -659,7 +665,7 @@ class _HttpTarget:
         With ``close_session_on_failure``, a session ID the answer issued is
         closed at the URL that answered before any failure propagates;
         ``cleanup_headers`` are added to that DELETE. With ``anonymous``, the
-        client's default ``Authorization`` is removed from the request and its cleanup.
+        client's ``Authorization`` and cookies are removed from the request and its cleanup.
         """
         request = self.client.build_request(
             "POST",
@@ -669,7 +675,7 @@ class _HttpTarget:
             timeout=PROBE_TIMEOUT_S,
         )
         if anonymous:
-            request.headers.pop("Authorization", None)
+            _strip_credentials(request)
         response: httpx2.Response | None = None
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
@@ -820,7 +826,7 @@ class _HttpTarget:
         after ``initialize``) and no ``Origin``, so a conforming server has no
         reason to refuse the cleanup. ``extra_headers`` carry a per-request
         credential the session was opened with; ``anonymous`` drops the client's
-        default ``Authorization`` for a session opened without one. The answer is
+        ``Authorization`` and cookies for a session opened without them. The answer is
         closed once its headers arrive, and the whole exchange shares one deadline.
         """
         session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
@@ -836,7 +842,7 @@ class _HttpTarget:
             request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
             request.headers.pop("Origin", None)
             if anonymous:
-                request.headers.pop("Authorization", None)
+                _strip_credentials(request)
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 answer = await self.client.send(request, follow_redirects=False, stream=True)
                 await answer.aclose()
