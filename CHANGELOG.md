@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-10-18
+
+A new HIGH rule sends a made-up bearer token to servers behind auth and
+checks that it is refused. Partial audits of servers behind auth gain one
+check; servers that serve anonymous requests are not affected.
+
 ### Added
 
 - **`auth_invalid_token_rejected` (HIGH, Security & Auth) checks that a server
@@ -19,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A 2xx answer fails. A 401, a 403, or a 4xx with an `invalid_token`
   challenge passes, and a refusal other than 401 is named in the message.
   Partial audits of servers behind auth gain one check.
+
+### Changed
+
+- **Dependencies refreshed.** The lockfile picks up httpx2 2.14.0 (with
+  httpcore2 2.14.0) and starlette 1.9.0. The `mcp==2.3.0` pin is unchanged;
+  it is still the latest SDK.
 
 ## [1.24.0] - 2026-10-18
 
@@ -2073,7 +2085,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.24.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.25.0...HEAD
+[1.25.0]: https://github.com/mcp-box/mcpscore/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/mcp-box/mcpscore/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/mcp-box/mcpscore/compare/v1.22.2...v1.23.0
 [1.22.2]: https://github.com/mcp-box/mcpscore/compare/v1.22.1...v1.22.2
