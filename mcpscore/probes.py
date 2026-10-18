@@ -1744,7 +1744,7 @@ def _well_known_urls(url: str) -> list[str]:
 
 
 async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int, dict[str, Any] | None]:
-    """GET a public well-known JSON document, stripping any caller Authorization.
+    """GET a public well-known JSON document, stripping any caller Authorization and cookies.
 
     Returns (http_status, parsed_dict_or_None). Auth-discovery documents (RFC
     9728, RFC 8414) are public — and RFC 8414 discovery can leave the server's
@@ -1754,7 +1754,7 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
     covers caller-injected clients.
     """
     request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
-    request.headers.pop("Authorization", None)
+    _strip_credentials(request)
     response = await send_within_origin(client, request)
     if response.status_code != 200:
         return response.status_code, None
@@ -3007,13 +3007,16 @@ async def run_all_probes(
                 unauthenticated.outcome is not ProbeOutcome.SUPPORTED
                 or unauthenticated.details.get("http_status") in AUTH_GATED_STATUSES
             )
-            metadata, invalid_token = await asyncio.gather(
-                run_one(
-                    PROBE_AUTH_METADATA,
-                    select(PROBE_AUTH_METADATA),
-                    challenge if isinstance(challenge, str) else None,
-                ),
-                run_one(PROBE_INVALID_TOKEN, select(PROBE_INVALID_TOKEN)) if gated else _not_gated(PROBE_INVALID_TOKEN),
+            metadata = await run_one(
+                PROBE_AUTH_METADATA,
+                select(PROBE_AUTH_METADATA),
+                challenge if isinstance(challenge, str) else None,
+            )
+            # After discovery: a cookie set in reply to the fabricated token must not reach the metadata fetches.
+            invalid_token = (
+                await run_one(PROBE_INVALID_TOKEN, select(PROBE_INVALID_TOKEN))
+                if gated
+                else await _not_gated(PROBE_INVALID_TOKEN)
             )
             return [unauthenticated, metadata, invalid_token]
 

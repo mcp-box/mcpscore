@@ -3033,6 +3033,21 @@ class TestInvalidTokenProbe:
 
         assert result.outcome is ProbeOutcome.SUPPORTED
 
+    async def test_cookie_earned_by_the_token_does_not_reach_metadata_discovery(self):
+        async def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                await asyncio.sleep(0.05)
+                if "earned=1" in request.headers.get("Cookie", ""):
+                    return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://a.example"]})
+                return httpx2.Response(404)
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            return httpx2.Response(401, headers={"Set-Cookie": "earned=1; Path=/"})
+
+        results = await _run(handler)
+
+        assert results[PROBE_AUTH_METADATA].outcome is not ProbeOutcome.SUPPORTED
+
     async def test_session_opened_for_the_token_is_closed_with_the_token(self):
         sessions = {"abc"}
 
