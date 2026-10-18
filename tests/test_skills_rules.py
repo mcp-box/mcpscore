@@ -566,3 +566,39 @@ def test_indented_dashes_inside_a_block_scalar_do_not_end_frontmatter() -> None:
     text = "---\nname: code-review\ndescription: |\n  Before\n  ---\n  After\n---\n# Body\n"
     entry = skill("code-review", {"SKILL.md": text}, description="Before\n---\nAfter\n")
     assert RULES["skills_frontmatter_matches"].check(data(entry)).passed
+
+
+@pytest.mark.parametrize("escape", ["../other/x.md", "./x.md", "a//b.md", "%2E%2E/other/x.md"])
+def test_manifest_paths_may_not_escape_the_skill(escape: str) -> None:
+    entry = skill("review", prefix="acme/")
+    entry["resources"].append({**entry["resources"][0], "uri": f"skill://acme/review/{escape}"})
+    result = RULES["skills_resources_manifest"].check(data(entry))
+    assert [issue["reason"] for issue in result.details["issues"]] == ["outside_skill"]
+
+
+@pytest.mark.parametrize("name", ["\uff46\uff4f\uff4f", "foo "])
+def test_name_must_equal_the_uri_segment_exactly(name: str) -> None:
+    entry = skill("foo")
+    entry["frontmatter"]["name"] = name
+    assert not RULES["skills_name_matches_uri"].check(data(entry)).passed
+
+
+def test_reference_style_links_are_checked() -> None:
+    body = "Read the [guide][g] and [notes][n].\n\n[g]: references/MISSING.md\n[n]: <references/NOTES.md>\n"
+    files = {"SKILL.md": skill_md("code-review", body=body), "references/NOTES.md": "n"}
+    result = RULES["skills_references_resolve"].check(data(skill("code-review", files)))
+    assert result.details["references_checked"] == 2
+    assert result.details["issues_total"] == 1
+
+
+def test_links_match_encoded_and_unicode_manifest_uris() -> None:
+    body = "[a](<assets/b c.png>) [b](assets/b%20c.png) [c](数据/表.md) [d](%E6%95%B0%E6%8D%AE/%E8%A1%A8.md)\n"
+    entry = skill("code-review", {"SKILL.md": skill_md("code-review", body=body)})
+    root = "skill://code-review"
+    entry["resources"] += [
+        {"uri": f"{root}/assets/b%20c.png", "digest": "sha256:" + "0" * 64, "size": 1},
+        {"uri": f"{root}/数据/表.md", "digest": "sha256:" + "0" * 64, "size": 1},
+    ]
+    result = RULES["skills_references_resolve"].check(data(entry))
+    assert result.passed
+    assert result.details["references_checked"] == 4

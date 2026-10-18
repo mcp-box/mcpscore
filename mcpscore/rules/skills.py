@@ -9,6 +9,7 @@ Skills specification (agentskills.io), which SEP-2640 adopts unchanged.
 from bisect import bisect_left
 from collections.abc import Iterator
 from typing import Any, ClassVar
+from urllib.parse import unquote
 
 from ..skills import (
     DIGEST_RE,
@@ -20,7 +21,6 @@ from ..skills import (
     manifest,
     markdown_blocks,
     name_problems,
-    normalize_name,
     parse_frontmatter,
     relative_references,
     resolve_reference,
@@ -127,6 +127,14 @@ def _json_equal(left: Any, right: Any) -> bool:
     if isinstance(left, list) and isinstance(right, list):
         return len(left) == len(right) and all(_json_equal(a, b) for a, b in zip(left, right, strict=True))
     return type(left) is type(right) and left == right
+
+
+def _inside(root: str, uri: str) -> bool:
+    """Whether *uri* names a file inside the skill directory *root*, with no ``.``, ``..`` or empty segments."""
+    if not uri.startswith(root + "/"):
+        return False
+    segments = unquote(uri[len(root) + 1 :]).split("/")
+    return all(segment not in ("", ".", "..") for segment in segments)
 
 
 def _complete_entry(entry: dict[str, Any], uri: str | None) -> bool:
@@ -363,7 +371,7 @@ def _manifest_issues(index: int, entry: dict[str, Any]) -> list[dict[str, Any]]:
         if item["uri"] in seen:
             issues.append(_issue(index, f"{path}/uri", "duplicate_file", "each file listed once"))
         seen.add(item["uri"])
-        if root is not None and item["uri"] != uri and not item["uri"].startswith(root + "/"):
+        if root is not None and item["uri"] != uri and not _inside(root, item["uri"]):
             issues.append(_issue(index, f"{path}/uri", "outside_skill", "a file inside the skill directory"))
     if isinstance(uri, str) and uri not in seen:
         issues.append(_issue(index, "/resources", "skill_file_unlisted", "an entry for the skill's SKILL.md"))
@@ -439,7 +447,7 @@ class SkillsNameMatchesUriRule(SkillsBaseRule):
                 continue
             if skill_root(uri) is None:
                 issues.append(_issue(index, "/uri", "not_skill_md", f"a URI ending in /{SKILL_FILE}"))
-            elif normalize_name(skill_path_name(uri) or "") != normalize_name(name):
+            elif skill_path_name(uri) != name:
                 issues.append(_issue(index, "/uri", "name_mismatch", "a skill path whose last segment is the name"))
         passed = not issues
         return self._result(
@@ -697,13 +705,16 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             root = skill_root(entry["uri"]) if isinstance(entry.get("uri"), str) else None
             if read is None or files is None or root is None:
                 continue
-            listed = {item["uri"] for item in files if isinstance(item, dict) and isinstance(item.get("uri"), str)}
+            # Compared decoded, so a link to "b c.png" matches a listed "b%20c.png" and Unicode either way.
+            listed = {
+                unquote(item["uri"]) for item in files if isinstance(item, dict) and isinstance(item.get("uri"), str)
+            }
             ordered = sorted(listed)
             split = split_frontmatter(read.text or "")
             body = split[1] if split else read.text or ""
             for target in relative_references(body):
                 references += 1
-                resolved = resolve_reference(root, target)
+                resolved = resolve_reference(unquote(root), unquote(target))
                 if resolved is None or not _lists_file_at_or_under(listed, ordered, resolved):
                     issues.append(
                         _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")

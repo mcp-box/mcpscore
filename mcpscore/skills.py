@@ -225,6 +225,8 @@ def _json_scalar(value: Any) -> str:
 _LINK_RE = re.compile(r"!?\[[^\[\]\n]*\]\(\s*(?:<([^<>\n]+)>|([^()\[\]<>\s]+))(?:[ \t]+\"[^\"\n]{0,256}\")?\s*\)")
 
 
+_DEFINITION_RE = re.compile(r"^ {0,3}\[[^\[\]\n]+\]:[ \t]*(?:<([^<>\n]+)>|([^\s<>]+))", re.MULTILINE)
+"""A link reference definition, ``[label]: target``, whose target reference-style links use."""
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)[^`]+\1(?!`)")
 """An inline code span; a span that itself contains backticks is not recognised, which keeps matching linear."""
@@ -290,8 +292,9 @@ def relative_references(body: str) -> list[str]:
     """Return relative Markdown link targets in *body*'s prose (not code), without anchors or queries, in order."""
     targets = []
     prose = "\n\n".join(strip_inline_code(text) for _, text, is_code in markdown_blocks(body) if not is_code)
-    for match in _LINK_RE.finditer(prose):
-        target = match.group(1) or match.group(2)
+    inline = ((m.group(1) or m.group(2), m.start()) for m in _LINK_RE.finditer(prose))
+    defined = ((m.group(1) or m.group(2), m.start()) for m in _DEFINITION_RE.finditer(prose))
+    for target, _ in sorted([*inline, *defined], key=lambda found: found[1]):
         if target.startswith(("#", "/")) or _SCHEME_RE.match(target):
             continue
         target = target.split("#", 1)[0].split("?", 1)[0]
