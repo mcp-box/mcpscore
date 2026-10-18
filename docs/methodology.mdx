@@ -90,7 +90,7 @@ whether a complete tools catalog is empty.
 The main score always includes three categories. Readiness is the fourth:
 it has its own score, and it also counts in the main score on a full audit
 of a modern or dual-era server. Legacy servers and partial audits leave it
-out. The server audit has 110 rules today. The
+out. The server audit has 111 rules today. The
 [rules reference](/rules) lists each one with its weight and the spec
 revisions it applies to.
 
@@ -98,7 +98,7 @@ revisions it applies to.
 |---|---|---|
 | Protocol | 22 | Protocol version, server name, title and version, advertised capabilities, transport and its HTTP envelope |
 | Primitives | 53 | Tools, prompts, resources, and resource templates: names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination |
-| Security & Auth | 15 | The server's security posture, detailed below |
+| Security & Auth | 16 | The server's security posture, detailed below |
 | Readiness | 20 | How ready the server is for the 2026-07-28 revision, [scored on its own axis](#the-readiness-score-separate-informative) and in the main score for modern and dual-era full audits |
 
 A separate set of six packaging rules scores a published npm or PyPI package
@@ -119,7 +119,7 @@ walks through the three catalog-text rules with a working demo.
 | `Origin` validation: a request with a foreign `Origin` gets HTTP 403, which blocks DNS rebinding ([Transports §Security Warning](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning), [Streamable HTTP §Security & Endpoint](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint)) | `security_origin_validation` (HIGH) |
 | Error hygiene: a malformed request gets the [JSON-RPC parse error](https://www.jsonrpc.org/specification#error_object), and the error body carries no stack traces, file paths, or credentials ([Tools §Security Considerations](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#security-considerations)) | `security_malformed_request_handling`, `security_error_data_leak` (MEDIUM) |
 | Catalog text: every name, title, description, schema string and URI the server lists carries no hidden Unicode (tag characters, bidirectional overrides, control characters, invisible runs), no provider-format credential, and none of a fixed list of prompt-injection phrasings ([OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/) MCP01, MCP03, MCP06; [§Security and Trust & Safety](https://modelcontextprotocol.io/specification/2025-11-25#security-and-trust-&-safety)) | `catalog_hidden_unicode`, `catalog_no_embedded_secrets`, `catalog_prompt_injection_phrasing` (HIGH) |
-| Authorization posture, on servers that answer an unauthenticated request with 401 or 403: the `WWW-Authenticate` challenge, [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) resource metadata, the [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) authorization-server chain, HTTPS throughout, advertised scopes, and advertised PKCE `S256` support ([Authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-discovery), [§Authorization Code Protection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-code-protection)) | eight `auth_*` rules |
+| Authorization posture, on servers that answer an unauthenticated request with 401 or 403: the `WWW-Authenticate` challenge, [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) resource metadata, the [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) authorization-server chain, HTTPS throughout, advertised scopes, advertised PKCE `S256` support, and a way for a new client to register ([Authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-discovery), [§Authorization Code Protection](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-code-protection), [§Client Registration Approaches](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches)) | nine `auth_*` rules |
 
 Three related checks live in other categories, because the spec files them
 there. Tool behavior annotations are `tools_annotations_present` and

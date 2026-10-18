@@ -1322,6 +1322,40 @@ class TestAuthMetadataProbe:
         assert d["auth_server_has_endpoints"] is True
         assert d["auth_server_pkce_s256"] is True
         assert d["auth_server_issuer"] == "https://auth.example"
+        assert d["auth_server_cimd_supported"] is False
+        assert d["auth_server_registration_endpoint"] is False
+
+    @pytest.mark.parametrize(
+        ("extra", "cimd", "registration"),
+        [
+            ({"client_id_metadata_document_supported": True}, True, False),
+            ({"registration_endpoint": "https://auth.example/register"}, False, True),
+            ({"client_id_metadata_document_supported": "true", "registration_endpoint": "  "}, False, False),
+        ],
+    )
+    async def test_authorization_server_registration_paths(self, extra: dict, cimd: bool, registration: bool):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            if request.url.host == "auth.example" and path == "/.well-known/oauth-authorization-server":
+                return httpx2.Response(
+                    200,
+                    json={
+                        "issuer": "https://auth.example",
+                        "authorization_endpoint": "https://auth.example/authorize",
+                        "token_endpoint": "https://auth.example/token",
+                        "code_challenge_methods_supported": ["S256"],
+                    }
+                    | extra,
+                )
+            return httpx2.Response(404)
+
+        d = (await _run(handler))[PROBE_AUTH_METADATA].details
+        assert d["auth_server_cimd_supported"] is cimd
+        assert d["auth_server_registration_endpoint"] is registration
 
     async def test_authorization_server_without_pkce(self):
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1349,6 +1383,8 @@ class TestAuthMetadataProbe:
         assert d["auth_server_metadata_present"] is True  # found via OIDC fallback
         assert d["auth_server_has_endpoints"] is True
         assert d["auth_server_pkce_s256"] is False
+        assert d["auth_server_cimd_supported"] is False
+        assert d["auth_server_registration_endpoint"] is False
 
     async def test_unreachable_authorization_server_preserves_resource_metadata(self):
         """An unreachable AS is a finding about the AS — it must not void the PRM.

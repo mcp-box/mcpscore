@@ -44,19 +44,21 @@ mcpscore https://api.githubcopilot.com/mcp/
 ✅ HTTP 401 challenge references metadata served at "https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/".
 ...
 ✅ The authorization server advertises PKCE with S256.
+❌ The authorization server advertises neither client_id_metadata_document_supported nor a registration_endpoint, so only pre-registered clients can sign in without asking the user for client credentials.
 ...
 ⚠️  Partial audit (Server requires authentication (HTTP 401); scored the unauthenticated surface only — pass a token to audit behind the gate.).
 Only the auth, TLS, and transport surface was scored — not comparable to a full audit.
-Audit finished. PARTIAL score: 27/27 from 10 of 90 checks — not comparable to a full audit.
+Audit finished. PARTIAL score: 27/29 from 11 of 91 checks — not comparable to a full audit.
 ```
 
 This is a partial audit. It covers TLS, the 401 challenge, the
 [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata, and the authorization server that metadata
 names. Those are real findings about your auth posture: a missing PKCE
-advertisement, for example, shows up here without any credential.
+advertisement, or no way for a new client to register, shows up here
+without any credential.
 
-The score line says `PARTIAL` and `from 10 of 90 checks` on purpose. A
-bare `27/27` reads as a perfect result when pasted into a chat. A
+The score line says `PARTIAL` and `from 11 of 91 checks` on purpose. A
+bare `27/29` pasted into a chat reads like the score of the whole server. A
 partial score and a full score are not comparable.
 
 A partial audit cannot pass a threshold. Add `--fail-under` and it fails:

@@ -15,6 +15,7 @@ from mcpscore.rules import AuditData
 from mcpscore.rules.auth import (
     AuthAuthorizationServersHttpsRule,
     AuthChallengeReferencesMetadataRule,
+    AuthClientRegistrationAdvertisedRule,
     AuthMetadataHttpsRule,
     AuthProtectedResourceMetadataRule,
     AuthScopesAdvertisedRule,
@@ -22,7 +23,7 @@ from mcpscore.rules.auth import (
     AuthServerPkceRule,
     AuthWwwAuthenticateRule,
 )
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, RuleSeverity
 
 URL = "https://server.example/mcp"
 METADATA_URL = "https://server.example/.well-known/oauth-protected-resource/mcp"
@@ -64,6 +65,8 @@ def _full_metadata(**extra: object) -> ProbeResult:
         "auth_server_metadata_present": True,
         "auth_server_has_endpoints": True,
         "auth_server_pkce_s256": True,
+        "auth_server_cimd_supported": True,
+        "auth_server_registration_endpoint": True,
     }
     base |= extra
     return _metadata(**base)
@@ -148,6 +151,7 @@ class TestCitations:
             AuthScopesAdvertisedRule,
             AuthServerMetadataPresentRule,
             AuthServerPkceRule,
+            AuthClientRegistrationAdvertisedRule,
         ):
             details = rule_cls().check(data).details
             assert details is not None
@@ -437,3 +441,44 @@ class TestAuthServerPkce:
     def test_skips_when_no_as_metadata(self):
         meta = _full_metadata(auth_server_metadata_present=False)
         assert AuthServerPkceRule().skip_reason(_data(_unauth(), meta)) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestAuthClientRegistrationAdvertised:
+    @staticmethod
+    def _check(version: str | None = "2025-11-25", **flags: object):
+        data = _data(_unauth(), _full_metadata(**flags))
+        data.protocol_version = version
+        return AuthClientRegistrationAdvertisedRule().check(data)
+
+    def test_passes_with_client_id_metadata_documents(self):
+        result = self._check(auth_server_registration_endpoint=False)
+        assert result.passed is True
+        assert "Client ID Metadata Documents" in result.message
+
+    def test_dynamic_registration_alone_passes_and_points_at_cimd(self):
+        result = self._check(auth_server_cimd_supported=False)
+        assert result.passed is True
+        assert "client_id_metadata_document_supported is the recommended path" in result.message
+
+    def test_dynamic_registration_alone_is_the_recommendation_before_2025_11_25(self):
+        result = self._check(version="2025-06-18", auth_server_cimd_supported=False)
+        assert result.passed is True
+        assert "recommended" not in result.message
+
+    @pytest.mark.parametrize("version", ["2025-06-18", "2025-11-25", None])
+    def test_fails_with_neither(self, version: str | None):
+        result = self._check(version, auth_server_cimd_supported=False, auth_server_registration_endpoint=False)
+        assert result.passed is False
+        assert result.severity is RuleSeverity.MEDIUM
+        assert "only pre-registered clients" in result.message
+        assert result.suggested_fix is not None
+        assert "client_id_metadata_document_supported" in result.suggested_fix
+
+    def test_skips_when_no_as_metadata(self):
+        meta = _full_metadata(auth_server_metadata_present=False)
+        rule = AuthClientRegistrationAdvertisedRule()
+        assert rule.skip_reason(_data(_unauth(), meta)) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_skips_for_open_servers(self):
+        rule = AuthClientRegistrationAdvertisedRule()
+        assert rule.skip_reason(_data(_unauth(status=200), _full_metadata())) == SKIP_REASON_NOT_APPLICABLE

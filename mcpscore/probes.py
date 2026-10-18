@@ -1936,6 +1936,9 @@ async def _fetch_auth_server_metadata(
             metadata.get("token_endpoint"), str
         )
         details["auth_server_pkce_s256"] = isinstance(methods, list) and "S256" in methods
+        details["auth_server_cimd_supported"] = metadata.get("client_id_metadata_document_supported") is True
+        registration = metadata.get("registration_endpoint")
+        details["auth_server_registration_endpoint"] = isinstance(registration, str) and bool(registration.strip())
         return
     if not reached:
         details["auth_server_metadata_error"] = last_error
