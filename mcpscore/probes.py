@@ -138,6 +138,9 @@ UNKNOWN_VERSION = "2099-01-01"
 MISSING_RESOURCE_URI = "resource://mcpscore/does-not-exist"
 """Deliberately nonexistent resource URI used by the missing-resource probe."""
 
+INVALID_TOKEN_PREFIX = "mcpscore-invalid-token-"  # noqa: S105 — a deliberately invalid token, not a secret
+"""Prefix of the fabricated bearer token; a random suffix makes each one impossible to have been issued."""
+
 INVALID_CURSOR_PREFIX = "mcpscore-invalid-cursor-"
 """Prefix for fabricated opaque cursors that cannot plausibly have been issued."""
 
@@ -153,6 +156,7 @@ PROBE_GET_STREAM_REMOVED = "probe_get_stream_removed"
 PROBE_UNKNOWN_VERSION = "probe_unknown_version"
 PROBE_MISSING_RESOURCE = "probe_missing_resource"
 PROBE_UNAUTHENTICATED = "probe_unauthenticated"
+PROBE_INVALID_TOKEN = "probe_invalid_token"  # noqa: S105 — a probe ID
 PROBE_SESSION_ID_ECHO = "probe_session_id_echo"
 PROBE_REMOVED_METHOD = "probe_removed_method"
 PROBE_AUTH_METADATA = "probe_auth_metadata"
@@ -188,6 +192,7 @@ _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_SESSION_ID_ECHO,
     PROBE_REMOVED_METHOD,
     PROBE_AUTH_METADATA,
+    PROBE_INVALID_TOKEN,
     PROBE_ORIGIN_VALIDATION,
     PROBE_UNKNOWN_METHOD,
     PROBE_MALFORMED_JSON,
@@ -220,6 +225,7 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_UNAUTHENTICATED,
         PROBE_SESSION_ID_ECHO,
         PROBE_AUTH_METADATA,
+        PROBE_INVALID_TOKEN,
         PROBE_ORIGIN_VALIDATION,
         PROBE_MALFORMED_JSON,
         PROBE_NOTIFICATION_ACCEPTED,
@@ -244,8 +250,8 @@ malformed wire input through the SDK transport.
 STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in _SINGLE_TARGET_PROBE_IDS if p not in HTTP_ONLY_PROBE_IDS)
 """Probes that run over stdio — the ones judging JSON-RPC, not HTTP."""
 
-_AUTH_DISCOVERY_PROBE_IDS = (PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA)
-"""Probes run in order, so metadata discovery can follow the observed challenge."""
+_AUTH_DISCOVERY_PROBE_IDS = (PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA, PROBE_INVALID_TOKEN)
+"""Probes that run after the unauthenticated request, because they depend on what it observed."""
 
 _ANONYMOUS_PROBE_IDS = frozenset(_AUTH_DISCOVERY_PROBE_IDS)
 """Probes that must see the server as an unauthenticated client does.
@@ -575,6 +581,22 @@ class _ProbeTarget(Protocol):
         raise NotImplementedError
 
 
+def _no_client_auth(anonymous: bool) -> dict[str, Any]:
+    """``send`` arguments that stop the client's ``auth`` flow from re-adding credentials to an anonymous request."""
+    return {"auth": None} if anonymous else {}
+
+
+def _strip_credentials(request: httpx2.Request, keep: dict[str, str] | None = None) -> None:
+    """Remove the client's ``Authorization`` and cookie-jar credentials from one built request.
+
+    An ``Authorization`` in ``keep`` (one the probe passed for this request) is put back.
+    """
+    request.headers.pop("Authorization", None)
+    request.headers.pop("Cookie", None)
+    if keep and "Authorization" in keep:
+        request.headers["Authorization"] = keep["Authorization"]
+
+
 @dataclass(frozen=True)
 class _HttpTarget:
     """A probe target reached over HTTP(S)."""
@@ -596,7 +618,7 @@ class _HttpTarget:
         """POST a probe request, optionally stripping headers from the final request.
 
         When ``anonymous``, remove any caller-supplied ``Authorization`` header
-        so the probe observes the server's unauthenticated behavior even when a
+        and cookies so the probe observes the server's unauthenticated behavior even when a
         token was provided via --token/--header. When ``run_all_probes`` created
         the clients itself, anonymous probes additionally run on a client that
         carries no caller headers at all (see ``_ANONYMOUS_PROBE_IDS``); the pop
@@ -612,13 +634,13 @@ class _HttpTarget:
         """
         request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
         if anonymous:
-            request.headers.pop("Authorization", None)
+            _strip_credentials(request)
         for header in omit_headers:
             request.headers.pop(header, None)
         response = (
-            await send_within_origin(self.client, request)
+            await send_within_origin(self.client, request, **_no_client_auth(anonymous))
             if follow_redirects
-            else await self.client.send(request, follow_redirects=False)
+            else await self.client.send(request, follow_redirects=False, **_no_client_auth(anonymous))
         )
         return _HttpProbeResponse(
             status_code=response.status_code,
@@ -634,6 +656,8 @@ class _HttpTarget:
         *,
         follow_redirects: bool = True,
         close_session_on_failure: bool = False,
+        cleanup_headers: dict[str, str] | None = None,
+        anonymous: bool = False,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -649,7 +673,10 @@ class _HttpTarget:
         content-encoded or exceeds the byte cap is returned with no payload and
         ``unobservable`` set, never as a timeout.
         With ``close_session_on_failure``, a session ID the answer issued is
-        closed at the URL that answered before any failure propagates.
+        closed at the URL that answered before any failure propagates;
+        ``cleanup_headers`` are added to that DELETE. With ``anonymous``, the
+        client's ``Authorization`` and cookies are removed from the request and its
+        cleanup; an ``Authorization`` passed in ``headers`` is kept.
         """
         request = self.client.build_request(
             "POST",
@@ -658,13 +685,17 @@ class _HttpTarget:
             headers={**headers, "Accept-Encoding": "identity"},
             timeout=PROBE_TIMEOUT_S,
         )
+        if anonymous:
+            _strip_credentials(request, headers)
         response: httpx2.Response | None = None
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 response = (
-                    await send_within_origin(self.client, request, stream=True)
+                    await send_within_origin(self.client, request, stream=True, **_no_client_auth(anonymous))
                     if follow_redirects
-                    else await self.client.send(request, follow_redirects=False, stream=True)
+                    else await self.client.send(
+                        request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
+                    )
                 )
                 content_type = response.headers.get("content-type", "")
                 encoding = response.headers.get("content-encoding", "").strip().lower()
@@ -695,7 +726,7 @@ class _HttpTarget:
                     issued = _HttpProbeResponse(
                         status_code=response.status_code, headers=dict(response.headers), payload=None
                     )
-                    await answered.end_session(issued)
+                    await answered.end_session(issued, cleanup_headers, anonymous=anonymous)
             timed_out = isinstance(exc, (TimeoutError, httpx2.ReadTimeout))
             if timed_out and response is not None and response.status_code >= 400:
                 # The status already arrived and says the request was refused; only the body is missing.
@@ -799,27 +830,36 @@ class _HttpTarget:
             "truncated" if truncated else None,
         )
 
-    async def end_session(self, response: _HttpProbeResponse) -> None:
+    async def end_session(
+        self, response: _HttpProbeResponse, extra_headers: dict[str, str] | None = None, *, anonymous: bool = False
+    ) -> None:
         """Best-effort DELETE of a session a legacy ``initialize`` opened; never raises.
 
         Carries the negotiated ``MCP-Protocol-Version`` (a MUST on every request
         after ``initialize``) and no ``Origin``, so a conforming server has no
-        reason to refuse the cleanup. The answer is closed once its headers
-        arrive, and the whole exchange shares one deadline.
+        reason to refuse the cleanup. ``extra_headers`` carry a per-request
+        credential the session was opened with; ``anonymous`` drops the client's
+        ``Authorization`` and cookies for a session opened without them. The answer is
+        closed once its headers arrive, and the whole exchange shares one deadline.
         """
         session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
         if not session_id:
             return
         negotiated = (response.result or {}).get("protocolVersion")
         headers = {
+            **(extra_headers or {}),
             "Mcp-Session-Id": session_id,
             "MCP-Protocol-Version": negotiated if isinstance(negotiated, str) else LEGACY_INITIALIZE_VERSION,
         }
         try:
             request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
             request.headers.pop("Origin", None)
+            if anonymous:
+                _strip_credentials(request, extra_headers)
             async with asyncio.timeout(PROBE_TIMEOUT_S):
-                answer = await self.client.send(request, follow_redirects=False, stream=True)
+                answer = await self.client.send(
+                    request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
+                )
                 await answer.aclose()
         except Exception:  # noqa: BLE001 — courtesy only; the observation is already made
             return
@@ -1605,6 +1645,82 @@ async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
     return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)
 
 
+def _token_refused(response: _HttpProbeResponse) -> bool:
+    """Whether the answer refuses the bearer token: 401/403, or any 4xx with an RFC 6750 ``invalid_token`` challenge."""
+    if response.status_code in AUTH_GATED_STATUSES:
+        return True
+    challenge = response.headers.get("www-authenticate") or ""
+    return 400 <= response.status_code < 500 and www_authenticate_param(challenge, "error") == "invalid_token"
+
+
+async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
+    """Send the unauthenticated request again with a fabricated bearer token, then a legacy ``initialize``.
+
+    SUPPORTED: the token is refused (:func:`_token_refused`). UNSUPPORTED: a 2xx
+    answer, so the token got past the auth check. Any other 4xx says nothing,
+    because a legacy server past the check refuses the sessionless request too;
+    the ``initialize`` then decides, but only when the same ``initialize`` without a
+    token is refused: a server may leave the handshake public and guard the reads.
+    Redirects, timeouts, rate limits and 5xx are NOT_APPLICABLE. Redirects are not
+    followed, so the answer is the endpoint's own. Every request is a read, read only
+    up to its response; a session opened for one is closed with the token it carried.
+    """
+    target_version = _target_version()
+    token = {"Authorization": f"Bearer {INVALID_TOKEN_PREFIX}{uuid4().hex}"}
+    attempts = (
+        (
+            "tools/list",
+            _request_body("tools/list", 7, _modern_meta(target_version)),
+            _request_headers(target_version, "tools/list"),
+        ),
+        ("initialize", _legacy_initialize_body(8), _legacy_headers()),
+    )
+    details: dict[str, Any] = {}
+    for method, body, headers in attempts:
+        response = await target.post_rpc(
+            body,
+            {**headers, **token},
+            follow_redirects=False,
+            close_session_on_failure=True,
+            cleanup_headers=token,
+            anonymous=True,
+        )
+        await target.end_session(response, token, anonymous=True)
+        details = {**_base_details(response), "method": method}
+        status = response.status_code
+        if _token_refused(response):
+            details["www_authenticate"] = response.headers.get("www-authenticate")
+            return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.SUPPORTED, details)
+        if 200 <= status < 300:
+            if method == "initialize":
+                return await _judge_served_initialize(target, details)
+            return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, details)
+        redirected = _redirected(PROBE_INVALID_TOKEN, status, details)
+        if redirected is not None:
+            return redirected
+        if not 400 <= status < 500 or status in (408, 429):
+            break
+    details["reason"] = f"HTTP {details.get('http_status')} does not show whether the token was accepted"
+    return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.NOT_APPLICABLE, details)
+
+
+async def _judge_served_initialize(target: _HttpTarget, details: dict[str, Any]) -> ProbeResult:
+    """Judge an ``initialize`` served with the fabricated token against the same request without one."""
+    control = await target.post_rpc(
+        _legacy_initialize_body(9),
+        _legacy_headers(),
+        follow_redirects=False,
+        close_session_on_failure=True,
+        anonymous=True,
+    )
+    await target.end_session(control, anonymous=True)
+    details["anonymous_http_status"] = control.status_code
+    if _token_refused(control):
+        return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, details)
+    details["reason"] = f"initialize without a token gets HTTP {control.status_code}, so serving it proves nothing"
+    return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.NOT_APPLICABLE, details)
+
+
 def observed_auth_status(probes: dict[str, ProbeResult] | None) -> int | None:
     """HTTP status of an auth gate the probes observed, or None if they saw no gate.
 
@@ -1637,7 +1753,7 @@ def _well_known_urls(url: str) -> list[str]:
 
 
 async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int, dict[str, Any] | None]:
-    """GET a public well-known JSON document, stripping any caller Authorization.
+    """GET a public well-known JSON document, stripping any caller Authorization and cookies.
 
     Returns (http_status, parsed_dict_or_None). Auth-discovery documents (RFC
     9728, RFC 8414) are public — and RFC 8414 discovery can leave the server's
@@ -1647,8 +1763,8 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
     covers caller-injected clients.
     """
     request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
-    request.headers.pop("Authorization", None)
-    response = await send_within_origin(client, request)
+    _strip_credentials(request)
+    response = await send_within_origin(client, request, auth=None)
     if response.status_code != 200:
         return response.status_code, None
     try:
@@ -2689,6 +2805,7 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_UNAUTHENTICATED: _probe_unauthenticated,
     PROBE_SESSION_ID_ECHO: _probe_session_id_echo,
     PROBE_AUTH_METADATA: _probe_auth_metadata,
+    PROBE_INVALID_TOKEN: _probe_invalid_token,
     PROBE_ORIGIN_VALIDATION: _probe_origin_validation,
     PROBE_MALFORMED_JSON: _probe_malformed_json,
     PROBE_NOTIFICATION_ACCEPTED: _probe_notification_accepted,
@@ -2704,6 +2821,11 @@ _HTTP_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = {
     **_TRANSPORT_AGNOSTIC_PROBES,
     **_HTTP_ONLY_PROBES,
 }
+
+
+async def _not_gated(probe_id: str) -> ProbeResult:
+    """NOT_APPLICABLE for a probe that needs an unauthenticated request to have been refused."""
+    return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, {"reason": "the unauthenticated request was not refused"})
 
 
 def not_applicable_results(reason: str, probe_ids: Iterable[str] = PROBE_IDS) -> dict[str, ProbeResult]:
@@ -2889,12 +3011,23 @@ async def run_all_probes(
             # Metadata discovery follows the challenge the unauthenticated request received.
             unauthenticated = await run_one(PROBE_UNAUTHENTICATED, select(PROBE_UNAUTHENTICATED))
             challenge = unauthenticated.details.get("www_authenticate")
+            # Without an observed answer the token probe still runs, so a network failure stays ERROR data.
+            gated = (
+                unauthenticated.outcome is not ProbeOutcome.SUPPORTED
+                or unauthenticated.details.get("http_status") in AUTH_GATED_STATUSES
+            )
             metadata = await run_one(
                 PROBE_AUTH_METADATA,
                 select(PROBE_AUTH_METADATA),
                 challenge if isinstance(challenge, str) else None,
             )
-            return [unauthenticated, metadata]
+            # After discovery: a cookie set in reply to the fabricated token must not reach the metadata fetches.
+            invalid_token = (
+                await run_one(PROBE_INVALID_TOKEN, select(PROBE_INVALID_TOKEN))
+                if gated
+                else await _not_gated(PROBE_INVALID_TOKEN)
+            )
+            return [unauthenticated, metadata, invalid_token]
 
         independent = [probe_id for probe_id in _SINGLE_TARGET_PROBE_IDS if probe_id not in _AUTH_DISCOVERY_PROBE_IDS]
         auth_results, results = await asyncio.gather(

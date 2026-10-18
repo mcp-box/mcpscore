@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`auth_invalid_token_rejected` (HIGH, Security & Auth) checks that a server
+  behind auth refuses a made-up bearer token.** The MCP spec requires HTTP 401
+  for an invalid token. A server that serves the request instead has let the
+  token through its auth check, the flaw behind LiteLLM's CVE-2026-59822.
+  mcpscore sends the refused request again with a random token, and then a
+  legacy `initialize`, which counts only when the same `initialize` without a
+  token is refused. All are reads; a session opened for one is closed.
+  A 2xx answer fails. A 401, a 403, or a 4xx with an `invalid_token`
+  challenge passes, and a refusal other than 401 is named in the message.
+  Partial audits of servers behind auth gain one check.
+
 ## [1.24.0] - 2026-10-18
 
 Four new rules: three check tool annotations against what each tool says it

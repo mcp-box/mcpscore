@@ -15,6 +15,7 @@ from mcpscore.probes import (
     ERROR_METHOD_NOT_FOUND,
     ERROR_UNSUPPORTED_PROTOCOL_VERSION,
     INVALID_CURSOR_PREFIX,
+    INVALID_TOKEN_PREFIX,
     META_PREFIX,
     ORIGIN_PROBE_VALUE,
     PROBE_AUTH_METADATA,
@@ -23,6 +24,7 @@ from mcpscore.probes import (
     PROBE_GET_STREAM_REMOVED,
     PROBE_HEADER_MISMATCH,
     PROBE_IDS,
+    PROBE_INVALID_TOKEN,
     PROBE_MALFORMED_JSON,
     PROBE_MALFORMED_META,
     PROBE_MISSING_METHOD_HEADER,
@@ -218,6 +220,8 @@ async def test_modern_server_supports_all_probed_behaviors():
         # Legacy-session probes: a modern-only server serves no `initialize`.
         PROBE_GET_STREAM,
         PROBE_SESSION_DELETE,
+        # Serves anonymous requests, so there is no token check to probe.
+        PROBE_INVALID_TOKEN,
     }
     for probe_id in PROBE_IDS:
         expected = ProbeOutcome.NOT_APPLICABLE if probe_id in not_applicable else ProbeOutcome.SUPPORTED
@@ -2022,6 +2026,34 @@ class TestAnonymousProbes:
         assert result.details["http_status"] == 401
         assert result.details["www_authenticate"] == "Bearer"
 
+    async def test_unauthenticated_probe_strips_cookies(self):
+        from mcpscore.probes import _probe_unauthenticated
+
+        seen: dict[str, str | None] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen["cookie"] = request.headers.get("Cookie")
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}, json={})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), cookies={"session": "s"}) as client:
+            await _probe_unauthenticated(_HttpTarget(client, URL))
+
+        assert seen["cookie"] is None
+
+    async def test_unauthenticated_probe_ignores_client_auth_flow(self):
+        from mcpscore.probes import _probe_unauthenticated
+
+        seen: dict[str, str | None] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen["auth"] = request.headers.get("Authorization")
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}, json={})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), auth=("user", "password")) as client:
+            await _probe_unauthenticated(_HttpTarget(client, URL))
+
+        assert seen["auth"] is None
+
     async def test_unauthenticated_probe_survives_oauth_error_body(self):
         """An RFC 6750 401 body must not crash the probe.
 
@@ -2846,3 +2878,298 @@ class TestResolveHost:
         monkeypatch.setattr(loop, "getaddrinfo", hang)
         monkeypatch.setattr(probes, "_DNS_TIMEOUT_SECONDS", 0.01)
         assert await _resolve_host("slow.example") is None
+
+
+def _token_gate(answer_with_token: httpx2.Response, seen: list[httpx2.Request], *, initialize=None):
+    """Refuse anonymous POSTs with 401 and answer any bearer with ``answer_with_token``.
+
+    ``initialize``, when given, answers a bearer-carrying ``initialize`` instead.
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.method != "POST":
+            return httpx2.Response(405)
+        if "Authorization" not in request.headers:
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+        if initialize is not None and json.loads(request.content).get("method") == "initialize":
+            return initialize
+        return answer_with_token
+
+    return handler
+
+
+def _token_requests(seen: list[httpx2.Request]) -> list[httpx2.Request]:
+    return [r for r in seen if INVALID_TOKEN_PREFIX in r.headers.get("Authorization", "")]
+
+
+class TestInvalidTokenProbe:
+    async def test_refused_token_is_supported(self):
+        seen: list[httpx2.Request] = []
+        results = await _run(_token_gate(httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}), seen))
+
+        result = results[PROBE_INVALID_TOKEN]
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["http_status"] == 401
+        assert result.details["method"] == "tools/list"
+        assert len(_token_requests(seen)) == 1
+
+    async def test_each_audit_fabricates_a_new_token(self):
+        seen: list[httpx2.Request] = []
+        handler = _token_gate(httpx2.Response(401), seen)
+        await _run(handler)
+        await _run(handler)
+
+        assert len({r.headers["Authorization"] for r in _token_requests(seen)}) == 2
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            httpx2.Response(403),
+            # A malformed token refused before validation, with an RFC 6750 challenge.
+            httpx2.Response(400, headers={"WWW-Authenticate": 'Bearer error="invalid_token", error_description="x"'}),
+        ],
+    )
+    async def test_other_refusals_are_supported(self, answer):
+        results = await _run(_token_gate(answer, []))
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.SUPPORTED
+        assert results[PROBE_INVALID_TOKEN].details["http_status"] == answer.status_code
+
+    async def test_served_token_is_unsupported(self):
+        answer = httpx2.Response(200, json={"jsonrpc": "2.0", "id": 7, "result": {"tools": []}})
+        results = await _run(_token_gate(answer, []))
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.UNSUPPORTED
+        assert results[PROBE_INVALID_TOKEN].details["http_status"] == 200
+
+    async def test_legacy_server_serving_the_token_is_unsupported(self):
+        no_session = httpx2.Response(400, json={"jsonrpc": "2.0", "id": 7, "error": {"code": -32600, "message": "x"}})
+        initialized = httpx2.Response(
+            200, json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "2025-11-25"}}
+        )
+        results = await _run(_token_gate(no_session, [], initialize=initialized))
+
+        result = results[PROBE_INVALID_TOKEN]
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["method"] == "initialize"
+        assert result.details["anonymous_http_status"] == 401
+
+    @pytest.mark.parametrize("status", [400, 404])
+    async def test_unexplained_4xx_is_not_applicable(self, status):
+        seen: list[httpx2.Request] = []
+        results = await _run(_token_gate(httpx2.Response(status), seen))
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert len(_token_requests(seen)) == 2
+
+    @pytest.mark.parametrize("status", [302, 408, 429, 500, 503])
+    async def test_inconclusive_answer_is_not_applicable(self, status):
+        seen: list[httpx2.Request] = []
+        answer = httpx2.Response(status, headers={"Location": "https://elsewhere.example/"})
+        results = await _run(_token_gate(answer, seen))
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert len(_token_requests(seen)) == 1
+
+    async def test_public_initialize_is_not_proof(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if request.method != "POST":
+                return httpx2.Response(405)
+            if json.loads(request.content).get("method") == "initialize":
+                return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "x"}})
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            return httpx2.Response(400)
+
+        results = await _run(handler)
+
+        result = results[PROBE_INVALID_TOKEN]
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["anonymous_http_status"] == 200
+
+    async def test_initialize_control_drops_the_callers_token(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if request.method == "DELETE":
+                return httpx2.Response(200)
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            if json.loads(request.content).get("method") == "initialize":
+                return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "x"}})
+            return httpx2.Response(400)
+
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["anonymous_http_status"] == 401
+        assert all("secret" not in r.headers.get("Authorization", "") for r in seen)
+
+    async def test_initialize_control_sends_no_cookie_the_token_earned(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "DELETE":
+                return httpx2.Response(200)
+            authed = "Authorization" in request.headers or "auth=1" in request.headers.get("Cookie", "")
+            if not authed:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            if json.loads(request.content).get("method") == "initialize":
+                return httpx2.Response(
+                    200,
+                    headers={"Set-Cookie": "auth=1; Path=/"},
+                    json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "x"}},
+                )
+            return httpx2.Response(400)
+
+        async with _client(handler) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["anonymous_http_status"] == 401
+
+    async def test_token_requests_send_no_client_cookie(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "session=valid" in request.headers.get("Cookie", ""):
+                return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 7, "result": {"tools": []}})
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            return httpx2.Response(401, headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), cookies={"session": "valid"}) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+
+    async def test_cookie_earned_by_the_token_does_not_reach_metadata_discovery(self):
+        async def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "GET":
+                await asyncio.sleep(0.05)
+                if "earned=1" in request.headers.get("Cookie", ""):
+                    return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://a.example"]})
+                return httpx2.Response(404)
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            return httpx2.Response(401, headers={"Set-Cookie": "earned=1; Path=/"})
+
+        results = await _run(handler)
+
+        assert results[PROBE_AUTH_METADATA].outcome is not ProbeOutcome.SUPPORTED
+
+    async def test_client_auth_flow_does_not_replace_the_token(self):
+        seen: list[httpx2.Request] = []
+        handler = _token_gate(httpx2.Response(401), seen)
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), auth=("user", "password")) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert _token_requests(seen)
+        assert not any(r.headers.get("Authorization", "").startswith("Basic") for r in seen)
+
+    async def test_session_opened_for_the_token_is_closed_with_the_token(self):
+        sessions = {"abc"}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            if request.method == "DELETE":
+                sessions.discard(request.headers.get("Mcp-Session-Id", ""))
+                return httpx2.Response(200)
+            return httpx2.Response(
+                200, headers={"Mcp-Session-Id": "abc"}, json={"jsonrpc": "2.0", "id": 7, "result": {}}
+            )
+
+        results = await _run(handler)
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.UNSUPPORTED
+        assert not sessions
+
+    async def test_same_origin_redirect_is_not_followed(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if request.url.path == "/public":
+                return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 7, "result": {"tools": []}})
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            return httpx2.Response(307, headers={"Location": "https://server.example/public"})
+
+        results = await _run(handler)
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert not any(
+            r.url.path == "/public" and INVALID_TOKEN_PREFIX in r.headers.get("Authorization", "") for r in seen
+        )
+
+    async def test_initialize_answered_on_an_open_stream_does_not_stall(self):
+        seen: list[httpx2.Request] = []
+
+        async def stream():
+            yield b'data: {"jsonrpc":"2.0","id":8,"result":{"protocolVersion":"2025-11-25"}}\n\n'
+            while True:
+                yield b": heartbeat\n\n"
+                await asyncio.sleep(0.01)
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if request.method == "DELETE":
+                return httpx2.Response(200)
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            if json.loads(request.content).get("method") == "initialize":
+                return httpx2.Response(
+                    200, headers={"Content-Type": "text/event-stream", "Mcp-Session-Id": "sse-1"}, content=stream()
+                )
+            return httpx2.Response(400)
+
+        async with _client(handler) as client:
+            result = await asyncio.wait_for(probes._probe_invalid_token(_HttpTarget(client, URL)), timeout=2)
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["method"] == "initialize"
+        assert any(r.method == "DELETE" and r.headers.get("Mcp-Session-Id") == "sse-1" for r in seen)
+
+    async def test_open_server_gets_no_token(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 7, "result": {"tools": []}})
+
+        results = await _run(handler)
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.NOT_APPLICABLE
+        assert not _token_requests(seen)
+
+    async def test_fabricated_token_replaces_the_callers(self):
+        seen: list[httpx2.Request] = []
+        handler = _token_gate(httpx2.Response(401), seen)
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert all("secret" not in r.headers.get("Authorization", "") for r in seen)
+
+    async def test_own_clients_send_no_caller_headers_with_the_token(self, monkeypatch):
+        seen: list[httpx2.Request] = []
+        handler = _token_gate(httpx2.Response(401), seen)
+        real_async_client = probes.async_client
+
+        def mocked(**kwargs):
+            return real_async_client(transport=httpx2.MockTransport(handler), **kwargs)
+
+        monkeypatch.setattr(probes, "async_client", mocked)
+        results = await run_all_probes(URL, headers={"Authorization": "Bearer secret", "X-Api-Key": "sekret"})
+
+        assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.SUPPORTED
+        assert _token_requests(seen)
+        assert all("X-Api-Key" not in r.headers for r in _token_requests(seen))
