@@ -2963,6 +2963,28 @@ class TestInvalidTokenProbe:
         assert result.outcome is ProbeOutcome.NOT_APPLICABLE
         assert result.details["anonymous_http_status"] == 200
 
+    async def test_initialize_control_drops_the_callers_token(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            if request.method == "DELETE":
+                return httpx2.Response(200)
+            if "Authorization" not in request.headers:
+                return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+            if json.loads(request.content).get("method") == "initialize":
+                return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "x"}})
+            return httpx2.Response(400)
+
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["anonymous_http_status"] == 401
+        assert all("secret" not in r.headers.get("Authorization", "") for r in seen)
+
     async def test_session_opened_for_the_token_is_closed_with_the_token(self):
         sessions = {"abc"}
 

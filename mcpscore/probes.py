@@ -641,6 +641,7 @@ class _HttpTarget:
         follow_redirects: bool = True,
         close_session_on_failure: bool = False,
         cleanup_headers: dict[str, str] | None = None,
+        anonymous: bool = False,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -657,7 +658,8 @@ class _HttpTarget:
         ``unobservable`` set, never as a timeout.
         With ``close_session_on_failure``, a session ID the answer issued is
         closed at the URL that answered before any failure propagates;
-        ``cleanup_headers`` are added to that DELETE.
+        ``cleanup_headers`` are added to that DELETE. With ``anonymous``, the
+        client's default ``Authorization`` is removed from the request and its cleanup.
         """
         request = self.client.build_request(
             "POST",
@@ -666,6 +668,8 @@ class _HttpTarget:
             headers={**headers, "Accept-Encoding": "identity"},
             timeout=PROBE_TIMEOUT_S,
         )
+        if anonymous:
+            request.headers.pop("Authorization", None)
         response: httpx2.Response | None = None
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
@@ -703,7 +707,7 @@ class _HttpTarget:
                     issued = _HttpProbeResponse(
                         status_code=response.status_code, headers=dict(response.headers), payload=None
                     )
-                    await answered.end_session(issued, cleanup_headers)
+                    await answered.end_session(issued, cleanup_headers, anonymous=anonymous)
             timed_out = isinstance(exc, (TimeoutError, httpx2.ReadTimeout))
             if timed_out and response is not None and response.status_code >= 400:
                 # The status already arrived and says the request was refused; only the body is missing.
@@ -807,14 +811,17 @@ class _HttpTarget:
             "truncated" if truncated else None,
         )
 
-    async def end_session(self, response: _HttpProbeResponse, extra_headers: dict[str, str] | None = None) -> None:
+    async def end_session(
+        self, response: _HttpProbeResponse, extra_headers: dict[str, str] | None = None, *, anonymous: bool = False
+    ) -> None:
         """Best-effort DELETE of a session a legacy ``initialize`` opened; never raises.
 
         Carries the negotiated ``MCP-Protocol-Version`` (a MUST on every request
         after ``initialize``) and no ``Origin``, so a conforming server has no
         reason to refuse the cleanup. ``extra_headers`` carry a per-request
-        credential the session was opened with. The answer is closed once its
-        headers arrive, and the whole exchange shares one deadline.
+        credential the session was opened with; ``anonymous`` drops the client's
+        default ``Authorization`` for a session opened without one. The answer is
+        closed once its headers arrive, and the whole exchange shares one deadline.
         """
         session_id = next((v for k, v in response.headers.items() if k.lower() == "mcp-session-id"), None)
         if not session_id:
@@ -828,6 +835,8 @@ class _HttpTarget:
         try:
             request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
             request.headers.pop("Origin", None)
+            if anonymous:
+                request.headers.pop("Authorization", None)
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 answer = await self.client.send(request, follow_redirects=False, stream=True)
                 await answer.aclose()
@@ -1672,9 +1681,13 @@ async def _probe_invalid_token(target: _HttpTarget) -> ProbeResult:
 async def _judge_served_initialize(target: _HttpTarget, details: dict[str, Any]) -> ProbeResult:
     """Judge an ``initialize`` served with the fabricated token against the same request without one."""
     control = await target.post_rpc(
-        _legacy_initialize_body(9), _legacy_headers(), follow_redirects=False, close_session_on_failure=True
+        _legacy_initialize_body(9),
+        _legacy_headers(),
+        follow_redirects=False,
+        close_session_on_failure=True,
+        anonymous=True,
     )
-    await target.end_session(control)
+    await target.end_session(control, anonymous=True)
     details["anonymous_http_status"] = control.status_code
     if _token_refused(control):
         return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.UNSUPPORTED, details)
