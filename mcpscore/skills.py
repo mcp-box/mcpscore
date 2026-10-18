@@ -274,6 +274,12 @@ def _prose(inline: Token, *, keep_code: bool = False) -> str:
     for child in inline.children or []:
         if child.type == "code_inline":
             parts.append(child.content if keep_code else " ")
+        elif child.type in ("link_open", "image"):
+            # Destinations (decoded) and titles are not code: a reader and a model see them as part of the text.
+            destination = child.attrs.get("href", child.attrs.get("src", ""))
+            parts.append(f" {unquote(str(destination))} {child.attrs.get('title', '')} ")
+            if child.type == "image":
+                parts.append(child.content)
         elif child.type in ("softbreak", "hardbreak"):
             parts.append("\n")
         else:
@@ -285,14 +291,16 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
     """Split Markdown into code blocks, paragraphs and headings, and any other non-blank source lines.
 
     Lines no block covers (link reference definitions, thematic breaks) are returned as prose blocks, so every
-    source line is in exactly one block. A document over ``MAX_MARKDOWN_BYTES`` is not parsed: all of it is prose.
+    source line is in exactly one block. A document over ``MAX_MARKDOWN_BYTES`` is not parsed: its blocks have
+    no known prose (``prose`` is empty), so only classes that count everywhere are judged in it.
     """
     # CommonMark ends a line at CR, LF or CRLF; the token line ranges count them all.
     body = normalize_newlines(body)
     lines = source_lines(body)
     blocks: list[MarkdownBlock] = []
     covered: set[int] = set()
-    tokens = _parse(body) if _parsable(body) else ()
+    parsed = _parsable(body)
+    tokens = _parse(body) if parsed else ()
     for token in tokens:
         if token.map is None or token.type not in ("fence", "code_block", "inline", "html_block"):
             continue
@@ -314,7 +322,8 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
             run.append(number)
         elif run:
             text = "\n".join(lines[run[0] : run[-1] + 1])
-            blocks.append(MarkdownBlock(first_line + run[0], text, text, text))
+            # In an unparsed document code cannot be told from prose, so code-exempt classes are not judged.
+            blocks.append(MarkdownBlock(first_line + run[0], text, text if parsed else "", text))
             run = []
     return sorted(blocks, key=lambda block: block.line)
 

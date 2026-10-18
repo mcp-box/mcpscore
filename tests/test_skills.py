@@ -579,7 +579,7 @@ class TestRobustness:
         monkeypatch.setattr(skills, "MAX_MARKDOWN_BYTES", 10)
         body = "```\n<|im_start|>\n```\n[a](x.md)\n"
         assert relative_references(body) is None
-        assert all(block.prose == block.text for block in markdown_blocks(body))
+        assert all(block.prose == "" and block.rendered == block.text for block in markdown_blocks(body))
 
     def test_parsing_at_the_limit_is_bounded(self):
         import time
