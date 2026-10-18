@@ -79,6 +79,10 @@ __all__ = [
 PROBE_TIMEOUT_S = 10.0
 """Per-request timeout for a single probe."""
 
+GET_STREAM_TIMEOUT_S = 35.0
+"""Timeout for a GET on the endpoint. Servlet-based servers send the headers of
+an SSE stream only with its first event, often a keep-alive up to 30 s apart."""
+
 PAGINATION_PROBE_TIMEOUT_S = 30.0
 """Total budget for the cache-scope traversal across all declared surfaces."""
 
@@ -822,15 +826,17 @@ class _HttpTarget:
 
     async def get_status(self, headers: dict[str, str]) -> _HttpProbeResponse:
         """GET the endpoint and close without consuming a possible legacy SSE stream."""
-        return await self.request_status("GET", headers)
+        return await self.request_status("GET", headers, wait_s=GET_STREAM_TIMEOUT_S)
 
-    async def request_status(self, method: str, headers: dict[str, str]) -> _HttpProbeResponse:
+    async def request_status(
+        self, method: str, headers: dict[str, str], *, wait_s: float = PROBE_TIMEOUT_S
+    ) -> _HttpProbeResponse:
         """Send a bodiless request and close without consuming the response body."""
         async with self.client.stream(
             method,
             self.url,
             headers=headers,
-            timeout=PROBE_TIMEOUT_S,
+            timeout=wait_s,
             follow_redirects=False,
         ) as response:
             return _HttpProbeResponse(
