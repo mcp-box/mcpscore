@@ -1331,6 +1331,12 @@ class TestAuthMetadataProbe:
             ({"client_id_metadata_document_supported": True}, True, False),
             ({"registration_endpoint": "https://auth.example/register"}, False, True),
             ({"client_id_metadata_document_supported": "true", "registration_endpoint": "  "}, False, False),
+            ({"registration_endpoint": "not-a-url"}, False, False),
+            ({"registration_endpoint": "/register"}, False, False),
+            ({"registration_endpoint": "https://"}, False, False),
+            ({"registration_endpoint": "http://auth.example/register"}, False, False),
+            ({"registration_endpoint": "https://[bad"}, False, False),
+            ({"registration_endpoint": 7}, False, False),
         ],
     )
     async def test_authorization_server_registration_paths(self, extra: dict, cimd: bool, registration: bool):
