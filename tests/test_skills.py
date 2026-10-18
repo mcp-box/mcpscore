@@ -491,7 +491,7 @@ class TestRobustness:
             started = time.perf_counter()
             strip_inline_code(attack)
             assert time.perf_counter() - started < 1.0
-        assert strip_inline_code("a ``x`y`` b `c` ```d") == "a ``x`y`` b   ```d"
+        assert strip_inline_code("a ``x`y`` b `c` ```d") == "a   b   ```d"
 
     def test_fence_closes_only_on_a_matching_delimiter(self):
         from mcpscore.skills import markdown_blocks

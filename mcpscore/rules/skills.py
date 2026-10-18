@@ -786,8 +786,17 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
             yield index, path, text, False
         read = _skill_file(evidence, entry)
         if read is not None:
-            for line, text, is_code in markdown_blocks(read.text or ""):
-                yield index, f"/{SKILL_FILE}#L{line}", text, is_code
+            text = read.text or ""
+            split = split_frontmatter(text)
+            # The frontmatter is scanned as YAML text, never as Markdown: a fence inside a block scalar must not
+            # turn the body that follows into "code".
+            if split is not None:
+                yield index, f"/{SKILL_FILE}#L2", split[0], False
+                body, first_line = split[1], split[0].count("\n") + 3
+            else:
+                body, first_line = text, 1
+            for line, block, is_code in markdown_blocks(body, first_line):
+                yield index, f"/{SKILL_FILE}#L{line}", block, is_code
     # The sampled skills/get entry is its own snapshot: frontmatter that differs from the listing's is scanned
     # too, under its own location; identical frontmatter was already scanned.
     got = evidence.get_entry

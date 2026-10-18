@@ -10,6 +10,7 @@ frontmatter with ``yaml.safe_load`` and scanned, never executed or followed.
 
 import asyncio
 import base64
+from bisect import bisect_right
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -243,8 +244,7 @@ def _label(text: str) -> str:
 
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)[^`]+\1(?!`)")
-"""An inline code span; a span that itself contains backticks is not recognised, which keeps matching linear."""
+_BACKTICK_RUN_RE = re.compile(r"`+")
 _FENCE_RE = re.compile(r"(`{3,}|~{3,})(.*)")
 
 
@@ -299,8 +299,28 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[tuple[int, str, bool
 
 
 def strip_inline_code(text: str) -> str:
-    """Replace inline code spans with a space."""
-    return _INLINE_CODE_RE.sub(" ", text)
+    """Replace inline code spans with a space.
+
+    A span opens at a run of backticks and closes at the next run of exactly the same length, so ``a`b``
+    is one span; an opening run with no closing run is literal text. Each run is looked up once.
+    """
+    runs = [match.span() for match in _BACKTICK_RUN_RE.finditer(text)]
+    by_length: dict[int, list[int]] = {}
+    for index, (start, end) in enumerate(runs):
+        by_length.setdefault(end - start, []).append(index)
+    parts, position, index = [], 0, 0
+    while index < len(runs):
+        start, end = runs[index]
+        same = by_length[end - start]
+        following = bisect_right(same, index)
+        if following < len(same):
+            closing = same[following]
+            parts += [text[position:start], " "]
+            position, index = runs[closing][1], closing + 1
+        else:
+            index += 1
+    parts.append(text[position:])
+    return "".join(parts)
 
 
 def relative_references(body: str) -> list[str]:
