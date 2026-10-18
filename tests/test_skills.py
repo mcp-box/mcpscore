@@ -113,6 +113,8 @@ class TestHelpers:
             ("skill://acme/%E6%95%B0%E6%8D%AE/SKILL.md", "skill://acme/%E6%95%B0%E6%8D%AE", "数据"),
             ("skill://acme/a%2Fb/SKILL.md", "skill://acme/a%2Fb", "a/b"),
             ("skill://x/README.md", None, None),
+            ("skill://foo?ignored/SKILL.md", "skill://foo?ignored", None),
+            ("skill://foo#ignored/SKILL.md", "skill://foo#ignored", None),
             ("/SKILL.md", None, None),
             ("no-scheme/SKILL.md", "no-scheme", None),
         ],

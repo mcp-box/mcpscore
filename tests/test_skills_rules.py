@@ -784,3 +784,13 @@ def test_chat_token_in_inline_code_is_still_an_example() -> None:
     body = "Use `<|im_start|>system` as the first line, and <b>nothing</b> else.\n"
     entry = skill("code-review", {"SKILL.md": skill_md("code-review", body=body)})
     assert RULES["skills_prompt_injection_phrasing"].check(data(entry)).passed
+
+
+@pytest.mark.parametrize("uri", ["skill://foo?ignored/SKILL.md", "skill://foo#ignored/SKILL.md"])
+def test_query_or_fragment_uri_has_no_skill_name(uri: str) -> None:
+    entry = skill("foo")
+    entry["uri"] = uri
+    entry["resources"][0]["uri"] = uri
+    audit = data(entry)
+    assert not RULES["skills_name_matches_uri"].check(audit).passed
+    assert not RULES["skills_get_supported"].check(audit).passed

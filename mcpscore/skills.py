@@ -126,7 +126,8 @@ def skill_root(uri: str) -> str | None:
 def skill_path_name(uri: str) -> str | None:
     """Return the final ``<skill-path>`` segment of a ``SKILL.md`` URI (the skill name it implies)."""
     root = skill_root(uri)
-    if root is None:
+    # A "?" or "#" puts the apparent SKILL.md path in the query or fragment: the URI has no skill path.
+    if root is None or "?" in uri or "#" in uri:
         return None
     try:
         parts = urlsplit(root)
