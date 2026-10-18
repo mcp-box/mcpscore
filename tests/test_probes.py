@@ -2040,6 +2040,20 @@ class TestAnonymousProbes:
 
         assert seen["cookie"] is None
 
+    async def test_unauthenticated_probe_ignores_client_auth_flow(self):
+        from mcpscore.probes import _probe_unauthenticated
+
+        seen: dict[str, str | None] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen["auth"] = request.headers.get("Authorization")
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"}, json={})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), auth=("user", "password")) as client:
+            await _probe_unauthenticated(_HttpTarget(client, URL))
+
+        assert seen["auth"] is None
+
     async def test_unauthenticated_probe_survives_oauth_error_body(self):
         """An RFC 6750 401 body must not crash the probe.
 
@@ -3047,6 +3061,16 @@ class TestInvalidTokenProbe:
         results = await _run(handler)
 
         assert results[PROBE_AUTH_METADATA].outcome is not ProbeOutcome.SUPPORTED
+
+    async def test_client_auth_flow_does_not_replace_the_token(self):
+        seen: list[httpx2.Request] = []
+        handler = _token_gate(httpx2.Response(401), seen)
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler), auth=("user", "password")) as client:
+            result = await probes._probe_invalid_token(_HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert _token_requests(seen)
+        assert not any(r.headers.get("Authorization", "").startswith("Basic") for r in seen)
 
     async def test_session_opened_for_the_token_is_closed_with_the_token(self):
         sessions = {"abc"}

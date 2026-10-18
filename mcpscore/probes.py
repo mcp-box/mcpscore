@@ -581,6 +581,11 @@ class _ProbeTarget(Protocol):
         raise NotImplementedError
 
 
+def _no_client_auth(anonymous: bool) -> dict[str, Any]:
+    """``send`` arguments that stop the client's ``auth`` flow from re-adding credentials to an anonymous request."""
+    return {"auth": None} if anonymous else {}
+
+
 def _strip_credentials(request: httpx2.Request, keep: dict[str, str] | None = None) -> None:
     """Remove the client's ``Authorization`` and cookie-jar credentials from one built request.
 
@@ -633,9 +638,9 @@ class _HttpTarget:
         for header in omit_headers:
             request.headers.pop(header, None)
         response = (
-            await send_within_origin(self.client, request)
+            await send_within_origin(self.client, request, **_no_client_auth(anonymous))
             if follow_redirects
-            else await self.client.send(request, follow_redirects=False)
+            else await self.client.send(request, follow_redirects=False, **_no_client_auth(anonymous))
         )
         return _HttpProbeResponse(
             status_code=response.status_code,
@@ -686,9 +691,11 @@ class _HttpTarget:
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 response = (
-                    await send_within_origin(self.client, request, stream=True)
+                    await send_within_origin(self.client, request, stream=True, **_no_client_auth(anonymous))
                     if follow_redirects
-                    else await self.client.send(request, follow_redirects=False, stream=True)
+                    else await self.client.send(
+                        request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
+                    )
                 )
                 content_type = response.headers.get("content-type", "")
                 encoding = response.headers.get("content-encoding", "").strip().lower()
@@ -850,7 +857,9 @@ class _HttpTarget:
             if anonymous:
                 _strip_credentials(request, extra_headers)
             async with asyncio.timeout(PROBE_TIMEOUT_S):
-                answer = await self.client.send(request, follow_redirects=False, stream=True)
+                answer = await self.client.send(
+                    request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
+                )
                 await answer.aclose()
         except Exception:  # noqa: BLE001 — courtesy only; the observation is already made
             return
@@ -1755,7 +1764,7 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
     """
     request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
     _strip_credentials(request)
-    response = await send_within_origin(client, request)
+    response = await send_within_origin(client, request, auth=None)
     if response.status_code != 200:
         return response.status_code, None
     try:
