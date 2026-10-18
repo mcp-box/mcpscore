@@ -54,6 +54,24 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
         ),
         ("annotations_present", [tool()], "/annotations", "actual effects"),
         (
+            "annotations_destructive_declared",
+            [tool(name="delete_report", annotations=ToolAnnotations(destructive_hint=False))],
+            "/annotations",
+            "ask before calling it",
+        ),
+        (
+            "annotations_read_only_declared",
+            [tool(annotations=ToolAnnotations(open_world_hint=False))],
+            "/annotations/readOnlyHint",
+            "only read",
+        ),
+        (
+            "annotations_hints_consistent",
+            [tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=True))],
+            "/annotations/destructiveHint",
+            "drop destructiveHint",
+        ),
+        (
             "execution_consistent",
             [tool(execution=ToolExecution(task_support="required"))],
             "/execution/taskSupport",
