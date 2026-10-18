@@ -762,7 +762,7 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
         )
 
 
-def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int, str, str, bool]]:
+def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, str, bool]]:
     """Yield (listing index, location, text, is code) for frontmatter strings and each read ``SKILL.md`` block.
 
     ``SKILL.md`` is scanned a paragraph or fenced code block at a time, so a directive wrapped across lines is
@@ -788,6 +788,14 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int, str, str, bool
         if read is not None:
             for line, text, is_code in markdown_blocks(read.text or ""):
                 yield index, f"/{SKILL_FILE}#L{line}", text, is_code
+    # The sampled skills/get entry is its own snapshot: frontmatter that differs from the listing's is scanned
+    # too, under its own location; identical frontmatter was already scanned.
+    got = evidence.get_entry
+    if isinstance(got, dict):
+        listed = next(((i, e) for i, e in _entries(evidence) if e.get("uri") == got.get("uri")), None)
+        if listed is None or not _json_equal(got.get("frontmatter"), listed[1].get("frontmatter")):
+            for path, text in strings(got.get("frontmatter"), "/skills/get/frontmatter"):
+                yield listed[0] if listed else None, path, text, False
 
 
 class SkillsSecurityRule(SkillsBaseRule):

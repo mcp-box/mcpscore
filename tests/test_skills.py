@@ -531,3 +531,23 @@ class TestRobustness:
         assert [e["uri"] for e in evidence.entries or []] == ["skill://a/SKILL.md"]
         assert evidence.list_incomplete
         assert evidence.list_error is None
+
+    @pytest.mark.parametrize(
+        ("link", "target"),
+        [
+            ("[g](references/MISSING(1).md)", "references/MISSING(1).md"),
+            ("[g](references/A.md 'Guide')", "references/A.md"),
+            ("[g](references/A.md (Guide))", "references/A.md"),
+            ('[g](references/A.md "Guide")', "references/A.md"),
+        ],
+    )
+    def test_link_forms(self, link: str, target: str):
+        assert relative_references(link) == [target]
+
+    def test_nested_parentheses_stay_linear(self):
+        import time
+
+        for attack in ["[a](" + "(" * 200_000, "[a](x" + "(x)" * 100_000, "[a](x '" + "a" * 300_000]:
+            started = time.perf_counter()
+            relative_references(attack)
+            assert time.perf_counter() - started < 1.0

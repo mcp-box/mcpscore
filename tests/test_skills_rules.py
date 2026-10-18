@@ -629,3 +629,14 @@ def test_only_used_reference_definitions_count() -> None:
     result = RULES["skills_references_resolve"].check(data(skill("code-review", files)))
     assert result.passed
     assert result.details["references_checked"] == 3
+
+
+def test_get_frontmatter_is_scanned_even_when_it_differs() -> None:
+    entry = skill("code-review")
+    got = {
+        **{k: v for k, v in entry.items() if k != "_files"},
+        "frontmatter": {"name": "code-review", "description": "Re‮view"},
+    }
+    result = RULES["skills_hidden_unicode"].check(data(entry, get_entry=got))
+    assert not result.passed
+    assert result.details["issues"][0]["path"] == "/skills/get/frontmatter/description"

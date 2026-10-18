@@ -223,7 +223,12 @@ def _json_scalar(value: Any) -> str:
 
 # Each part stops at the next bracket, parenthesis or line end, so a failed match never rescans the rest of the
 # text: extraction stays linear on untrusted input full of unmatched brackets.
-_LINK_RE = re.compile(r"!?\[[^\[\]\n]*\]\(\s*(?:<([^<>\n]+)>|([^()\[\]<>\s]+))(?:[ \t]+\"[^\"\n]{0,256}\")?\s*\)")
+_LINK_RE = re.compile(
+    r"!?\[[^\[\]\n]*\]\(\s*"
+    r"(?:<([^<>\n]+)>|((?:[^()\[\]<>\s]|\([^()\[\]<>\s]*\))+))"  # destination: one level of balanced parens
+    r"(?:[ \t]+(?:\"[^\"\n]{0,256}\"|'[^'\n]{0,256}'|\([^()\n]{0,256}\)))?"  # "title", 'title' or (title)
+    r"\s*\)"
+)
 
 
 _DEFINITION_RE = re.compile(r"^ {0,3}\[([^\[\]\n]+)\]:[ \t]*(?:<([^<>\n]+)>|([^\s<>]+))[^\n]*", re.MULTILINE)
