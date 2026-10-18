@@ -517,6 +517,7 @@ dependencies = [
     { name = "httpx2" },
     { name = "jsonschema" },
     { name = "mcp" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -535,6 +536,7 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.10.0" },
     { name = "jsonschema", specifier = ">=4.21" },
     { name = "mcp", specifier = "==2.3.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [package.metadata.requires-dev]

@@ -37,6 +37,7 @@ from .report_evidence import report_evidence
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
 from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, rule_sort_key
 from .rules.packaging import PACKAGING_GROUP
+from .skills import collect_skills, declared_settings
 from .spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,7 @@ class MCPAuditor:
                 await self._collect_resource_templates()
             if self.audit_data.capabilities.prompts is not None:
                 await self._collect_prompts()
+            await self._collect_skills()
         await self._collect_probes()
         await self._collect_session_cursor_probes()
         self._recover_tools_from_stateless_probe()
@@ -982,6 +984,13 @@ class MCPAuditor:
             logger.error("No resource templates to audit")
             return
         self.audit_data.resource_templates = templates
+
+    async def _collect_skills(self) -> None:
+        """Collect Skills extension evidence when the server declares the extension (SEP-2640)."""
+        settings = declared_settings(self.audit_data.capabilities)
+        if settings is None or self.mcp_client is None:
+            return
+        self.audit_data.skills = await collect_skills(self.mcp_client, settings)
 
     def get_audit_report(self) -> dict:
         """Generate a machine-readable report of the full audit.

@@ -37,11 +37,12 @@ from mcp_types import (
     ListResourceTemplatesResult,
     PaginatedRequestParams,
     Prompt,
+    Request,
     Resource,
     ResourceTemplate,
     Tool,
 )
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .diagnostics import validation_diagnostics
 from .enums import ConnectionErrorReason, MCPTransportType
@@ -56,6 +57,7 @@ from .probes import (
     failure_cause,
 )
 from .redirects import REFUSED_DOWNGRADE, REFUSED_TOO_MANY, RefusedRedirect, send_within_origin, unfollowed_redirect
+from .skills import SKILLS_EXTENSION
 from .tls import async_client
 
 if TYPE_CHECKING:
@@ -563,6 +565,16 @@ def _log_refused_redirect(status: int | None, refused: RefusedRedirect, server_u
     )
 
 
+class _RawRequest(Request[dict[str, Any], str]):
+    """A request whose params pass through as given; the generic model drops fields it does not declare."""
+
+
+class _RawResult(BaseModel):
+    """A result object kept as sent: every field passes through as an extra."""
+
+    model_config = ConfigDict(extra="allow")
+
+
 class MCPClient:
     """Client for connecting to and communicating with MCP (Model Context Protocol) servers.
 
@@ -753,6 +765,8 @@ class MCPClient:
                     write_stream,
                     read_timeout_seconds=REQUEST_TIMEOUT_S,
                     client_info=Implementation(name=CLIENT_NAME, version=client_version()),
+                    # Some servers expose their skills only to a client that declares the extension.
+                    extensions={SKILLS_EXTENSION: {}},
                 )
             )
             init_result: InitializeResult = await asyncio.wait_for(
@@ -1403,6 +1417,26 @@ class MCPClient:
 
         results = await asyncio.gather(*(observe(name, probe_id) for name, probe_id in probe_ids.items()))
         return {result.probe_id: result for result in results}
+
+    async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send one JSON-RPC request the SDK has no typed method for and return its result object.
+
+        Raises:
+            RuntimeError: No session is open.
+            MCPError: The server answered with an error, or the request timed out.
+
+        """
+        if not self.session:
+            raise RuntimeError(ERROR_NO_ACTIVE_SESSION)
+        result = await self.session.send_request(_RawRequest(method=method, params=params), _RawResult)
+        return dict(result.model_extra or {})
+
+    async def read_resource_contents(self, uri: str) -> list[dict[str, Any]]:
+        """Read one resource and return its contents as wire-shaped dicts (``text`` or base64 ``blob``)."""
+        if not self.session:
+            raise RuntimeError(ERROR_NO_ACTIVE_SESSION)
+        result = await self.session.read_resource(uri)
+        return [item.model_dump(by_alias=True, mode="json", exclude_none=True) for item in result.contents]
 
     async def _list_all_pages(
         self,

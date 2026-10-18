@@ -39,6 +39,7 @@ _ENTITY_LABELS = {
     "resource": "Resource",
     "resource_template": "Resource template",
     "prompt": "Prompt",
+    "skill": "Skill",
     "server": "Server",
     "catalog": "Catalog",
     "response": "Response",

@@ -72,6 +72,7 @@ dependencies = [
     "mcp==2.3.0",
     "httpx2>=2.10.0",
     "jsonschema>=4.21",
+    "pyyaml>=6.0",
 ]
 
 [project.urls]

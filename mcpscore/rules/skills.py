@@ -1,0 +1,823 @@
+"""Skills extension rules (SEP-2640): servers that declare ``io.modelcontextprotocol/skills``.
+
+A server that declares the extension serves Agent Skills as MCP resources and
+answers ``skills/list`` and ``skills/get``. These rules judge only such servers;
+every other server skips them as not-applicable. The skill format is the Agent
+Skills specification (agentskills.io), which SEP-2640 adopts unchanged.
+"""
+
+from collections.abc import Iterator
+import re
+from typing import Any, ClassVar
+
+from ..skills import (
+    DIGEST_RE,
+    SKILL_FILE,
+    SkillFile,
+    SkillsEvidence,
+    declared_settings,
+    manifest,
+    name_problems,
+    parse_frontmatter,
+    relative_references,
+    resolve_reference,
+    skill_path_name,
+    skill_root,
+    split_frontmatter,
+)
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+)
+from .catalog_diagnostics import catalog_result, field_issue
+from .catalog_security import hidden_unicode_classes, injection_classes, secret_classes
+from .registry import register_rule
+
+SEP = "MCP Skills Extension (SEP-2640, Final)"
+AGENT_SKILLS = "Agent Skills specification (agentskills.io/specification, read 2026-10-18)"
+
+
+def _entries(evidence: SkillsEvidence) -> Iterator[tuple[int, dict[str, Any]]]:
+    """Yield the listing entries that are objects, with their listing index."""
+    for index, entry in enumerate(evidence.entries or []):
+        if isinstance(entry, dict):
+            yield index, entry
+
+
+def _skill_file(evidence: SkillsEvidence, entry: dict[str, Any]) -> SkillFile | None:
+    """Return the read of an entry's ``SKILL.md`` when it returned content."""
+    uri = entry.get("uri")
+    read = evidence.files.get(uri) if isinstance(uri, str) else None
+    return read if read is not None and read.error is None and read.text is not None else None
+
+
+class SkillsBaseRule(BaseRule):
+    """Base for rules that judge a server declaring the Skills extension."""
+
+    group_name = "skills"
+    group_order = 10
+    needs_listing: ClassVar[bool] = True
+    """The rule judges ``skills/list`` entries, so it skips when the listing is unavailable or empty."""
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless the server declared the extension and its skills evidence was collected."""
+        if audit_data.capabilities is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if declared_settings(audit_data.capabilities) is None:
+            return SKIP_REASON_NOT_APPLICABLE
+        evidence = audit_data.skills
+        if evidence is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if self.needs_listing:
+            if evidence.entries is None:
+                return SKIP_REASON_INSUFFICIENT_DATA
+            if not evidence.entries:
+                # An empty listing is legal (SEP-2640 §Enumeration): no skill to judge, not a failure.
+                return SKIP_REASON_NOT_APPLICABLE
+        return None
+
+    @staticmethod
+    def _evidence(audit_data: AuditData) -> SkillsEvidence:
+        assert audit_data.skills is not None  # noqa: S101 — guaranteed by skip_reason
+        return audit_data.skills
+
+    def _result(
+        self, *, passed: bool, message: str, details: dict[str, Any], fix: str, issues: list[dict[str, Any]]
+    ) -> RuleResult:
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details=details,
+            suggested_fix=fix,
+            issues=issues,
+        )
+
+
+def _issue(index: int | None, path: str, reason: str, expected: str) -> dict[str, Any]:
+    return field_issue("skill", index, path, reason, expected)
+
+
+@register_rule
+class SkillsListSupportedRule(SkillsBaseRule):
+    """Medium check: a server declaring the extension answers ``skills/list`` with a ``skills`` array."""
+
+    rule_id = "skills_list_supported"
+    basis = f"{SEP} §Enumeration via skills/list (MUST implement), §Capability Declaration"
+    rule_order = 1
+    needs_listing = False
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - skills/list Answers"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the listing timed out: an unanswered request says nothing either way."""
+        reason = super().skip_reason(audit_data)
+        if reason is None and (self._evidence(audit_data).list_error or {}).get("outcome") == "timeout":
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return reason
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: ``skills/list`` returns a result carrying a ``skills`` array (it may be empty)."""
+        evidence = self._evidence(audit_data)
+        error = evidence.list_error
+        passed = error is None and not evidence.list_malformed
+        if passed:
+            message = f"✅ skills/list answered with {len(evidence.entries or [])} skill(s)"
+        elif error is not None:
+            message = "❌ skills/list failed" + (
+                f" with JSON-RPC error {error['error_code']}" if "error_code" in error else ""
+            )
+        else:
+            message = "❌ skills/list answered without a skills array"
+        return self._result(
+            passed=passed,
+            message=message,
+            details={"skills": len(evidence.entries or []), "error": error, "incomplete": evidence.list_incomplete},
+            fix=(
+                "Implement skills/list: return {skills: [...]} with one entry per skill you serve. An empty array is "
+                "valid for a catalog you cannot enumerate."
+            ),
+            issues=[] if passed else [_issue(None, "/skills", "skills_list_failed", "a result with a skills array")],
+        )
+
+
+@register_rule
+class SkillsGetSupportedRule(SkillsBaseRule):
+    """Medium check: ``skills/get`` returns the entry of a listed skill."""
+
+    rule_id = "skills_get_supported"
+    basis = f"{SEP} §Retrieval via skills/get (MUST implement; MUST answer for every skill served)"
+    rule_order = 2
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - skills/get Answers"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when no listed skill had a URI to ask for, or the call timed out."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        evidence = self._evidence(audit_data)
+        if evidence.get_uri is None:
+            return SKIP_REASON_NOT_APPLICABLE
+        if (evidence.get_error or {}).get("outcome") == "timeout":
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: ``skills/get`` for the first listed ``SKILL.md`` URI returns a skill entry with that URI."""
+        evidence = self._evidence(audit_data)
+        entry = evidence.get_entry
+        passed = evidence.get_error is None and isinstance(entry, dict) and entry.get("uri") == evidence.get_uri
+        if passed:
+            message = "✅ skills/get returned the entry of a listed skill"
+        elif evidence.get_error is not None:
+            code = evidence.get_error.get("error_code")
+            message = "❌ skills/get failed for a listed skill" + (f" with JSON-RPC error {code}" if code else "")
+        else:
+            message = "❌ skills/get did not return a skill entry for the requested URI"
+        return self._result(
+            passed=passed,
+            message=message,
+            details={"error": evidence.get_error},
+            fix=(
+                "Implement skills/get: given a skill's SKILL.md URI, return {skill: {...}}, the same entry skills/list "
+                "carries, for every skill you serve."
+            ),
+            issues=[] if passed else [_issue(None, "/skill", "skills_get_failed", "a skill entry for the listed URI")],
+        )
+
+
+@register_rule
+class SkillsResourcesCapabilityRule(SkillsBaseRule):
+    """Medium check: a server declaring the extension also declares the ``resources`` capability."""
+
+    rule_id = "skills_resources_capability"
+    basis = f"{SEP} §Capability Declaration (MUST also declare the resources capability)"
+    rule_order = 3
+    needs_listing = False
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - Resources Capability Declared"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: skill files are served as resources, so the ``resources`` capability must be declared."""
+        passed = getattr(audit_data.capabilities, "resources", None) is not None
+        return self._result(
+            passed=passed,
+            message=(
+                "✅ The resources capability is declared alongside the skills extension"
+                if passed
+                else "❌ The skills extension is declared without the resources capability"
+            ),
+            details={},
+            fix="Declare the resources capability: clients read skill files with resources/read.",
+            issues=[]
+            if passed
+            else [_issue(None, "/capabilities/resources", "missing_capability", "a resources capability")],
+        )
+
+
+@register_rule
+class SkillsEntriesWellFormedRule(SkillsBaseRule):
+    """Medium check: every listing entry has a string ``uri`` and frontmatter with ``name`` and ``description``."""
+
+    rule_id = "skills_entries_well_formed"
+    basis = f"{SEP} §Enumeration via skills/list (result fields), §Frontmatter; {AGENT_SKILLS} §Frontmatter"
+    rule_order = 4
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - Listing Entries Well-Formed"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: each entry is an object with ``uri`` and a frontmatter object holding non-empty strings.
+
+        The frontmatter is the skill's ``SKILL.md`` YAML frontmatter rendered as JSON; Agent Skills requires
+        ``name`` and a ``description`` of 1-1024 characters.
+        """
+        issues = []
+        for index, entry in enumerate(self._evidence(audit_data).entries or []):
+            if not isinstance(entry, dict):
+                issues.append(_issue(index, "", "not_an_object", "a skill entry object"))
+                continue
+            if not isinstance(entry.get("uri"), str) or not entry["uri"]:
+                issues.append(_issue(index, "/uri", "missing_uri", "the URI of the skill's SKILL.md"))
+            frontmatter = entry.get("frontmatter")
+            if not isinstance(frontmatter, dict):
+                issues.append(_issue(index, "/frontmatter", "missing_frontmatter", "the SKILL.md frontmatter as JSON"))
+                continue
+            if not isinstance(frontmatter.get("name"), str) or not frontmatter["name"]:
+                issues.append(_issue(index, "/frontmatter/name", "missing_name", "a non-empty name"))
+            description = frontmatter.get("description")
+            if not isinstance(description, str) or not 1 <= len(description) <= 1024:
+                issues.append(
+                    _issue(
+                        index, "/frontmatter/description", "invalid_description", "a description of 1-1024 characters"
+                    )
+                )
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ Every skills/list entry is well-formed"
+            if passed
+            else f"❌ Number of skills/list entry problems: {len(issues)}",
+            details={},
+            fix=(
+                "Give every skills/list entry a uri (the SKILL.md resource URI) and a frontmatter object copied from "
+                "SKILL.md, with a name and a description of at most 1024 characters."
+            ),
+            issues=issues,
+        )
+
+
+def _manifest_issues(index: int, entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Check one entry's ``resources``: ``"dynamic"`` or a complete array of ``{uri, digest, size}``."""
+    resources = entry.get("resources")
+    if resources == "dynamic":
+        return []
+    if not isinstance(resources, list):
+        return [_issue(index, "/resources", "missing_resources", 'an array of skill files or "dynamic"')]
+    issues: list[dict[str, Any]] = []
+    uri = entry.get("uri")
+    root = skill_root(uri) if isinstance(uri, str) else None
+    seen: set[str] = set()
+    for position, item in enumerate(resources):
+        path = f"/resources/{position}"
+        if not isinstance(item, dict) or not isinstance(item.get("uri"), str):
+            issues.append(_issue(index, path, "invalid_file_entry", "an object with uri, digest and size"))
+            continue
+        if not isinstance(item.get("digest"), str) or not DIGEST_RE.fullmatch(item["digest"]):
+            issues.append(_issue(index, f"{path}/digest", "invalid_digest", "sha256: followed by 64 lowercase hex"))
+        size = item.get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            issues.append(_issue(index, f"{path}/size", "invalid_size", "the file's length in bytes"))
+        if item["uri"] in seen:
+            issues.append(_issue(index, f"{path}/uri", "duplicate_file", "each file listed once"))
+        seen.add(item["uri"])
+        if root is not None and item["uri"] != uri and not item["uri"].startswith(root + "/"):
+            issues.append(_issue(index, f"{path}/uri", "outside_skill", "a file inside the skill directory"))
+    if isinstance(uri, str) and uri not in seen:
+        issues.append(_issue(index, "/resources", "skill_file_unlisted", "an entry for the skill's SKILL.md"))
+    return issues
+
+
+@register_rule
+class SkillsResourcesManifestRule(SkillsBaseRule):
+    """Medium check: each skill lists its files with digests and sizes, or declares itself dynamic."""
+
+    rule_id = "skills_resources_manifest"
+    basis = f'{SEP} §Resources (REQUIRED; complete array or "dynamic"), §Integrity and verification (digest format)'
+    rule_order = 5
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - File Manifest Valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: ``resources`` is ``"dynamic"`` or a complete array of valid ``{uri, digest, size}`` items.
+
+        The array lists every file once, including the entry's ``SKILL.md``, all inside the skill directory.
+        Hosts must not load an entry without it.
+        """
+        evidence = self._evidence(audit_data)
+        issues = [issue for index, entry in _entries(evidence) for issue in _manifest_issues(index, entry)]
+        dynamic = sum(1 for _, entry in _entries(evidence) if entry.get("resources") == "dynamic")
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ Every skill lists its files with digests and sizes, or is marked dynamic"
+            if passed
+            else f"❌ Number of skill file manifest problems: {len(issues)}",
+            details={"dynamic_skills": dynamic},
+            fix=(
+                "Set resources on every entry: list each file once, SKILL.md included, as "
+                '{uri, digest: "sha256:<hex>", size}, or set "dynamic" for generated skills.'
+            ),
+            issues=issues,
+        )
+
+
+@register_rule
+class SkillsNameMatchesUriRule(SkillsBaseRule):
+    """Medium check: a skill's URI ends in ``<name>/SKILL.md``."""
+
+    rule_id = "skills_name_matches_uri"
+    basis = f"{SEP} §Resource Mapping (final skill-path segment MUST equal the frontmatter name), §Frontmatter"
+    rule_order = 6
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - Name Matches URI"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: the URI ends in ``/SKILL.md`` and its last skill-path segment equals ``frontmatter.name``.
+
+        That is what lets a host recover the skill name from the URI alone.
+        """
+        issues = []
+        for index, entry in _entries(self._evidence(audit_data)):
+            uri, frontmatter = entry.get("uri"), entry.get("frontmatter")
+            name = frontmatter.get("name") if isinstance(frontmatter, dict) else None
+            if not isinstance(uri, str) or not isinstance(name, str):
+                continue
+            if skill_root(uri) is None:
+                issues.append(_issue(index, "/uri", "not_skill_md", f"a URI ending in /{SKILL_FILE}"))
+            elif skill_path_name(uri) != name:
+                issues.append(_issue(index, "/uri", "name_mismatch", "a skill path whose last segment is the name"))
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ Every skill URI ends in <name>/SKILL.md"
+            if passed
+            else f"❌ Number of skills whose URI does not match their name: {len(issues)}",
+            details={},
+            fix=(
+                "Serve each skill at <prefix>/<name>/SKILL.md, where <name> is the frontmatter name, "
+                "e.g. skill://acme/billing/refunds/SKILL.md for name: refunds."
+            ),
+            issues=issues,
+        )
+
+
+@register_rule
+class SkillsNameValidRule(SkillsBaseRule):
+    """Medium check: skill names follow the Agent Skills naming rules."""
+
+    rule_id = "skills_name_valid"
+    basis = f"{AGENT_SKILLS} §name field; {SEP} §Resource Mapping (the name MUST satisfy the naming rules)"
+    rule_order = 7
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - Names Valid"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: 1-64 characters of ``a-z``, ``0-9`` and single hyphens, not at either end."""
+        issues = []
+        for index, entry in _entries(self._evidence(audit_data)):
+            frontmatter = entry.get("frontmatter")
+            name = frontmatter.get("name") if isinstance(frontmatter, dict) else None
+            if isinstance(name, str) and name and name_problems(name):
+                issues.append(
+                    {
+                        **_issue(index, "/frontmatter/name", "invalid_name", "1-64 of a-z, 0-9 and single hyphens"),
+                        "problems": name_problems(name),
+                    }
+                )
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ Every skill name follows the Agent Skills naming rules"
+            if passed
+            else f"❌ Number of skills with invalid names: {len(issues)}",
+            details={},
+            fix=(
+                "Rename the skill with lowercase letters, digits and single hyphens, at most 64 characters, not "
+                "starting or ending with a hyphen, and rename its directory to match."
+            ),
+            issues=issues,
+        )
+
+
+def _listed_size(item: dict[str, Any]) -> int | None:
+    size = item.get("size")
+    return size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None
+
+
+def _listed_digest(item: dict[str, Any]) -> str | None:
+    digest = item.get("digest")
+    return digest if isinstance(digest, str) and DIGEST_RE.fullmatch(digest) else None
+
+
+def _listed_files(evidence: SkillsEvidence) -> Iterator[tuple[int, int, dict[str, Any], SkillFile]]:
+    """Yield each read file whose manifest item lists a valid size or digest, with its index and position.
+
+    An item without either has nothing to verify against; skills_resources_manifest reports it.
+    """
+    for index, entry in _entries(evidence):
+        for position, item in enumerate(manifest(entry) or []):
+            uri = item.get("uri") if isinstance(item, dict) else None
+            read = evidence.files.get(uri) if isinstance(uri, str) else None
+            if read is None or read.error is not None:
+                continue
+            if _listed_size(item) is not None or _listed_digest(item) is not None:
+                yield index, position, item, read
+
+
+@register_rule
+class SkillsDigestIntegrityRule(SkillsBaseRule):
+    """High check: skill files served match the digest and size the listing promised."""
+
+    rule_id = "skills_digest_integrity"
+    basis = f"{SEP} §Integrity and verification (hosts MUST NOT use content that fails the digest or size)"
+    rule_order = 8
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - Files Match Their Digests"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when no file with a listed digest was read (dynamic skills only, or every read failed)."""
+        reason = super().skip_reason(audit_data)
+        if reason is None and next(_listed_files(self._evidence(audit_data)), None) is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return reason
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """High check: each read file's byte length equals ``size`` and its SHA-256 equals ``digest``.
+
+        A mismatch means hosts refuse the file: the content is not what users approved from the listing.
+        """
+        evidence = self._evidence(audit_data)
+        issues, checked = [], 0
+        for index, position, item, read in _listed_files(evidence):
+            checked += 1
+            size, digest = _listed_size(item), _listed_digest(item)
+            if size is not None and read.size != size:
+                issues.append(_issue(index, f"/resources/{position}/size", "size_mismatch", "the served byte length"))
+            elif digest is not None and read.digest != digest:
+                issues.append(_issue(index, f"/resources/{position}/digest", "digest_mismatch", "the served SHA-256"))
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message=f"✅ {checked} skill file(s) match their listed digest and size"
+            if passed
+            else f"❌ Number of skill files that do not match their listing: {len(issues)} of {checked} read",
+            details={"files_checked": checked, "budget_exhausted": evidence.budget_exhausted},
+            fix=(
+                "Recompute each file's digest and size from the exact bytes resources/read returns, and refresh the "
+                "listing whenever a skill file changes."
+            ),
+            issues=issues,
+        )
+
+
+@register_rule
+class SkillsFrontmatterMatchesRule(SkillsBaseRule):
+    """High check: the served ``SKILL.md`` frontmatter is the frontmatter the listing shows."""
+
+    rule_id = "skills_frontmatter_matches"
+    basis = (
+        f"{SEP} §Frontmatter (MUST be identical in content), §Integrity and verification (hosts MUST compare "
+        f"field by field); {AGENT_SKILLS} §SKILL.md format"
+    )
+    rule_order = 9
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - SKILL.md Frontmatter Matches Listing"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when no listed ``SKILL.md`` was read."""
+        reason = super().skip_reason(audit_data)
+        evidence = audit_data.skills
+        if (
+            reason is None
+            and evidence is not None
+            and not any(_skill_file(evidence, entry) for _, entry in _entries(evidence))
+        ):
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return reason
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """High check: each read ``SKILL.md`` starts with YAML frontmatter equal to the entry's ``frontmatter``.
+
+        Hosts parse the served file and refuse the skill on any difference, so what users approve from the
+        listing is what the model receives.
+        """
+        evidence = self._evidence(audit_data)
+        issues, checked = [], 0
+        for index, entry in _entries(evidence):
+            read = _skill_file(evidence, entry)
+            if read is None or not isinstance(entry.get("frontmatter"), dict):
+                continue
+            checked += 1
+            try:
+                served = parse_frontmatter(read.text or "")
+            except ValueError:
+                issues.append(_issue(index, f"/{SKILL_FILE}", "frontmatter_unparseable", "YAML frontmatter"))
+                continue
+            if served != entry["frontmatter"]:
+                issues.append(_issue(index, "/frontmatter", "frontmatter_mismatch", "the served SKILL.md frontmatter"))
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message=f"✅ {checked} served SKILL.md file(s) carry the frontmatter their listing shows"
+            if passed
+            else f"❌ Number of SKILL.md files whose frontmatter differs from the listing: {len(issues)} of {checked}",
+            details={"skills_checked": checked},
+            fix=(
+                "Build the listing's frontmatter by parsing the served SKILL.md, so both always carry the same "
+                "fields and values."
+            ),
+            issues=issues,
+        )
+
+
+@register_rule
+class SkillsReferencesResolveRule(SkillsBaseRule):
+    """Low check: relative links in ``SKILL.md`` point at files the skill lists."""
+
+    rule_id = "skills_references_resolve"
+    basis = (
+        f"{SEP} §Reading (relative references resolve against the skill root), §Resources (complete file list); "
+        f"{AGENT_SKILLS} §File references"
+    )
+    rule_order = 10
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - SKILL.md References Resolve"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when no ``SKILL.md`` of a skill with a file manifest was read."""
+        reason = super().skip_reason(audit_data)
+        evidence = audit_data.skills
+        if (
+            reason is None
+            and evidence is not None
+            and not any(_skill_file(evidence, entry) and manifest(entry) for _, entry in _entries(evidence))
+        ):
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return reason
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Low check: every relative Markdown link in a read ``SKILL.md`` body names a file in the skill's manifest.
+
+        Hosts may read only listed files while acting on a skill, so a link to anything else is a dead end for
+        the agent.
+        """
+        evidence = self._evidence(audit_data)
+        issues, references = [], 0
+        for index, entry in _entries(evidence):
+            read, files = _skill_file(evidence, entry), manifest(entry)
+            root = skill_root(entry["uri"]) if isinstance(entry.get("uri"), str) else None
+            if read is None or files is None or root is None:
+                continue
+            listed = {item.get("uri") for item in files if isinstance(item, dict)}
+            split = split_frontmatter(read.text or "")
+            body = split[1] if split else read.text or ""
+            for target in relative_references(body):
+                references += 1
+                resolved = resolve_reference(root, target)
+                if resolved is None or resolved not in listed:
+                    issues.append(
+                        _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")
+                    )
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message=f"✅ All {references} relative link(s) in SKILL.md files point at listed skill files"
+            if passed
+            else f"❌ Number of SKILL.md links to files the skill does not list: {len(issues)} of {references}",
+            details={"references_checked": references},
+            fix=(
+                "Link supporting files by their path relative to the skill root (references/GUIDE.md) and list each "
+                "linked file in the skill's resources."
+            ),
+            issues=issues,
+        )
+
+
+def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int, str, str, bool]]:
+    """Yield (listing index, location, text, in code block) for frontmatter strings and each read ``SKILL.md`` line."""
+
+    def strings(value: Any, path: str) -> Iterator[tuple[str, str]]:
+        if isinstance(value, str):
+            yield path, value
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                yield from strings(item, f"{path}/{key}")
+        elif isinstance(value, list):
+            for position, item in enumerate(value):
+                yield from strings(item, f"{path}/{position}")
+
+    for index, entry in _entries(evidence):
+        for path, text in strings(entry.get("frontmatter"), "/frontmatter"):
+            yield index, path, text, False
+        read = _skill_file(evidence, entry)
+        if read is not None:
+            fence: str | None = None
+            for number, line in enumerate((read.text or "").splitlines(), start=1):
+                marker = line.lstrip()[:3]
+                if marker in ("```", "~~~") and (fence is None or marker == fence):
+                    fence = None if fence else marker
+                    continue
+                yield index, f"/{SKILL_FILE}#L{number}", line, fence is not None
+
+
+_INLINE_CODE_RE = re.compile(r"(`+)(?:(?!\1).)+?\1")
+
+
+class SkillsSecurityRule(SkillsBaseRule):
+    """Base for the catalog security checks applied to skill frontmatter and ``SKILL.md`` text."""
+
+    group_name = "security"
+    group_order = 3
+    issue_reason: ClassVar[str]
+    expected: ClassVar[str]
+    passed_message: ClassVar[str]
+    failure_label: ClassVar[str]
+    fix: ClassVar[str]
+    allowed_in_code: ClassVar[frozenset[str]] = frozenset()
+    """Classes that do not count inside code (fenced blocks and inline spans), where a skill shows examples."""
+
+    def matches(self, text: str) -> list[str]:
+        """Return the class name of each finding in *text*."""
+        raise NotImplementedError
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Scan skill text and report locations (listing index and line), never the matched text."""
+        issues, classes = [], set()
+        for index, path, text, in_code in _skill_texts(self._evidence(audit_data)):
+            found = self.matches(text)
+            if found and self.allowed_in_code:
+                prose = set() if in_code else set(self.matches(_INLINE_CODE_RE.sub(" ", text)))
+                found = [name for name in found if name not in self.allowed_in_code or name in prose]
+            if found:
+                classes.update(found)
+                issues.append({**_issue(index, path, self.issue_reason, self.expected), "matched": sorted(set(found))})
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message=f"✅ {self.passed_message}" if passed else f"❌ Number of {self.failure_label}: {len(issues)}",
+            details={"matched": sorted(classes)},
+            fix=self.fix,
+            issues=issues,
+        )
+
+
+_SECURITY_BASIS = (
+    f"{SEP} §Security Implications (skill content is untrusted input); OWASP MCP Top 10 (beta) MCP03:2025 Tool "
+    "Poisoning and MCP06:2025 Prompt Injection via Contextual Payloads"
+)
+
+
+@register_rule
+class SkillsHiddenUnicodeRule(SkillsSecurityRule):
+    """High check: skill text carries no invisible characters."""
+
+    rule_id = "skills_hidden_unicode"
+    basis = f"{_SECURITY_BASIS}; Unicode UTS #51 §2.8, CVE-2021-42574"
+    rule_order = 23
+    issue_reason = "hidden_unicode"
+    expected = "visible text without tag characters, bidirectional controls, control characters or invisible runs"
+    passed_message = "Skill text contains no hidden Unicode characters"
+    failure_label = "skill text locations with hidden Unicode characters"
+    fix = (
+        "Remove the invisible characters from the listed skill locations; text a reviewer cannot see should not "
+        "reach the model."
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return "No Hidden Unicode in Skills"
+
+    def matches(self, text: str) -> list[str]:
+        """Return the hidden-Unicode classes found in *text*."""
+        return hidden_unicode_classes(text)
+
+
+@register_rule
+class SkillsNoEmbeddedSecretsRule(SkillsSecurityRule):
+    """High check: skill text carries no credentials."""
+
+    rule_id = "skills_no_embedded_secrets"
+    basis = f"{SEP} §Security Implications; OWASP MCP Top 10 (beta) MCP01:2025 Token Mismanagement & Secret Exposure"
+    rule_order = 24
+    issue_reason = "embedded_secret"
+    expected = "no provider-issued credentials in skill text"
+    passed_message = "Skill text contains no embedded credentials"
+    failure_label = "skill text locations with embedded credentials"
+    fix = (
+        "Remove the credential from the skill, revoke it with its provider, and have the skill read secrets from "
+        "the environment instead."
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return "No Secrets in Skills"
+
+    def matches(self, text: str) -> list[str]:
+        """Return the secret classes found in *text*."""
+        return secret_classes(text)
+
+
+@register_rule
+class SkillsPromptInjectionPhrasingRule(SkillsSecurityRule):
+    """High check: skill text does not address the model with hidden directives."""
+
+    rule_id = "skills_prompt_injection_phrasing"
+    basis = _SECURITY_BASIS
+    rule_order = 25
+    allowed_in_code = frozenset({"chat_template_token"})
+    issue_reason = "prompt_injection_phrasing"
+    expected = "instructions for the task, without directives about earlier instructions, roles or the user"
+    passed_message = "Skill text contains no prompt-injection phrasing"
+    failure_label = "skill text locations with prompt-injection phrasing"
+    fix = (
+        "Rewrite the listed skill lines as instructions for the task. Remove directives to override earlier "
+        "instructions, change role, or keep anything from the user."
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return "No Prompt-Injection Phrasing in Skills"
+
+    def matches(self, text: str) -> list[str]:
+        """Return the injection-phrasing classes found in *text*."""
+        return injection_classes(text)
