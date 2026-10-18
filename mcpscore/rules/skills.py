@@ -803,7 +803,9 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
             # The frontmatter is scanned as YAML text, never as Markdown: a fence inside a block scalar must not
             # turn the body that follows into "code".
             if split is not None:
-                yield index, f"/{SKILL_FILE}#L2", split[0], split[0]
+                # The whole header, delimiter lines included, so nothing hidden on a delimiter escapes the scan.
+                header = text[: len(text) - len(split[1])]
+                yield index, f"/{SKILL_FILE}#L1", header, header
                 body, first_line = split[1], split[0].count("\n") + 3
             else:
                 body, first_line = text, 1
@@ -851,10 +853,10 @@ class SkillsSecurityRule(SkillsBaseRule):
         """Scan skill text and report locations (listing index and line), never the matched text."""
         issues, classes = [], set()
         for index, path, text, prose_text in _skill_texts(self._evidence(audit_data)):
-            found = self.matches(text)
-            if found and self.allowed_in_code:
-                prose = set(self.matches(prose_text))
-                found = [name for name in found if name not in self.allowed_in_code or name in prose]
+            # Source matches, minus the classes allowed in code, plus whatever the rendered prose shows: wrapping
+            # inside a blockquote or list can hide a directive from the source but not from the prose.
+            found = [name for name in self.matches(text) if name not in self.allowed_in_code]
+            found += [name for name in self.matches(prose_text) if name not in found]
             if found:
                 classes.update(found)
                 # A frontmatter key can itself be the finding; the published path stops above it.

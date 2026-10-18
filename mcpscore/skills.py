@@ -276,6 +276,8 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
     Lines no block covers (link reference definitions, thematic breaks) are returned as prose blocks, so every
     source line is in exactly one block. A document over ``MAX_MARKDOWN_BYTES`` is not parsed: all of it is prose.
     """
+    # CommonMark ends a line at CR, LF or CRLF; the token line ranges count them all.
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
     lines = source_lines(body)
     blocks: list[MarkdownBlock] = []
     covered: set[int] = set()
