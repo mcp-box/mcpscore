@@ -727,6 +727,7 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             and not any(
                 (read := _skill_file(evidence, entry)) is not None
                 and manifest(entry)
+                and skill_root(str(entry.get("uri"))) is not None
                 and relative_references(_body(read.text or "")) is not None
                 for _, entry in _entries(evidence)
             )

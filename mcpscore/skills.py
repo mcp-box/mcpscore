@@ -252,6 +252,7 @@ def _parse(body: str) -> tuple[Token, ...]:
 
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_HTML_TAG_RE = re.compile(r"<[^<>]*>")
 
 
 @dataclass(frozen=True)
@@ -287,6 +288,9 @@ def _prose(inline: Token, *, keep_code: bool = False) -> str:
                 parts.append(child.content)
         elif child.type in ("softbreak", "hardbreak"):
             parts.append("\n")
+        elif child.type == "html_inline":
+            # A tag renders as nothing; it is still in the source text, which is scanned on its own.
+            continue
         else:
             parts.append(child.content)
     return "\n".join(["".join(parts), *(extra for extra in extras if extra)])
@@ -319,7 +323,8 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         elif token.type == "inline":
             prose, rendered = _prose(token), _prose(token, keep_code=True)
         else:
-            prose = rendered = text
+            # An HTML block: what renders is its text without the tags; the tags stay in the source text.
+            prose = rendered = _HTML_TAG_RE.sub("", text)
         blocks.append(MarkdownBlock(first_line + start, text, prose, rendered))
     run: list[int] = []
     for number in [*range(len(lines)), len(lines)]:
