@@ -139,8 +139,10 @@ its tools through the [Skills extension](https://modelcontextprotocol.io/extensi
 (SEP-2640). When a server declares `io.modelcontextprotocol/skills`, mcpscore
 lists its skills, asks `skills/get` for one of them, and reads each listed
 `SKILL.md` plus one supporting file per skill, within fixed caps. Servers that
-do not declare the extension skip these rules as `not-applicable`, and an
-empty `skills/list` is valid and scores nothing.
+do not declare the extension skip these rules as `not-applicable`. An empty
+`skills/list` is valid: the two extension checks (`skills_list_supported`,
+`skills_resources_capability`) still score, and every rule that judges skills
+skips.
 
 | What is checked | Rules |
 |---|---|
