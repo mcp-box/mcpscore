@@ -17,7 +17,8 @@ import logging
 import posixpath
 import re
 from typing import Any, Protocol
-from urllib.parse import urlsplit
+import unicodedata
+from urllib.parse import unquote, urlsplit
 
 from pydantic import ValidationError
 import yaml
@@ -50,7 +51,6 @@ COLLECTION_TIMEOUT_S = 90.0
 READ_CONCURRENCY = 4
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 NAME_MAX_LENGTH = 64
 
 
@@ -130,15 +130,30 @@ def skill_path_name(uri: str) -> str | None:
     if not parts.scheme:
         return None
     path = (parts.netloc + parts.path).strip("/")
-    return path.rsplit("/", 1)[-1] or None
+    # Split before decoding, so an encoded "/" cannot change which segment is the name.
+    return unquote(path.rsplit("/", 1)[-1]) or None
+
+
+def normalize_name(name: str) -> str:
+    """NFKC-normalize a skill name, as the Agent Skills reference validator does before checking it."""
+    return unicodedata.normalize("NFKC", name.strip())
 
 
 def name_problems(name: str) -> list[str]:
-    """Return the Agent Skills naming rules *name* breaks (empty when valid)."""
+    """Return the Agent Skills naming rules *name* breaks (empty when valid).
+
+    Follows the reference validator (skills-ref): Unicode letters and digits are allowed, lowercase only,
+    with single hyphens that neither start nor end the name.
+    """
+    name = normalize_name(name)
     problems = []
     if not 1 <= len(name) <= NAME_MAX_LENGTH:
         problems.append("length")
-    if not NAME_RE.fullmatch(name):
+    if name != name.lower():
+        problems.append("uppercase")
+    if name.startswith("-") or name.endswith("-") or "--" in name:
+        problems.append("hyphens")
+    if not all(char.isalnum() or char == "-" for char in name):
         problems.append("characters")
     return problems
 
@@ -255,7 +270,7 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[tuple[int, str, bool
             if _fence_closes(line, fence):
                 flush(is_code=True)
                 fence = None
-        elif not line.strip():
+        elif not line.strip(" \t"):
             flush(is_code=False)
         else:
             if not current:

@@ -19,6 +19,7 @@ from ..skills import (
     manifest,
     markdown_blocks,
     name_problems,
+    normalize_name,
     parse_frontmatter,
     relative_references,
     resolve_reference,
@@ -428,7 +429,7 @@ class SkillsNameMatchesUriRule(SkillsBaseRule):
                 continue
             if skill_root(uri) is None:
                 issues.append(_issue(index, "/uri", "not_skill_md", f"a URI ending in /{SKILL_FILE}"))
-            elif skill_path_name(uri) != name:
+            elif normalize_name(skill_path_name(uri) or "") != normalize_name(name):
                 issues.append(_issue(index, "/uri", "name_mismatch", "a skill path whose last segment is the name"))
         passed = not issues
         return self._result(
@@ -462,7 +463,7 @@ class SkillsNameValidRule(SkillsBaseRule):
         return RuleSeverity.MEDIUM
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """Medium check: 1-64 characters of ``a-z``, ``0-9`` and single hyphens, not at either end."""
+        """Medium check: 1-64 lowercase letters or digits (Unicode allowed) and single hyphens, not at either end."""
         issues = []
         for index, entry in _entries(self._evidence(audit_data)):
             frontmatter = entry.get("frontmatter")
@@ -470,7 +471,12 @@ class SkillsNameValidRule(SkillsBaseRule):
             if isinstance(name, str) and name and name_problems(name):
                 issues.append(
                     {
-                        **_issue(index, "/frontmatter/name", "invalid_name", "1-64 of a-z, 0-9 and single hyphens"),
+                        **_issue(
+                            index,
+                            "/frontmatter/name",
+                            "invalid_name",
+                            "1-64 lowercase letters, digits and single hyphens",
+                        ),
                         "problems": name_problems(name),
                     }
                 )
@@ -594,7 +600,10 @@ class SkillsFrontmatterMatchesRule(SkillsBaseRule):
         if (
             reason is None
             and evidence is not None
-            and not any(_skill_file(evidence, entry) for _, entry in _entries(evidence))
+            and not any(
+                _skill_file(evidence, entry) and isinstance(entry.get("frontmatter"), dict)
+                for _, entry in _entries(evidence)
+            )
         ):
             return SKIP_REASON_INSUFFICIENT_DATA
         return reason
@@ -679,13 +688,14 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             if read is None or files is None or root is None:
                 continue
             listed = {item["uri"] for item in files if isinstance(item, dict) and isinstance(item.get("uri"), str)}
+            # A directory link resolves when the skill lists a file under it (SEP-2640 §Directory Listing).
+            reachable = listed | {uri.rsplit("/", depth)[0] for uri in listed for depth in range(1, uri.count("/") + 1)}
             split = split_frontmatter(read.text or "")
             body = split[1] if split else read.text or ""
             for target in relative_references(body):
                 references += 1
                 resolved = resolve_reference(root, target)
-                # A directory link resolves when the skill lists a file under it (SEP-2640 §Directory Listing).
-                if resolved is None or not (resolved in listed or any(u.startswith(resolved + "/") for u in listed)):
+                if resolved is None or resolved not in reachable:
                     issues.append(
                         _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")
                     )
@@ -748,6 +758,13 @@ class SkillsSecurityRule(SkillsBaseRule):
     def matches(self, text: str) -> list[str]:
         """Return the class name of each finding in *text*."""
         raise NotImplementedError
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when no skill text was observed: no frontmatter string and no ``SKILL.md`` read."""
+        reason = super().skip_reason(audit_data)
+        if reason is None and next(_skill_texts(self._evidence(audit_data)), None) is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return reason
 
     @property
     def severity(self) -> RuleSeverity:

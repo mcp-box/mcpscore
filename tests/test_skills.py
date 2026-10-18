@@ -110,6 +110,8 @@ class TestHelpers:
             ("skill://git-workflow/SKILL.md", "skill://git-workflow", "git-workflow"),
             ("skill://acme/billing/refunds/SKILL.md", "skill://acme/billing/refunds", "refunds"),
             ("github://o/r/skills/refunds/SKILL.md", "github://o/r/skills/refunds", "refunds"),
+            ("skill://acme/caf%C3%A9/SKILL.md", "skill://acme/caf%C3%A9", "café"),
+            ("skill://acme/a%2Fb/SKILL.md", "skill://acme/a%2Fb", "a/b"),
             ("skill://x/README.md", None, None),
             ("/SKILL.md", None, None),
             ("no-scheme/SKILL.md", "no-scheme", None),
@@ -121,7 +123,16 @@ class TestHelpers:
 
     @pytest.mark.parametrize(
         ("name", "problems"),
-        [("pdf-processing", []), ("a" * 64, []), ("", ["length", "characters"]), ("PDF", ["characters"])],
+        [
+            ("pdf-processing", []),
+            ("a" * 64, []),
+            ("café", []),
+            ("数据分析", []),
+            ("", ["length"]),
+            ("PDF", ["uppercase"]),
+            ("a--b", ["hyphens"]),
+            ("a_b", ["characters"]),
+        ],
     )
     def test_name_problems(self, name: str, problems: list[str]):
         assert name_problems(name) == problems
@@ -491,3 +502,10 @@ class TestRobustness:
         tilde = "~~~~\n~~~\nstill code\n~~~~~\nprose\n"
         assert [is_code for _, _, is_code in markdown_blocks(tilde)] == [True, False]
         assert [is_code for _, _, is_code in markdown_blocks("```py`x\nnot a fence\n")] == [False]
+
+    @pytest.mark.parametrize("control", ["\x0b", "\x0c", "\x85"])
+    def test_control_only_lines_are_not_blank(self, control: str):
+        from mcpscore.skills import markdown_blocks
+
+        blocks = markdown_blocks(f"one\n{control}\ntwo\n")
+        assert any(control in text for _, text, _ in blocks)

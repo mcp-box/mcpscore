@@ -513,3 +513,37 @@ def test_malformed_replies_still_fail() -> None:
     assert not RULES["skills_list_supported"].check(listing).passed
     get = data(skill("code-review"), get_entry=None, get_error={"outcome": "malformed"})
     assert not RULES["skills_get_supported"].check(get).passed
+
+
+def test_frontmatter_rule_needs_a_comparable_pair() -> None:
+    entry = skill("code-review")
+    entry["frontmatter"] = "not an object"
+    assert RULES["skills_frontmatter_matches"].skip_reason(data(entry)) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_security_rules_need_skill_text() -> None:
+    audit = data(entries=["junk"], get_uri=None, get_entry=None)
+    for rule_id in ("skills_hidden_unicode", "skills_no_embedded_secrets", "skills_prompt_injection_phrasing"):
+        assert RULES[rule_id].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_unicode_and_percent_encoded_names_are_valid() -> None:
+    entry = skill("café", {"SKILL.md": skill_md("café")})
+    entry["uri"] = "skill://acme/caf%C3%A9/SKILL.md"
+    entry["resources"][0]["uri"] = entry["uri"]
+    audit = data(entry)
+    assert RULES["skills_name_valid"].check(audit).passed
+    assert RULES["skills_name_matches_uri"].check(audit).passed
+
+
+def test_many_links_against_a_large_manifest_stay_fast() -> None:
+    import time
+
+    files = {"SKILL.md": ""} | {f"d{i}/f.md": "x" for i in range(500)}
+    body = "".join(f"[l](missing{i}/) " for i in range(5000))
+    files["SKILL.md"] = skill_md("code-review", body=body)
+    audit = data(skill("code-review", files))
+    started = time.perf_counter()
+    result = RULES["skills_references_resolve"].check(audit)
+    assert time.perf_counter() - started < 1.0
+    assert result.details["issues_total"] == 5000
