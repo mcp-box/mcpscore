@@ -203,11 +203,14 @@ def _json_scalar(value: Any) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-_LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+\"[^\"]*\")?\s*\)")
+# Each part stops at the next bracket, parenthesis or line end, so a failed match never rescans the rest of the
+# text: extraction stays linear on untrusted input full of unmatched brackets.
+_LINK_RE = re.compile(r"!?\[[^\[\]\n]*\]\(\s*(?:<([^<>\n]+)>|([^()\[\]<>\s]+))(?:[ \t]+\"[^\"\n]{0,256}\")?\s*\)")
 
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-_INLINE_CODE_RE = re.compile(r"(`+)(?:(?!\1).)+?\1")
+_INLINE_CODE_RE = re.compile(r"(`+)[^`]+\1")
+"""An inline code span; a span that itself contains backticks is not recognised, which keeps matching linear."""
 _FENCES = ("```", "~~~")
 
 
@@ -271,6 +274,8 @@ def resolve_reference(root: str, target: str) -> str | None:
     normalized = posixpath.normpath(target)
     if normalized == ".." or normalized.startswith("../"):
         return None
+    if normalized == ".":
+        return root
     return f"{root}/{normalized}"
 
 
@@ -349,7 +354,7 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence) -> None:
     seen: set[str] = set()
     for page in range(MAX_LIST_PAGES):
         try:
-            result = await session.request_raw("skills/list", {"cursor": cursor} if cursor else {})
+            result = await session.request_raw("skills/list", {"cursor": cursor} if cursor is not None else {})
         except Exception as exc:  # noqa: BLE001 — a failed listing is evidence, not an audit abort
             if page == 0:
                 evidence.list_error = _rpc_error(exc)

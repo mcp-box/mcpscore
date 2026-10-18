@@ -433,3 +433,26 @@ class TestRobustness:
             assert evidence.entries is None
         else:
             assert evidence.get_error == {"outcome": "timeout"}
+
+    def test_link_extraction_is_linear_on_unmatched_brackets(self):
+        import time
+
+        for attack in ["[" * 400_000, "[a](" * 100_000, '[a](b "' * 60_000, "`" + "a`" * 200_000]:
+            started = time.perf_counter()
+            relative_references(attack)
+            assert time.perf_counter() - started < 1.0
+
+    async def test_empty_cursor_continues_pagination(self):
+        class Paged(FakeSession):
+            async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+                self.calls.append((method, params))
+                if method == "skills/get":
+                    return {"skill": {"uri": params["uri"]}}
+                if params.get("cursor") == "":
+                    return {"skills": [entry("b")]}
+                return {"skills": [entry("a")], "nextCursor": ""}
+
+        session = Paged([])
+        evidence = await collect_skills(session, {})
+        assert [e["uri"] for e in evidence.entries or []] == ["skill://a/SKILL.md", "skill://b/SKILL.md"]
+        assert not evidence.list_incomplete

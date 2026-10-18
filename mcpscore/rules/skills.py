@@ -104,6 +104,19 @@ def _issue(index: int | None, path: str, reason: str, expected: str) -> dict[str
     return field_issue("skill", index, path, reason, expected)
 
 
+def _json_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values the way JSON types them: ``true`` is not ``1``, while ``1`` equals ``1.0``."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left == right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_json_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_json_equal(a, b) for a, b in zip(left, right, strict=True))
+    return type(left) is type(right) and left == right
+
+
 def _complete_entry(entry: dict[str, Any], uri: str | None) -> bool:
     """Whether *entry* is a skill entry for *uri*: frontmatter with name and description, and a valid manifest."""
     frontmatter = entry.get("frontmatter")
@@ -494,9 +507,11 @@ def _listed_files(evidence: SkillsEvidence) -> Iterator[tuple[int, int, dict[str
         for position, item in enumerate(manifest(entry) or []):
             uri = item.get("uri") if isinstance(item, dict) else None
             read = evidence.files.get(uri) if isinstance(uri, str) else None
-            if read is None or read.error is not None:
+            if read is None or read.error not in (None, "too_large"):
                 continue
-            if _listed_size(item) is not None or _listed_digest(item) is not None:
+            # An oversized read kept only its length: it can still contradict a listed size.
+            checkable = _listed_size(item) is not None or (read.error is None and _listed_digest(item) is not None)
+            if checkable:
                 yield index, position, item, read
 
 
@@ -535,7 +550,7 @@ class SkillsDigestIntegrityRule(SkillsBaseRule):
             size, digest = _listed_size(item), _listed_digest(item)
             if size is not None and read.size != size:
                 issues.append(_issue(index, f"/resources/{position}/size", "size_mismatch", "the served byte length"))
-            elif digest is not None and read.digest != digest:
+            elif digest is not None and read.digest is not None and read.digest != digest:
                 issues.append(_issue(index, f"/resources/{position}/digest", "digest_mismatch", "the served SHA-256"))
         passed = not issues
         return self._result(
@@ -601,7 +616,7 @@ class SkillsFrontmatterMatchesRule(SkillsBaseRule):
             except ValueError:
                 issues.append(_issue(index, f"/{SKILL_FILE}", "frontmatter_unparseable", "YAML frontmatter"))
                 continue
-            if served != entry["frontmatter"]:
+            if not _json_equal(served, entry["frontmatter"]):
                 issues.append(_issue(index, "/frontmatter", "frontmatter_mismatch", "the served SKILL.md frontmatter"))
         passed = not issues
         return self._result(
@@ -700,6 +715,8 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int, str, str, bool
             yield path, value
         elif isinstance(value, dict):
             for key, item in value.items():
+                # The key is scanned at its parent's location, so a finding never publishes it.
+                yield path, str(key)
                 yield from strings(item, f"{path}/{pointer_token(str(key))}")
         elif isinstance(value, list):
             for position, item in enumerate(value):

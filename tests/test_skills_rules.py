@@ -458,5 +458,42 @@ def test_finding_in_a_frontmatter_key_is_not_published() -> None:
     result = RULES["skills_no_embedded_secrets"].check(data(entry))
     assert not result.passed
     assert key not in json.dumps(result.to_dict())
-    assert result.details["issues"][0]["path"] == "/frontmatter/metadata"
-    assert result.details["issues"][0]["path_truncated"] is True
+    assert {issue["path"] for issue in result.details["issues"]} == {"/frontmatter/metadata"}
+
+
+def test_key_only_credential_is_found_from_the_listing_alone() -> None:
+    key = "AKIA" + "2E0A8F3B4C5D6E7F"
+    audit = data(skill("code-review", metadata={key: "value"}), files={})
+    result = RULES["skills_no_embedded_secrets"].check(audit)
+    assert not result.passed
+    assert key not in json.dumps(result.to_dict())
+
+
+@pytest.mark.parametrize(
+    ("listed", "served"),
+    [({"flag": True}, "flag: 1"), ({"n": 1}, "n: true"), ({"l": [False]}, "l: [0]"), ({"m": {"x": 1}}, "m: {x: '1'}")],
+)
+def test_frontmatter_types_must_match(listed: dict[str, Any], served: str) -> None:
+    text = f"---\nname: code-review\ndescription: d\n{served}\n---\n"
+    entry = skill("code-review", {"SKILL.md": text}, description="d", **listed)
+    assert not RULES["skills_frontmatter_matches"].check(data(entry)).passed
+
+
+def test_frontmatter_numbers_compare_numerically() -> None:
+    text = "---\nname: code-review\ndescription: d\nversion: 1.0\n---\n"
+    entry = skill("code-review", {"SKILL.md": text}, description="d", version=1)
+    assert RULES["skills_frontmatter_matches"].check(data(entry)).passed
+
+
+def test_oversized_read_still_contradicts_a_listed_size() -> None:
+    audit = data(skill("code-review"))
+    uri = "skill://code-review/SKILL.md"
+    audit.skills.files[uri] = SkillFile(uri, 5_000_000, error="too_large")
+    result = RULES["skills_digest_integrity"].check(audit)
+    assert result.details["issues"][0]["reason"] == "size_mismatch"
+    assert RULES["skills_frontmatter_matches"].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_current_directory_link_resolves() -> None:
+    entry = skill("code-review", {"SKILL.md": skill_md("code-review", body="All [files](./) are listed.\n")})
+    assert RULES["skills_references_resolve"].check(data(entry)).passed
