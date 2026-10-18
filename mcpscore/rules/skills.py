@@ -7,7 +7,6 @@ Skills specification (agentskills.io), which SEP-2640 adopts unchanged.
 """
 
 from collections.abc import Iterator
-import re
 from typing import Any, ClassVar
 
 from ..skills import (
@@ -17,6 +16,7 @@ from ..skills import (
     SkillsEvidence,
     declared_settings,
     manifest,
+    markdown_blocks,
     name_problems,
     parse_frontmatter,
     relative_references,
@@ -24,6 +24,7 @@ from ..skills import (
     skill_path_name,
     skill_root,
     split_frontmatter,
+    strip_inline_code,
 )
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -33,8 +34,8 @@ from .base import (
     RuleResult,
     RuleSeverity,
 )
-from .catalog_diagnostics import catalog_result, field_issue
-from .catalog_security import hidden_unicode_classes, injection_classes, secret_classes
+from .catalog_diagnostics import catalog_result, field_issue, pointer_token
+from .catalog_security import _publishable_path, hidden_unicode_classes, injection_classes, secret_classes
 from .registry import register_rule
 
 SEP = "MCP Skills Extension (SEP-2640, Final)"
@@ -101,6 +102,18 @@ class SkillsBaseRule(BaseRule):
 
 def _issue(index: int | None, path: str, reason: str, expected: str) -> dict[str, Any]:
     return field_issue("skill", index, path, reason, expected)
+
+
+def _complete_entry(entry: dict[str, Any], uri: str | None) -> bool:
+    """Whether *entry* is a skill entry for *uri*: frontmatter with name and description, and a valid manifest."""
+    frontmatter = entry.get("frontmatter")
+    return (
+        entry.get("uri") == uri
+        and isinstance(frontmatter, dict)
+        and isinstance(frontmatter.get("name"), str)
+        and isinstance(frontmatter.get("description"), str)
+        and not _manifest_issues(0, entry)
+    )
 
 
 @register_rule
@@ -181,17 +194,22 @@ class SkillsGetSupportedRule(SkillsBaseRule):
         return None
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """Medium check: ``skills/get`` for the first listed ``SKILL.md`` URI returns a skill entry with that URI."""
+        """Medium check: ``skills/get`` for the first listed ``SKILL.md`` URI returns a complete skill entry.
+
+        The entry has the same shape as a listing entry: that URI, the frontmatter with ``name`` and
+        ``description``, and a valid ``resources`` manifest. Its values may differ from the listing's, since the
+        two are snapshots taken at different times.
+        """
         evidence = self._evidence(audit_data)
         entry = evidence.get_entry
-        passed = evidence.get_error is None and isinstance(entry, dict) and entry.get("uri") == evidence.get_uri
+        passed = evidence.get_error is None and isinstance(entry, dict) and _complete_entry(entry, evidence.get_uri)
         if passed:
             message = "✅ skills/get returned the entry of a listed skill"
         elif evidence.get_error is not None:
             code = evidence.get_error.get("error_code")
             message = "❌ skills/get failed for a listed skill" + (f" with JSON-RPC error {code}" if code else "")
         else:
-            message = "❌ skills/get did not return a skill entry for the requested URI"
+            message = "❌ skills/get did not return a complete skill entry for the requested URI"
         return self._result(
             passed=passed,
             message=message,
@@ -644,13 +662,14 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             root = skill_root(entry["uri"]) if isinstance(entry.get("uri"), str) else None
             if read is None or files is None or root is None:
                 continue
-            listed = {item.get("uri") for item in files if isinstance(item, dict)}
+            listed = {item["uri"] for item in files if isinstance(item, dict) and isinstance(item.get("uri"), str)}
             split = split_frontmatter(read.text or "")
             body = split[1] if split else read.text or ""
             for target in relative_references(body):
                 references += 1
                 resolved = resolve_reference(root, target)
-                if resolved is None or resolved not in listed:
+                # A directory link resolves when the skill lists a file under it (SEP-2640 §Directory Listing).
+                if resolved is None or not (resolved in listed or any(u.startswith(resolved + "/") for u in listed)):
                     issues.append(
                         _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")
                     )
@@ -670,14 +689,18 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
 
 
 def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int, str, str, bool]]:
-    """Yield (listing index, location, text, in code block) for frontmatter strings and each read ``SKILL.md`` line."""
+    """Yield (listing index, location, text, is code) for frontmatter strings and each read ``SKILL.md`` block.
+
+    ``SKILL.md`` is scanned a paragraph or fenced code block at a time, so a directive wrapped across lines is
+    still one string; the location is the block's first line.
+    """
 
     def strings(value: Any, path: str) -> Iterator[tuple[str, str]]:
         if isinstance(value, str):
             yield path, value
         elif isinstance(value, dict):
             for key, item in value.items():
-                yield from strings(item, f"{path}/{key}")
+                yield from strings(item, f"{path}/{pointer_token(str(key))}")
         elif isinstance(value, list):
             for position, item in enumerate(value):
                 yield from strings(item, f"{path}/{position}")
@@ -687,16 +710,8 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int, str, str, bool
             yield index, path, text, False
         read = _skill_file(evidence, entry)
         if read is not None:
-            fence: str | None = None
-            for number, line in enumerate((read.text or "").splitlines(), start=1):
-                marker = line.lstrip()[:3]
-                if marker in ("```", "~~~") and (fence is None or marker == fence):
-                    fence = None if fence else marker
-                    continue
-                yield index, f"/{SKILL_FILE}#L{number}", line, fence is not None
-
-
-_INLINE_CODE_RE = re.compile(r"(`+)(?:(?!\1).)+?\1")
+            for line, text, is_code in markdown_blocks(read.text or ""):
+                yield index, f"/{SKILL_FILE}#L{line}", text, is_code
 
 
 class SkillsSecurityRule(SkillsBaseRule):
@@ -726,11 +741,14 @@ class SkillsSecurityRule(SkillsBaseRule):
         for index, path, text, in_code in _skill_texts(self._evidence(audit_data)):
             found = self.matches(text)
             if found and self.allowed_in_code:
-                prose = set() if in_code else set(self.matches(_INLINE_CODE_RE.sub(" ", text)))
+                prose = set() if in_code else set(self.matches(strip_inline_code(text)))
                 found = [name for name in found if name not in self.allowed_in_code or name in prose]
             if found:
                 classes.update(found)
-                issues.append({**_issue(index, path, self.issue_reason, self.expected), "matched": sorted(set(found))})
+                # A frontmatter key can itself be the finding; the published path stops above it.
+                published, truncated = _publishable_path(path)
+                issue = {**_issue(index, published, self.issue_reason, self.expected), "matched": sorted(set(found))}
+                issues.append({**issue, "path_truncated": True} if truncated else issue)
         passed = not issues
         return self._result(
             passed=passed,

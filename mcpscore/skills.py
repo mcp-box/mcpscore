@@ -122,7 +122,10 @@ def skill_path_name(uri: str) -> str | None:
     root = skill_root(uri)
     if root is None:
         return None
-    parts = urlsplit(root)
+    try:
+        parts = urlsplit(root)
+    except ValueError:
+        return None
     if not parts.scheme:
         return None
     path = (parts.netloc + parts.path).strip("/")
@@ -145,9 +148,15 @@ def manifest(entry: dict[str, Any]) -> list[dict[str, Any]] | None:
     return resources if isinstance(resources, list) else None
 
 
+def source_lines(text: str) -> list[str]:
+    """Split text on line feeds only, so form feeds, vertical tabs and U+0085 stay in the text they hide in."""
+    return [line.removesuffix("\r") for line in text.split("\n")]
+
+
 def split_frontmatter(text: str) -> tuple[str, str] | None:
     """Split ``SKILL.md`` text into its YAML frontmatter and body, or None when it has no frontmatter."""
-    lines = text.splitlines(keepends=True)
+    lines = text.split("\n")
+    lines = [line + "\n" for line in lines[:-1]] + [lines[-1]]
     if not lines or lines[0].strip() != "---":
         return None
     for index in range(1, len(lines)):
@@ -165,23 +174,91 @@ def parse_frontmatter(text: str) -> Any:
     if split is None:
         raise ValueError("no frontmatter")
     try:
+        _check_yaml_shape(split[0])
         parsed = yaml.safe_load(split[0])
-    except yaml.YAMLError as exc:
+        return json.loads(json.dumps(parsed, default=_json_scalar))
+    except (yaml.YAMLError, TypeError, RecursionError) as exc:
         raise ValueError("invalid YAML") from exc
-    return json.loads(
-        json.dumps(parsed, default=lambda value: value.isoformat() if hasattr(value, "isoformat") else str(value))
-    )
+
+
+MAX_FRONTMATTER_DEPTH = 32
+
+
+def _check_yaml_shape(source: str) -> None:
+    """Refuse aliases and deep nesting before loading, so a small document cannot expand without bound."""
+    depth = 0
+    for event in yaml.parse(source, Loader=yaml.SafeLoader):
+        if isinstance(event, yaml.AliasEvent):
+            raise ValueError("YAML aliases")  # noqa: TRY004 — callers report any refused document as invalid YAML
+        if isinstance(event, yaml.CollectionStartEvent):
+            depth += 1
+            if depth > MAX_FRONTMATTER_DEPTH:
+                raise ValueError("YAML nesting")
+        elif isinstance(event, yaml.CollectionEndEvent):
+            depth -= 1
+
+
+def _json_scalar(value: Any) -> str:
+    """Render a YAML scalar JSON has no type for (dates, timestamps) as its ISO string."""
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
 _LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+\"[^\"]*\")?\s*\)")
 
 
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_INLINE_CODE_RE = re.compile(r"(`+)(?:(?!\1).)+?\1")
+_FENCES = ("```", "~~~")
+
+
+def markdown_blocks(body: str, first_line: int = 1) -> list[tuple[int, str, bool]]:
+    """Split Markdown into blocks: each fenced code block, and each paragraph of prose.
+
+    Returns (first line number, text, is code). Fence marker lines belong to their code block.
+    """
+    blocks: list[tuple[int, str, bool]] = []
+    current: list[str] = []
+    start = first_line
+    fence: str | None = None
+
+    def flush(*, is_code: bool) -> None:
+        if current:
+            blocks.append((start, "\n".join(current), is_code))
+            current.clear()
+
+    for number, line in enumerate(source_lines(body), start=first_line):
+        marker = line.lstrip()[:3]
+        if fence is None and marker in _FENCES:
+            flush(is_code=False)
+            fence, start = marker, number
+            current.append(line)
+        elif fence is not None:
+            current.append(line)
+            if marker == fence:
+                flush(is_code=True)
+                fence = None
+        elif not line.strip():
+            flush(is_code=False)
+        else:
+            if not current:
+                start = number
+            current.append(line)
+    flush(is_code=fence is not None)
+    return blocks
+
+
+def strip_inline_code(text: str) -> str:
+    """Replace inline code spans with a space."""
+    return _INLINE_CODE_RE.sub(" ", text)
+
+
 def relative_references(body: str) -> list[str]:
-    """Return relative Markdown link targets in *body*, without anchors or queries, in order."""
+    """Return relative Markdown link targets in *body*'s prose (not code), without anchors or queries, in order."""
     targets = []
-    for match in _LINK_RE.finditer(body):
+    prose = "\n\n".join(strip_inline_code(text) for _, text, is_code in markdown_blocks(body) if not is_code)
+    for match in _LINK_RE.finditer(prose):
         target = match.group(1) or match.group(2)
-        if target.startswith(("#", "/")) or urlsplit(target).scheme:
+        if target.startswith(("#", "/")) or _SCHEME_RE.match(target):
             continue
         target = target.split("#", 1)[0].split("?", 1)[0]
         if target:
@@ -214,7 +291,10 @@ def content_bytes(contents: list[dict[str, Any]], uri: str) -> tuple[bytes, str 
 
 
 def _reads(entries: list[Any]) -> list[tuple[str, bool]]:
-    """Choose the files to read: each listed ``SKILL.md``, then one supporting file per skill."""
+    """Choose the files to read: each listed ``SKILL.md``, then one supporting file per skill, each URI once.
+
+    A nested skill's ``SKILL.md`` can also be its parent's supporting file; it is read once, with its text kept.
+    """
     skill_files: list[tuple[str, bool]] = []
     supporting: list[tuple[str, bool]] = []
     for entry in entries:
@@ -238,7 +318,10 @@ def _reads(entries: list[Any]) -> list[tuple[str, bool]]:
         )
         if extra is not None and len(supporting) < MAX_SUPPORTING_FILES:
             supporting.append((extra, False))
-    return skill_files + supporting
+    reads: dict[str, bool] = {}
+    for uri, keep_text in skill_files + supporting:
+        reads[uri] = reads.get(uri, False) or keep_text
+    return list(reads.items())
 
 
 def _declared_size(entries: list[Any], uri: str) -> int | None:
@@ -317,6 +400,9 @@ async def _read(session: SkillsSession, uri: str, keep_text: bool) -> SkillFile:
     if decoded is None:
         return SkillFile(uri, error="empty")
     raw, mime_type = decoded
+    if len(raw) > MAX_FILE_BYTES:
+        # The SDK has already received the message; this bounds what the audit keeps and scans.
+        return SkillFile(uri, len(raw), mime_type=mime_type, error="too_large")
     text = raw.decode("utf-8", errors="replace") if keep_text else None
     return SkillFile(uri, len(raw), "sha256:" + hashlib.sha256(raw).hexdigest(), mime_type, text)
 
@@ -333,11 +419,18 @@ async def _read_files(session: SkillsSession, evidence: SkillsEvidence) -> None:
         budget -= declared or 0
         planned.append((uri, is_skill_file))
     gate = asyncio.Semaphore(READ_CONCURRENCY)
+    received = 0
 
     async def one(uri: str, keep_text: bool) -> None:
+        nonlocal received
         async with gate:
+            if received >= MAX_TOTAL_BYTES:
+                evidence.budget_exhausted = True
+                return
+            result = await _read(session, uri, keep_text)
+            received += result.size or 0
             # Stored as each read finishes, so a collection timeout keeps the reads already made.
-            evidence.files[uri] = await _read(session, uri, keep_text)
+            evidence.files[uri] = result
 
     await asyncio.gather(*(one(uri, keep) for uri, keep in planned))
 
@@ -345,12 +438,21 @@ async def _read_files(session: SkillsSession, evidence: SkillsEvidence) -> None:
 async def collect_skills(session: SkillsSession, settings: dict[str, Any]) -> SkillsEvidence:
     """List the server's skills, call ``skills/get`` once, and read a bounded sample of skill files."""
     evidence = SkillsEvidence(settings=settings)
+    phase = "list"
     try:
         async with asyncio.timeout(COLLECTION_TIMEOUT_S):
             await _list(session, evidence)
+            phase = "get"
             await _get(session, evidence)
+            phase = "read"
             await _read_files(session, evidence)
     except TimeoutError:
+        # The deadline cancels the call in flight, so its own handler never records the outcome.
         evidence.budget_exhausted = True
+        if phase == "list":
+            evidence.list_error = {"outcome": "timeout"}
+            evidence.entries = None
+        elif phase == "get":
+            evidence.get_error = {"outcome": "timeout"}
         logger.warning("Stopped collecting skills after %.0fs", COLLECTION_TIMEOUT_S)
     return evidence

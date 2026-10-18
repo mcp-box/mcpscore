@@ -366,3 +366,70 @@ class TestAuditorWiring:
         assert session.calls == []
         skipped = {s.rule_id: s.reason for s in auditor.skipped_rules}
         assert skipped["skills_list_supported"] == "not-applicable"
+
+
+class TestRobustness:
+    def test_yaml_aliases_and_deep_nesting_are_refused(self):
+        bomb = "---\na: &a [x, x]\nb: &b [*a, *a]\nc: &c [*b, *b]\n---\n"
+        with pytest.raises(ValueError, match="YAML aliases"):
+            parse_frontmatter(bomb)
+        deep = "---\nk: " + "[" * 40 + "]" * 40 + "\n---\n"
+        with pytest.raises(ValueError, match="YAML nesting"):
+            parse_frontmatter(deep)
+
+    @pytest.mark.parametrize("text", ["---\n2026-10-18: release\n---\n", "---\n? [a, b]\n: x\n---\n"])
+    def test_keys_json_cannot_hold_are_invalid_frontmatter(self, text: str):
+        with pytest.raises(ValueError, match="invalid YAML"):
+            parse_frontmatter(text)
+
+    def test_malformed_authority_has_no_name(self):
+        assert skill_path_name("skill://[/SKILL.md") is None
+
+    def test_links_in_code_and_malformed_urls_are_not_references(self):
+        body = (
+            "Write links like `[label](example.md)`.\n\n"
+            "```markdown\n[label](inside.md)\n```\n\n"
+            "[bad](https://[invalid) and [real](real.md)\n"
+        )
+        assert relative_references(body) == ["real.md"]
+
+    async def test_nested_skill_md_is_read_once_with_its_text(self):
+        parent = entry("parent", {"SKILL.md": "p", "child/SKILL.md": "c"})
+        child = {**entry("child"), "uri": "skill://parent/child/SKILL.md"}
+        session = FakeSession(
+            [{"skills": [parent, child]}],
+            {"skill://parent/SKILL.md": "p", "skill://parent/child/SKILL.md": "---\nname: child\n---\n"},
+        )
+        evidence = await collect_skills(session, {})
+        assert session.reads.count("skill://parent/child/SKILL.md") == 1
+        assert evidence.files["skill://parent/child/SKILL.md"].text == "---\nname: child\n---\n"
+
+    async def test_actual_bytes_are_bounded(self, monkeypatch):
+        monkeypatch.setattr(skills, "MAX_FILE_BYTES", 8)
+        monkeypatch.setattr(skills, "MAX_TOTAL_BYTES", 8)
+        monkeypatch.setattr(skills, "READ_CONCURRENCY", 1)
+        dynamic = [{**entry(n), "resources": "dynamic"} for n in ("a", "b")]
+        session = FakeSession([{"skills": dynamic}], {"skill://a/SKILL.md": "x" * 9, "skill://b/SKILL.md": "y"})
+        evidence = await collect_skills(session, {})
+        oversized = evidence.files["skill://a/SKILL.md"]
+        assert oversized.error == "too_large"
+        assert oversized.text is None
+        assert "skill://b/SKILL.md" not in evidence.files
+        assert evidence.budget_exhausted
+
+    @pytest.mark.parametrize("hang", ["skills/list", "skills/get"])
+    async def test_deadline_records_the_interrupted_call_as_a_timeout(self, monkeypatch, hang: str):
+        monkeypatch.setattr(skills, "COLLECTION_TIMEOUT_S", 0.2)
+
+        class Hanging(FakeSession):
+            async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+                if method == hang:
+                    await asyncio.sleep(5)
+                return await super().request_raw(method, params)
+
+        evidence = await collect_skills(Hanging([{"skills": [entry("a")]}]), {})
+        if hang == "skills/list":
+            assert evidence.list_error == {"outcome": "timeout"}
+            assert evidence.entries is None
+        else:
+            assert evidence.get_error == {"outcome": "timeout"}
