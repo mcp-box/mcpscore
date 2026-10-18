@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-10-18
+
+Four new rules: three check tool annotations against what each tool says it
+does, and one checks that a server behind OAuth lets a new client register.
+Scores change for servers whose tools carry annotations, and for servers
+whose authorization server advertises no way to register.
+
 ### Added
 
 - **Three rules check tool annotations against what the tool says it does.**
@@ -42,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first event, so a 10-second wait passed the rule on some runs and skipped
   it on others. GET probes now wait up to 35 seconds. Servers that answer
   right away are not affected.
+- **Dependencies refreshed.** The lockfile picks up patch releases of
+  filelock, platformdirs and virtualenv, used only in development. The
+  `mcp==2.3.0` pin is unchanged; it is still the latest SDK.
 
 ### Docs
 
@@ -2050,7 +2060,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.23.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.24.0...HEAD
+[1.24.0]: https://github.com/mcp-box/mcpscore/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/mcp-box/mcpscore/compare/v1.22.2...v1.23.0
 [1.22.2]: https://github.com/mcp-box/mcpscore/compare/v1.22.1...v1.22.2
 [1.22.1]: https://github.com/mcp-box/mcpscore/compare/v1.22.0...v1.22.1
