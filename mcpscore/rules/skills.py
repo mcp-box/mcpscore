@@ -6,6 +6,7 @@ every other server skips them as not-applicable. The skill format is the Agent
 Skills specification (agentskills.io), which SEP-2640 adopts unchanged.
 """
 
+from bisect import bisect_left
 from collections.abc import Iterator
 from typing import Any, ClassVar
 
@@ -104,6 +105,15 @@ class SkillsBaseRule(BaseRule):
 
 def _issue(index: int | None, path: str, reason: str, expected: str) -> dict[str, Any]:
     return field_issue("skill", index, path, reason, expected)
+
+
+def _lists_file_at_or_under(listed: set[str], ordered: list[str], target: str) -> bool:
+    """Whether the manifest lists *target*, or a file under it (a directory link, SEP-2640 §Directory Listing)."""
+    if target in listed:
+        return True
+    prefix = target + "/"
+    position = bisect_left(ordered, prefix)
+    return position < len(ordered) and ordered[position].startswith(prefix)
 
 
 def _json_equal(left: Any, right: Any) -> bool:
@@ -688,14 +698,13 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             if read is None or files is None or root is None:
                 continue
             listed = {item["uri"] for item in files if isinstance(item, dict) and isinstance(item.get("uri"), str)}
-            # A directory link resolves when the skill lists a file under it (SEP-2640 §Directory Listing).
-            reachable = listed | {uri.rsplit("/", depth)[0] for uri in listed for depth in range(1, uri.count("/") + 1)}
+            ordered = sorted(listed)
             split = split_frontmatter(read.text or "")
             body = split[1] if split else read.text or ""
             for target in relative_references(body):
                 references += 1
                 resolved = resolve_reference(root, target)
-                if resolved is None or resolved not in reachable:
+                if resolved is None or not _lists_file_at_or_under(listed, ordered, resolved):
                     issues.append(
                         _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")
                     )

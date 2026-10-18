@@ -547,3 +547,22 @@ def test_many_links_against_a_large_manifest_stay_fast() -> None:
     result = RULES["skills_references_resolve"].check(audit)
     assert time.perf_counter() - started < 1.0
     assert result.details["issues_total"] == 5000
+
+
+def test_deep_manifest_paths_do_not_blow_up_reference_checks() -> None:
+    import time
+
+    deep = "/".join(["d"] * 4000) + "/f.md"
+    body = "[a](d/d/) [b](missing/)\n"
+    entry = skill("code-review", {"SKILL.md": skill_md("code-review", body=body), deep: "x"})
+    started = time.perf_counter()
+    result = RULES["skills_references_resolve"].check(data(entry))
+    assert time.perf_counter() - started < 1.0
+    assert result.details["references_checked"] == 2
+    assert result.details["issues_total"] == 1
+
+
+def test_indented_dashes_inside_a_block_scalar_do_not_end_frontmatter() -> None:
+    text = "---\nname: code-review\ndescription: |\n  Before\n  ---\n  After\n---\n# Body\n"
+    entry = skill("code-review", {"SKILL.md": text}, description="Before\n---\nAfter\n")
+    assert RULES["skills_frontmatter_matches"].check(data(entry)).passed

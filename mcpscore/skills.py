@@ -173,10 +173,11 @@ def split_frontmatter(text: str) -> tuple[str, str] | None:
     """Split ``SKILL.md`` text into its YAML frontmatter and body, or None when it has no frontmatter."""
     lines = text.split("\n")
     lines = [line + "\n" for line in lines[:-1]] + [lines[-1]]
-    if not lines or lines[0].strip() != "---":
+    # Delimiters start at column zero; an indented "---" belongs to a YAML block scalar.
+    if not lines or lines[0].rstrip() != "---":
         return None
     for index in range(1, len(lines)):
-        if lines[index].strip() == "---":
+        if lines[index].rstrip() == "---":
             return "".join(lines[1:index]), "".join(lines[index + 1 :])
     return None
 
