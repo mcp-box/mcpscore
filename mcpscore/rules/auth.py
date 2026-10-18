@@ -14,7 +14,8 @@ the probe follows them in the order a client does. RFC 9728 metadata has a
 ``resource`` value matching the server, and it MUST list at least one
 authorization server. The deeper rules follow the discovery chain to the
 authorization server's own metadata, validate its issuer, and check it
-advertises PKCE (S256), per the OAuth security BCP (RFC 9700).
+advertises PKCE (S256), per the OAuth security BCP (RFC 9700), and a way for
+a client with no prior relationship to register.
 """
 
 from typing import ClassVar
@@ -734,6 +735,97 @@ class AuthServerPkceRule(AuthMetadataBaseRule):
             suggested_fix=(
                 "If S256 is supported, include it in code_challenge_methods_supported. Otherwise "
                 "implement S256 before advertising it. This check does not verify runtime enforcement."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
+        )
+
+
+CIMD_SINCE = "2025-11-25"
+"""First revision with Client ID Metadata Documents (SHOULD) and Dynamic Client Registration demoted to MAY."""
+
+
+@register_rule
+class AuthClientRegistrationAdvertisedRule(AuthMetadataBaseRule):
+    """Medium check: the authorization server tells a new client how to register."""
+
+    rule_id = "auth_client_registration_advertised"
+    rule_order = 12
+
+    @property
+    def rule_name(self) -> str:
+        return "Auth - Client Registration Advertised"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when there is no reachable AS metadata to inspect (that rule's finding)."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        if self._metadata(audit_data).get("auth_server_metadata_present") is not True:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: the metadata advertises Client ID Metadata Documents or Dynamic Client Registration.
+
+        A client that has never seen this server registers through one of them. With neither,
+        only pre-registered clients connect, and every other client must ask the user for
+        client credentials. Since 2025-11-25 Client ID Metadata Documents are the SHOULD and
+        Dynamic Client Registration is kept for backwards compatibility; before, Dynamic
+        Client Registration was the SHOULD. Whether the server then accepts a given client is
+        its trust policy and is not judged.
+
+        Args:
+            audit_data: The collected server data for this audit
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        details = self._metadata(audit_data)
+        cimd = details.get("auth_server_cimd_supported") is True
+        dcr = details.get("auth_server_registration_endpoint") is True
+        version = audit_data.protocol_version
+        cimd_era = version is None or compare(version, CIMD_SINCE) >= 0
+        passed = cimd or dcr
+        if cimd:
+            message = "✅ The authorization server supports Client ID Metadata Documents"
+        elif dcr and cimd_era:
+            message = (
+                "✅ The authorization server offers Dynamic Client Registration (registration_endpoint). "
+                "Advertising client_id_metadata_document_supported is the recommended path for new clients"
+            )
+        elif dcr:
+            message = "✅ The authorization server offers Dynamic Client Registration (registration_endpoint)"
+        else:
+            message = (
+                "❌ The authorization server advertises neither client_id_metadata_document_supported nor a "
+                "registration_endpoint, so only pre-registered clients can sign in without asking the user "
+                "for client credentials"
+            )
+        return diagnostic_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "basis": (
+                    "MCP Authorization 2025-11-25 §Client Registration Approaches, §Client ID Metadata Documents "
+                    "(SHOULD), §Dynamic Client Registration (MAY); 2025-06-18 §Dynamic Client Registration (SHOULD)"
+                ),
+                "issuer": details.get("auth_server_issuer"),
+                "client_id_metadata_document_supported": cimd,
+                "registration_endpoint": dcr,
+            },
+            suggested_fix=(
+                "Fetch HTTPS client_id metadata documents and set client_id_metadata_document_supported: true in "
+                "the authorization server metadata, or expose an RFC 7591 registration_endpoint. An allowlist of "
+                "trusted client domains still works with either."
             )
             if not passed
             else None,

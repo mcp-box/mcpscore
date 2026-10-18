@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The name and description are read conservatively: an ambiguous verb, or a
   description that says the tool does something else, leaves the tool
   unjudged.
+- **`auth_client_registration_advertised` (MEDIUM, Security & Auth) checks
+  that a server behind OAuth lets a new client register.** The authorization
+  server's metadata must advertise `client_id_metadata_document_supported` or
+  a `registration_endpoint`. With neither, only pre-registered clients can
+  sign in, and other clients must ask the user for client credentials. A
+  registration endpoint alone passes, with a pointer to Client ID Metadata
+  Documents on 2025-11-25 and later. The rule reads metadata the audit
+  already fetches and does not register anything. Partial audits of servers
+  behind auth gain one check.
 
 ### Fixed
 

@@ -1842,6 +1842,17 @@ def www_authenticate_param(header: str, param: str) -> str | None:
     return None
 
 
+def _is_https_url(value: object) -> bool:
+    """Whether ``value`` is an absolute HTTPS URL with a host, as authorization server endpoints must be."""
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit(value.strip())
+    except ValueError:
+        return False
+    return parts.scheme.lower() == "https" and bool(parts.hostname)
+
+
 def _auth_server_metadata_urls(issuer: str) -> list[str]:
     """Return an issuer's authorization server metadata locations, in the MCP discovery order.
 
@@ -1936,6 +1947,8 @@ async def _fetch_auth_server_metadata(
             metadata.get("token_endpoint"), str
         )
         details["auth_server_pkce_s256"] = isinstance(methods, list) and "S256" in methods
+        details["auth_server_cimd_supported"] = metadata.get("client_id_metadata_document_supported") is True
+        details["auth_server_registration_endpoint"] = _is_https_url(metadata.get("registration_endpoint"))
         return
     if not reached:
         details["auth_server_metadata_error"] = last_error
