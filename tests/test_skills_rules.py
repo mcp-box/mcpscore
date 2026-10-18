@@ -528,8 +528,8 @@ def test_security_rules_need_skill_text() -> None:
 
 
 def test_unicode_and_percent_encoded_names_are_valid() -> None:
-    entry = skill("café", {"SKILL.md": skill_md("café")})
-    entry["uri"] = "skill://acme/caf%C3%A9/SKILL.md"
+    entry = skill("数据", {"SKILL.md": skill_md("数据")})
+    entry["uri"] = "skill://acme/%E6%95%B0%E6%8D%AE/SKILL.md"
     entry["resources"][0]["uri"] = entry["uri"]
     audit = data(entry)
     assert RULES["skills_name_valid"].check(audit).passed

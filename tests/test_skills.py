@@ -110,7 +110,7 @@ class TestHelpers:
             ("skill://git-workflow/SKILL.md", "skill://git-workflow", "git-workflow"),
             ("skill://acme/billing/refunds/SKILL.md", "skill://acme/billing/refunds", "refunds"),
             ("github://o/r/skills/refunds/SKILL.md", "github://o/r/skills/refunds", "refunds"),
-            ("skill://acme/caf%C3%A9/SKILL.md", "skill://acme/caf%C3%A9", "café"),
+            ("skill://acme/%E6%95%B0%E6%8D%AE/SKILL.md", "skill://acme/%E6%95%B0%E6%8D%AE", "数据"),
             ("skill://acme/a%2Fb/SKILL.md", "skill://acme/a%2Fb", "a/b"),
             ("skill://x/README.md", None, None),
             ("/SKILL.md", None, None),
