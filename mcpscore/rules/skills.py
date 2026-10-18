@@ -144,13 +144,22 @@ def _inside(root: str, uri: str) -> bool:
 
 
 def _complete_entry(entry: dict[str, Any], uri: str | None) -> bool:
-    """Whether *entry* is a skill entry for *uri*: frontmatter with name and description, and a valid manifest."""
+    """Whether *entry* is a valid skill entry for *uri*, by the rules a listing entry is held to.
+
+    The name is valid and equals the URI's last skill-path segment, the description has 1-1024 characters, and
+    the manifest is valid. Values may differ from the listing's: the two are snapshots taken at different times.
+    """
     frontmatter = entry.get("frontmatter")
+    if entry.get("uri") != uri or not isinstance(uri, str) or not isinstance(frontmatter, dict):
+        return False
+    name, description = frontmatter.get("name"), frontmatter.get("description")
     return (
-        entry.get("uri") == uri
-        and isinstance(frontmatter, dict)
-        and isinstance(frontmatter.get("name"), str)
-        and isinstance(frontmatter.get("description"), str)
+        isinstance(name, str)
+        and bool(name)
+        and not name_problems(name)
+        and skill_path_name(uri) == name
+        and isinstance(description, str)
+        and 1 <= len(description) <= 1024
         and not _manifest_issues(0, entry)
     )
 
