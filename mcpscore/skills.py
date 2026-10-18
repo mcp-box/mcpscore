@@ -272,11 +272,17 @@ class MarkdownBlock:
 def _prose(inline: Token, *, keep_code: bool = False) -> str:
     """Return the rendered text of an inline token, with code spans kept or replaced by a space.
 
-    Link and image destinations (decoded) and titles are not code, so they are judged too; they follow the
-    visible text on their own lines rather than splitting a sentence that contains a link.
+    Link and image destinations (decoded), titles and inline HTML are not code, so they are judged too; they
+    follow the visible text on their own lines rather than splitting a sentence that contains them.
     """
-    parts, extras = [], []
-    for child in inline.children or []:
+    parts: list[str] = []
+    extras: list[str] = []
+    _render(inline.children or [], parts, extras, keep_code=keep_code)
+    return "\n".join(["".join(parts), *(extra for extra in extras if extra)])
+
+
+def _render(children: list[Token], parts: list[str], extras: list[str], *, keep_code: bool) -> None:
+    for child in children:
         if child.type == "code_inline":
             parts.append(child.content if keep_code else " ")
         elif child.type in ("link_open", "image"):
@@ -285,15 +291,15 @@ def _prose(inline: Token, *, keep_code: bool = False) -> str:
                 str(child.attrs.get("title", "")),
             ]
             if child.type == "image":
-                parts.append(child.content)
+                # Alt text renders from the image's own children, formatting removed.
+                _render(child.children or [], parts, extras, keep_code=keep_code)
         elif child.type in ("softbreak", "hardbreak"):
             parts.append("\n")
         elif child.type == "html_inline":
-            # A tag renders as nothing; it is still in the source text, which is scanned on its own.
-            continue
+            # A tag or comment renders as nothing, but it is not code: its text is judged on its own line.
+            extras.append(child.content)
         else:
             parts.append(child.content)
-    return "\n".join(["".join(parts), *(extra for extra in extras if extra)])
 
 
 def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
@@ -323,8 +329,9 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         elif token.type == "inline":
             prose, rendered = _prose(token), _prose(token, keep_code=True)
         else:
-            # An HTML block: what renders is its text without the tags; the tags stay in the source text.
-            prose = rendered = _HTML_TAG_RE.sub("", text)
+            # An HTML block is not code: its source counts in full, and its tag-free text catches a directive
+            # that tags split.
+            prose, rendered = text, _HTML_TAG_RE.sub("", text)
         blocks.append(MarkdownBlock(first_line + start, text, prose, rendered))
     run: list[int] = []
     for number in [*range(len(lines)), len(lines)]:
