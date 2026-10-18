@@ -21,6 +21,7 @@ from ..skills import (
     manifest,
     markdown_blocks,
     name_problems,
+    normalize_newlines,
     parse_frontmatter,
     relative_references,
     resolve_reference,
@@ -774,8 +775,8 @@ def _body(text: str) -> str:
     return split[1] if split else text
 
 
-def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, str, str]]:
-    """Yield (listing index, location, text, prose) for frontmatter strings and each read ``SKILL.md`` block.
+def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, str, str, str]]:
+    """Yield (listing index, location, source, rendered, prose) for frontmatter strings and ``SKILL.md`` blocks.
 
     ``SKILL.md`` is scanned a paragraph or fenced code block at a time, so a directive wrapped across lines is
     still one string; the location is the block's first line.
@@ -795,22 +796,22 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
 
     for index, entry in _entries(evidence):
         for path, text in strings(entry.get("frontmatter"), "/frontmatter"):
-            yield index, path, text, text
+            yield index, path, text, text, text
         read = _skill_file(evidence, entry)
         if read is not None:
-            text = read.text or ""
+            text = normalize_newlines(read.text or "")
             split = split_frontmatter(text)
             # The frontmatter is scanned as YAML text, never as Markdown: a fence inside a block scalar must not
             # turn the body that follows into "code".
             if split is not None:
                 # The whole header, delimiter lines included, so nothing hidden on a delimiter escapes the scan.
                 header = text[: len(text) - len(split[1])]
-                yield index, f"/{SKILL_FILE}#L1", header, header
+                yield index, f"/{SKILL_FILE}#L1", header, header, header
                 body, first_line = split[1], split[0].count("\n") + 3
             else:
                 body, first_line = text, 1
             for block in markdown_blocks(body, first_line):
-                yield index, f"/{SKILL_FILE}#L{block.line}", block.text, block.prose
+                yield index, f"/{SKILL_FILE}#L{block.line}", block.text, block.rendered, block.prose
     # The sampled skills/get entry is its own snapshot: frontmatter that differs from the listing's is scanned
     # too, under its own location; identical frontmatter was already scanned.
     got = evidence.get_entry
@@ -818,7 +819,7 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
         listed = next(((i, e) for i, e in _entries(evidence) if e.get("uri") == got.get("uri")), None)
         if listed is None or not _json_equal(got.get("frontmatter"), listed[1].get("frontmatter")):
             for path, text in strings(got.get("frontmatter"), "/skills/get/frontmatter"):
-                yield listed[0] if listed else None, path, text, text
+                yield listed[0] if listed else None, path, text, text, text
 
 
 class SkillsSecurityRule(SkillsBaseRule):
@@ -852,11 +853,15 @@ class SkillsSecurityRule(SkillsBaseRule):
     def check(self, audit_data: AuditData) -> RuleResult:
         """Scan skill text and report locations (listing index and line), never the matched text."""
         issues, classes = [], set()
-        for index, path, text, prose_text in _skill_texts(self._evidence(audit_data)):
-            # Source matches, minus the classes allowed in code, plus whatever the rendered prose shows: wrapping
-            # inside a blockquote or list can hide a directive from the source but not from the prose.
-            found = [name for name in self.matches(text) if name not in self.allowed_in_code]
-            found += [name for name in self.matches(prose_text) if name not in found]
+        for index, path, source, rendered, prose_text in _skill_texts(self._evidence(audit_data)):
+            # The source, and the rendered text (markup removed, inline code kept), count every class but those
+            # exempt in code; the prose (code removed) counts every class. Markup or a code span can split a
+            # directive in the source, but not in what a reader sees.
+            found: list[str] = []
+            for text, exempt in ((source, True), (rendered, True), (prose_text, False)):
+                for name in self.matches(text):
+                    if name not in found and not (exempt and name in self.allowed_in_code):
+                        found.append(name)
             if found:
                 classes.update(found)
                 # A frontmatter key can itself be the finding; the published path stops above it.

@@ -174,8 +174,17 @@ def source_lines(text: str) -> list[str]:
     return [line.removesuffix("\r") for line in text.split("\n")]
 
 
+def normalize_newlines(text: str) -> str:
+    """Turn CRLF and bare CR into LF, the line endings CommonMark and YAML both accept."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def split_frontmatter(text: str) -> tuple[str, str] | None:
-    """Split ``SKILL.md`` text into its YAML frontmatter and body, or None when it has no frontmatter."""
+    """Split ``SKILL.md`` text into its YAML frontmatter and body, or None when it has no frontmatter.
+
+    Line endings are normalised first, so both parts use LF.
+    """
+    text = normalize_newlines(text)
     lines = text.split("\n")
     lines = [line + "\n" for line in lines[:-1]] + [lines[-1]]
     # Delimiters start at column zero; an indented "---" belongs to a YAML block scalar.
@@ -255,14 +264,16 @@ class MarkdownBlock:
     """The block's source lines, exactly as written."""
     prose: str
     """The block's text outside code: empty for a code block, inline code spans removed from a paragraph."""
+    rendered: str
+    """The block's rendered text with inline code kept: what a reader sees, markup removed."""
 
 
-def _prose(inline: Token) -> str:
-    """Return the rendered text of an inline token with code spans replaced by a space."""
+def _prose(inline: Token, *, keep_code: bool = False) -> str:
+    """Return the rendered text of an inline token, with code spans kept or replaced by a space."""
     parts = []
     for child in inline.children or []:
         if child.type == "code_inline":
-            parts.append(" ")
+            parts.append(child.content if keep_code else " ")
         elif child.type in ("softbreak", "hardbreak"):
             parts.append("\n")
         else:
@@ -277,7 +288,7 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
     source line is in exactly one block. A document over ``MAX_MARKDOWN_BYTES`` is not parsed: all of it is prose.
     """
     # CommonMark ends a line at CR, LF or CRLF; the token line ranges count them all.
-    body = body.replace("\r\n", "\n").replace("\r", "\n")
+    body = normalize_newlines(body)
     lines = source_lines(body)
     blocks: list[MarkdownBlock] = []
     covered: set[int] = set()
@@ -290,15 +301,20 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
             continue
         covered.update(range(start, end))
         text = "\n".join(lines[start:end])
-        prose = "" if token.type in ("fence", "code_block") else _prose(token) if token.type == "inline" else text
-        blocks.append(MarkdownBlock(first_line + start, text, prose))
+        if token.type in ("fence", "code_block"):
+            prose, rendered = "", text
+        elif token.type == "inline":
+            prose, rendered = _prose(token), _prose(token, keep_code=True)
+        else:
+            prose = rendered = text
+        blocks.append(MarkdownBlock(first_line + start, text, prose, rendered))
     run: list[int] = []
     for number in [*range(len(lines)), len(lines)]:
         if number < len(lines) and number not in covered and lines[number].strip(" \t"):
             run.append(number)
         elif run:
             text = "\n".join(lines[run[0] : run[-1] + 1])
-            blocks.append(MarkdownBlock(first_line + run[0], text, text))
+            blocks.append(MarkdownBlock(first_line + run[0], text, text, text))
             run = []
     return sorted(blocks, key=lambda block: block.line)
 
