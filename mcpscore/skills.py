@@ -269,22 +269,27 @@ class MarkdownBlock:
 
 
 def _prose(inline: Token, *, keep_code: bool = False) -> str:
-    """Return the rendered text of an inline token, with code spans kept or replaced by a space."""
-    parts = []
+    """Return the rendered text of an inline token, with code spans kept or replaced by a space.
+
+    Link and image destinations (decoded) and titles are not code, so they are judged too; they follow the
+    visible text on their own lines rather than splitting a sentence that contains a link.
+    """
+    parts, extras = [], []
     for child in inline.children or []:
         if child.type == "code_inline":
             parts.append(child.content if keep_code else " ")
         elif child.type in ("link_open", "image"):
-            # Destinations (decoded) and titles are not code: a reader and a model see them as part of the text.
-            destination = child.attrs.get("href", child.attrs.get("src", ""))
-            parts.append(f" {unquote(str(destination))} {child.attrs.get('title', '')} ")
+            extras += [
+                unquote(str(child.attrs.get("href", child.attrs.get("src", "")))),
+                str(child.attrs.get("title", "")),
+            ]
             if child.type == "image":
                 parts.append(child.content)
         elif child.type in ("softbreak", "hardbreak"):
             parts.append("\n")
         else:
             parts.append(child.content)
-    return "".join(parts)
+    return "\n".join(["".join(parts), *(extra for extra in extras if extra)])
 
 
 def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
