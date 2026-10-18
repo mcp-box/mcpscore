@@ -45,6 +45,19 @@ def entry(name: str, files: dict[str, str] | None = None) -> dict[str, Any]:
     }
 
 
+def _validation_error() -> Exception:
+    from pydantic import BaseModel
+
+    class Strict(BaseModel):
+        value: int
+
+    try:
+        Strict.model_validate({"value": "x"})
+    except Exception as exc:  # noqa: BLE001 — building a real ValidationError
+        return exc
+    raise AssertionError
+
+
 class FakeSession:
     """Answer skills/list pages, skills/get and resources/read from canned data."""
 
@@ -185,7 +198,8 @@ class TestCollector:
             (MCPError(code=-32601, message="nope"), {"outcome": "rpc_error", "error_code": -32601}),
             (MCPError(code=-32001, message="slow"), {"outcome": "timeout"}),
             (TimeoutError(), {"outcome": "timeout"}),
-            (RuntimeError("boom"), {"outcome": "exception", "exception": "RuntimeError"}),
+            (RuntimeError("boom"), {"outcome": "transport", "exception": "RuntimeError"}),
+            (_validation_error(), {"outcome": "malformed"}),
         ],
     )
     async def test_failed_listing_is_evidence(self, error: Exception, expected: dict[str, Any]):
@@ -456,3 +470,24 @@ class TestRobustness:
         evidence = await collect_skills(session, {})
         assert [e["uri"] for e in evidence.entries or []] == ["skill://a/SKILL.md", "skill://b/SKILL.md"]
         assert not evidence.list_incomplete
+
+    def test_unmatched_backtick_runs_stay_linear(self):
+        import time
+
+        from mcpscore.skills import strip_inline_code
+
+        for attack in ["prose " + "`" * 64_000, ("`" * 3 + "a") * 50_000]:
+            started = time.perf_counter()
+            strip_inline_code(attack)
+            assert time.perf_counter() - started < 1.0
+        assert strip_inline_code("a ``x`y`` b `c` ```d") == "a ``x`y`` b   ```d"
+
+    def test_fence_closes_only_on_a_matching_delimiter(self):
+        from mcpscore.skills import markdown_blocks
+
+        body = "````markdown\n```json\n[a](x.md)\n```\n````\nAfter.\n"
+        assert [(line, is_code) for line, _, is_code in markdown_blocks(body)] == [(1, True), (6, False)]
+        assert relative_references(body) == []
+        tilde = "~~~~\n~~~\nstill code\n~~~~~\nprose\n"
+        assert [is_code for _, _, is_code in markdown_blocks(tilde)] == [True, False]
+        assert [is_code for _, _, is_code in markdown_blocks("```py`x\nnot a fence\n")] == [False]

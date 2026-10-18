@@ -497,3 +497,19 @@ def test_oversized_read_still_contradicts_a_listed_size() -> None:
 def test_current_directory_link_resolves() -> None:
     entry = skill("code-review", {"SKILL.md": skill_md("code-review", body="All [files](./) are listed.\n")})
     assert RULES["skills_references_resolve"].check(data(entry)).passed
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "transport"])
+def test_unanswered_calls_are_not_judged(outcome: str) -> None:
+    listing = data(entries=None, list_error={"outcome": outcome})
+    assert RULES["skills_list_supported"].skip_reason(listing) == SKIP_REASON_INSUFFICIENT_DATA
+    get = data(skill("code-review"), get_entry=None, get_error={"outcome": outcome})
+    assert RULES["skills_get_supported"].skip_reason(get) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_malformed_replies_still_fail() -> None:
+    listing = data(entries=None, list_error={"outcome": "malformed"})
+    assert RULES["skills_list_supported"].skip_reason(listing) is None
+    assert not RULES["skills_list_supported"].check(listing).passed
+    get = data(skill("code-review"), get_entry=None, get_error={"outcome": "malformed"})
+    assert not RULES["skills_get_supported"].check(get).passed

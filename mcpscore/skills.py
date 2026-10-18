@@ -19,6 +19,7 @@ import re
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from pydantic import ValidationError
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -209,9 +210,23 @@ _LINK_RE = re.compile(r"!?\[[^\[\]\n]*\]\(\s*(?:<([^<>\n]+)>|([^()\[\]<>\s]+))(?
 
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-_INLINE_CODE_RE = re.compile(r"(`+)[^`]+\1")
+_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)[^`]+\1(?!`)")
 """An inline code span; a span that itself contains backticks is not recognised, which keeps matching linear."""
-_FENCES = ("```", "~~~")
+_FENCE_RE = re.compile(r"(`{3,}|~{3,})(.*)")
+
+
+def _fence_open(line: str) -> str | None:
+    """Return the opening delimiter of a fenced code block on *line*, or None."""
+    match = _FENCE_RE.fullmatch(line.lstrip())
+    if match is None or (match.group(1)[0] == "`" and "`" in match.group(2)):
+        return None
+    return match.group(1)
+
+
+def _fence_closes(line: str, opening: str) -> bool:
+    """Whether *line* closes a block opened by *opening*: the same character, at least as many, nothing else."""
+    stripped = line.strip()
+    return len(stripped) >= len(opening) and stripped == opening[0] * len(stripped)
 
 
 def markdown_blocks(body: str, first_line: int = 1) -> list[tuple[int, str, bool]]:
@@ -230,14 +245,14 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[tuple[int, str, bool
             current.clear()
 
     for number, line in enumerate(source_lines(body), start=first_line):
-        marker = line.lstrip()[:3]
-        if fence is None and marker in _FENCES:
+        opening = _fence_open(line) if fence is None else None
+        if opening is not None:
             flush(is_code=False)
-            fence, start = marker, number
+            fence, start = opening, number
             current.append(line)
         elif fence is not None:
             current.append(line)
-            if marker == fence:
+            if _fence_closes(line, fence):
                 flush(is_code=True)
                 fence = None
         elif not line.strip():
@@ -339,13 +354,20 @@ def _declared_size(entries: list[Any], uri: str) -> int | None:
     return None
 
 
+UNOBSERVED_OUTCOMES = frozenset({"timeout", "transport"})
+"""Call outcomes with no answer from the server, so nothing about the method can be judged."""
+
+
 def _rpc_error(exc: Exception) -> dict[str, Any]:
+    """Classify a failed call: a JSON-RPC error, a reply that did not validate, a timeout, or no answer at all."""
     code = getattr(exc, "code", None)
     if isinstance(exc, TimeoutError) or code == -32001:
         return {"outcome": "timeout"}
     if isinstance(code, int):
         return {"outcome": "rpc_error", "error_code": code}
-    return {"outcome": "exception", "exception": type(exc).__name__}
+    if isinstance(exc, ValidationError):
+        return {"outcome": "malformed"}
+    return {"outcome": "transport", "exception": type(exc).__name__}
 
 
 async def _list(session: SkillsSession, evidence: SkillsEvidence) -> None:

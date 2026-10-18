@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 from ..skills import (
     DIGEST_RE,
     SKILL_FILE,
+    UNOBSERVED_OUTCOMES,
     SkillFile,
     SkillsEvidence,
     declared_settings,
@@ -147,9 +148,9 @@ class SkillsListSupportedRule(SkillsBaseRule):
         return RuleSeverity.MEDIUM
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when the listing timed out: an unanswered request says nothing either way."""
+        """Skip when the listing got no answer (timeout or transport failure): that says nothing either way."""
         reason = super().skip_reason(audit_data)
-        if reason is None and (self._evidence(audit_data).list_error or {}).get("outcome") == "timeout":
+        if reason is None and (self._evidence(audit_data).list_error or {}).get("outcome") in UNOBSERVED_OUTCOMES:
             return SKIP_REASON_INSUFFICIENT_DATA
         return reason
 
@@ -195,14 +196,14 @@ class SkillsGetSupportedRule(SkillsBaseRule):
         return RuleSeverity.MEDIUM
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when no listed skill had a URI to ask for, or the call timed out."""
+        """Skip when no listed skill had a URI to ask for, or the call got no answer."""
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
         evidence = self._evidence(audit_data)
         if evidence.get_uri is None:
             return SKIP_REASON_NOT_APPLICABLE
-        if (evidence.get_error or {}).get("outcome") == "timeout":
+        if (evidence.get_error or {}).get("outcome") in UNOBSERVED_OUTCOMES:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
