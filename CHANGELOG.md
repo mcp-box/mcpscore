@@ -44,8 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tools/list` breaks on a non-object output schema root.** When the
   negotiated session served no tools and the catalog came from the
   2026-07-28 stateless lifecycle, the rule was judged on 2026-07-28 and
-  skipped, exactly when its violation occurred. It is now judged on the
-  session's revision, and `capability_tools_present` names the cause.
+  skipped, exactly when its violation occurred. It now fails when the
+  session's catalog was rejected at an output schema root, and
+  `capability_tools_present` names the cause.
 
 ## [1.25.0] - 2026-10-18
 
