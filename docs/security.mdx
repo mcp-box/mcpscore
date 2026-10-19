@@ -94,9 +94,10 @@ below follows from one of those limits.
 - **MCP05**: injection happens when a tool runs with untrusted input. The
   audit never sends `tools/call`. [Smoke mode](/smoke-mode) calls your own
   read-only tools with inputs derived from their schemas, not attack payloads.
-- **MCP07**: mcpscore checks the authorization discovery chain. Whether each
-  tool enforces authorization, and whether the server rejects a token issued
-  for another service, needs credentials and tool calls.
+- **MCP07**: mcpscore checks the authorization discovery chain and that a
+  made-up bearer token is refused. Whether each tool enforces authorization,
+  and whether the server rejects a real token issued for another service,
+  needs credentials and tool calls.
 - **MCP08**: logging and telemetry live inside the server.
 - **MCP09**: an inventory of the MCP servers running in an organization is a
   governance task. mcpscore audits the server you point it at.
@@ -184,3 +185,5 @@ same file through its `sarif-path` input.
 - [The OWASP MCP Top 10, and what your server's catalog tells a model](https://mcpscore.dev/blog/owasp-mcp-top-10-catalog-security):
   the catalog-text rules on a demo server, and how they were measured on live
   servers before release.
+- [The LiteLLM MCP auth bypass, and the one request that shows it](https://mcpscore.dev/blog/litellm-mcp-auth-bypass-invalid-token):
+  CVE-2026-59822 and how `auth_invalid_token_rejected` sends a made-up token.
