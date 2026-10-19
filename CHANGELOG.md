@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-10-19
+
+A reporting fix for partial audits; no score changes.
+
 ### Fixed
 
 - **`tools_output_schema_root_object` skips as insufficient data again on
@@ -2156,7 +2160,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.26.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.26.1...HEAD
+[1.26.1]: https://github.com/mcp-box/mcpscore/compare/v1.26.0...v1.26.1
 [1.26.0]: https://github.com/mcp-box/mcpscore/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/mcp-box/mcpscore/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/mcp-box/mcpscore/compare/v1.23.0...v1.24.0
