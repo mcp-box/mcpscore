@@ -313,23 +313,29 @@ class MarkdownBlock:
     """The block's rendered text with inline code kept: what a reader sees, markup removed."""
 
 
-def _prose(inline: Token, *, keep_code: bool = False) -> str:
-    """Return the rendered text of an inline token, with code spans kept or replaced by a space.
+def _inline_views(inline: Token, seen: set[tuple[str, str]]) -> tuple[str, str]:
+    """Return the prose (code spans replaced by a space) and rendered text (code kept) of an inline token.
 
     Link and image destinations (decoded), titles and inline HTML are not code, so they are judged too; they
     follow the visible text on their own lines rather than splitting a sentence that contains them. A tag may
-    render as nothing or as a break, so text with inline HTML is judged both ways. Each distinct extra is kept
-    once, so references that repeat one long destination do not multiply the text.
+    render as nothing or as a break, so text with inline HTML is judged both ways. Each distinct extra is added
+    only in the first block of the document that has it (``seen``), so references that repeat one long
+    destination do not multiply the text.
     """
     extras: dict[tuple[str, str], str] = {}
-    texts = []
-    for tag in ("", "\n"):
-        parts: list[str] = []
-        _render(inline.children or [], parts, extras if not tag else {}, keep_code=keep_code, tag=tag)
-        texts.append("".join(parts))
-    if texts[1] == texts[0]:
-        texts.pop()
-    return "\n".join([*texts, *(extra for extra in extras.values() if extra)])
+    views = []
+    for keep_code in (False, True):
+        texts = []
+        for tag in ("", "\n"):
+            parts: list[str] = []
+            _render(inline.children or [], parts, {} if tag or keep_code else extras, keep_code=keep_code, tag=tag)
+            texts.append("".join(parts))
+        if texts[1] == texts[0]:
+            texts.pop()
+        views.append(texts)
+    new = [extra for key, extra in extras.items() if key not in seen and extra]
+    seen.update(extras)
+    return "\n".join([*views[0], *new]), "\n".join([*views[1], *new])
 
 
 def _render(
@@ -370,6 +376,7 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
     lines = source_lines(body)
     blocks: list[MarkdownBlock] = []
     covered: set[int] = set()
+    seen: set[tuple[str, str]] = set()
     parsed = _parsable(body)
     tokens = _parse(body) if parsed else ()
     for token in tokens:
@@ -385,7 +392,7 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
             # as one sentence; the source keeps them.
             prose, rendered = "", token.content
         elif token.type == "inline":
-            prose, rendered = _prose(token), _prose(token, keep_code=True)
+            prose, rendered = _inline_views(token, seen)
         else:
             # An HTML block holds no code: its decoded content and its text, with tags read as nothing and as
             # breaks, all count in full, so neither a character reference nor a tag hides a directive. The

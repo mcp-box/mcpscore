@@ -593,13 +593,14 @@ class TestRobustness:
             # Generous: CI runners parse adversarial input several times slower than a laptop.
             assert time.perf_counter() - started < 20.0
 
-    def test_repeated_references_to_one_destination_do_not_multiply_the_text(self):
+    @pytest.mark.parametrize("separator", ["", "\n\n"])
+    def test_repeated_references_to_one_destination_do_not_multiply_the_text(self, separator: str):
         from mcpscore.skills import markdown_blocks
 
         destination = "https://example.test/" + "a" * 16_000
-        body = "[x]" * 8_192 + "\n\n[x]: " + destination + "\n"
+        body = separator.join(["[x]"] * 4_096) + "\n\n[x]: " + destination + "\n"
         blocks = markdown_blocks(body)
-        assert any(destination in block.prose for block in blocks)
+        assert any(destination in block.prose and destination in block.rendered for block in blocks)
         assert sum(len(block.prose) + len(block.rendered) for block in blocks) < 10 * len(body)
 
     def test_links_inside_alt_text_are_not_references(self):
