@@ -900,3 +900,18 @@ def test_non_integral_sizes_stay_invalid(size: Any) -> None:
     entry["resources"][0]["size"] = size
     result = RULES["skills_resources_manifest"].check(data(entry))
     assert [issue["reason"] for issue in result.details["issues"]] == ["invalid_size"]
+
+
+@pytest.mark.parametrize(
+    ("listed", "link", "resolves"),
+    [
+        ("references/a/b.md", "references/a%2Fb.md", False),
+        ("references/a%2Fb.md", "references/a/b.md", False),
+        ("references/a%2Fb.md", "references/a%2fb.md", True),
+        ("references/a b.md", "references/a%20b.md", True),
+    ],
+)
+def test_encoded_slash_is_not_a_path_separator(listed: str, link: str, resolves: bool) -> None:
+    files = {"SKILL.md": skill_md("code-review", body=f"[guide]({link})\n"), listed: "# Guide\n"}
+    result = RULES["skills_references_resolve"].check(data(skill("code-review", files)))
+    assert result.passed is resolves

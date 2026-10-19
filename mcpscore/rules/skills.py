@@ -8,6 +8,7 @@ Skills specification (agentskills.io), which SEP-2640 adopts unchanged.
 
 from bisect import bisect_left
 from collections.abc import Iterator
+import re
 from typing import Any, ClassVar
 from urllib.parse import unquote
 
@@ -134,6 +135,14 @@ def _json_equal(left: Any, right: Any) -> bool:
     if isinstance(left, list) and isinstance(right, list):
         return len(left) == len(right) and all(_json_equal(a, b) for a, b in zip(left, right, strict=True))
     return type(left) is type(right) and left == right
+
+
+_ENCODED_SLASH_RE = re.compile("%2f", re.IGNORECASE)
+
+
+def _decode_path(uri: str) -> str:
+    """Percent-decode *uri* for comparison, keeping an encoded ``/`` distinct from a path separator."""
+    return "%2F".join(unquote(part) for part in _ENCODED_SLASH_RE.split(uri))
 
 
 def _inside(root: str, uri: str) -> bool:
@@ -747,9 +756,11 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             root = skill_root(entry["uri"]) if isinstance(entry.get("uri"), str) else None
             if read is None or files is None or root is None:
                 continue
-            # Compared decoded, so a link to "b c.png" matches a listed "b%20c.png" and Unicode either way.
+            # Compared decoded, so a link to "b c.png" matches a listed "b%20c.png"; an encoded "/" stays encoded.
             listed = {
-                unquote(item["uri"]) for item in files if isinstance(item, dict) and isinstance(item.get("uri"), str)
+                _decode_path(item["uri"])
+                for item in files
+                if isinstance(item, dict) and isinstance(item.get("uri"), str)
             }
             ordered = sorted(listed)
             targets = relative_references(_body(read.text or ""))
@@ -758,7 +769,7 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
                 continue
             for target in targets:
                 references += 1
-                resolved = resolve_reference(unquote(root), unquote(target))
+                resolved = resolve_reference(_decode_path(root), _decode_path(target))
                 if resolved is None or not _lists_file_at_or_under(listed, ordered, resolved):
                     issues.append(
                         _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")
