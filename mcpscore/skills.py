@@ -256,10 +256,11 @@ def _parse(body: str) -> tuple[Token, ...]:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
-def _html_text(html: str) -> str:
-    """Return the text of an HTML fragment: tags and comments dropped, a quoted ``>`` kept, references decoded.
+def _html_text(html: str, tag: str = "") -> str:
+    """Return the text of an HTML fragment: tags and comments become *tag*, a quoted ``>`` stays inside its tag.
 
-    One linear pass, so hostile input stays cheap. An unterminated tag or comment runs to the end.
+    Character references are decoded. One linear pass, so hostile input stays cheap. An unterminated tag or
+    comment runs to the end.
     """
     parts: list[str] = []
     i, n = 0, len(html)
@@ -272,6 +273,7 @@ def _html_text(html: str) -> str:
         if html.startswith("<!--", start):
             end = html.find("-->", start + 4)
             i = n if end < 0 else end + 3
+            parts.append(tag)
         elif start + 1 < n and (html[start + 1].isalpha() or html[start + 1] in "/!?"):
             j, quote, last = start + 1, "", ""
             while j < n:
@@ -287,6 +289,7 @@ def _html_text(html: str) -> str:
                     last = char
                 j += 1
             i = j + 1
+            parts.append(tag)
         else:
             parts.append("<")
             i = start + 1
@@ -311,15 +314,21 @@ def _prose(inline: Token, *, keep_code: bool = False) -> str:
     """Return the rendered text of an inline token, with code spans kept or replaced by a space.
 
     Link and image destinations (decoded), titles and inline HTML are not code, so they are judged too; they
-    follow the visible text on their own lines rather than splitting a sentence that contains them.
+    follow the visible text on their own lines rather than splitting a sentence that contains them. A tag may
+    render as nothing or as a break, so text with inline HTML is judged both ways.
     """
-    parts: list[str] = []
     extras: list[str] = []
-    _render(inline.children or [], parts, extras, keep_code=keep_code)
-    return "\n".join(["".join(parts), *(extra for extra in extras if extra)])
+    texts = []
+    for tag in ("", "\n"):
+        parts: list[str] = []
+        _render(inline.children or [], parts, extras if not tag else [], keep_code=keep_code, tag=tag)
+        texts.append("".join(parts))
+    if texts[1] == texts[0]:
+        texts.pop()
+    return "\n".join([*texts, *(extra for extra in extras if extra)])
 
 
-def _render(children: list[Token], parts: list[str], extras: list[str], *, keep_code: bool) -> None:
+def _render(children: list[Token], parts: list[str], extras: list[str], *, keep_code: bool, tag: str) -> None:
     for child in children:
         if child.type == "code_inline":
             parts.append(child.content if keep_code else " ")
@@ -330,12 +339,13 @@ def _render(children: list[Token], parts: list[str], extras: list[str], *, keep_
             ]
             if child.type == "image":
                 # Alt text renders from the image's own children, formatting removed.
-                _render(child.children or [], parts, extras, keep_code=keep_code)
+                _render(child.children or [], parts, extras, keep_code=keep_code, tag=tag)
         elif child.type in ("softbreak", "hardbreak"):
             parts.append("\n")
         elif child.type == "html_inline":
             # A tag or comment renders as nothing, but it is not code: its decoded text is judged on its own line.
             extras.append(html_lib.unescape(child.content))
+            parts.append(tag)
         else:
             parts.append(child.content)
 
@@ -367,9 +377,9 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         elif token.type == "inline":
             prose, rendered = _prose(token), _prose(token, keep_code=True)
         else:
-            # An HTML block holds no code: its decoded source and its tag-free text both count in full, so neither
-            # a character reference nor a tag splitting a directive hides it.
-            rendered = _html_text(text)
+            # An HTML block holds no code: its decoded source and its text, with tags read as nothing and as
+            # breaks, all count in full, so neither a character reference nor a tag hides a directive.
+            rendered = "\n".join([_html_text(text), _html_text(text, "\n")])
             prose = f"{html_lib.unescape(text)}\n{rendered}"
         blocks.append(MarkdownBlock(first_line + start, text, prose, rendered))
     run: list[int] = []

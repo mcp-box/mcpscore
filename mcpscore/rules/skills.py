@@ -785,27 +785,39 @@ def _body(text: str) -> str:
     return split[1] if split else text
 
 
+def _strings(value: Any, path: str) -> Iterator[tuple[str, str]]:
+    """Yield (location, text) for every string and key in a JSON value; a key is located at its parent."""
+    if isinstance(value, str):
+        yield path, value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            # The key is scanned at its parent's location, so a finding never publishes it.
+            yield path, str(key)
+            yield from _strings(item, f"{path}/{pointer_token(str(key))}")
+    elif isinstance(value, list):
+        for position, item in enumerate(value):
+            yield from _strings(item, f"{path}/{position}")
+
+
+def _decoded_served_strings(text: str, listed: Any) -> Iterator[str]:
+    """Yield the decoded strings of served frontmatter that differs from the listing's (already scanned)."""
+    try:
+        served = parse_frontmatter(text)
+    except ValueError:
+        return
+    if not _json_equal(served, listed):
+        for _, value in _strings(served, ""):
+            yield value
+
+
 def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, str, str, str]]:
     """Yield (listing index, location, source, rendered, prose) for frontmatter strings and ``SKILL.md`` blocks.
 
     ``SKILL.md`` is scanned a paragraph or fenced code block at a time, so a directive wrapped across lines is
     still one string; the location is the block's first line.
     """
-
-    def strings(value: Any, path: str) -> Iterator[tuple[str, str]]:
-        if isinstance(value, str):
-            yield path, value
-        elif isinstance(value, dict):
-            for key, item in value.items():
-                # The key is scanned at its parent's location, so a finding never publishes it.
-                yield path, str(key)
-                yield from strings(item, f"{path}/{pointer_token(str(key))}")
-        elif isinstance(value, list):
-            for position, item in enumerate(value):
-                yield from strings(item, f"{path}/{position}")
-
     for index, entry in _entries(evidence):
-        for path, text in strings(entry.get("frontmatter"), "/frontmatter"):
+        for path, text in _strings(entry.get("frontmatter"), "/frontmatter"):
             yield index, path, text, text, text
         read = _skill_file(evidence, entry)
         if read is not None:
@@ -817,6 +829,10 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
                 # The whole header, delimiter lines included, so nothing hidden on a delimiter escapes the scan.
                 header = text[: len(text) - len(split[1])]
                 yield index, f"/{SKILL_FILE}#L1", header, header, header
+                # YAML escapes decode only when parsed: served values that differ from the listing's are judged
+                # decoded too, under the header's location so a finding never publishes a key.
+                for value in _decoded_served_strings(text, entry.get("frontmatter")):
+                    yield index, f"/{SKILL_FILE}#L1", value, value, value
                 body, first_line = split[1], split[0].count("\n") + 3
             else:
                 body, first_line = text, 1
@@ -828,7 +844,7 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
     if isinstance(got, dict):
         listed = next(((i, e) for i, e in _entries(evidence) if e.get("uri") == got.get("uri")), None)
         if listed is None or not _json_equal(got.get("frontmatter"), listed[1].get("frontmatter")):
-            for path, text in strings(got.get("frontmatter"), "/skills/get/frontmatter"):
+            for path, text in _strings(got.get("frontmatter"), "/skills/get/frontmatter"):
                 yield listed[0] if listed else None, path, text, text, text
 
 

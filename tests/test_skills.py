@@ -611,3 +611,7 @@ class TestRobustness:
 )
 def test_html_text_drops_tags_and_comments(html: str, text: str) -> None:
     assert skills._html_text(html) == text
+
+
+def test_html_text_can_read_tags_as_breaks() -> None:
+    assert skills._html_text("previous<br>instructions <!-- c -->end", "\n") == "previous\ninstructions \nend"
