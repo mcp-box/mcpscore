@@ -558,19 +558,25 @@ class MCPAuditor:
         recovered from the stateless lifecycle is judged on the revision it
         was served on, not the session's — a rule scoped to the older
         revision must not fail a shape the newer one allows — unless the
-        session served none of it and the rule judges the shape the session's
-        revision forbids (``judges_session_revision``). Everything else is
-        judged on the negotiated version.
+        session rejected the very field the rule judges
+        (``session_failure_field``). Everything else is judged on the
+        negotiated version.
         """
         if rule.uses_modern_probe_evidence and self.era in (Era.MODERN, Era.DUAL):
             return LATEST.version
         for name in self._required_fields(rule):
             if name in self.audit_data.catalog_versions:
-                session_served_none = self.audit_data.listing_errors.get(name, {}).get("page_index") == 0
-                if rule.judges_session_revision and session_served_none:
+                if rule.session_failure_field and self._session_rejected(name, rule.session_failure_field):
                     return self.audit_data.protocol_version
                 return self.audit_data.catalog_versions[name]
         return self.audit_data.protocol_version
+
+    def _session_rejected(self, listing: str, field: str) -> bool:
+        """Whether the session's first page of ``listing`` failed validation at ``field`` of some item."""
+        error = self.audit_data.listing_errors.get(listing, {})
+        if error.get("outcome") != "invalid_response" or error.get("page_index") != 0:
+            return False
+        return any(field in str(issue.get("path", "")).split("/") for issue in error.get("issues", []))
 
     def _rules_for_target(self) -> list[BaseRule]:
         """Return the rules that apply to the kind of target this run audited.

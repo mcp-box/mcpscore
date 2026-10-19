@@ -128,10 +128,8 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
     assert results["tools_at_least_one"].passed
     assert "tools_names_unique" in results
-    # The session served none of the catalog, so the root rule judges it on the session's revision.
-    root = results["tools_output_schema_root_object"]
-    assert not root.passed
-    assert root.details["tools_with_non_object_root"] == {"get_alerts": "array"}
+    # Nothing ties the session error to the schema: the catalog is judged on the revision it was served on.
+    assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
     assert "readiness_2026_tool_schema_dialect" not in skipped
     # Needs the legacy capabilities too: evidence from two lifecycles is not comparable.
     assert skipped["tools_execution_consistent"] == SKIP_REASON_INSUFFICIENT_DATA
@@ -144,6 +142,46 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
     report = auditor.get_audit_report()
     assert report["spec"]["catalog_versions"] == {"tools": "2026-07-28"}
     assert report["listing_errors"]["tools"] == LEGACY_ERROR
+
+
+SCHEMA_REJECTED = {
+    "outcome": "invalid_response",
+    "page_index": 0,
+    "issues": [{"path": "/tools/0/outputSchema/type", "reason": "literal_error", "expected": "an object"}],
+    "issues_total": 1,
+    "issues_omitted": 0,
+}
+"""The SDK client rejected the session catalog at the first tool's output schema root."""
+
+
+@pytest.mark.parametrize(
+    ("error", "judged"),
+    [
+        (SCHEMA_REJECTED, True),
+        (LEGACY_ERROR, False),
+        ({"outcome": "timeout", "page_index": 0}, False),
+        ({**SCHEMA_REJECTED, "issues": [{"path": "/tools/0/inputSchema/type", "reason": "literal_error"}]}, False),
+    ],
+)
+async def test_root_rule_judges_the_session_revision_only_when_the_session_rejected_the_schema(
+    stateless_probes, error: dict, judged: bool
+):
+    stateless_probes({"resultType": "complete", "tools": [ARRAY_ROOT_TOOL]})
+    client = LegacyListingFailsClient()
+    client.listing_errors["tools"] = dict(error)
+    auditor = MCPAuditor()
+
+    await auditor.audit(client)
+
+    assert auditor.audit_data.catalog_versions == {"tools": "2026-07-28"}
+    results = {result.rule_id: result for result in auditor.results}
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    if judged:
+        root = results["tools_output_schema_root_object"]
+        assert not root.passed
+        assert root.details["tools_with_non_object_root"] == {"get_alerts": "array"}
+    else:
+        assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
 
 
 async def test_incomplete_session_catalog_is_replaced_by_a_complete_modern_one(stateless_probes):
