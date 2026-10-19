@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-10-19
+
+Servers that publish Agent Skills are now scored on 13 new rules; every other
+server skips them. Two scoring fixes: legacy servers that answer without an
+`initialize` handshake are no longer judged on the 2026-07-28 readiness
+checks, so many of their scores rise, and a non-object output schema root
+that breaks the session's tool listing now fails its rule.
+
 ### Added
 
 - **13 rules score servers that publish Agent Skills over the Skills
@@ -56,6 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or a stateless result carrying `resultType`, `ttlMs` or `cacheScope`.
   Servers in the TypeScript SDK's stateless HTTP mode are the common case:
   their readiness checks no longer count in the main score.
+
+### Changed
+
+- **Dependencies refreshed.** The lockfile picks up httpx2 2.15.1 (with
+  httpcore2 2.15.1). The `mcp==2.3.0` pin is unchanged; it is still the
+  latest SDK.
 
 ## [1.25.0] - 2026-10-18
 
@@ -2135,7 +2149,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.25.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.26.0...HEAD
+[1.26.0]: https://github.com/mcp-box/mcpscore/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/mcp-box/mcpscore/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/mcp-box/mcpscore/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/mcp-box/mcpscore/compare/v1.22.2...v1.23.0
