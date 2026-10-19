@@ -30,6 +30,7 @@ from .base import (
 )
 from .catalog_diagnostics import catalog_result, field_issue
 from .registry import register_rule
+from .tools import ToolsOutputSchemaRootObjectRule, non_object_output_roots
 
 
 def _wire_str(capability: object | None) -> str | None:
@@ -277,12 +278,26 @@ class CapabilityToolsPresentRule(CapabilityDeclarationRule):
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Compare the declared tools capability against the collected catalog."""
-        return self._evaluate(
+        result = self._evaluate(
             audit_data.capabilities,
             audit_data.tools,
             audit_data.listing_errors,
             fallback_version=audit_data.catalog_versions.get(self.feature),
         )
+        # The likeliest cause of a session listing that fails while the stateless one succeeds: an output schema
+        # root the session's revision forbids.
+        if (
+            not result.passed
+            and self.feature in audit_data.catalog_versions
+            and audit_data.protocol_version is not None
+            and ToolsOutputSchemaRootObjectRule().applies_to(audit_data.protocol_version)
+            and (offending := non_object_output_roots(audit_data.tools or []))
+        ):
+            result.message += (
+                f" {len(offending)} tool(s) declare an outputSchema whose root is not an object, which "
+                f"{audit_data.protocol_version} does not allow (see tools_output_schema_root_object)."
+            )
+        return result
 
 
 class CapabilityListChangedRule(CapabilityBaseRule):
