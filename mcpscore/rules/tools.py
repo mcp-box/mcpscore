@@ -971,8 +971,12 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip a recovered catalog unless the session rejected an output schema root.
 
-        The session's rejection is judged whatever the recovered catalog holds, even nothing.
+        The session's rejection is judged whatever the recovered catalog holds, even nothing. ``check`` takes
+        the whole audit data, so the auditor's partial-audit skip does not see that this rule needs the tools:
+        a partial audit that collected none is insufficient data, as for every other tools rule.
         """
+        if audit_data.partial and audit_data.tools is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
         if "tools" in audit_data.catalog_versions:
             return None if session_rejected_output_roots(audit_data) else SKIP_REASON_NOT_APPLICABLE
         return super().skip_reason(audit_data)

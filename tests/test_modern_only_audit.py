@@ -496,6 +496,10 @@ async def test_audit_partial_scores_auth_and_skips_session(stub_probes, monkeypa
     assert skipped.get("tools_at_least_one") == "insufficient-data"
     assert skipped.get("server_name_present") == "insufficient-data"
     assert skipped.get("capability_tools_present") == "insufficient-data"
+    # No tools were collected, so no tools rule may call itself not applicable.
+    tools_skips = {s["rule_id"]: s["reason"] for s in report["skipped_rules"] if s["group_name"] == "tools"}
+    assert tools_skips.get("tools_output_schema_root_object") == "insufficient-data"
+    assert set(tools_skips.values()) == {"insufficient-data"}, tools_skips
     # No transport was established, so the transport rule cannot claim a pass.
     assert "transport_streamable_http" not in scored
     assert skipped.get("transport_streamable_http") == "insufficient-data"
