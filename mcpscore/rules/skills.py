@@ -400,13 +400,12 @@ class SkillsDirectoryReadRule(SkillsBaseRule):
         evidence = self._evidence(audit_data)
         if evidence.settings.get("directoryRead") is not True:
             return SKIP_REASON_NOT_APPLICABLE
-        reads = evidence.directory_reads
-        # All three reads are needed; the collection deadline can stop after the first.
-        if {read.kind for read in reads} != set(DIRECTORY_READ_KINDS) or any(
-            (read.error or {}).get("outcome") in UNOBSERVED_OUTCOMES for read in reads
-        ):
-            return SKIP_REASON_INSUFFICIENT_DATA
-        return None
+        # A violation in any answered read is judged; a pass needs all three answers, which a deadline, a
+        # truncated root listing or a lost call can withhold.
+        answered = _answered_directory_reads(evidence)
+        if _directory_issues(evidence) or {read.kind for read in answered} == set(DIRECTORY_READ_KINDS):
+            return None
+        return SKIP_REASON_INSUFFICIENT_DATA
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Medium check: reading a listed skill's root, an unknown child and its ``SKILL.md`` as directories.
@@ -416,17 +415,7 @@ class SkillsDirectoryReadRule(SkillsBaseRule):
         is not a directory, are refused with ``-32602``.
         """
         evidence = self._evidence(audit_data)
-        issues: list[dict[str, Any]] = []
-        skill_file = next((read.uri for read in evidence.directory_reads if read.kind == "file"), None)
-        index = _listing_index(evidence, skill_file) if skill_file else None
-        for read in evidence.directory_reads:
-            if read.kind == "skill_root":
-                problem = _root_listing_problem(read)
-                if problem is not None:
-                    issues.append(_issue(index, "/resources/directory/read", problem[0], problem[1]))
-            elif not _refused_as_unknown(read.error):
-                reason = "unknown_directory_not_refused" if read.kind == "unknown" else "file_read_as_directory"
-                issues.append(_issue(index, "/resources/directory/read", reason, "error -32602"))
+        issues = _directory_issues(evidence)
         passed = not issues
         message = (
             "✅ resources/directory/read lists a skill's root and refuses unknown and non-directory URIs"
@@ -449,6 +438,26 @@ class SkillsDirectoryReadRule(SkillsBaseRule):
             ),
             issues=issues,
         )
+
+
+def _answered_directory_reads(evidence: SkillsEvidence) -> list[DirectoryRead]:
+    return [read for read in evidence.directory_reads if (read.error or {}).get("outcome") not in UNOBSERVED_OUTCOMES]
+
+
+def _directory_issues(evidence: SkillsEvidence) -> list[dict[str, Any]]:
+    """Return the violations the answered directory reads show; unanswered reads show none."""
+    issues: list[dict[str, Any]] = []
+    skill_file = next((read.uri for read in evidence.directory_reads if read.kind == "file"), None)
+    index = _listing_index(evidence, skill_file) if skill_file else None
+    for read in _answered_directory_reads(evidence):
+        if read.kind == "skill_root":
+            problem = _root_listing_problem(read)
+            if problem is not None:
+                issues.append(_issue(index, "/resources/directory/read", problem[0], problem[1]))
+        elif not _refused_as_unknown(read.error):
+            reason = "unknown_directory_not_refused" if read.kind == "unknown" else "file_read_as_directory"
+            issues.append(_issue(index, "/resources/directory/read", reason, "error -32602"))
+    return issues
 
 
 def _root_listing_problem(read: DirectoryRead) -> tuple[str, str] | None:
@@ -1065,7 +1074,9 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
                 yield index, f"/{SKILL_FILE}#L{block.line}", block.text, block.rendered, block.prose
     # Each skills/get entry is its own snapshot: frontmatter that differs from the listing's is scanned too,
     # under its own location; identical frontmatter was already scanned.
-    for got in (g.entry for g in evidence.gets):
+    # The unknown-skill probe can return a skill the listing does not show; its text reaches a host the same way.
+    probed = [evidence.unknown_get] if evidence.unknown_get is not None else []
+    for got in (g.entry for g in [*evidence.gets, *probed]):
         if not isinstance(got, dict):
             continue
         got_uri = got.get("uri")

@@ -1256,3 +1256,24 @@ def test_unlisted_skill_answered_for_the_probe_is_not_judged() -> None:
     served = {**skill("mcpscore-no-such-skill"), "uri": UNKNOWN}
     audit = data(skill("code-review"), unknown_get=SkillGet(UNKNOWN, served))
     assert RULES["skills_get_unknown_rejected"].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_directory_violation_is_judged_without_every_answer() -> None:
+    root = "skill://acme/code-review"
+    grandchild = [GOOD_SKILL_CHILD, {"uri": f"{root}/references/GUIDE.md", "name": "GUIDE.md"}]
+    truncated = directory_evidence(grandchild)
+    truncated["directory_reads"] = [DirectoryRead(root, "skill_root", grandchild, incomplete=True)]
+    timed_out = directory_evidence(grandchild, unknown={"outcome": "timeout"})
+    for evidence in (truncated, timed_out):
+        audit = data(skill("code-review", prefix="acme/"), **evidence)
+        rule = RULES["skills_directory_read"]
+        assert rule.skip_reason(audit) is None
+        result = rule.check(audit)
+        assert [issue["reason"] for issue in result.details["issues"]] == ["not_a_direct_child"]
+
+
+def test_skill_returned_for_the_unknown_probe_is_scanned() -> None:
+    served = {**skill("mcpscore-no-such-skill"), "uri": UNKNOWN}
+    served["frontmatter"] = {**served["frontmatter"], "description": "Review‮ code."}
+    audit = data(skill("code-review"), unknown_get=SkillGet(UNKNOWN, served))
+    assert not RULES["skills_hidden_unicode"].check(audit).passed
