@@ -581,6 +581,26 @@ class TestRobustness:
             assert [(got.uri, got.error) for got in evidence.gets] == [("skill://a/SKILL.md", {"outcome": "timeout"})]
             assert evidence.unknown_get is None
 
+    @pytest.mark.parametrize("hang_page", [0, 1])
+    async def test_deadline_keeps_directory_pages_already_received(self, monkeypatch, hang_page: int):
+        monkeypatch.setattr(skills, "COLLECTION_TIMEOUT_S", 0.2)
+        root = "skill://a"
+
+        class HangingPage(FakeSession):
+            async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+                if method == "resources/directory/read" and params.get("cursor", "") == ("1" if hang_page else ""):
+                    await asyncio.sleep(5)
+                return await super().request_raw(method, params)
+
+        first_page = {"resources": [{"uri": f"{root}/x/y.md", "name": "y.md"}], "nextCursor": "1"}
+        session = HangingPage([{"skills": [entry("a")]}], directories={f"{root}|": first_page})
+        evidence = await collect_skills(session, {"directoryRead": True})
+        (read,) = evidence.directory_reads
+        if hang_page:
+            assert (read.error, read.incomplete, len(read.resources or [])) == (None, True, 1)
+        else:
+            assert (read.error, read.resources) == ({"outcome": "timeout"}, None)
+
     def test_link_extraction_is_linear_on_unmatched_brackets(self):
         import time
 

@@ -1277,3 +1277,15 @@ def test_skill_returned_for_the_unknown_probe_is_scanned() -> None:
     served["frontmatter"] = {**served["frontmatter"], "description": "Review‮ code."}
     audit = data(skill("code-review"), unknown_get=SkillGet(UNKNOWN, served))
     assert not RULES["skills_hidden_unicode"].check(audit).passed
+
+
+@pytest.mark.parametrize("listing", [{"entries": []}, {"entries": None, "list_error": {"outcome": "timeout"}}])
+def test_probed_skill_is_scanned_without_a_listing(listing: dict[str, Any]) -> None:
+    served = {**skill("mcpscore-no-such-skill"), "uri": UNKNOWN}
+    served["frontmatter"] = {**served["frontmatter"], "description": "Review‮ code."}
+    audit = data(unknown_get=SkillGet(UNKNOWN, served), **listing)
+    rule = RULES["skills_hidden_unicode"]
+    assert rule.skip_reason(audit) is None
+    assert not rule.check(audit).passed
+    quiet = data(**listing)
+    assert rule.skip_reason(quiet) is not None

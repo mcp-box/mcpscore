@@ -1113,11 +1113,17 @@ class SkillsSecurityRule(SkillsBaseRule):
         raise NotImplementedError
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when no skill text was observed: no frontmatter string and no ``SKILL.md`` read."""
+        """Skip when no skill text was observed: no frontmatter string and no ``SKILL.md`` read.
+
+        Text a ``skills/get`` call returned counts even when the listing is empty or failed: a host receives it
+        the same way.
+        """
         reason = super().skip_reason(audit_data)
-        if reason is None and next(_skill_texts(self._evidence(audit_data)), None) is None:
-            return SKIP_REASON_INSUFFICIENT_DATA
-        return reason
+        evidence = audit_data.skills
+        has_text = evidence is not None and next(_skill_texts(evidence), None) is not None
+        if reason is None:
+            return None if has_text else SKIP_REASON_INSUFFICIENT_DATA
+        return None if has_text else reason
 
     @property
     def severity(self) -> RuleSeverity:

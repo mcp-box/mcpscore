@@ -726,8 +726,14 @@ async def _get(session: SkillsSession, evidence: SkillsEvidence) -> None:
     evidence.unknown_get = await _get_one(session, unknown_skill_uri(evidence.entries or []))
 
 
-async def _read_directory(session: SkillsSession, uri: str, kind: str) -> DirectoryRead:
-    read = DirectoryRead(uri, kind)
+async def _read_directory(session: SkillsSession, uri: str, kind: str, reads: list[DirectoryRead]) -> DirectoryRead:
+    """Read *uri* as a directory across its pages, appended to *reads* before the first call.
+
+    Until the first page answers, the read records a timeout; once a page has answered, the children received
+    stay recorded as incomplete if the collection deadline cancels a later page.
+    """
+    read = DirectoryRead(uri, kind, error={"outcome": "timeout"}, incomplete=True)
+    reads.append(read)
     children: list[Any] = []
     cursor: str | None = None
     seen: set[str] = set()
@@ -737,10 +743,9 @@ async def _read_directory(session: SkillsSession, uri: str, kind: str) -> Direct
             result = await session.request_raw("resources/directory/read", params)
         except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
             if page == 0:
-                read.error = _rpc_error(exc)
-            else:
-                read.resources, read.incomplete = children, True
+                read.error, read.incomplete = _rpc_error(exc), False
             return read
+        read.error = None
         items = result.get("resources") if isinstance(result, dict) else None
         if not isinstance(items, list):
             read.resources = children if page else None
@@ -754,7 +759,6 @@ async def _read_directory(session: SkillsSession, uri: str, kind: str) -> Direct
             return read
         seen.add(next_cursor)
         cursor = next_cursor
-    read.incomplete = True
     return read
 
 
@@ -766,8 +770,7 @@ async def _read_directories(session: SkillsSession, evidence: SkillsEvidence) ->
     root = skill_root(skill_file) if skill_file else None
     if skill_file is None or root is None:
         return
-    root_read = await _read_directory(session, root, "skill_root")
-    evidence.directory_reads.append(root_read)
+    root_read = await _read_directory(session, root, "skill_root", evidence.directory_reads)
     if root_read.incomplete:
         # An unread page may hold any name, so no child can be shown to be unknown.
         return
@@ -779,8 +782,8 @@ async def _read_directories(session: SkillsSession, evidence: SkillsEvidence) ->
     )
     taken |= {_child_name(root, item.get("uri")) for item in manifest(entry) or [] if isinstance(item, dict)}
     unknown = f"{root}/{_unused_name(UNKNOWN_DIRECTORY_NAME, taken)}"
-    evidence.directory_reads.append(await _read_directory(session, unknown, "unknown"))
-    evidence.directory_reads.append(await _read_directory(session, skill_file, "file"))
+    await _read_directory(session, unknown, "unknown", evidence.directory_reads)
+    await _read_directory(session, skill_file, "file", evidence.directory_reads)
 
 
 def _child_name(root: str, uri: Any) -> str:
