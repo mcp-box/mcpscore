@@ -334,8 +334,8 @@ def _render(children: list[Token], parts: list[str], extras: list[str], *, keep_
         elif child.type in ("softbreak", "hardbreak"):
             parts.append("\n")
         elif child.type == "html_inline":
-            # A tag or comment renders as nothing, but it is not code: its text is judged on its own line.
-            extras.append(child.content)
+            # A tag or comment renders as nothing, but it is not code: its decoded text is judged on its own line.
+            extras.append(html_lib.unescape(child.content))
         else:
             parts.append(child.content)
 
@@ -367,9 +367,10 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         elif token.type == "inline":
             prose, rendered = _prose(token), _prose(token, keep_code=True)
         else:
-            # An HTML block is not code: its source counts in full, and its tag-free text catches a directive
-            # that tags split.
-            prose, rendered = text, _html_text(text)
+            # An HTML block holds no code: its decoded source and its tag-free text both count in full, so neither
+            # a character reference nor a tag splitting a directive hides it.
+            rendered = _html_text(text)
+            prose = f"{html_lib.unescape(text)}\n{rendered}"
         blocks.append(MarkdownBlock(first_line + start, text, prose, rendered))
     run: list[int] = []
     for number in [*range(len(lines)), len(lines)]:
