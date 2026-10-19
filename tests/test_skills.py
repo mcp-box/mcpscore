@@ -274,6 +274,27 @@ class TestCollector:
     def test_unknown_skill_uri_sits_beside_a_listed_skill(self, listed: str, unknown: str):
         assert skills.unknown_skill_uri([{"uri": listed}]) == unknown
 
+    def test_unknown_skill_uri_avoids_every_listed_skill(self, monkeypatch):
+        monkeypatch.setattr(skills, "MAX_SKILL_FILES", 1)
+        listed = [
+            {"uri": "skill://acme/review/SKILL.md"},
+            {"uri": "skill://acme/mcpscore-no-such-skill/SKILL.md"},
+            {"uri": "skill://acme/mcpscore-no-such-skill-%32/SKILL.md"},
+        ]
+        assert skills.unknown_skill_uri(listed) == "skill://acme/mcpscore-no-such-skill-3/SKILL.md"
+
+    async def test_unknown_directory_avoids_the_root_listing_and_the_manifest(self):
+        root = "skill://a"
+        a = entry("a")
+        a["resources"].append({"uri": f"{root}/mcpscore-no-such-directory/GUIDE.md", "digest": "x", "size": 1})
+        listing = {"resources": [{"uri": f"{root}/mcpscore-no-such-directory-2", "mimeType": "inode/directory"}]}
+        session = FakeSession(
+            [{"skills": [a]}],
+            directories={f"{root}|": listing, f"{root}/mcpscore-no-such-directory-3|": {"resources": []}},
+        )
+        evidence = await collect_skills(session, {"directoryRead": True})
+        assert evidence.directory_reads[1].uri == f"{root}/mcpscore-no-such-directory-3"
+
     async def test_directory_reads_only_when_declared(self):
         root = "skill://a"
         directories = {

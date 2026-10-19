@@ -458,7 +458,8 @@ def _root_listing_problem(read: DirectoryRead) -> tuple[str, str] | None:
         if not isinstance(uri, str):
             return "malformed_directory_child", "a resource with a URI"
         parent, _, name = normalize_uri(uri).rstrip("/").rpartition("/")
-        if parent != root or not name:
+        # "." and ".." (also percent-encoded, which normal form decodes) name the directory or its parent.
+        if parent != root or name in ("", ".", ".."):
             return "not_a_direct_child", "only direct children of the directory"
         children.append(name)
     if SKILL_FILE not in children and not read.incomplete:

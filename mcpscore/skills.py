@@ -678,14 +678,29 @@ def _listed_skill_uris(entries: list[Any]) -> list[str]:
     return list(uris.values())[:MAX_SKILL_FILES]
 
 
+def _unused_name(base: str, taken: set[str]) -> str:
+    """Return *base*, or *base* with the first numeric suffix that makes it absent from *taken*."""
+    name, suffix = base, 1
+    while name in taken:
+        suffix += 1
+        name = f"{base}-{suffix}"
+    return name
+
+
 def unknown_skill_uri(entries: list[Any]) -> str:
-    """Return a ``SKILL.md`` URI beside the first listed skill, named so that no server serves it."""
-    for uri in _listed_skill_uris(entries):
-        root = skill_root(uri)
-        parent = root.rpartition("/")[0] if root else ""
-        if parent:
-            return f"{parent}/{UNKNOWN_SKILL_NAME}/{SKILL_FILE}"
-    return f"skill://{UNKNOWN_SKILL_NAME}/{SKILL_FILE}"
+    """Return a ``SKILL.md`` URI beside the first listed skill that no listed skill uses."""
+    listed = {normalize_uri(e["uri"]) for e in entries if isinstance(e, dict) and isinstance(e.get("uri"), str)}
+    parent = next(
+        (root.rpartition("/")[0] for uri in _listed_skill_uris(entries) if (root := skill_root(uri))),
+        "",
+    )
+    prefix = f"{parent}/" if parent else "skill://"
+    taken = {
+        uri.removeprefix(normalize_uri(prefix)).removesuffix(f"/{SKILL_FILE}")
+        for uri in listed
+        if uri.startswith(normalize_uri(prefix))
+    }
+    return f"{prefix}{_unused_name(UNKNOWN_SKILL_NAME, taken)}/{SKILL_FILE}"
 
 
 async def _get_one(session: SkillsSession, uri: str) -> SkillGet:
@@ -751,9 +766,26 @@ async def _read_directories(session: SkillsSession, evidence: SkillsEvidence) ->
     root = skill_root(skill_file) if skill_file else None
     if skill_file is None or root is None:
         return
-    uris = {"skill_root": root, "unknown": f"{root}/{UNKNOWN_DIRECTORY_NAME}", "file": skill_file}
-    for kind in DIRECTORY_READ_KINDS:
-        evidence.directory_reads.append(await _read_directory(session, uris[kind], kind))
+    root_read = await _read_directory(session, root, "skill_root")
+    evidence.directory_reads.append(root_read)
+    # The unknown child is named after the root's listing and the skill's manifest, so it names nothing served.
+    taken = {_child_name(root, child.get("uri")) for child in root_read.resources or [] if isinstance(child, dict)}
+    entry = next(
+        (e for e in evidence.entries or [] if isinstance(e, dict) and e.get("uri") == skill_file),
+        {},
+    )
+    taken |= {_child_name(root, item.get("uri")) for item in manifest(entry) or [] if isinstance(item, dict)}
+    unknown = f"{root}/{_unused_name(UNKNOWN_DIRECTORY_NAME, taken)}"
+    evidence.directory_reads.append(await _read_directory(session, unknown, "unknown"))
+    evidence.directory_reads.append(await _read_directory(session, skill_file, "file"))
+
+
+def _child_name(root: str, uri: Any) -> str:
+    """Return the first path segment of *uri* below *root*, in normal form, or "" when it is not below it."""
+    prefix = normalize_uri(root) + "/"
+    if not isinstance(uri, str) or not normalize_uri(uri).startswith(prefix):
+        return ""
+    return normalize_uri(uri)[len(prefix) :].split("/", 1)[0]
 
 
 async def _read(session: SkillsSession, uri: str, keep_text: bool) -> SkillFile:

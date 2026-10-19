@@ -1183,6 +1183,16 @@ def test_directory_read_needs_the_declared_setting() -> None:
         (directory_evidence([{"uri": "skill://acme/code-review/references/GUIDE.md"}]), "not_a_direct_child"),
         (directory_evidence([{"uri": "skill://acme/other/SKILL.md"}]), "not_a_direct_child"),
         (directory_evidence(["junk"]), "malformed_directory_child"),
+        (
+            directory_evidence([{"uri": "skill://acme/code-review/SKILL.md"}, {"uri": "skill://acme/code-review/."}]),
+            "not_a_direct_child",
+        ),
+        (
+            directory_evidence(
+                [{"uri": "skill://acme/code-review/SKILL.md"}, {"uri": "skill://acme/code-review/%2E%2E"}]
+            ),
+            "not_a_direct_child",
+        ),
     ],
 )
 def test_directory_read_failures(evidence: dict[str, Any], reason: str) -> None:
