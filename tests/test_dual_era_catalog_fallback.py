@@ -190,10 +190,16 @@ async def test_root_rule_judges_the_session_revision_only_when_the_session_rejec
         assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
 
 
-async def test_session_rejection_fails_the_root_rule_whatever_the_recovered_catalog_declares(stateless_probes):
-    """The stateless lifecycle may serve an object root while the session served an array: the session is judged."""
-    object_root = {**ARRAY_ROOT_TOOL, "outputSchema": {"type": "object", "properties": {}}}
-    stateless_probes({"resultType": "complete", "tools": [object_root]})
+@pytest.mark.parametrize(
+    "recovered",
+    [[{**ARRAY_ROOT_TOOL, "outputSchema": {"type": "object", "properties": {}}}], []],
+    ids=["object-root", "empty"],
+)
+async def test_session_rejection_fails_the_root_rule_whatever_the_recovered_catalog_declares(
+    stateless_probes, recovered: list
+):
+    """The stateless lifecycle may serve another catalog than the session did: the session's rejection is judged."""
+    stateless_probes({"resultType": "complete", "tools": recovered})
     client = LegacyListingFailsClient()
     client.listing_errors["tools"] = dict(SCHEMA_REJECTED)
     auditor = MCPAuditor()

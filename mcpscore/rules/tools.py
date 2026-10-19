@@ -969,11 +969,13 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
         return RuleSeverity.HIGH
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip a recovered catalog unless the session rejected an output schema root."""
-        reason = super().skip_reason(audit_data)
-        if reason is None and "tools" in audit_data.catalog_versions and not session_rejected_output_roots(audit_data):
-            return SKIP_REASON_NOT_APPLICABLE
-        return reason
+        """Skip a recovered catalog unless the session rejected an output schema root.
+
+        The session's rejection is judged whatever the recovered catalog holds, even nothing.
+        """
+        if "tools" in audit_data.catalog_versions:
+            return None if session_rejected_output_roots(audit_data) else SKIP_REASON_NOT_APPLICABLE
+        return super().skip_reason(audit_data)
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Judge the session's catalog, or the session's rejection of it when the catalog was recovered."""
