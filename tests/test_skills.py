@@ -666,3 +666,34 @@ def test_supporting_read_skips_skill_md_under_another_spelling() -> None:
         ("skill://acme/code%2Dreview/SKILL.md", True),
         ("skill://acme/code-review/GUIDE.md", False),
     ]
+
+
+async def test_oversized_skill_md_under_another_spelling_is_not_requested(monkeypatch) -> None:
+    monkeypatch.setattr(skills, "MAX_FILE_BYTES", 10)
+    listed = {
+        "uri": "skill://code%2Dreview/SKILL.md",
+        "frontmatter": {"name": "code-review", "description": "d"},
+        "resources": [{"uri": "skill://code-review/SKILL.md", "digest": "sha256:" + "0" * 64, "size": 50}],
+    }
+    session = FakeSession([{"skills": [listed]}], {"skill://code%2Dreview/SKILL.md": "x" * 50})
+    await collect_skills(session, {})
+    assert session.reads == []
+
+
+def test_normalize_uri_lowercases_the_scheme_only() -> None:
+    assert skills.normalize_uri("SKILL://Acme/Review") == "skill://Acme/Review"
+
+
+def test_one_file_under_two_spellings_is_read_once() -> None:
+    parent = {
+        "uri": "skill://acme/SKILL.md",
+        "resources": [
+            {"uri": "skill://acme/SKILL.md", "size": 1},
+            {"uri": "skill://acme/code-review/SKILL.md", "size": 1},
+        ],
+    }
+    nested = {"uri": "skill://acme/code%2Dreview/SKILL.md", "resources": "dynamic"}
+    assert skills._reads([parent, nested]) == [
+        ("skill://acme/SKILL.md", True),
+        ("skill://acme/code%2Dreview/SKILL.md", True),
+    ]

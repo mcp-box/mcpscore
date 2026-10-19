@@ -54,9 +54,13 @@ def _entries(evidence: SkillsEvidence) -> Iterator[tuple[int, dict[str, Any]]]:
 
 
 def _skill_file(evidence: SkillsEvidence, entry: dict[str, Any]) -> SkillFile | None:
-    """Return the read of an entry's ``SKILL.md`` when it returned content."""
+    """Return the read of an entry's ``SKILL.md`` when it returned content, matched in RFC 3986 normal form."""
     uri = entry.get("uri")
-    read = evidence.files.get(uri) if isinstance(uri, str) else None
+    if not isinstance(uri, str):
+        return None
+    read = evidence.files.get(uri) or next(
+        (f for read_uri, f in evidence.files.items() if normalize_uri(read_uri) == normalize_uri(uri)), None
+    )
     return read if read is not None and read.error is None and read.text is not None else None
 
 

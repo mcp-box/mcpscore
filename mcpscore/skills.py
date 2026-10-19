@@ -449,11 +449,13 @@ def _normal_escape(match: re.Match[str]) -> str:
 def normalize_uri(uri: str) -> str:
     """Return *uri* in RFC 3986 normal form for comparison (§6.2.2.1-2).
 
-    Characters a URI cannot carry (non-ASCII, spaces) are percent-encoded as UTF-8, escapes are uppercased, and
-    only escapes of unreserved characters are decoded: ``%2D`` equals ``-``, while ``%3B``, ``%2F`` or ``%25``
-    stay distinct from ``;``, ``/`` or ``%``.
+    The scheme is lowercased; characters a URI cannot carry (non-ASCII, spaces) are percent-encoded as UTF-8,
+    escapes are uppercased, and only escapes of unreserved characters are decoded: ``%2D`` equals ``-``, while
+    ``%3B``, ``%2F`` or ``%25`` stay distinct from ``;``, ``/`` or ``%``. The rest stays case-sensitive.
     """
-    return _ESCAPE_RE.sub(_normal_escape, quote(uri, safe=_URI_SAFE))
+    normal = _ESCAPE_RE.sub(_normal_escape, quote(uri, safe=_URI_SAFE))
+    scheme = _SCHEME_RE.match(normal)
+    return normal[: scheme.end()].lower() + normal[scheme.end() :] if scheme else normal
 
 
 def resolve_reference(root: str, target: str) -> str | None:
@@ -492,7 +494,10 @@ def content_bytes(contents: list[dict[str, Any]], uri: str) -> tuple[bytes, str 
     """Return the raw bytes and MIME type of the content item for *uri* (the first item otherwise)."""
     if not contents:
         return None
-    item = next((c for c in contents if c.get("uri") == uri), contents[0])
+    item = next(
+        (c for c in contents if isinstance(c.get("uri"), str) and normalize_uri(c["uri"]) == normalize_uri(uri)),
+        contents[0],
+    )
     mime_type = item.get("mimeType")
     if isinstance(item.get("text"), str):
         return item["text"].encode("utf-8"), mime_type
@@ -532,10 +537,12 @@ def _reads(entries: list[Any]) -> list[tuple[str, bool]]:
         )
         if extra is not None and len(supporting) < MAX_SUPPORTING_FILES:
             supporting.append((extra, False))
-    reads: dict[str, bool] = {}
+    # One request per URI in normal form, under its first spelling (a SKILL.md's own, as skill files come first).
+    reads: dict[str, tuple[str, bool]] = {}
     for uri, keep_text in skill_files + supporting:
-        reads[uri] = reads.get(uri, False) or keep_text
-    return list(reads.items())
+        first, kept = reads.get(normalize_uri(uri), (uri, False))
+        reads[normalize_uri(uri)] = (first, kept or keep_text)
+    return list(reads.values())
 
 
 def _declared_size(entries: list[Any], uri: str) -> int | None:
@@ -543,7 +550,12 @@ def _declared_size(entries: list[Any], uri: str) -> int | None:
         if not isinstance(entry, dict):
             continue
         for item in manifest(entry) or []:
-            if isinstance(item, dict) and item.get("uri") == uri and (size := size_value(item.get("size"))) is not None:
+            listed = item.get("uri") if isinstance(item, dict) else None
+            if (
+                isinstance(listed, str)
+                and normalize_uri(listed) == normalize_uri(uri)
+                and (size := size_value(item.get("size"))) is not None
+            ):
                 return size
     return None
 
