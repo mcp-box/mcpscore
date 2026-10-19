@@ -137,15 +137,19 @@ def _json_equal(left: Any, right: Any) -> bool:
     return type(left) is type(right) and left == right
 
 
-_ENCODED_SLASH_RE = re.compile("%2f", re.IGNORECASE)
+# Escapes of the path, query and fragment delimiters: decoding them would change which URI is meant.
+_KEPT_ESCAPE_RE = re.compile("(%2f|%3f|%23)", re.IGNORECASE)
 
 
 def _decode_path(uri: str) -> str:
-    """Percent-decode *uri* for comparison, keeping an encoded ``/`` distinct from a path separator.
+    """Percent-decode *uri* for comparison, keeping an encoded ``/``, ``?`` or ``#`` distinct from the delimiter.
 
-    A decoded ``%`` is escaped again, so a literal "%2F" (sent as ``%252F``) never equals the kept escape.
+    A decoded ``%`` is escaped again, so a literal "%2F" (sent as ``%252F``) never equals a kept escape.
     """
-    return "%2F".join(unquote(part).replace("%", "%25") for part in _ENCODED_SLASH_RE.split(uri))
+    pieces = _KEPT_ESCAPE_RE.split(uri)
+    return "".join(
+        piece.upper() if position % 2 else unquote(piece).replace("%", "%25") for position, piece in enumerate(pieces)
+    )
 
 
 def _inside(root: str, uri: str) -> bool:

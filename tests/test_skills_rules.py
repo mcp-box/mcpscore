@@ -912,6 +912,12 @@ def test_non_integral_sizes_stay_invalid(size: Any) -> None:
         ("references/a%2Fb.md", "references/a%252Fb.md", False),
         ("references/a%252Fb.md", "references/a%2Fb.md", False),
         ("references/100%25.md", "references/100%25.md", True),
+        ("references/a?b.md", "references/a%3Fb.md", False),
+        ("references/a%3Fb.md", "references/a%3fb.md", True),
+        ("references/a%3Fb.md", "references/a%253Fb.md", False),
+        ("references/a#b.md", "references/a%23b.md", False),
+        ("references/a%23b.md", "references/a%23b.md", True),
+        ("references/a%23b.md", "references/a%2523b.md", False),
     ],
 )
 def test_encoded_slash_is_not_a_path_separator(listed: str, link: str, resolves: bool) -> None:
