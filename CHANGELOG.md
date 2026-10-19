@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `safe_load`, and `SKILL.md` is parsed as CommonMark to tell code from prose
   and find its links.
 
+### Fixed
+
+- **A legacy server that answers requests without an `initialize`
+  handshake is no longer scored as a 2026-07-28 server.** A plain tools
+  result to a stateless `tools/list` counted as modern support, so such a
+  server was classed dual-era: its 2026-07-28 readiness checks counted in
+  the main score and `protocol_version_latest` passed. Modern support now
+  needs a `server/discover` result, a `-32022` answer to an unknown version,
+  or a stateless result carrying `resultType`, `ttlMs` or `cacheScope`.
+  Servers in the TypeScript SDK's stateless HTTP mode are the common case:
+  their readiness checks no longer count in the main score.
+
 ## [1.25.0] - 2026-10-18
 
 A new HIGH rule sends a made-up bearer token to servers behind auth and

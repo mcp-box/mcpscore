@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from mcpscore.mcp_auditor import MCPAuditor
 from mcpscore.probes import (
     PROBE_DISCOVER,
@@ -34,6 +36,7 @@ from mcpscore.rules.base import (
     SKIP_REASON_REQUIRES_MODERN_SUPPORT,
     RuleSeverity,
 )
+from mcpscore.rules.protocol_version import LatestVersionRule
 from mcpscore.rules.readiness import (
     CacheMetadataReadinessRule,
     DeprecatedFeaturesReadinessRule,
@@ -578,6 +581,34 @@ class TestEraDetection:
             {"http_status": 400, "error_code": -32022, "data_well_formed": False},
         )
         assert detect_era(None, probes) is Era.MODERN
+
+    @staticmethod
+    def lenient_legacy_probes(**stateless_details: object) -> dict[str, ProbeResult]:
+        """Return probes of a legacy server that answers any request without checking for ``initialize``."""
+        probes = legacy_probes()
+        probes[PROBE_DISCOVER] = ProbeResult(PROBE_DISCOVER, ProbeOutcome.UNSUPPORTED, {"error_code": -32601})
+        probes[PROBE_STATELESS_LIST] = ProbeResult(
+            PROBE_STATELESS_LIST,
+            ProbeOutcome.SUPPORTED,
+            {"result_type": None, "ttl_ms": None, "cache_scope": None, **stateless_details},
+        )
+        # The made-up version is answered with the same tools result, not -32022.
+        probes[PROBE_UNKNOWN_VERSION] = ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.UNSUPPORTED, {})
+        return probes
+
+    def test_plain_tools_result_without_initialize_is_legacy(self):
+        probes = self.lenient_legacy_probes()
+        assert detect_era("2025-11-25", probes) is Era.LEGACY
+        data = AuditData(protocol_version="2025-11-25", probes=probes)
+        latest = LatestVersionRule().check(data)
+        assert not latest.passed
+        assert latest.details["modern_lifecycle_support"] is False
+        for rule_cls in (CacheMetadataReadinessRule, ResultTypeReadinessRule, MetaValidationReadinessRule):
+            assert rule_cls().skip_reason(data) == SKIP_REASON_REQUIRES_MODERN_SUPPORT, rule_cls.rule_id
+
+    @pytest.mark.parametrize("field", ["result_type", "ttl_ms", "cache_scope"])
+    def test_stateless_result_with_a_modern_field_is_modern(self, field: str):
+        assert detect_era("2025-11-25", self.lenient_legacy_probes(**{field: "complete"})) is Era.DUAL
 
     def test_no_evidence(self):
         assert detect_era(None, not_applicable_results(reason="stdio")) is None

@@ -2837,16 +2837,28 @@ GATEWAY_PROBE_IDS: tuple[str, ...] = (PROBE_DISCOVER, PROBE_STATELESS_LIST)
 """Probes whose support indicates the server speaks the modern lifecycle at all."""
 
 
+MODERN_RESULT_FIELDS: tuple[str, ...] = ("result_type", "ttl_ms", "cache_scope")
+"""Stateless-list details that only a modern result carries (``resultType``, ``ttlMs``, ``cacheScope``)."""
+
+
 def has_modern_support(probes: dict[str, ProbeResult] | None) -> bool:
     """Whether the probes observed any modern-lifecycle support.
 
-    True when the server answered ``server/discover`` or a stateless request —
-    the gateway condition for the detail readiness rules.
+    True when the server answered ``server/discover``, or answered a stateless
+    request with a modern result — the gateway condition for the detail
+    readiness rules. A plain tools result is not enough: a legacy server that
+    answers without checking for ``initialize`` returns one too.
     """
     if not probes:
         return False
-    return any(
-        probes[probe_id].outcome is ProbeOutcome.SUPPORTED for probe_id in GATEWAY_PROBE_IDS if probe_id in probes
+    discover = probes.get(PROBE_DISCOVER)
+    if discover is not None and discover.outcome is ProbeOutcome.SUPPORTED:
+        return True
+    stateless = probes.get(PROBE_STATELESS_LIST)
+    return (
+        stateless is not None
+        and stateless.outcome is ProbeOutcome.SUPPORTED
+        and any(stateless.details.get(field) is not None for field in MODERN_RESULT_FIELDS)
     )
 
 
