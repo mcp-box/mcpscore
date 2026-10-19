@@ -382,10 +382,12 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         elif token.type == "inline":
             prose, rendered = _prose(token), _prose(token, keep_code=True)
         else:
-            # An HTML block holds no code: its decoded source and its text, with tags read as nothing and as
-            # breaks, all count in full, so neither a character reference nor a tag hides a directive.
-            rendered = "\n".join([_html_text(text), _html_text(text, "\n")])
-            prose = f"{html_lib.unescape(text)}\n{rendered}"
+            # An HTML block holds no code: its decoded content and its text, with tags read as nothing and as
+            # breaks, all count in full, so neither a character reference nor a tag hides a directive. The
+            # content drops blockquote and list markers, as for code blocks.
+            content = token.content
+            rendered = "\n".join([_html_text(content), _html_text(content, "\n")])
+            prose = f"{html_lib.unescape(content)}\n{rendered}"
         blocks.append(MarkdownBlock(first_line + start, text, prose, rendered))
     run: list[int] = []
     for number in [*range(len(lines)), len(lines)]:
