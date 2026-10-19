@@ -999,5 +999,15 @@ def test_differently_encoded_skill_root_is_still_inside() -> None:
     entry = skill("code-review", prefix="acme/")
     entry["uri"] = "skill://acme/code%2Dreview/SKILL.md"
     entry["resources"].append({"uri": "skill://acme/code-review/GUIDE.md", "digest": digest("x"), "size": 1})
+    audit = data(entry)
+    assert RULES["skills_resources_manifest"].check(audit).passed
+    assert RULES["skills_get_supported"].check(audit).passed
+
+
+def test_one_file_listed_under_two_spellings_is_a_duplicate() -> None:
+    entry = skill("code-review")
+    item = dict(entry["resources"][0])
+    item["uri"] = item["uri"].replace("code-review", "code%2Dreview")
+    entry["resources"].append(item)
     result = RULES["skills_resources_manifest"].check(data(entry))
-    assert "outside_skill" not in [issue["reason"] for issue in result.details.get("issues", [])]
+    assert [issue["reason"] for issue in result.details["issues"]] == ["duplicate_file"]

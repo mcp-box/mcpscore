@@ -154,7 +154,10 @@ def _complete_entry(entry: dict[str, Any], uri: str | None) -> bool:
     the manifest is valid. Values may differ from the listing's: the two are snapshots taken at different times.
     """
     frontmatter = entry.get("frontmatter")
-    if entry.get("uri") != uri or not isinstance(uri, str) or not isinstance(frontmatter, dict):
+    returned = entry.get("uri")
+    if not isinstance(uri, str) or not isinstance(returned, str) or normalize_uri(returned) != normalize_uri(uri):
+        return False
+    if not isinstance(frontmatter, dict):
         return False
     name, description = frontmatter.get("name"), frontmatter.get("description")
     return (
@@ -391,12 +394,19 @@ def _manifest_issues(index: int, entry: dict[str, Any]) -> list[dict[str, Any]]:
             issues.append(_issue(index, f"{path}/digest", "invalid_digest", "sha256: followed by 64 lowercase hex"))
         if size_value(item.get("size")) is None:
             issues.append(_issue(index, f"{path}/size", "invalid_size", "the file's length in bytes"))
-        if item["uri"] in seen:
+        # Compared in RFC 3986 normal form: two spellings of one URI are one file.
+        normal = normalize_uri(item["uri"])
+        if normal in seen:
             issues.append(_issue(index, f"{path}/uri", "duplicate_file", "each file listed once"))
-        seen.add(item["uri"])
-        if root is not None and item["uri"] != uri and not _inside(root, item["uri"]):
+        seen.add(normal)
+        if (
+            root is not None
+            and isinstance(uri, str)
+            and normal != normalize_uri(uri)
+            and not _inside(root, item["uri"])
+        ):
             issues.append(_issue(index, f"{path}/uri", "outside_skill", "a file inside the skill directory"))
-    if isinstance(uri, str) and uri not in seen:
+    if isinstance(uri, str) and normalize_uri(uri) not in seen:
         issues.append(_issue(index, "/resources", "skill_file_unlisted", "an entry for the skill's SKILL.md"))
     return issues
 
@@ -846,7 +856,17 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
     # too, under its own location; identical frontmatter was already scanned.
     got = evidence.get_entry
     if isinstance(got, dict):
-        listed = next(((i, e) for i, e in _entries(evidence) if e.get("uri") == got.get("uri")), None)
+        got_uri = got.get("uri")
+        listed = next(
+            (
+                (i, e)
+                for i, e in _entries(evidence)
+                if isinstance(got_uri, str)
+                and isinstance(e.get("uri"), str)
+                and normalize_uri(e["uri"]) == normalize_uri(got_uri)
+            ),
+            None,
+        )
         if listed is None or not _json_equal(got.get("frontmatter"), listed[1].get("frontmatter")):
             for path, text in _strings(got.get("frontmatter"), "/skills/get/frontmatter"):
                 yield listed[0] if listed else None, path, text, text, text
