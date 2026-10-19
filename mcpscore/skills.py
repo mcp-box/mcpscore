@@ -117,10 +117,11 @@ def declared_settings(capabilities: Any) -> dict[str, Any] | None:
 
 def skill_root(uri: str) -> str | None:
     """Return the skill directory URI of a ``SKILL.md`` URI, or None when *uri* does not end in ``/SKILL.md``."""
-    suffix = "/" + SKILL_FILE
-    if not uri.endswith(suffix) or len(uri) <= len(suffix):
+    root, _, last = uri.rpartition("/")
+    # The file name is compared in normal form ("%53KILL.md" is SKILL.md); the root keeps its spelling.
+    if not root or normalize_uri(last) != SKILL_FILE:
         return None
-    return uri[: -len(suffix)]
+    return root
 
 
 def skill_path_name(uri: str) -> str | None:

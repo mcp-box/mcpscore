@@ -1051,3 +1051,11 @@ def test_skill_md_read_under_another_spelling_is_scanned() -> None:
     read = audit.skills.files.pop(entry["uri"])
     audit.skills.files["skill://code%2Dreview/SKILL.md"] = read
     assert not RULES["skills_prompt_injection_phrasing"].check(audit).passed
+
+
+def test_encoded_skill_md_file_name_is_the_skill_file() -> None:
+    entry = skill("code-review")
+    entry["uri"] = "skill://code-review/%53KILL.md"
+    audit = data(entry)
+    for rule_id in ("skills_name_matches_uri", "skills_get_supported", "skills_resources_manifest"):
+        assert RULES[rule_id].check(audit).passed, rule_id

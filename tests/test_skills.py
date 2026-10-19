@@ -697,3 +697,8 @@ def test_one_file_under_two_spellings_is_read_once() -> None:
         ("skill://acme/SKILL.md", True),
         ("skill://acme/code%2Dreview/SKILL.md", True),
     ]
+
+
+def test_skill_root_accepts_an_encoded_skill_md_and_keeps_the_root_spelling() -> None:
+    assert skill_root("skill://acme/code%2Dreview/%53KILL.md") == "skill://acme/code%2Dreview"
+    assert skill_root("skill://acme/code-review/skill.md") is None
