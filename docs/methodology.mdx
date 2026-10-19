@@ -54,7 +54,7 @@ The same DeepWiki audit, grouped by category:
 | Protocol | 40 | 47 | `protocol_version_latest` (2), `server_title_present` (2), `server_websiteurl_present` (1), `server_icons_present` (1), `transport_invalid_request_error_code` (1) |
 | Primitives | 35 | 42 | `tools_annotations_present` (2), `tools_title_present_in_all` (1), four `pagination_*_invalid_cursor` rules (1 each) |
 | Security & Auth | 16 | 19 | `security_origin_validation` (3) |
-| **Total** | **91** | **108** | 12 failed, 31 passed, 65 skipped |
+| **Total** | **91** | **108** | 12 failed, 31 passed, 78 skipped |
 
 Fixing the one Security & Auth failure moves the score to 94/108. The
 `--json` report carries the same arithmetic per rule in `results[].severity_value`
@@ -90,15 +90,15 @@ whether a complete tools catalog is empty.
 The main score always includes three categories. Readiness is the fourth:
 it has its own score, and it also counts in the main score on a full audit
 of a modern or dual-era server. Legacy servers and partial audits leave it
-out. The server audit has 112 rules today. The
+out. The server audit has 125 rules today. The
 [rules reference](/rules) lists each one with its weight and the spec
 revisions it applies to.
 
 | Category | Rules | What it covers |
 |---|---|---|
 | Protocol | 22 | Protocol version, server name, title and version, advertised capabilities, transport and its HTTP envelope |
-| Primitives | 53 | Tools, prompts, resources, and resource templates: names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination |
-| Security & Auth | 17 | The server's security posture, detailed below |
+| Primitives | 63 | Tools, prompts, resources, resource templates and [skills](#skills-servers-that-publish-agent-skills): names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination, skill integrity |
+| Security & Auth | 20 | The server's security posture, detailed below |
 | Readiness | 20 | How ready the server is for the 2026-07-28 revision, [scored on its own axis](#the-readiness-score-separate-informative) and in the main score for modern and dual-era full audits |
 
 A separate set of six packaging rules scores a published npm or PyPI package
@@ -128,9 +128,34 @@ in Primitives. Session-ID handling on the stateless lifecycle is
 `readiness_2026_no_session_id`, in Readiness.
 
 A server that serves anonymous requests has no authorization posture to
-grade, so the eight `auth_*` rules skip as `not-applicable`. That is the case
+grade, so the ten `auth_*` rules skip as `not-applicable`. That is the case
 for DeepWiki above. To score the authorization flow behind the gate, see
 [authenticated servers](/authenticated-servers).
+
+### Skills: servers that publish Agent Skills
+
+A server can ship [Agent Skills](https://agentskills.io/specification) next to
+its tools through the [Skills extension](https://modelcontextprotocol.io/extensions/skills)
+(SEP-2640). When a server declares `io.modelcontextprotocol/skills`, mcpscore
+lists its skills, asks `skills/get` for one of them, and reads each listed
+`SKILL.md` plus one supporting file per skill, within fixed caps. Servers that
+do not declare the extension skip these rules as `not-applicable`. An empty
+`skills/list` is valid: the two extension checks (`skills_list_supported`,
+`skills_resources_capability`) still score, and every rule that judges skills
+skips.
+
+| What is checked | Rules |
+|---|---|
+| The extension answers: `skills/list` and `skills/get` work, and the `resources` capability is declared ([§Listing skills](https://modelcontextprotocol.io/extensions/skills#listing-skills), [§Getting a skill](https://modelcontextprotocol.io/extensions/skills#getting-a-skill), [§Capabilities](https://modelcontextprotocol.io/extensions/skills#capabilities)) | `skills_list_supported`, `skills_get_supported`, `skills_resources_capability` (MEDIUM) |
+| Listing entries: a `uri`, the frontmatter with `name` and `description`, a complete file list with `sha256` digests and sizes (or `"dynamic"`), a URI ending in `<name>/SKILL.md`, and a name that follows the [Agent Skills naming rules](https://agentskills.io/specification#name-field) | `skills_entries_well_formed`, `skills_resources_manifest`, `skills_name_matches_uri`, `skills_name_valid` (MEDIUM) |
+| Integrity: the files served match their listed digest and size, and the served `SKILL.md` frontmatter equals the listing's ([§Integrity and verification](https://modelcontextprotocol.io/extensions/skills#integrity-and-verification)) | `skills_digest_integrity`, `skills_frontmatter_matches` (HIGH) |
+| Relative links in `SKILL.md` point at files the skill lists | `skills_references_resolve` (LOW) |
+| Skill text: the catalog-text checks run on skill frontmatter and every `SKILL.md` line. Chat-template tokens inside code count as examples. ([§Security considerations](https://modelcontextprotocol.io/extensions/skills#security-considerations)) | `skills_hidden_unicode`, `skills_no_embedded_secrets`, `skills_prompt_injection_phrasing` (HIGH, Security & Auth) |
+
+mcpscore reads skill content as data. It never runs a bundled script, follows
+an instruction from a skill, or grants what `allowed-tools` asks for. The
+skills calls run in the audit's own session, so a modern-only server without
+the `initialize` handshake skips these rules as `insufficient-data`.
 
 ## How an audit runs
 
@@ -144,7 +169,9 @@ for DeepWiki above. To score the authorization flow behind the gate, see
   <Step title="Collect">
     Protocol version, server info, capabilities, and the complete paginated
     listings of tools, prompts, resources, and resource templates, plus TLS
-    details for HTTPS targets.
+    details for HTTPS targets. A server that declares the Skills extension
+    also gets `skills/list`, one `skills/get` and a capped sample of
+    `resources/read` calls for its skill files.
   </Step>
   <Step title="Probe">
     Requests outside the audit's own session that observe behavior the spec

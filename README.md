@@ -209,12 +209,13 @@ More: [package audits](https://docs.mcpscore.dev/package-audits).
 
 ## What the score measures
 
-112 server rules in four categories:
+125 server rules in four categories:
 
 - **Protocol**: protocol version, server identity, capabilities, transport.
-- **Primitives**: tools, prompts, resources, and resource templates. Names,
-  titles, descriptions, schemas, annotations, and pagination decide whether
-  an agent picks the right tool and calls it correctly.
+- **Primitives**: tools, prompts, resources, resource templates, and skills
+  served over the Skills extension. Names, titles, descriptions, schemas,
+  annotations, and pagination decide whether an agent picks the right tool
+  and calls it correctly.
 - **Security & Auth**: TLS, `Origin` validation, error responses that leak
   data, and for auth-gated servers the OAuth challenge and metadata chain.
 - **Readiness**: how ready the server is for the 2026-07-28 spec revision.

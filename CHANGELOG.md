@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **13 rules score servers that publish Agent Skills over the Skills
+  extension (SEP-2640).** They apply only to a server that declares
+  `io.modelcontextprotocol/skills`; every other server skips them. mcpscore
+  lists the skills, asks `skills/get` for one, and reads each `SKILL.md` and
+  one supporting file per skill, within fixed caps. Skill content is read as
+  data: nothing in it is run or followed.
+  - Primitives, MEDIUM: `skills_list_supported`, `skills_get_supported`,
+    `skills_resources_capability`, `skills_entries_well_formed`,
+    `skills_resources_manifest`, `skills_name_matches_uri` and
+    `skills_name_valid` check the extension's required methods, the listing
+    entries, the file manifest and the Agent Skills naming rules.
+  - Primitives, HIGH: `skills_digest_integrity` and
+    `skills_frontmatter_matches` check that the files served match the
+    listed digest and size, and that `SKILL.md` carries the frontmatter the
+    listing shows. Hosts refuse a skill that fails either.
+  - Primitives, LOW: `skills_references_resolve` checks that relative links
+    in `SKILL.md` point at files the skill lists.
+  - Security & Auth, HIGH: `skills_hidden_unicode`,
+    `skills_no_embedded_secrets` and `skills_prompt_injection_phrasing` run
+    the catalog-text checks on skill frontmatter and `SKILL.md` lines.
+    Chat-template tokens inside code count as examples.
+
+  The audit's session now declares the Skills extension in `initialize`, so
+  servers that expose skills only to clients that support them are scored
+  too. Modern-only servers skip the skills rules for now. PyYAML and
+  markdown-it-py are new runtime dependencies: skill frontmatter is read with
+  `safe_load`, and `SKILL.md` is parsed as CommonMark to tell code from prose
+  and find its links.
+
 ## [1.25.0] - 2026-10-18
 
 A new HIGH rule sends a made-up bearer token to servers behind auth and

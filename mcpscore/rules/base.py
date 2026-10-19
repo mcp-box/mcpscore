@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from mcp_types import Implementation, Prompt, Resource, ResourceTemplate, ServerCapabilities, Tool
 
     from mcpscore.packages import PackageMetadata
+    from mcpscore.skills import SkillsEvidence
 
     from ..enums import MCPTransportType
     from ..probes import ProbeResult
@@ -156,6 +157,9 @@ class AuditData:
     # read it, and they are the only rules a package audit runs. Nothing here
     # comes from executing the package; see mcpscore.packages.
     package: PackageMetadata | None = None
+
+    skills: SkillsEvidence | None = None
+    """Skills extension evidence (SEP-2640); None unless the server declared the extension and a session ran."""
 
     # Partial audit: no server session was available (e.g. an auth-gated
     # server), so only probe-derived rules were scored and session-dependent
