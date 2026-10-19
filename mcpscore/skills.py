@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
 import hashlib
+import html as html_lib
 import json
 import logging
 import posixpath
@@ -256,7 +257,7 @@ _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
 def _html_text(html: str) -> str:
-    """Return the text of an HTML fragment: tags and comments dropped, a quoted ``>`` kept inside its tag.
+    """Return the text of an HTML fragment: tags and comments dropped, a quoted ``>`` kept, references decoded.
 
     One linear pass, so hostile input stays cheap. An unterminated tag or comment runs to the end.
     """
@@ -289,7 +290,7 @@ def _html_text(html: str) -> str:
         else:
             parts.append("<")
             i = start + 1
-    return "".join(parts)
+    return html_lib.unescape("".join(parts))
 
 
 @dataclass(frozen=True)
@@ -377,7 +378,7 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         elif run:
             text = "\n".join(lines[run[0] : run[-1] + 1])
             # In an unparsed document code cannot be told from prose, so code-exempt classes are not judged.
-            blocks.append(MarkdownBlock(first_line + run[0], text, text if parsed else "", text))
+            blocks.append(MarkdownBlock(first_line + run[0], text, text if parsed else "", html_lib.unescape(text)))
             run = []
     return sorted(blocks, key=lambda block: block.line)
 
