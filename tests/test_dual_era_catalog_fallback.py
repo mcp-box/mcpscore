@@ -184,9 +184,25 @@ async def test_root_rule_judges_the_session_revision_only_when_the_session_rejec
     if judged:
         root = results["tools_output_schema_root_object"]
         assert not root.passed
-        assert root.details["tools_with_non_object_root"] == {"get_alerts": "array"}
+        assert root.details["session_rejected_tool_indexes"] == [0]
+        assert "2025-11-25 session could not list tools" in root.message
     else:
         assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
+
+
+async def test_session_rejection_fails_the_root_rule_whatever_the_recovered_catalog_declares(stateless_probes):
+    """The stateless lifecycle may serve an object root while the session served an array: the session is judged."""
+    object_root = {**ARRAY_ROOT_TOOL, "outputSchema": {"type": "object", "properties": {}}}
+    stateless_probes({"resultType": "complete", "tools": [object_root]})
+    client = LegacyListingFailsClient()
+    client.listing_errors["tools"] = dict(SCHEMA_REJECTED)
+    auditor = MCPAuditor()
+
+    await auditor.audit(client)
+
+    root = {result.rule_id: result for result in auditor.results}["tools_output_schema_root_object"]
+    assert not root.passed
+    assert root.details["issues"][0]["entity_index"] == 0
 
 
 async def test_incomplete_session_catalog_is_replaced_by_a_complete_modern_one(stateless_probes):

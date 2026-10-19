@@ -339,16 +339,6 @@ class BaseRule(ABC):
     revision instead.
     """
 
-    session_failure_path: str | None = None
-    """Item path whose rejection on the session makes a recovered catalog be judged on the session's revision.
-
-    Set by rules that check a shape the session's revision forbids and a newer one allows. When the session
-    listing failed on its first page with a validation issue at exactly this path of an item
-    (``outputSchema/type`` matches ``/tools/0/outputSchema/type``), that shape is what broke it, so judging the
-    recovered catalog on the revision it was served on would skip the rule exactly when its violation occurs.
-    Any other failure keeps the catalog's own revision.
-    """
-
     def __init__(self, **kwargs: Any) -> None:
         super().__init__()
         # kwargs maybe used by subclasses to store additional data
