@@ -1059,3 +1059,10 @@ def test_encoded_skill_md_file_name_is_the_skill_file() -> None:
     audit = data(entry)
     for rule_id in ("skills_name_matches_uri", "skills_get_supported", "skills_resources_manifest"):
         assert RULES[rule_id].check(audit).passed, rule_id
+
+
+@pytest.mark.parametrize(("link", "resolves"), [("templates/", False), ("templates/.", False), ("templates", True)])
+def test_directory_link_needs_a_listed_descendant(link: str, resolves: bool) -> None:
+    files = {"SKILL.md": skill_md("code-review", body=f"[t]({link})\n"), "templates": "a file, not a directory\n"}
+    result = RULES["skills_references_resolve"].check(data(skill("code-review", files)))
+    assert result.passed is resolves

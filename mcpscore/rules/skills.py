@@ -119,9 +119,12 @@ def _issue(index: int | None, path: str, reason: str, expected: str) -> dict[str
     return field_issue("skill", index, path, reason, expected)
 
 
-def _lists_file_at_or_under(listed: set[str], ordered: list[str], target: str) -> bool:
-    """Whether the manifest lists *target*, or a file under it (a directory link, SEP-2640 §Directory Listing)."""
-    if target in listed:
+def _lists_file_at_or_under(listed: set[str], ordered: list[str], target: str, *, directory: bool = False) -> bool:
+    """Whether the manifest lists *target*, or a file under it (a directory link, SEP-2640 §Directory Listing).
+
+    A *directory* target needs a file under it: a listed file of the same name is not a directory.
+    """
+    if not directory and target in listed:
         return True
     prefix = target + "/"
     position = bisect_left(ordered, prefix)
@@ -781,8 +784,11 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
                 continue
             for target in targets:
                 references += 1
-                resolved = resolve_reference(normalize_uri(root), normalize_uri(target))
-                if resolved is None or not _lists_file_at_or_under(listed, ordered, resolved):
+                target = normalize_uri(target)
+                # A trailing "/", "." or ".." names a directory, whatever the resolution leaves.
+                directory = target == "." or target == ".." or target.endswith(("/", "/.", "/.."))
+                resolved = resolve_reference(normalize_uri(root), target)
+                if resolved is None or not _lists_file_at_or_under(listed, ordered, resolved, directory=directory):
                     issues.append(
                         _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")
                     )
