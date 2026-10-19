@@ -977,3 +977,27 @@ def test_skill_paths_are_split_before_decoding(path: str, inside: bool) -> None:
     entry["resources"].append({"uri": f"skill://code-review/{path}", "digest": digest("x"), "size": 1})
     result = RULES["skills_resources_manifest"].check(data(entry))
     assert ("outside_skill" in [issue["reason"] for issue in result.details.get("issues", [])]) is not inside
+
+
+@pytest.mark.parametrize(
+    ("listed", "link", "resolves"),
+    [
+        ("references/a;b.md", "references/a%3Bb.md", False),
+        ("references/a%3Bb.md", "references/a%3bb.md", True),
+        ("references/GUIDE.md", "references//GUIDE.md", False),
+        ("references/code-review.md", "references/code%2Dreview.md", True),
+        ("references/指南.md", "references/%e6%8c%87%e5%8d%97.md", True),
+    ],
+)
+def test_links_compare_in_rfc_3986_normal_form(listed: str, link: str, resolves: bool) -> None:
+    files = {"SKILL.md": skill_md("code-review", body=f"[guide]({link})\n"), listed: "# Guide\n"}
+    result = RULES["skills_references_resolve"].check(data(skill("code-review", files)))
+    assert result.passed is resolves
+
+
+def test_differently_encoded_skill_root_is_still_inside() -> None:
+    entry = skill("code-review", prefix="acme/")
+    entry["uri"] = "skill://acme/code%2Dreview/SKILL.md"
+    entry["resources"].append({"uri": "skill://acme/code-review/GUIDE.md", "digest": digest("x"), "size": 1})
+    result = RULES["skills_resources_manifest"].check(data(entry))
+    assert "outside_skill" not in [issue["reason"] for issue in result.details.get("issues", [])]

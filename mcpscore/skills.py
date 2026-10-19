@@ -17,11 +17,10 @@ import hashlib
 import html as html_lib
 import json
 import logging
-import posixpath
 import re
 from typing import Any, Protocol
 import unicodedata
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -436,14 +435,45 @@ def relative_references(body: str) -> list[str] | None:
     return targets
 
 
+# RFC 3986 §2.2-2.3: characters a URI may carry unencoded; "%" keeps existing escapes.
+_URI_SAFE = ":/?#[]@!$&'()*+,;=-._~%"
+_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+_ESCAPE_RE = re.compile("%([0-9A-Fa-f]{2})")
+
+
+def _normal_escape(match: re.Match[str]) -> str:
+    char = chr(int(match[1], 16))
+    return char if char in _UNRESERVED else f"%{match[1].upper()}"
+
+
+def normalize_uri(uri: str) -> str:
+    """Return *uri* in RFC 3986 normal form for comparison (§6.2.2.1-2).
+
+    Characters a URI cannot carry (non-ASCII, spaces) are percent-encoded as UTF-8, escapes are uppercased, and
+    only escapes of unreserved characters are decoded: ``%2D`` equals ``-``, while ``%3B``, ``%2F`` or ``%25``
+    stay distinct from ``;``, ``/`` or ``%``.
+    """
+    return _ESCAPE_RE.sub(_normal_escape, quote(uri, safe=_URI_SAFE))
+
+
 def resolve_reference(root: str, target: str) -> str | None:
-    """Resolve a relative reference against a skill root URI; None when it climbs out of the skill."""
-    normalized = posixpath.normpath(target)
-    if normalized == ".." or normalized.startswith("../"):
-        return None
-    if normalized == ".":
-        return root
-    return f"{root}/{normalized}"
+    """Resolve a relative reference against a skill root URI; None when it climbs out of the skill.
+
+    Dot segments are removed as in RFC 3986 §5.2.4 and empty segments are kept, since ``a//b`` names a
+    different resource than ``a/b``. A trailing ``/`` names the directory itself.
+    """
+    segments = target.split("/")
+    if len(segments) > 1 and segments[-1] == "":
+        segments.pop()
+    resolved: list[str] = []
+    for segment in segments:
+        if segment == "..":
+            if not resolved:
+                return None
+            resolved.pop()
+        elif segment != ".":
+            resolved.append(segment)
+    return "/".join([root, *resolved])
 
 
 def size_value(value: Any) -> int | None:

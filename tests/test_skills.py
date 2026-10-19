@@ -631,3 +631,24 @@ def test_float_sized_supporting_file_is_read() -> None:
 @pytest.mark.parametrize(("value", "size"), [(42, 42), (42.0, 42), (True, None), (1.5, None), (-1, None), ("4", None)])
 def test_size_value(value: Any, size: int | None) -> None:
     assert skills.size_value(value) == size
+
+
+@pytest.mark.parametrize(
+    ("uri", "normal"),
+    [
+        ("skill://a/code%2Dreview", "skill://a/code-review"),
+        ("skill://a/b%3bc", "skill://a/b%3Bc"),
+        ("skill://a/b;c", "skill://a/b;c"),
+        ("skill://a/指南 x", "skill://a/%E6%8C%87%E5%8D%97%20x"),
+        ("skill://a/x%252F", "skill://a/x%252F"),
+        ("skill://a/%2e%2E", "skill://a/.."),
+    ],
+)
+def test_normalize_uri(uri: str, normal: str) -> None:
+    assert skills.normalize_uri(uri) == normal
+
+
+def test_resolve_reference_keeps_empty_segments_and_directory_links() -> None:
+    assert resolve_reference("skill://s", "references//GUIDE.md") == "skill://s/references//GUIDE.md"
+    assert resolve_reference("skill://s", "references/") == "skill://s/references"
+    assert resolve_reference("skill://s", "references/..") == "skill://s"

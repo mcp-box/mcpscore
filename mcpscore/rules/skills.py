@@ -8,9 +8,7 @@ Skills specification (agentskills.io), which SEP-2640 adopts unchanged.
 
 from bisect import bisect_left
 from collections.abc import Iterator
-import re
 from typing import Any, ClassVar
-from urllib.parse import unquote
 
 from ..skills import (
     DIGEST_RE,
@@ -23,6 +21,7 @@ from ..skills import (
     markdown_blocks,
     name_problems,
     normalize_newlines,
+    normalize_uri,
     parse_frontmatter,
     relative_references,
     resolve_reference,
@@ -138,27 +137,13 @@ def _json_equal(left: Any, right: Any) -> bool:
     return type(left) is type(right) and left == right
 
 
-# Escapes of the path, query and fragment delimiters: decoding them would change which URI is meant.
-_KEPT_ESCAPE_RE = re.compile("(%2f|%3f|%23)", re.IGNORECASE)
-
-
-def _decode_path(uri: str) -> str:
-    """Percent-decode *uri* for comparison, keeping an encoded ``/``, ``?`` or ``#`` distinct from the delimiter.
-
-    A decoded ``%`` is escaped again, so a literal "%2F" (sent as ``%252F``) never equals a kept escape.
-    """
-    pieces = _KEPT_ESCAPE_RE.split(uri)
-    return "".join(
-        piece.upper() if position % 2 else unquote(piece).replace("%", "%25") for position, piece in enumerate(pieces)
-    )
-
-
 def _inside(root: str, uri: str) -> bool:
     """Whether *uri* names a file inside the skill directory *root*, with no ``.``, ``..`` or empty segments."""
+    root, uri = normalize_uri(root), normalize_uri(uri)
     if not uri.startswith(root + "/"):
         return False
-    # Split before decoding, so an encoded "/" is part of a name, while an encoded "." or ".." is still caught.
-    segments = [unquote(segment) for segment in uri[len(root) + 1 :].split("/")]
+    # In normal form an encoded "/" stays inside its segment, and an encoded "." or ".." is decoded and caught.
+    segments = uri[len(root) + 1 :].split("/")
     return all(segment not in ("", ".", "..") for segment in segments)
 
 
@@ -765,9 +750,9 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             root = skill_root(entry["uri"]) if isinstance(entry.get("uri"), str) else None
             if read is None or files is None or root is None:
                 continue
-            # Compared decoded, so a link to "b c.png" matches a listed "b%20c.png"; an encoded "/" stays encoded.
+            # Compared in RFC 3986 normal form: "b c.png" matches "b%20c.png", while "%3B" never matches ";".
             listed = {
-                _decode_path(item["uri"])
+                normalize_uri(item["uri"])
                 for item in files
                 if isinstance(item, dict) and isinstance(item.get("uri"), str)
             }
@@ -778,7 +763,7 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
                 continue
             for target in targets:
                 references += 1
-                resolved = resolve_reference(_decode_path(root), _decode_path(target))
+                resolved = resolve_reference(normalize_uri(root), normalize_uri(target))
                 if resolved is None or not _lists_file_at_or_under(listed, ordered, resolved):
                     issues.append(
                         _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")
