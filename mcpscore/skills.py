@@ -142,8 +142,11 @@ def skill_path_name(uri: str) -> str | None:
 
 
 def normalize_name(name: str) -> str:
-    """NFKC-normalize a skill name, as the Agent Skills reference validator does before checking it."""
-    return unicodedata.normalize("NFKC", name.strip())
+    """NFKC-normalize a skill name, as the Agent Skills reference validator does before checking it.
+
+    Whitespace is kept: the naming rules allow none, and a padded name cannot equal its directory's name.
+    """
+    return unicodedata.normalize("NFKC", name)
 
 
 def name_problems(name: str) -> list[str]:
@@ -373,7 +376,9 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         covered.update(range(start, end))
         text = "\n".join(lines[start:end])
         if token.type in ("fence", "code_block"):
-            prose, rendered = "", text
+            # The content drops blockquote and list markers, so a directive wrapped inside quoted code still reads
+            # as one sentence; the source keeps them.
+            prose, rendered = "", token.content
         elif token.type == "inline":
             prose, rendered = _prose(token), _prose(token, keep_code=True)
         else:
@@ -388,8 +393,13 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
             run.append(number)
         elif run:
             text = "\n".join(lines[run[0] : run[-1] + 1])
-            # In an unparsed document code cannot be told from prose, so code-exempt classes are not judged.
-            blocks.append(MarkdownBlock(first_line + run[0], text, text if parsed else "", html_lib.unescape(text)))
+            if parsed:
+                blocks.append(MarkdownBlock(first_line + run[0], text, text, html_lib.unescape(text)))
+            else:
+                # Code cannot be told from prose here, so code-exempt classes are not judged; HTML is read the
+                # way a parsed HTML block is, so a tag cannot split a directive.
+                rendered = "\n".join([html_lib.unescape(text), _html_text(text), _html_text(text, "\n")])
+                blocks.append(MarkdownBlock(first_line + run[0], text, "", rendered))
             run = []
     return sorted(blocks, key=lambda block: block.line)
 
