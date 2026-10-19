@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Two MEDIUM skills rules for the rest of the extension's required
+  methods.** Both apply only to servers that declare the Skills extension.
+  - `skills_get_unknown_rejected` asks `skills/get` for a skill the server
+    does not serve, next to a listed one, and expects JSON-RPC error
+    `-32602`.
+  - `skills_directory_read` applies when the server sets `directoryRead:
+    true`. It reads a listed skill's root with `resources/directory/read`,
+    which must list its direct children with `SKILL.md` among them, and
+    expects `-32602` for an unknown directory and for a file.
+
+### Changed
+
+- **`skills_get_supported` now asks `skills/get` for every listed skill**
+  (up to 32), not only the first, as the extension requires an answer for
+  every skill the server serves. Calls that get no answer are not judged.
+
 ## [1.26.1] - 2026-10-19
 
 A reporting fix for partial audits; no score changes.

@@ -90,7 +90,7 @@ whether a complete tools catalog is empty.
 The main score always includes three categories. Readiness is the fourth:
 it has its own score, and it also counts in the main score on a full audit
 of a modern or dual-era server. Legacy servers and partial audits leave it
-out. The server audit has 125 rules today. The
+out. The server audit has 127 rules today. The
 [rules reference](/rules) lists each one with its weight and the spec
 revisions it applies to.
 
@@ -137,8 +137,9 @@ for DeepWiki above. To score the authorization flow behind the gate, see
 A server can ship [Agent Skills](https://agentskills.io/specification) next to
 its tools through the [Skills extension](https://modelcontextprotocol.io/extensions/skills)
 (SEP-2640). When a server declares `io.modelcontextprotocol/skills`, mcpscore
-lists its skills, asks `skills/get` for one of them, and reads each listed
-`SKILL.md` plus one supporting file per skill, within fixed caps. Servers that
+lists its skills, asks `skills/get` for each of them and for one it does not
+serve, reads directories when the server sets `directoryRead`, and reads each
+listed `SKILL.md` plus one supporting file per skill, within fixed caps. Servers that
 do not declare the extension skip these rules as `not-applicable`. An empty
 `skills/list` is valid: the two extension checks (`skills_list_supported`,
 `skills_resources_capability`) still score, and every rule that judges skills
@@ -147,6 +148,8 @@ skips.
 | What is checked | Rules |
 |---|---|
 | The extension answers: `skills/list` and `skills/get` work, and the `resources` capability is declared ([§Listing skills](https://modelcontextprotocol.io/extensions/skills#listing-skills), [§Getting a skill](https://modelcontextprotocol.io/extensions/skills#getting-a-skill), [§Capabilities](https://modelcontextprotocol.io/extensions/skills#capabilities)) | `skills_list_supported`, `skills_get_supported`, `skills_resources_capability` (MEDIUM) |
+| `skills/get` refuses a skill the server does not serve with `-32602` ([§Getting a skill](https://modelcontextprotocol.io/extensions/skills#getting-a-skill), [§Error handling](https://modelcontextprotocol.io/extensions/skills#error-handling)) | `skills_get_unknown_rejected` (MEDIUM) |
+| With `directoryRead: true`: a skill's root lists its direct children, `SKILL.md` among them, and an unknown directory or a file is refused with `-32602` ([§Reading directories](https://modelcontextprotocol.io/extensions/skills#reading-directories)) | `skills_directory_read` (MEDIUM) |
 | Listing entries: a `uri`, the frontmatter with `name` and `description`, a complete file list with `sha256` digests and sizes (or `"dynamic"`), a URI ending in `<name>/SKILL.md`, and a name that follows the [Agent Skills naming rules](https://agentskills.io/specification#name-field) | `skills_entries_well_formed`, `skills_resources_manifest`, `skills_name_matches_uri`, `skills_name_valid` (MEDIUM) |
 | Integrity: the files served match their listed digest and size, and the served `SKILL.md` frontmatter equals the listing's ([§Integrity and verification](https://modelcontextprotocol.io/extensions/skills#integrity-and-verification)) | `skills_digest_integrity`, `skills_frontmatter_matches` (HIGH) |
 | Relative links in `SKILL.md` point at files the skill lists | `skills_references_resolve` (LOW) |

@@ -68,10 +68,12 @@ class FakeSession:
         *,
         get: Any = None,
         errors: dict[str, Exception] | None = None,
+        directories: dict[str, Any] | None = None,
     ) -> None:
         self.pages = pages
         self.files = files or {}
         self.get = get
+        self.directories = directories or {}
         self.errors = errors or {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.reads: list[str] = []
@@ -83,6 +85,8 @@ class FakeSession:
             raise self.errors[key]
         if method == "skills/get":
             return self.get if self.get is not None else {"skill": {"uri": params["uri"]}}
+        if method == "resources/directory/read":
+            return self.directories[f"{params['uri']}|{params.get('cursor', '')}"]
         index = int(params["cursor"]) if "cursor" in params else 0
         return self.pages[index]
 
@@ -178,8 +182,12 @@ class TestCollector:
         evidence = await collect_skills(session, {"directoryRead": True})
         assert evidence.settings == {"directoryRead": True}
         assert [e["uri"] for e in evidence.entries or []] == ["skill://a/SKILL.md", "skill://b/SKILL.md"]
-        assert evidence.get_uri == "skill://a/SKILL.md"
-        assert evidence.get_entry == {"uri": "skill://a/SKILL.md"}
+        assert [(got.uri, got.entry) for got in evidence.gets] == [
+            ("skill://a/SKILL.md", {"uri": "skill://a/SKILL.md"}),
+            ("skill://b/SKILL.md", {"uri": "skill://b/SKILL.md"}),
+        ]
+        assert evidence.unknown_get is not None
+        assert evidence.unknown_get.uri == "skill://mcpscore-no-such-skill/SKILL.md"
         assert sorted(evidence.files) == ["skill://a/SKILL.md", "skill://a/references/R.md", "skill://b/SKILL.md"]
         skill_file = evidence.files["skill://a/SKILL.md"]
         assert skill_file.text == "---\nname: a\n---\n"
@@ -219,7 +227,7 @@ class TestCollector:
         evidence = await collect_skills(FakeSession([], errors={"skills/list:": error}), {})
         assert evidence.entries is None
         assert evidence.list_error == expected
-        assert evidence.get_uri is None
+        assert evidence.gets == []
         assert evidence.files == {}
 
     async def test_failure_after_the_first_page_keeps_entries(self):
@@ -241,14 +249,95 @@ class TestCollector:
     async def test_get_failure_and_odd_result(self):
         error = FakeSession([{"skills": [entry("a")]}], errors={"skills/get:skill://a/SKILL.md": MCPError(-32602, "x")})
         evidence = await collect_skills(error, {})
-        assert evidence.get_error == {"outcome": "rpc_error", "error_code": -32602}
+        assert evidence.gets[0].error == {"outcome": "rpc_error", "error_code": -32602}
         odd = await collect_skills(FakeSession([{"skills": [entry("a")]}], get={"other": 1}), {})
-        assert odd.get_entry is None
+        assert odd.gets[0].entry is None
+
+    async def test_gets_every_listed_skill_once_up_to_the_cap(self, monkeypatch):
+        monkeypatch.setattr(skills, "MAX_SKILL_FILES", 2)
+        same = entry("a")
+        same["uri"] = "skill://a/%53KILL.md"
+        session = FakeSession([{"skills": [entry("a"), same, entry("b"), entry("c")]}])
+        evidence = await collect_skills(session, {})
+        assert [got.uri for got in evidence.gets] == ["skill://a/SKILL.md", "skill://b/SKILL.md"]
+        asked = [params["uri"] for method, params in session.calls if method == "skills/get"]
+        assert asked == ["skill://a/SKILL.md", "skill://b/SKILL.md", "skill://mcpscore-no-such-skill/SKILL.md"]
+
+    @pytest.mark.parametrize(
+        ("listed", "unknown"),
+        [
+            ("skill://acme/billing/refunds/SKILL.md", "skill://acme/billing/mcpscore-no-such-skill/SKILL.md"),
+            ("https://example.test/skills/a/SKILL.md", "https://example.test/skills/mcpscore-no-such-skill/SKILL.md"),
+            ("not-a-skill-file", "skill://mcpscore-no-such-skill/SKILL.md"),
+        ],
+    )
+    def test_unknown_skill_uri_sits_beside_a_listed_skill(self, listed: str, unknown: str):
+        assert skills.unknown_skill_uri([{"uri": listed}]) == unknown
+
+    async def test_directory_reads_only_when_declared(self):
+        root = "skill://a"
+        directories = {
+            f"{root}|": {"resources": [{"uri": f"{root}/SKILL.md"}], "nextCursor": "1"},
+            f"{root}|1": {"resources": [{"uri": f"{root}/refs", "mimeType": "inode/directory"}]},
+        }
+        errors = {
+            f"resources/directory/read:{root}/mcpscore-no-such-directory": MCPError(-32602, "unknown"),
+            f"resources/directory/read:{root}/SKILL.md": MCPError(-32602, "not a directory"),
+        }
+        session = FakeSession([{"skills": [entry("a")]}], errors=errors, directories=directories)
+        assert (await collect_skills(session, {})).directory_reads == []
+        evidence = await collect_skills(session, {"directoryRead": True})
+        root_read, unknown, file = evidence.directory_reads
+        assert (root_read.kind, root_read.incomplete) == ("skill_root", False)
+        assert [child["uri"] for child in root_read.resources or []] == [f"{root}/SKILL.md", f"{root}/refs"]
+        assert unknown.error == file.error == {"outcome": "rpc_error", "error_code": -32602}
+
+    async def test_directory_read_failures_and_odd_pages(self):
+        root = "skill://a"
+        later_failure = FakeSession(
+            [{"skills": [entry("a")]}],
+            errors={"resources/directory/read:1": MCPError(-32603, "x")},
+            directories={f"{root}|": {"resources": [{"uri": f"{root}/SKILL.md"}], "nextCursor": "1"}},
+        )
+        root_read = (await collect_skills(later_failure, {"directoryRead": True})).directory_reads[0]
+        assert (len(root_read.resources or []), root_read.incomplete, root_read.error) == (1, True, None)
+        odd = FakeSession(
+            [{"skills": [entry("a")]}],
+            directories={f"{root}|": {"resources": [], "nextCursor": "1"}, f"{root}|1": {"items": []}},
+        )
+        root_read = (await collect_skills(odd, {"directoryRead": True})).directory_reads[0]
+        assert (root_read.resources, root_read.incomplete) == ([], True)
+        malformed = FakeSession([{"skills": [entry("a")]}], directories={f"{root}|": ["no", "object"]})
+        assert (await collect_skills(malformed, {"directoryRead": True})).directory_reads[0].resources is None
+
+    async def test_directory_read_page_limit_and_repeated_cursor(self, monkeypatch):
+        monkeypatch.setattr(skills, "MAX_LIST_PAGES", 2)
+        root = "skill://a"
+        looping = FakeSession(
+            [{"skills": [entry("a")]}],
+            directories={
+                f"{root}|": {"resources": [], "nextCursor": "1"},
+                f"{root}|1": {"resources": [], "nextCursor": "1"},
+            },
+        )
+        assert (await collect_skills(looping, {"directoryRead": True})).directory_reads[0].incomplete
+        endless = FakeSession(
+            [{"skills": [entry("a")]}],
+            directories={
+                f"{root}|": {"resources": [], "nextCursor": "1"},
+                f"{root}|1": {"resources": [], "nextCursor": "2"},
+            },
+        )
+        assert (await collect_skills(endless, {"directoryRead": True})).directory_reads[0].incomplete
+
+    async def test_no_directory_reads_without_a_skill_root(self):
+        session = FakeSession([{"skills": [{"uri": "skill://a/README.md"}]}])
+        assert (await collect_skills(session, {"directoryRead": True})).directory_reads == []
 
     async def test_entries_without_uris_are_not_requested(self):
         session = FakeSession([{"skills": ["junk", {"frontmatter": {}}]}])
         evidence = await collect_skills(session, {})
-        assert evidence.get_uri is None
+        assert evidence.gets == []
         assert session.reads == []
 
     async def test_read_errors_and_empty_contents(self):
@@ -459,7 +548,8 @@ class TestRobustness:
             assert evidence.list_error == {"outcome": "timeout"}
             assert evidence.entries is None
         else:
-            assert evidence.get_error == {"outcome": "timeout"}
+            assert [(got.uri, got.error) for got in evidence.gets] == [("skill://a/SKILL.md", {"outcome": "timeout"})]
+            assert evidence.unknown_get is None
 
     def test_link_extraction_is_linear_on_unmatched_brackets(self):
         import time
