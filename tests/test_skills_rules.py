@@ -1011,3 +1011,26 @@ def test_one_file_listed_under_two_spellings_is_a_duplicate() -> None:
     entry["resources"].append(item)
     result = RULES["skills_resources_manifest"].check(data(entry))
     assert [issue["reason"] for issue in result.details["issues"]] == ["duplicate_file"]
+
+
+def _respelled(entry: dict[str, Any]) -> dict[str, Any]:
+    """List the skill's files under "code-review" while the skill URI says "code%2Dreview"."""
+    entry["uri"] = entry["uri"].replace("code-review", "code%2Dreview")
+    return entry
+
+
+def test_read_under_another_spelling_is_still_verified() -> None:
+    entry = _respelled(skill("code-review"))
+    entry["resources"][0]["digest"] = digest("something else")
+    assert not RULES["skills_digest_integrity"].check(data(entry)).passed
+
+
+def test_conflicting_reads_under_two_spellings_cannot_hide_a_mismatch() -> None:
+    entry = _respelled(skill("code-review"))
+    audit = data(entry)
+    assert audit.skills is not None
+    listed = entry["resources"][0]
+    served = next(iter(audit.skills.files.values()))
+    audit.skills.files[listed["uri"]] = SkillFile(listed["uri"], listed["size"], listed["digest"], "text/markdown", "")
+    audit.skills.files[served.uri] = SkillFile(served.uri, served.size, digest("tampered"), "text/markdown", "")
+    assert not RULES["skills_digest_integrity"].check(audit).passed

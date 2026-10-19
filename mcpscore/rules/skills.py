@@ -575,18 +575,22 @@ def _listed_digest(item: dict[str, Any]) -> str | None:
 def _listed_files(evidence: SkillsEvidence) -> Iterator[tuple[int, int, dict[str, Any], SkillFile]]:
     """Yield each read file whose manifest item lists a valid size or digest, with its index and position.
 
-    An item without either has nothing to verify against; skills_resources_manifest reports it.
+    Reads match items in RFC 3986 normal form, and every read of an item is yielded, so a file read under two
+    spellings is judged on both responses. An item without size or digest has nothing to verify against;
+    skills_resources_manifest reports it.
     """
+    reads: dict[str, list[SkillFile]] = {}
+    for read_uri, read in evidence.files.items():
+        reads.setdefault(normalize_uri(read_uri), []).append(read)
     for index, entry in _entries(evidence):
         for position, item in enumerate(manifest(entry) or []):
             uri = item.get("uri") if isinstance(item, dict) else None
-            read = evidence.files.get(uri) if isinstance(uri, str) else None
-            if read is None or read.error not in (None, "too_large"):
-                continue
-            # An oversized read kept only its length: it can still contradict a listed size.
-            checkable = _listed_size(item) is not None or (read.error is None and _listed_digest(item) is not None)
-            if checkable:
-                yield index, position, item, read
+            for read in reads.get(normalize_uri(uri), []) if isinstance(uri, str) else []:
+                if read.error not in (None, "too_large"):
+                    continue
+                # An oversized read kept only its length: it can still contradict a listed size.
+                if _listed_size(item) is not None or (read.error is None and _listed_digest(item) is not None):
+                    yield index, position, item, read
 
 
 @register_rule

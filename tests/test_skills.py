@@ -652,3 +652,17 @@ def test_resolve_reference_keeps_empty_segments_and_directory_links() -> None:
     assert resolve_reference("skill://s", "references//GUIDE.md") == "skill://s/references//GUIDE.md"
     assert resolve_reference("skill://s", "references/") == "skill://s/references"
     assert resolve_reference("skill://s", "references/..") == "skill://s"
+
+
+def test_supporting_read_skips_skill_md_under_another_spelling() -> None:
+    entry = {
+        "uri": "skill://acme/code%2Dreview/SKILL.md",
+        "resources": [
+            {"uri": "skill://acme/code-review/SKILL.md", "size": 10},
+            {"uri": "skill://acme/code-review/GUIDE.md", "size": 8},
+        ],
+    }
+    assert skills._reads([entry]) == [
+        ("skill://acme/code%2Dreview/SKILL.md", True),
+        ("skill://acme/code-review/GUIDE.md", False),
+    ]

@@ -524,7 +524,7 @@ def _reads(entries: list[Any]) -> list[tuple[str, bool]]:
                 for item in files
                 if isinstance(item, dict)
                 and isinstance(item.get("uri"), str)
-                and item["uri"] != uri
+                and normalize_uri(item["uri"]) != normalize_uri(uri)
                 and (size := size_value(item.get("size"))) is not None
                 and size <= MAX_FILE_BYTES
             ),
