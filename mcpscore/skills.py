@@ -768,6 +768,9 @@ async def _read_directories(session: SkillsSession, evidence: SkillsEvidence) ->
         return
     root_read = await _read_directory(session, root, "skill_root")
     evidence.directory_reads.append(root_read)
+    if root_read.incomplete:
+        # An unread page may hold any name, so no child can be shown to be unknown.
+        return
     # The unknown child is named after the root's listing and the skill's manifest, so it names nothing served.
     taken = {_child_name(root, child.get("uri")) for child in root_read.resources or [] if isinstance(child, dict)}
     entry = next(

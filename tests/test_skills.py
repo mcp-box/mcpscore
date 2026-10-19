@@ -295,6 +295,15 @@ class TestCollector:
         evidence = await collect_skills(session, {"directoryRead": True})
         assert evidence.directory_reads[1].uri == f"{root}/mcpscore-no-such-directory-3"
 
+    async def test_truncated_root_listing_skips_the_unknown_directory_probe(self, monkeypatch):
+        monkeypatch.setattr(skills, "MAX_LIST_PAGES", 1)
+        root = "skill://a"
+        session = FakeSession(
+            [{"skills": [entry("a")]}], directories={f"{root}|": {"resources": [], "nextCursor": "1"}}
+        )
+        evidence = await collect_skills(session, {"directoryRead": True})
+        assert [(read.kind, read.incomplete) for read in evidence.directory_reads] == [("skill_root", True)]
+
     async def test_directory_reads_only_when_declared(self):
         root = "skill://a"
         directories = {

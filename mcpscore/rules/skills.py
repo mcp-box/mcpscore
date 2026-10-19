@@ -327,12 +327,18 @@ class SkillsGetUnknownRejectedRule(SkillsBaseRule):
         return RuleSeverity.MEDIUM
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when the call was not made or got no answer."""
+        """Skip when the call was not made, got no answer, or found a skill the listing does not show.
+
+        A server may serve skills it does not list (SEP-2640 §Enumeration allows a partial catalog), so a
+        complete entry for the requested URI is not evidence that it fails to refuse unknown skills.
+        """
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
         got = self._evidence(audit_data).unknown_get
         if got is None or (got.error or {}).get("outcome") in UNOBSERVED_OUTCOMES:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if got.error is None and isinstance(got.entry, dict) and _complete_entry(got.entry, got.uri):
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
@@ -340,7 +346,7 @@ class SkillsGetUnknownRejectedRule(SkillsBaseRule):
         """Medium check: a ``SKILL.md`` URI beside a listed skill, named so no server serves it, is refused.
 
         The refusal must be JSON-RPC error ``-32602`` (Invalid params), the code ``resources/read`` uses for
-        unknown resources. A skill entry, an empty result or another error code fails.
+        unknown resources. Another error code, or a result that is not a skill entry for that URI, fails.
         """
         got = self._evidence(audit_data).unknown_get
         assert got is not None  # noqa: S101 — guaranteed by skip_reason
@@ -354,7 +360,7 @@ class SkillsGetUnknownRejectedRule(SkillsBaseRule):
         elif got.error is not None:
             message = "❌ skills/get answered an unknown skill with a reply that is not a valid result or error"
         else:
-            message = "❌ skills/get returned a result for a skill the server does not serve"
+            message = "❌ skills/get answered a URI that names no listed skill with neither a skill entry nor -32602"
         return self._result(
             passed=passed,
             message=message,
@@ -455,9 +461,10 @@ def _root_listing_problem(read: DirectoryRead) -> tuple[str, str] | None:
     children: list[str] = []
     for child in read.resources:
         uri = child.get("uri") if isinstance(child, dict) else None
-        if not isinstance(uri, str):
-            return "malformed_directory_child", "a resource with a URI"
-        parent, _, name = normalize_uri(uri).rstrip("/").rpartition("/")
+        if not isinstance(uri, str) or not isinstance(child.get("name"), str):
+            return "malformed_directory_child", "a resource with a uri and a name"
+        # Directory URIs carry no trailing slash, so "SKILL.md/" is a different resource, not the skill file.
+        parent, _, name = normalize_uri(uri).rpartition("/")
         # "." and ".." (also percent-encoded, which normal form decodes) name the directory or its parent.
         if parent != root or name in ("", ".", ".."):
             return "not_a_direct_child", "only direct children of the directory"

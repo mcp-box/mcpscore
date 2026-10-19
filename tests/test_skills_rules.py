@@ -87,6 +87,7 @@ def data(*entries: dict[str, Any], resources: bool = True, **evidence: Any) -> A
 
 
 UNKNOWN = "skill://mcpscore-no-such-skill/SKILL.md"
+GOOD_SKILL_CHILD = {"uri": "skill://acme/code-review/SKILL.md", "name": "SKILL.md"}
 
 
 def good() -> AuditData:
@@ -104,9 +105,9 @@ def directory_evidence(children: list[Any] | None = None, **refusals: Any) -> di
     root = "skill://acme/code-review"
     if children is None:
         children = [
-            {"uri": f"{root}/SKILL.md", "mimeType": "text/markdown"},
-            {"uri": f"{root}/references", "mimeType": "inode/directory"},
-            {"uri": f"{root}/assets", "mimeType": "inode/directory"},
+            {"uri": f"{root}/SKILL.md", "name": "SKILL.md", "mimeType": "text/markdown"},
+            {"uri": f"{root}/references", "name": "references", "mimeType": "inode/directory"},
+            {"uri": f"{root}/assets", "name": "assets", "mimeType": "inode/directory"},
         ]
     refused = {"outcome": "rpc_error", "error_code": -32602}
     return {
@@ -1147,8 +1148,12 @@ def test_get_rule_judges_only_answered_calls() -> None:
 @pytest.mark.parametrize(
     ("unknown_get", "phrase"),
     [
-        (SkillGet(UNKNOWN, {"uri": UNKNOWN}), "returned a result"),
-        (SkillGet(UNKNOWN), "returned a result"),
+        (SkillGet(UNKNOWN, {"uri": UNKNOWN}), "neither a skill entry nor -32602"),
+        (SkillGet(UNKNOWN), "neither a skill entry nor -32602"),
+        (
+            SkillGet(UNKNOWN, {**skill("code-review"), "uri": "skill://other/SKILL.md"}),
+            "neither a skill entry nor -32602",
+        ),
         (SkillGet(UNKNOWN, error={"outcome": "rpc_error", "error_code": -32603}), "error -32603, not -32602"),
         (SkillGet(UNKNOWN, error={"outcome": "malformed"}), "not a valid result or error"),
     ],
@@ -1179,20 +1184,27 @@ def test_directory_read_needs_the_declared_setting() -> None:
     [
         (directory_evidence(unknown=None), "unknown_directory_not_refused"),
         (directory_evidence(file={"outcome": "rpc_error", "error_code": -32601}), "file_read_as_directory"),
-        (directory_evidence([{"uri": "skill://acme/code-review/references"}]), "skill_file_not_listed"),
-        (directory_evidence([{"uri": "skill://acme/code-review/references/GUIDE.md"}]), "not_a_direct_child"),
-        (directory_evidence([{"uri": "skill://acme/other/SKILL.md"}]), "not_a_direct_child"),
+        (
+            directory_evidence([{"uri": "skill://acme/code-review/references", "name": "references"}]),
+            "skill_file_not_listed",
+        ),
+        (
+            directory_evidence([{"uri": "skill://acme/code-review/references/GUIDE.md", "name": "GUIDE.md"}]),
+            "not_a_direct_child",
+        ),
+        (directory_evidence([{"uri": "skill://acme/other/SKILL.md", "name": "SKILL.md"}]), "not_a_direct_child"),
         (directory_evidence(["junk"]), "malformed_directory_child"),
         (
-            directory_evidence([{"uri": "skill://acme/code-review/SKILL.md"}, {"uri": "skill://acme/code-review/."}]),
+            directory_evidence([GOOD_SKILL_CHILD, {"uri": "skill://acme/code-review/.", "name": "."}]),
             "not_a_direct_child",
         ),
         (
-            directory_evidence(
-                [{"uri": "skill://acme/code-review/SKILL.md"}, {"uri": "skill://acme/code-review/%2E%2E"}]
-            ),
+            directory_evidence([GOOD_SKILL_CHILD, {"uri": "skill://acme/code-review/%2E%2E", "name": ".."}]),
             "not_a_direct_child",
         ),
+        (directory_evidence([{"uri": "skill://acme/code-review/SKILL.md/", "name": "SKILL.md"}]), "not_a_direct_child"),
+        (directory_evidence([{"uri": "skill://acme/code-review/SKILL.md"}]), "malformed_directory_child"),
+        (directory_evidence([{"uri": "skill://acme/code-review/SKILL.md", "name": 7}]), "malformed_directory_child"),
     ],
 )
 def test_directory_read_failures(evidence: dict[str, Any], reason: str) -> None:
@@ -1215,7 +1227,9 @@ def test_directory_read_root_failures() -> None:
 
 
 def test_incomplete_root_listing_need_not_show_skill_md() -> None:
-    evidence = directory_evidence([{"uri": "skill://acme/code-review/references", "mimeType": "inode/directory"}])
+    evidence = directory_evidence(
+        [{"uri": "skill://acme/code-review/references", "name": "references", "mimeType": "inode/directory"}]
+    )
     evidence["directory_reads"][0].incomplete = True
     assert RULES["skills_directory_read"].check(data(skill("code-review", prefix="acme/"), **evidence)).passed
 
@@ -1236,3 +1250,9 @@ def test_every_get_entry_is_scanned_for_hidden_text() -> None:
     later = {**b, "frontmatter": {**b["frontmatter"], "description": "Review‮ code."}}
     audit = data(a, b, gets=[SkillGet(a["uri"], a), SkillGet(b["uri"], later)])
     assert not RULES["skills_hidden_unicode"].check(audit).passed
+
+
+def test_unlisted_skill_answered_for_the_probe_is_not_judged() -> None:
+    served = {**skill("mcpscore-no-such-skill"), "uri": UNKNOWN}
+    audit = data(skill("code-review"), unknown_get=SkillGet(UNKNOWN, served))
+    assert RULES["skills_get_unknown_rejected"].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
