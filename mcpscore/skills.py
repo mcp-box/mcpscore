@@ -748,6 +748,8 @@ async def _read_directory(session: SkillsSession, uri: str, kind: str, reads: li
         read.error = None
         items = result.get("resources") if isinstance(result, dict) else None
         if not isinstance(items, list):
+            # An answer that is not a directory result; the children of earlier pages stay recorded.
+            read.error = {"outcome": "malformed"}
             read.resources = children if page else None
             read.incomplete = bool(page)
             return read
@@ -771,8 +773,8 @@ async def _read_directories(session: SkillsSession, evidence: SkillsEvidence) ->
     if skill_file is None or root is None:
         return
     root_read = await _read_directory(session, root, "skill_root", evidence.directory_reads)
-    if root_read.incomplete:
-        # An unread page may hold any name, so no child can be shown to be unknown.
+    if root_read.error is not None or root_read.resources is None or root_read.incomplete:
+        # Without the root's whole listing, no child name can be shown to be unknown.
         return
     # The unknown child is named after the root's listing and the skill's manifest, so it names nothing served.
     taken = {_child_name(root, child.get("uri")) for child in root_read.resources or [] if isinstance(child, dict)}

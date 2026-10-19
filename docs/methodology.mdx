@@ -141,9 +141,10 @@ lists its skills, asks `skills/get` for each of them and for one it does not
 serve, reads directories when the server sets `directoryRead`, and reads each
 listed `SKILL.md` plus one supporting file per skill, within fixed caps. Servers that
 do not declare the extension skip these rules as `not-applicable`. An empty
-`skills/list` is valid: the two extension checks (`skills_list_supported`,
-`skills_resources_capability`) still score, and every rule that judges skills
-skips.
+`skills/list` is valid: the extension checks (`skills_list_supported`,
+`skills_resources_capability`, `skills_get_unknown_rejected`) still score, and
+every rule that judges listed skills skips. Skill text a `skills/get` call
+returns is still scanned by the security checks.
 
 | What is checked | Rules |
 |---|---|

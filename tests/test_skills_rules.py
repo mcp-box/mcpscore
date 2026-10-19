@@ -1289,3 +1289,11 @@ def test_probed_skill_is_scanned_without_a_listing(listing: dict[str, Any]) -> N
     assert not rule.check(audit).passed
     quiet = data(**listing)
     assert rule.skip_reason(quiet) is not None
+
+
+def test_malformed_later_root_page_fails_the_directory_rule() -> None:
+    evidence = directory_evidence()
+    evidence["directory_reads"][0].error = {"outcome": "malformed"}
+    evidence["directory_reads"][0].incomplete = True
+    result = RULES["skills_directory_read"].check(data(skill("code-review", prefix="acme/"), **evidence))
+    assert [issue["reason"] for issue in result.details["issues"]] == ["malformed_directory_result"]

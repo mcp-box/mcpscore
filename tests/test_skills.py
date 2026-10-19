@@ -304,6 +304,24 @@ class TestCollector:
         evidence = await collect_skills(session, {"directoryRead": True})
         assert [(read.kind, read.incomplete) for read in evidence.directory_reads] == [("skill_root", True)]
 
+    async def test_malformed_later_directory_page_is_recorded(self):
+        root = "skill://a"
+        first = {"resources": [{"uri": f"{root}/SKILL.md", "name": "SKILL.md"}], "nextCursor": "1"}
+        session = FakeSession([{"skills": [entry("a")]}], directories={f"{root}|": first, f"{root}|1": {"items": []}})
+        (root_read,) = (await collect_skills(session, {"directoryRead": True})).directory_reads
+        assert (root_read.error, root_read.incomplete, len(root_read.resources or [])) == (
+            {"outcome": "malformed"},
+            True,
+            1,
+        )
+
+    @pytest.mark.parametrize("error", [MCPError(code=-32001, message="slow"), RuntimeError("gone")])
+    async def test_unknown_directory_needs_a_whole_root_listing(self, error: Exception):
+        root = "skill://a"
+        session = FakeSession([{"skills": [entry("a")]}], errors={f"resources/directory/read:{root}": error})
+        reads = (await collect_skills(session, {"directoryRead": True})).directory_reads
+        assert [read.kind for read in reads] == ["skill_root"]
+
     async def test_directory_reads_only_when_declared(self):
         root = "skill://a"
         directories = {

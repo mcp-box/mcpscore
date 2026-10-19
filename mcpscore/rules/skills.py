@@ -462,6 +462,8 @@ def _directory_issues(evidence: SkillsEvidence) -> list[dict[str, Any]]:
 
 def _root_listing_problem(read: DirectoryRead) -> tuple[str, str] | None:
     """Return ``(reason, expected)`` when a skill root's directory listing is wrong, or None when it is right."""
+    if (read.error or {}).get("outcome") == "malformed":
+        return "malformed_directory_result", "a resources array"
     if read.error is not None:
         return "directory_read_failed", "the directory's children"
     if read.resources is None:
