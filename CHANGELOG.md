@@ -47,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped, exactly when its violation occurred. It now fails when the
   session's catalog was rejected at an output schema root, and
   `capability_tools_present` names the cause.
+- **A legacy server that answers requests without an `initialize`
+  handshake is no longer scored as a 2026-07-28 server.** A plain tools
+  result to a stateless `tools/list` counted as modern support, so such a
+  server was classed dual-era: its 2026-07-28 readiness checks counted in
+  the main score and `protocol_version_latest` passed. Modern support now
+  needs a `server/discover` result, a `-32022` answer to an unknown version,
+  or a stateless result carrying `resultType`, `ttlMs` or `cacheScope`.
+  Servers in the TypeScript SDK's stateless HTTP mode are the common case:
+  their readiness checks no longer count in the main score.
 
 ## [1.25.0] - 2026-10-18
 
