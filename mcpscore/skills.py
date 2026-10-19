@@ -238,7 +238,7 @@ def _json_scalar(value: Any) -> str:
 _MARKDOWN = MarkdownIt("commonmark")
 """CommonMark parser: decides what is code, prose or a link the way a renderer does."""
 
-MAX_MARKDOWN_BYTES = 128 * 1024
+MAX_MARKDOWN_BYTES = 64 * 1024
 """Larger documents are not parsed: scanned line by line as prose, and their links are not checked."""
 
 
@@ -351,7 +351,9 @@ def _link_targets(tokens: list[Token]) -> Iterator[str]:
         if token.type == "link_open":
             yield str(token.attrs.get("href", ""))
         elif token.type == "image":
+            # Alt text is text, not navigation: links nested in it are not followed.
             yield str(token.attrs.get("src", ""))
+            continue
         if token.children:
             yield from _link_targets(token.children)
 

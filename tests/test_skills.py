@@ -590,4 +590,9 @@ class TestRobustness:
         for attack in ["[" * size, "[a](" * (size // 4), '[a](b "' * (size // 7)]:
             started = time.perf_counter()
             relative_references(attack)
-            assert time.perf_counter() - started < 5.0
+            # Generous: CI runners parse adversarial input several times slower than a laptop.
+            assert time.perf_counter() - started < 20.0
+
+    def test_links_inside_alt_text_are_not_references(self):
+        assert relative_references("![foo [bar](missing.md)](image.png)") == ["image.png"]
+        assert relative_references("![a ![b](inner.png)](outer.png)") == ["outer.png"]

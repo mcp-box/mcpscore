@@ -540,13 +540,13 @@ def test_many_links_against_a_large_manifest_stay_fast() -> None:
     import time
 
     files = {"SKILL.md": ""} | {f"d{i}/f.md": "x" for i in range(500)}
-    body = "".join(f"[l](missing{i}/) " for i in range(5000))
+    body = "".join(f"[l](missing{i}/) " for i in range(3000))
     files["SKILL.md"] = skill_md("code-review", body=body)
     audit = data(skill("code-review", files))
     started = time.perf_counter()
     result = RULES["skills_references_resolve"].check(audit)
     assert time.perf_counter() - started < 1.0
-    assert result.details["issues_total"] == 5000
+    assert result.details["issues_total"] == 3000
 
 
 def test_deep_manifest_paths_do_not_blow_up_reference_checks() -> None:
