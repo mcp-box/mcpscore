@@ -911,6 +911,29 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
         )
 
 
+def non_object_output_roots(tools: list[Tool]) -> dict[str, Any]:
+    """Return each tool whose declared output schema is not object-rooted, mapped to its root ``type``."""
+    return {
+        tool.name: tool.output_schema.get("type", "<absent>")
+        for tool in tools
+        if tool.output_schema is not None and tool.output_schema.get("type") != "object"
+    }
+
+
+def session_rejected_output_roots(audit_data: AuditData) -> list[int]:
+    """Return the indexes of tools whose output schema root the session's first ``tools/list`` page failed at."""
+    error = audit_data.listing_errors.get("tools", {})
+    if error.get("outcome") != "invalid_response" or error.get("page_index") != 0:
+        return []
+    indexes = set()
+    for issue in error.get("issues", []):
+        # "/tools/0/outputSchema/type" -> ["tools", "0", "outputSchema", "type"]
+        parts = str(issue.get("path", "")).split("/")[1:]
+        if len(parts) == 4 and parts[0] == "tools" and parts[1].isdigit() and parts[2:] == ["outputSchema", "type"]:
+            indexes.add(int(parts[1]))
+    return sorted(indexes)
+
+
 @register_rule
 class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
     """High check: output schemas must be object-rooted where the revision requires it.
@@ -921,6 +944,12 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
     server negotiating an older revision while declaring a non-object root
     breaks clients that compile declared schemas relying on that guarantee
     (e.g. the Go and Rust quickstart clients).
+
+    When the session listing failed and the catalog was recovered from the
+    stateless lifecycle, that catalog shows what the newer revision serves,
+    not what the session did. The rule then judges the session's own
+    evidence: it fails when the session's catalog was rejected at an output
+    schema root, and is not applicable otherwise.
     """
 
     rule_id = "tools_output_schema_root_object"
@@ -939,12 +968,50 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
     def severity(self) -> RuleSeverity:
         return RuleSeverity.HIGH
 
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip a recovered catalog unless the session rejected an output schema root.
+
+        The session's rejection is judged whatever the recovered catalog holds, even nothing.
+        """
+        if "tools" in audit_data.catalog_versions:
+            return None if session_rejected_output_roots(audit_data) else SKIP_REASON_NOT_APPLICABLE
+        return super().skip_reason(audit_data)
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Judge the session's catalog, or the session's rejection of it when the catalog was recovered."""
+        if "tools" not in audit_data.catalog_versions:
+            return super().check(audit_data)
+        rejected = session_rejected_output_roots(audit_data)
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=False,
+            message=(
+                f"❌ The {audit_data.protocol_version} session could not list tools: the output schema root of "
+                f"{len(rejected)} tool(s) is not an object"
+            ),
+            details={"session_rejected_tool_indexes": rejected},
+            suggested_fix=self._SUGGESTED_FIX,
+            issues=(
+                field_issue(
+                    "tool",
+                    index,
+                    "/outputSchema/type",
+                    "non_object_root",
+                    "object for revisions 2025-06-18 through 2025-11-25",
+                )
+                for index in rejected
+            ),
+        )
+
+    _SUGGESTED_FIX = (
+        "For the audited revision, wrap structured output in an object and update "
+        "outputSchema and returned structuredContent together. Omit outputSchema only if "
+        "structured output is not part of the contract."
+    )
+
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
-        offending = {
-            tool.name: tool.output_schema.get("type", "<absent>")
-            for tool in tools
-            if tool.output_schema is not None and tool.output_schema.get("type") != "object"
-        }
+        offending = non_object_output_roots(tools)
         passed = not offending
         message = (
             "✅ All declared output schemas are object-rooted"
@@ -957,11 +1024,7 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
             passed=passed,
             message=message,
             details={"tools_with_non_object_root": offending},
-            suggested_fix=(
-                "For the audited revision, wrap structured output in an object and update "
-                "outputSchema and returned structuredContent together. Omit outputSchema only if "
-                "structured output is not part of the contract."
-            ),
+            suggested_fix=self._SUGGESTED_FIX,
             issues=fields(
                 tools,
                 "tool",

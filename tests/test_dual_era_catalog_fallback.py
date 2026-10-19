@@ -128,7 +128,7 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
     assert results["tools_at_least_one"].passed
     assert "tools_names_unique" in results
-    # Scoped to the older revision: it must not fail the array root the catalog's revision allows.
+    # Nothing ties the session error to the schema: the catalog is judged on the revision it was served on.
     assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
     assert "readiness_2026_tool_schema_dialect" not in skipped
     # Needs the legacy capabilities too: evidence from two lifecycles is not comparable.
@@ -137,10 +137,78 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
     assert not capability.passed
     assert "returned JSON-RPC error -32603" in capability.message
     assert "2026-07-28 stateless lifecycle" in capability.message
+    assert "1 tool(s) declare an outputSchema whose root is not an object" in capability.message
 
     report = auditor.get_audit_report()
     assert report["spec"]["catalog_versions"] == {"tools": "2026-07-28"}
     assert report["listing_errors"]["tools"] == LEGACY_ERROR
+
+
+SCHEMA_REJECTED = {
+    "outcome": "invalid_response",
+    "page_index": 0,
+    "issues": [{"path": "/tools/0/outputSchema/type", "reason": "literal_error", "expected": "an object"}],
+    "issues_total": 1,
+    "issues_omitted": 0,
+}
+"""The SDK client rejected the session catalog at the first tool's output schema root."""
+
+
+@pytest.mark.parametrize(
+    ("error", "judged"),
+    [
+        (SCHEMA_REJECTED, True),
+        (LEGACY_ERROR, False),
+        ({"outcome": "timeout", "page_index": 0}, False),
+        ({**SCHEMA_REJECTED, "issues": [{"path": "/tools/0/inputSchema/type", "reason": "literal_error"}]}, False),
+        ({**SCHEMA_REJECTED, "issues": [{"path": "/tools/0/outputSchema/required", "reason": "list_type"}]}, False),
+        (
+            {**SCHEMA_REJECTED, "issues": [{"path": "/tools/0/outputSchema/properties/type", "reason": "dict_type"}]},
+            False,
+        ),
+    ],
+)
+async def test_root_rule_judges_the_session_revision_only_when_the_session_rejected_the_schema(
+    stateless_probes, error: dict, judged: bool
+):
+    stateless_probes({"resultType": "complete", "tools": [ARRAY_ROOT_TOOL]})
+    client = LegacyListingFailsClient()
+    client.listing_errors["tools"] = dict(error)
+    auditor = MCPAuditor()
+
+    await auditor.audit(client)
+
+    assert auditor.audit_data.catalog_versions == {"tools": "2026-07-28"}
+    results = {result.rule_id: result for result in auditor.results}
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    if judged:
+        root = results["tools_output_schema_root_object"]
+        assert not root.passed
+        assert root.details["session_rejected_tool_indexes"] == [0]
+        assert "2025-11-25 session could not list tools" in root.message
+    else:
+        assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
+
+
+@pytest.mark.parametrize(
+    "recovered",
+    [[{**ARRAY_ROOT_TOOL, "outputSchema": {"type": "object", "properties": {}}}], []],
+    ids=["object-root", "empty"],
+)
+async def test_session_rejection_fails_the_root_rule_whatever_the_recovered_catalog_declares(
+    stateless_probes, recovered: list
+):
+    """The stateless lifecycle may serve another catalog than the session did: the session's rejection is judged."""
+    stateless_probes({"resultType": "complete", "tools": recovered})
+    client = LegacyListingFailsClient()
+    client.listing_errors["tools"] = dict(SCHEMA_REJECTED)
+    auditor = MCPAuditor()
+
+    await auditor.audit(client)
+
+    root = {result.rule_id: result for result in auditor.results}["tools_output_schema_root_object"]
+    assert not root.passed
+    assert root.details["issues"][0]["entity_index"] == 0
 
 
 async def test_incomplete_session_catalog_is_replaced_by_a_complete_modern_one(stateless_probes):
@@ -158,7 +226,10 @@ async def test_incomplete_session_catalog_is_replaced_by_a_complete_modern_one(s
     assert "tools" not in data.incomplete_listings
     assert data.listing_errors["tools"] == PARTIAL_LEGACY_ERROR
     results = {result.rule_id: result for result in auditor.results}
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
     assert "tools_names_unique" in results
+    # The session served part of the catalog: the recovered one is judged on its own revision.
+    assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
     capability = results[CapabilityToolsPresentRule.rule_id]
     assert capability.passed
     assert "tools/list on the negotiated session served part of the catalog" in capability.message
