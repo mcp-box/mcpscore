@@ -320,36 +320,42 @@ def _inline_views(inline: Token, seen: set[tuple[str, str]]) -> tuple[str, str]:
     follow the visible text on their own lines rather than splitting a sentence that contains them. A tag may
     render as nothing or as a break, so text with inline HTML is judged both ways. Each distinct extra is added
     only in the first block of the document that has it (``seen``), so references that repeat one long
-    destination do not multiply the text.
+    destination do not multiply the text; each is decoded once, after that check.
     """
-    extras: dict[tuple[str, str], str] = {}
+    extras: dict[tuple[str, str], None] = {}
     views = []
     for keep_code in (False, True):
         texts = []
         for tag in ("", "\n"):
             parts: list[str] = []
-            _render(inline.children or [], parts, {} if tag or keep_code else extras, keep_code=keep_code, tag=tag)
+            _render(inline.children or [], parts, None if tag or keep_code else extras, keep_code=keep_code, tag=tag)
             texts.append("".join(parts))
         if texts[1] == texts[0]:
             texts.pop()
         views.append(texts)
-    new = [extra for key, extra in extras.items() if key not in seen and extra]
+    new = [text for key in extras if key not in seen and (text := _decode_extra(*key))]
     seen.update(extras)
     return "\n".join([*views[0], *new]), "\n".join([*views[1], *new])
 
 
+def _decode_extra(kind: str, raw: str) -> str:
+    """Return the text a reader sees for a raw destination, title or inline tag."""
+    if kind == "href":
+        return unquote(raw)
+    return html_lib.unescape(raw) if kind == "html" else raw
+
+
 def _render(
-    children: list[Token], parts: list[str], extras: dict[tuple[str, str], str], *, keep_code: bool, tag: str
+    children: list[Token], parts: list[str], extras: dict[tuple[str, str], None] | None, *, keep_code: bool, tag: str
 ) -> None:
+    """Append the visible text of inline tokens to ``parts``, and the raw keys of their extras to ``extras``."""
     for child in children:
         if child.type == "code_inline":
             parts.append(child.content if keep_code else " ")
         elif child.type in ("link_open", "image"):
-            href = str(child.attrs.get("href", child.attrs.get("src", "")))
-            title = str(child.attrs.get("title", ""))
-            if ("href", href) not in extras:
-                extras["href", href] = unquote(href)
-            extras.setdefault(("title", title), title)
+            if extras is not None:
+                extras["href", str(child.attrs.get("href", child.attrs.get("src", "")))] = None
+                extras["title", str(child.attrs.get("title", ""))] = None
             if child.type == "image":
                 # Alt text renders from the image's own children, formatting removed.
                 _render(child.children or [], parts, extras, keep_code=keep_code, tag=tag)
@@ -357,8 +363,8 @@ def _render(
             parts.append("\n")
         elif child.type == "html_inline":
             # A tag or comment renders as nothing, but it is not code: its decoded text is judged on its own line.
-            if ("html", child.content) not in extras:
-                extras["html", child.content] = html_lib.unescape(child.content)
+            if extras is not None:
+                extras["html", child.content] = None
             parts.append(tag)
         else:
             parts.append(child.content)
@@ -439,12 +445,15 @@ def relative_references(body: str) -> list[str] | None:
     if not _parsable(body):
         return None
     targets = []
+    # References that repeat one destination share one stripped string rather than each copying it.
+    stripped: dict[str, str] = {}
     for target in _link_targets(list(_parse(body))):
         if not target or target.startswith(("#", "/")) or _SCHEME_RE.match(target):
             continue
-        target = target.split("#", 1)[0].split("?", 1)[0]
-        if target:
-            targets.append(target)
+        if target not in stripped:
+            stripped[target] = target.split("#", 1)[0].split("?", 1)[0]
+        if stripped[target]:
+            targets.append(stripped[target])
     return targets
 
 

@@ -603,6 +603,17 @@ class TestRobustness:
         assert any(destination in block.prose and destination in block.rendered for block in blocks)
         assert sum(len(block.prose) + len(block.rendered) for block in blocks) < 10 * len(body)
 
+    def test_a_shared_destination_is_decoded_once(self, monkeypatch):
+        from mcpscore.skills import markdown_blocks
+
+        destination = "https://example.test/" + "%41" * 5_000
+        decoded: list[str] = []
+        unquote = skills.unquote
+        monkeypatch.setattr(skills, "unquote", lambda text: decoded.append(text) or unquote(text))
+        blocks = markdown_blocks("\n\n".join(["[x]"] * 512) + "\n\n[x]: " + destination + "\n")
+        assert decoded.count(destination) == 1
+        assert any("A" * 5_000 in block.prose for block in blocks)
+
     def test_links_inside_alt_text_are_not_references(self):
         assert relative_references("![foo [bar](missing.md)](image.png)") == ["image.png"]
         assert relative_references("![a ![b](inner.png)](outer.png)") == ["outer.png"]

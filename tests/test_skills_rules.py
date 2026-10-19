@@ -369,6 +369,22 @@ def test_references_ignore_anchors_urls_and_climbing_out() -> None:
     assert result.details["issues_total"] == 1
 
 
+def test_references_repeating_one_target_resolve_it_once(monkeypatch) -> None:
+    from mcpscore.rules import skills as skill_rules
+
+    target = "missing/" + "a" * 16_000 + ".md"
+    normalized: list[str] = []
+    normalize_uri = skill_rules.normalize_uri
+    monkeypatch.setattr(skill_rules, "normalize_uri", lambda uri: normalized.append(uri) or normalize_uri(uri))
+    body = "\n\n".join(["[x]"] * 512) + "\n\n[x]: " + target + "\n"
+    result = RULES["skills_references_resolve"].check(
+        data(skill("code-review", {"SKILL.md": skill_md("code-review", body=body)}))
+    )
+    assert result.details["references_checked"] == 512
+    assert result.details["issues_total"] == 512
+    assert normalized.count(target) == 1
+
+
 def test_security_rules_report_location_without_the_text() -> None:
     entry = skill("code-review", {"SKILL.md": skill_md("code-review", body="Key: AKIA" + "2E0A8F3B4C5D6E7F\n")})
     result = RULES["skills_no_embedded_secrets"].check(data(entry))

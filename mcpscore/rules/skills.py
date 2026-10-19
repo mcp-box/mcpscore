@@ -782,13 +782,20 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
             if targets is None:
                 unparsed += 1
                 continue
+            base = normalize_uri(root)
+            # Each distinct target is resolved once, however many links repeat it.
+            verdicts: dict[str, bool] = {}
             for target in targets:
                 references += 1
-                target = normalize_uri(target)
-                # A trailing "/", "." or ".." names a directory, whatever the resolution leaves.
-                directory = target == "." or target == ".." or target.endswith(("/", "/.", "/.."))
-                resolved = resolve_reference(normalize_uri(root), target)
-                if resolved is None or not _lists_file_at_or_under(listed, ordered, resolved, directory=directory):
+                if target not in verdicts:
+                    normal = normalize_uri(target)
+                    # A trailing "/", "." or ".." names a directory, whatever the resolution leaves.
+                    directory = normal == "." or normal == ".." or normal.endswith(("/", "/.", "/.."))
+                    resolved = resolve_reference(base, normal)
+                    verdicts[target] = resolved is not None and _lists_file_at_or_under(
+                        listed, ordered, resolved, directory=directory
+                    )
+                if not verdicts[target]:
                     issues.append(
                         _issue(index, f"/{SKILL_FILE}", "unresolved_reference", "a link to a file the skill lists")
                     )
