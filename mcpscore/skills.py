@@ -253,7 +253,43 @@ def _parse(body: str) -> tuple[Token, ...]:
 
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-_HTML_TAG_RE = re.compile(r"<[^<>]*>")
+
+
+def _html_text(html: str) -> str:
+    """Return the text of an HTML fragment: tags and comments dropped, a quoted ``>`` kept inside its tag.
+
+    One linear pass, so hostile input stays cheap. An unterminated tag or comment runs to the end.
+    """
+    parts: list[str] = []
+    i, n = 0, len(html)
+    while i < n:
+        start = html.find("<", i)
+        if start < 0:
+            parts.append(html[i:])
+            break
+        parts.append(html[i:start])
+        if html.startswith("<!--", start):
+            end = html.find("-->", start + 4)
+            i = n if end < 0 else end + 3
+        elif start + 1 < n and (html[start + 1].isalpha() or html[start + 1] in "/!?"):
+            j, quote, last = start + 1, "", ""
+            while j < n:
+                char = html[j]
+                if quote:
+                    if char == quote:
+                        quote = ""
+                elif char in "\"'" and last == "=":
+                    quote = char
+                elif char == ">":
+                    break
+                if not char.isspace():
+                    last = char
+                j += 1
+            i = j + 1
+        else:
+            parts.append("<")
+            i = start + 1
+    return "".join(parts)
 
 
 @dataclass(frozen=True)
@@ -332,7 +368,7 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         else:
             # An HTML block is not code: its source counts in full, and its tag-free text catches a directive
             # that tags split.
-            prose, rendered = text, _HTML_TAG_RE.sub("", text)
+            prose, rendered = text, _html_text(text)
         blocks.append(MarkdownBlock(first_line + start, text, prose, rendered))
     run: list[int] = []
     for number in [*range(len(lines)), len(lines)]:

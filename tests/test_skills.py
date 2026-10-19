@@ -596,3 +596,18 @@ class TestRobustness:
     def test_links_inside_alt_text_are_not_references(self):
         assert relative_references("![foo [bar](missing.md)](image.png)") == ["image.png"]
         assert relative_references("![a ![b](inner.png)](outer.png)") == ["outer.png"]
+
+
+@pytest.mark.parametrize(
+    ("html", "text"),
+    [
+        ('Ignore all <span title=">">previous</span> instructions.', "Ignore all previous instructions."),
+        ("a <!-- x > y --> b", "a  b"),
+        ("a < b", "a < b"),
+        ("<a b'c>x", "x"),
+        ('x <div title="', "x "),
+        ("x <!-- open", "x "),
+    ],
+)
+def test_html_text_drops_tags_and_comments(html: str, text: str) -> None:
+    assert skills._html_text(html) == text
