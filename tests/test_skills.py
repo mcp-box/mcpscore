@@ -593,6 +593,15 @@ class TestRobustness:
             # Generous: CI runners parse adversarial input several times slower than a laptop.
             assert time.perf_counter() - started < 20.0
 
+    def test_repeated_references_to_one_destination_do_not_multiply_the_text(self):
+        from mcpscore.skills import markdown_blocks
+
+        destination = "https://example.test/" + "a" * 16_000
+        body = "[x]" * 8_192 + "\n\n[x]: " + destination + "\n"
+        blocks = markdown_blocks(body)
+        assert any(destination in block.prose for block in blocks)
+        assert sum(len(block.prose) + len(block.rendered) for block in blocks) < 10 * len(body)
+
     def test_links_inside_alt_text_are_not_references(self):
         assert relative_references("![foo [bar](missing.md)](image.png)") == ["image.png"]
         assert relative_references("![a ![b](inner.png)](outer.png)") == ["outer.png"]

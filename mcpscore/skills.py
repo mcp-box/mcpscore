@@ -318,28 +318,32 @@ def _prose(inline: Token, *, keep_code: bool = False) -> str:
 
     Link and image destinations (decoded), titles and inline HTML are not code, so they are judged too; they
     follow the visible text on their own lines rather than splitting a sentence that contains them. A tag may
-    render as nothing or as a break, so text with inline HTML is judged both ways.
+    render as nothing or as a break, so text with inline HTML is judged both ways. Each distinct extra is kept
+    once, so references that repeat one long destination do not multiply the text.
     """
-    extras: list[str] = []
+    extras: dict[tuple[str, str], str] = {}
     texts = []
     for tag in ("", "\n"):
         parts: list[str] = []
-        _render(inline.children or [], parts, extras if not tag else [], keep_code=keep_code, tag=tag)
+        _render(inline.children or [], parts, extras if not tag else {}, keep_code=keep_code, tag=tag)
         texts.append("".join(parts))
     if texts[1] == texts[0]:
         texts.pop()
-    return "\n".join([*texts, *(extra for extra in extras if extra)])
+    return "\n".join([*texts, *(extra for extra in extras.values() if extra)])
 
 
-def _render(children: list[Token], parts: list[str], extras: list[str], *, keep_code: bool, tag: str) -> None:
+def _render(
+    children: list[Token], parts: list[str], extras: dict[tuple[str, str], str], *, keep_code: bool, tag: str
+) -> None:
     for child in children:
         if child.type == "code_inline":
             parts.append(child.content if keep_code else " ")
         elif child.type in ("link_open", "image"):
-            extras += [
-                unquote(str(child.attrs.get("href", child.attrs.get("src", "")))),
-                str(child.attrs.get("title", "")),
-            ]
+            href = str(child.attrs.get("href", child.attrs.get("src", "")))
+            title = str(child.attrs.get("title", ""))
+            if ("href", href) not in extras:
+                extras["href", href] = unquote(href)
+            extras.setdefault(("title", title), title)
             if child.type == "image":
                 # Alt text renders from the image's own children, formatting removed.
                 _render(child.children or [], parts, extras, keep_code=keep_code, tag=tag)
@@ -347,7 +351,8 @@ def _render(children: list[Token], parts: list[str], extras: list[str], *, keep_
             parts.append("\n")
         elif child.type == "html_inline":
             # A tag or comment renders as nothing, but it is not code: its decoded text is judged on its own line.
-            extras.append(html_lib.unescape(child.content))
+            if ("html", child.content) not in extras:
+                extras["html", child.content] = html_lib.unescape(child.content)
             parts.append(tag)
         else:
             parts.append(child.content)
