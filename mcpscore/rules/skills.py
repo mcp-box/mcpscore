@@ -86,8 +86,9 @@ class SkillsBaseRule(BaseRule):
             if evidence.entries is None:
                 return SKIP_REASON_INSUFFICIENT_DATA
             if not evidence.entries:
-                # An empty listing is legal (SEP-2640 §Enumeration): no skill to judge, not a failure.
-                return SKIP_REASON_NOT_APPLICABLE
+                # An empty listing is legal (SEP-2640 §Enumeration): no skill to judge, not a failure. An empty
+                # first page with more pages unread says nothing about the catalog.
+                return SKIP_REASON_INSUFFICIENT_DATA if evidence.list_incomplete else SKIP_REASON_NOT_APPLICABLE
             if not any(self.judges(entry) for entry in evidence.entries):
                 return SKIP_REASON_INSUFFICIENT_DATA
         return None
@@ -156,7 +157,8 @@ def _inside(root: str, uri: str) -> bool:
     """Whether *uri* names a file inside the skill directory *root*, with no ``.``, ``..`` or empty segments."""
     if not uri.startswith(root + "/"):
         return False
-    segments = unquote(uri[len(root) + 1 :]).split("/")
+    # Split before decoding, so an encoded "/" is part of a name, while an encoded "." or ".." is still caught.
+    segments = [unquote(segment) for segment in uri[len(root) + 1 :].split("/")]
     return all(segment not in ("", ".", "..") for segment in segments)
 
 
