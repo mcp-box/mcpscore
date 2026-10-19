@@ -434,6 +434,18 @@ def resolve_reference(root: str, target: str) -> str | None:
     return f"{root}/{normalized}"
 
 
+def size_value(value: Any) -> int | None:
+    """Return a listed byte length, or None when it is not a nonnegative integer.
+
+    JSON does not tell 42 from 42.0, so an integral float counts; booleans, fractions and non-finite numbers do not.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return value if isinstance(value, int) and value >= 0 else None
+
+
 def content_bytes(contents: list[dict[str, Any]], uri: str) -> tuple[bytes, str | None] | None:
     """Return the raw bytes and MIME type of the content item for *uri* (the first item otherwise)."""
     if not contents:
@@ -471,8 +483,8 @@ def _reads(entries: list[Any]) -> list[tuple[str, bool]]:
                 if isinstance(item, dict)
                 and isinstance(item.get("uri"), str)
                 and item["uri"] != uri
-                and isinstance(item.get("size"), int)
-                and item["size"] <= MAX_FILE_BYTES
+                and (size := size_value(item.get("size"))) is not None
+                and size <= MAX_FILE_BYTES
             ),
             None,
         )
@@ -489,8 +501,8 @@ def _declared_size(entries: list[Any], uri: str) -> int | None:
         if not isinstance(entry, dict):
             continue
         for item in manifest(entry) or []:
-            if isinstance(item, dict) and item.get("uri") == uri and isinstance(item.get("size"), int):
-                return item["size"]
+            if isinstance(item, dict) and item.get("uri") == uri and (size := size_value(item.get("size"))) is not None:
+                return size
     return None
 
 

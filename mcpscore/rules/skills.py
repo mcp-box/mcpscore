@@ -25,6 +25,7 @@ from ..skills import (
     parse_frontmatter,
     relative_references,
     resolve_reference,
+    size_value,
     skill_path_name,
     skill_root,
     split_frontmatter,
@@ -385,8 +386,7 @@ def _manifest_issues(index: int, entry: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if not isinstance(item.get("digest"), str) or not DIGEST_RE.fullmatch(item["digest"]):
             issues.append(_issue(index, f"{path}/digest", "invalid_digest", "sha256: followed by 64 lowercase hex"))
-        size = item.get("size")
-        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        if size_value(item.get("size")) is None:
             issues.append(_issue(index, f"{path}/size", "invalid_size", "the file's length in bytes"))
         if item["uri"] in seen:
             issues.append(_issue(index, f"{path}/uri", "duplicate_file", "each file listed once"))
@@ -551,8 +551,7 @@ class SkillsNameValidRule(SkillsBaseRule):
 
 
 def _listed_size(item: dict[str, Any]) -> int | None:
-    size = item.get("size")
-    return size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None
+    return size_value(item.get("size"))
 
 
 def _listed_digest(item: dict[str, Any]) -> str | None:

@@ -881,3 +881,22 @@ def test_escaped_control_in_served_frontmatter_is_found() -> None:
 def test_html_breaks_do_not_join_words_of_a_directive(body: str) -> None:
     entry = skill("code-review", {"SKILL.md": skill_md("code-review", body=body)})
     assert not RULES["skills_prompt_injection_phrasing"].check(data(entry)).passed
+
+
+@pytest.mark.parametrize("as_number", [float, lambda size: float(f"{size}e0")])
+def test_integral_float_sizes_are_byte_lengths(as_number) -> None:
+    entry = skill("code-review", {"SKILL.md": skill_md("code-review"), "references/GUIDE.md": "# Guide\n"})
+    for item in entry["resources"]:
+        item["size"] = as_number(item["size"])
+    audit = data(entry)
+    assert RULES["skills_resources_manifest"].check(audit).passed
+    assert RULES["skills_digest_integrity"].check(audit).passed
+    assert RULES["skills_digest_integrity"].check(audit).details["files_checked"] == 2
+
+
+@pytest.mark.parametrize("size", [True, 1.5, -1.0, float("inf"), float("nan")])
+def test_non_integral_sizes_stay_invalid(size: Any) -> None:
+    entry = skill("code-review")
+    entry["resources"][0]["size"] = size
+    result = RULES["skills_resources_manifest"].check(data(entry))
+    assert [issue["reason"] for issue in result.details["issues"]] == ["invalid_size"]

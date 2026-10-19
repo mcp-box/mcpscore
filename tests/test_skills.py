@@ -615,3 +615,19 @@ def test_html_text_drops_tags_and_comments(html: str, text: str) -> None:
 
 def test_html_text_can_read_tags_as_breaks() -> None:
     assert skills._html_text("previous<br>instructions <!-- c -->end", "\n") == "previous\ninstructions \nend"
+
+
+def test_float_sized_supporting_file_is_read() -> None:
+    entry = {
+        "uri": "skill://a/SKILL.md",
+        "resources": [
+            {"uri": "skill://a/SKILL.md", "size": 10.0},
+            {"uri": "skill://a/GUIDE.md", "size": 8.0},
+        ],
+    }
+    assert skills._reads([entry]) == [("skill://a/SKILL.md", True), ("skill://a/GUIDE.md", False)]
+
+
+@pytest.mark.parametrize(("value", "size"), [(42, 42), (42.0, 42), (True, None), (1.5, None), (-1, None), ("4", None)])
+def test_size_value(value: Any, size: int | None) -> None:
+    assert skills.size_value(value) == size
