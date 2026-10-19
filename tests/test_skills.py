@@ -322,6 +322,23 @@ class TestCollector:
         reads = (await collect_skills(session, {"directoryRead": True})).directory_reads
         assert [read.kind for read in reads] == ["skill_root"]
 
+    async def test_negative_directory_probes_judge_their_first_answer(self):
+        root = "skill://a"
+        listing = {"resources": [{"uri": f"{root}/SKILL.md", "name": "SKILL.md"}]}
+        answered = {"resources": [], "nextCursor": "1"}
+        session = FakeSession(
+            [{"skills": [entry("a")]}],
+            errors={"resources/directory/read:1": MCPError(-32602, "bad cursor")},
+            directories={
+                f"{root}|": listing,
+                f"{root}/mcpscore-no-such-directory|": answered,
+                f"{root}/SKILL.md|": answered,
+            },
+        )
+        _, unknown, file = (await collect_skills(session, {"directoryRead": True})).directory_reads
+        assert (unknown.error, unknown.resources) == (None, [])
+        assert (file.error, file.resources) == (None, [])
+
     async def test_directory_reads_only_when_declared(self):
         root = "skill://a"
         directories = {

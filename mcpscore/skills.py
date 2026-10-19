@@ -737,7 +737,9 @@ async def _read_directory(session: SkillsSession, uri: str, kind: str, reads: li
     children: list[Any] = []
     cursor: str | None = None
     seen: set[str] = set()
-    for page in range(MAX_LIST_PAGES):
+    # The unknown-child and file probes judge their first answer alone: a refusal on a later page cannot undo it.
+    pages = MAX_LIST_PAGES if kind == "skill_root" else 1
+    for page in range(pages):
         params: dict[str, Any] = {"uri": uri, **({"cursor": cursor} if cursor is not None else {})}
         try:
             result = await session.request_raw("resources/directory/read", params)
