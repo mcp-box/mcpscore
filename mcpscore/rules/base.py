@@ -339,6 +339,14 @@ class BaseRule(ABC):
     revision instead.
     """
 
+    judges_session_revision: bool = False
+    """Whether a catalog recovered after the negotiated session served none is judged on the session's revision.
+
+    Set by rules that check a shape the session's revision forbids and a newer one allows. That shape is what
+    makes the session listing fail, so judging the recovered catalog on the revision it was served on would
+    skip the rule exactly when its violation occurs.
+    """
+
     def __init__(self, **kwargs: Any) -> None:
         super().__init__()
         # kwargs maybe used by subclasses to store additional data

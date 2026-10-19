@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `safe_load`, and `SKILL.md` is parsed as CommonMark to tell code from prose
   and find its links.
 
+### Fixed
+
+- **`tools_output_schema_root_object` now fails a server whose session
+  `tools/list` breaks on a non-object output schema root.** When the
+  negotiated session served no tools and the catalog came from the
+  2026-07-28 stateless lifecycle, the rule was judged on 2026-07-28 and
+  skipped, exactly when its violation occurred. It is now judged on the
+  session's revision, and `capability_tools_present` names the cause.
+
 ## [1.25.0] - 2026-10-18
 
 A new HIGH rule sends a made-up bearer token to servers behind auth and

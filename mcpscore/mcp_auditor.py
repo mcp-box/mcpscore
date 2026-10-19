@@ -557,13 +557,18 @@ class MCPAuditor:
         Modern probe evidence is judged on the latest revision. A catalog
         recovered from the stateless lifecycle is judged on the revision it
         was served on, not the session's — a rule scoped to the older
-        revision must not fail a shape the newer one allows. Everything else
-        is judged on the negotiated version.
+        revision must not fail a shape the newer one allows — unless the
+        session served none of it and the rule judges the shape the session's
+        revision forbids (``judges_session_revision``). Everything else is
+        judged on the negotiated version.
         """
         if rule.uses_modern_probe_evidence and self.era in (Era.MODERN, Era.DUAL):
             return LATEST.version
         for name in self._required_fields(rule):
             if name in self.audit_data.catalog_versions:
+                session_served_none = self.audit_data.listing_errors.get(name, {}).get("page_index") == 0
+                if rule.judges_session_revision and session_served_none:
+                    return self.audit_data.protocol_version
                 return self.audit_data.catalog_versions[name]
         return self.audit_data.protocol_version
 

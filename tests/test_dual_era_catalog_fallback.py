@@ -128,8 +128,10 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
     assert results["tools_at_least_one"].passed
     assert "tools_names_unique" in results
-    # Scoped to the older revision: it must not fail the array root the catalog's revision allows.
-    assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
+    # The session served none of the catalog, so the root rule judges it on the session's revision.
+    root = results["tools_output_schema_root_object"]
+    assert not root.passed
+    assert root.details["tools_with_non_object_root"] == {"get_alerts": "array"}
     assert "readiness_2026_tool_schema_dialect" not in skipped
     # Needs the legacy capabilities too: evidence from two lifecycles is not comparable.
     assert skipped["tools_execution_consistent"] == SKIP_REASON_INSUFFICIENT_DATA
@@ -137,6 +139,7 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
     assert not capability.passed
     assert "returned JSON-RPC error -32603" in capability.message
     assert "2026-07-28 stateless lifecycle" in capability.message
+    assert "1 tool(s) declare an outputSchema whose root is not an object" in capability.message
 
     report = auditor.get_audit_report()
     assert report["spec"]["catalog_versions"] == {"tools": "2026-07-28"}
@@ -158,7 +161,10 @@ async def test_incomplete_session_catalog_is_replaced_by_a_complete_modern_one(s
     assert "tools" not in data.incomplete_listings
     assert data.listing_errors["tools"] == PARTIAL_LEGACY_ERROR
     results = {result.rule_id: result for result in auditor.results}
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
     assert "tools_names_unique" in results
+    # The session served part of the catalog: the recovered one is judged on its own revision.
+    assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
     capability = results[CapabilityToolsPresentRule.rule_id]
     assert capability.passed
     assert "tools/list on the negotiated session served part of the catalog" in capability.message

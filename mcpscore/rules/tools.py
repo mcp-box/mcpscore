@@ -911,6 +911,15 @@ class ToolsOutputSchemaValidRule(ToolsBaseRule):
         )
 
 
+def non_object_output_roots(tools: list[Tool]) -> dict[str, Any]:
+    """Return each tool whose declared output schema is not object-rooted, mapped to its root ``type``."""
+    return {
+        tool.name: tool.output_schema.get("type", "<absent>")
+        for tool in tools
+        if tool.output_schema is not None and tool.output_schema.get("type") != "object"
+    }
+
+
 @register_rule
 class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
     """High check: output schemas must be object-rooted where the revision requires it.
@@ -920,7 +929,9 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
     at the root level"); any-root schemas became legal in 2026-07-28. A
     server negotiating an older revision while declaring a non-object root
     breaks clients that compile declared schemas relying on that guarantee
-    (e.g. the Go and Rust quickstart clients).
+    (e.g. the Go and Rust quickstart clients). A server that serves such a
+    schema only on the stateless lifecycle, after the session listing
+    failed, is judged on the session's revision.
     """
 
     rule_id = "tools_output_schema_root_object"
@@ -929,6 +940,7 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
     # was lifted in 2026-07-28 — the rule applies only inside that window.
     min_spec_version = "2025-06-18"
     max_spec_version = "2025-11-25"
+    judges_session_revision = True
     rule_order = 17
 
     @property
@@ -940,11 +952,7 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
         return RuleSeverity.HIGH
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
-        offending = {
-            tool.name: tool.output_schema.get("type", "<absent>")
-            for tool in tools
-            if tool.output_schema is not None and tool.output_schema.get("type") != "object"
-        }
+        offending = non_object_output_roots(tools)
         passed = not offending
         message = (
             "✅ All declared output schemas are object-rooted"

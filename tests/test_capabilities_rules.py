@@ -1,7 +1,8 @@
 from dataclasses import replace
 
-from mcp_types import ResourcesCapability
+from mcp_types import ResourcesCapability, Tool
 from pydantic import BaseModel
+import pytest
 
 from mcpscore.rules import AuditData, RuleSeverity
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
@@ -243,6 +244,22 @@ def test_declared_and_served_by_stateless_fallback_still_fails(capabilities_full
         assert details["served"] is True
         assert details["catalog_version"] == "2026-07-28"
         assert details["collection_error"]["error_code"] == -32603
+
+
+@pytest.mark.parametrize(("session", "noted"), [("2025-11-25", True), ("2026-07-28", False), ("2025-03-26", False)])
+def test_failed_session_listing_names_a_non_object_output_root(capabilities_full, session: str, noted: bool):
+    tool = Tool.model_validate(
+        {"name": "get_alerts", "inputSchema": {"type": "object"}, "outputSchema": {"type": "array"}}
+    )
+    audit_data = AuditData(
+        capabilities=capabilities_full,
+        protocol_version=session,
+        listing_errors={"tools": {"outcome": "rpc_error", "page_index": 0, "error_code": -32603}},
+        catalog_versions={"tools": "2026-07-28"},
+        tools=[tool],
+    )
+    message = CapabilityToolsPresentRule().check(audit_data).message
+    assert ("outputSchema whose root is not an object, which 2025-11-25 does not allow" in message) is noted
 
 
 def test_partial_session_listing_recovered_from_stateless_passes_with_a_note(capabilities_full):
