@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tools_output_schema_root_object` skips as insufficient data again on
+  partial audits.** In 1.26.0 a server behind auth, audited without a
+  session, reported the rule as not applicable, as if it had no tools. No
+  score changes.
+
 ## [1.26.0] - 2026-10-19
 
 Servers that publish Agent Skills are now scored on 13 new rules; every other
