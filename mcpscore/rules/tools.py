@@ -940,7 +940,7 @@ class ToolsOutputSchemaRootObjectRule(ToolsBaseRule):
     # was lifted in 2026-07-28 — the rule applies only inside that window.
     min_spec_version = "2025-06-18"
     max_spec_version = "2025-11-25"
-    session_failure_field = "outputSchema"
+    session_failure_path = "outputSchema/type"
     rule_order = 17
 
     @property

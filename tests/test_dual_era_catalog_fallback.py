@@ -161,6 +161,11 @@ SCHEMA_REJECTED = {
         (LEGACY_ERROR, False),
         ({"outcome": "timeout", "page_index": 0}, False),
         ({**SCHEMA_REJECTED, "issues": [{"path": "/tools/0/inputSchema/type", "reason": "literal_error"}]}, False),
+        ({**SCHEMA_REJECTED, "issues": [{"path": "/tools/0/outputSchema/required", "reason": "list_type"}]}, False),
+        (
+            {**SCHEMA_REJECTED, "issues": [{"path": "/tools/0/outputSchema/properties/type", "reason": "dict_type"}]},
+            False,
+        ),
     ],
 )
 async def test_root_rule_judges_the_session_revision_only_when_the_session_rejected_the_schema(
