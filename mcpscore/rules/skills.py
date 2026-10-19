@@ -479,6 +479,8 @@ def _root_listing_problem(read: DirectoryRead) -> tuple[str, str] | None:
         # "." and ".." (also percent-encoded, which normal form decodes) name the directory or its parent.
         if parent != root or name in ("", ".", ".."):
             return "not_a_direct_child", "only direct children of the directory"
+        if name == SKILL_FILE and child.get("mimeType") == "inode/directory":
+            return "skill_file_listed_as_directory", f"{SKILL_FILE} listed as a file"
         children.append(name)
     if SKILL_FILE not in children and not read.incomplete:
         return "skill_file_not_listed", f"{SKILL_FILE} among the skill root's children"

@@ -348,6 +348,14 @@ class TestCollector:
             directories={f"{root}|": {"resources": [{"uri": f"{root}/SKILL.md"}], "nextCursor": "1"}},
         )
         root_read = (await collect_skills(later_failure, {"directoryRead": True})).directory_reads[0]
+        assert (len(root_read.resources or []), root_read.incomplete) == (1, True)
+        assert root_read.error == {"outcome": "rpc_error", "error_code": -32603}
+        later_timeout = FakeSession(
+            [{"skills": [entry("a")]}],
+            errors={"resources/directory/read:1": TimeoutError()},
+            directories={f"{root}|": {"resources": [{"uri": f"{root}/SKILL.md"}], "nextCursor": "1"}},
+        )
+        root_read = (await collect_skills(later_timeout, {"directoryRead": True})).directory_reads[0]
         assert (len(root_read.resources or []), root_read.incomplete, root_read.error) == (1, True, None)
         odd = FakeSession(
             [{"skills": [entry("a")]}],

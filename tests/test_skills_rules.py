@@ -1297,3 +1297,17 @@ def test_malformed_later_root_page_fails_the_directory_rule() -> None:
     evidence["directory_reads"][0].incomplete = True
     result = RULES["skills_directory_read"].check(data(skill("code-review", prefix="acme/"), **evidence))
     assert [issue["reason"] for issue in result.details["issues"]] == ["malformed_directory_result"]
+
+
+def test_skill_file_listed_as_a_directory_fails() -> None:
+    evidence = directory_evidence([{**GOOD_SKILL_CHILD, "mimeType": "inode/directory"}])
+    result = RULES["skills_directory_read"].check(data(skill("code-review", prefix="acme/"), **evidence))
+    assert [issue["reason"] for issue in result.details["issues"]] == ["skill_file_listed_as_directory"]
+
+
+def test_answered_later_page_error_fails_the_directory_rule() -> None:
+    evidence = directory_evidence()
+    evidence["directory_reads"][0].error = {"outcome": "rpc_error", "error_code": -32603}
+    evidence["directory_reads"][0].incomplete = True
+    result = RULES["skills_directory_read"].check(data(skill("code-review", prefix="acme/"), **evidence))
+    assert [issue["reason"] for issue in result.details["issues"]] == ["directory_read_failed"]

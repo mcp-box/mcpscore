@@ -742,8 +742,12 @@ async def _read_directory(session: SkillsSession, uri: str, kind: str, reads: li
         try:
             result = await session.request_raw("resources/directory/read", params)
         except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
+            error = _rpc_error(exc)
             if page == 0:
-                read.error, read.incomplete = _rpc_error(exc), False
+                read.error, read.incomplete = error, False
+            elif error["outcome"] not in UNOBSERVED_OUTCOMES:
+                # An answered failure on a later page is judged; the children received stay recorded.
+                read.error = error
             return read
         read.error = None
         items = result.get("resources") if isinstance(result, dict) else None
