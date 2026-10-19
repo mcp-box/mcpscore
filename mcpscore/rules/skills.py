@@ -141,8 +141,11 @@ _ENCODED_SLASH_RE = re.compile("%2f", re.IGNORECASE)
 
 
 def _decode_path(uri: str) -> str:
-    """Percent-decode *uri* for comparison, keeping an encoded ``/`` distinct from a path separator."""
-    return "%2F".join(unquote(part) for part in _ENCODED_SLASH_RE.split(uri))
+    """Percent-decode *uri* for comparison, keeping an encoded ``/`` distinct from a path separator.
+
+    A decoded ``%`` is escaped again, so a literal "%2F" (sent as ``%252F``) never equals the kept escape.
+    """
+    return "%2F".join(unquote(part).replace("%", "%25") for part in _ENCODED_SLASH_RE.split(uri))
 
 
 def _inside(root: str, uri: str) -> bool:
