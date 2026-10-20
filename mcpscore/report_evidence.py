@@ -21,7 +21,9 @@ _SECRET_QUERY_KEYS = frozenset(
         "code",
     }
 )
-_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^\s\"'<>]+", re.IGNORECASE)
+# Userinfo may hold an apostrophe (an RFC 3986 sub-delim), so an optional "...@" part admits one; the rest of
+# the URL stops at quotes, so a URL quoted in prose ends at its closing quote.
+_URL = re.compile(r"[a-z][a-z0-9+.-]*://(?:[^\s\"<>/?#@]*@)?[^\s\"'<>]+", re.IGNORECASE)
 _AUTHORITY = re.compile(r"([a-z][a-z0-9+.-]*://)([^/?#]*)", re.IGNORECASE)
 
 

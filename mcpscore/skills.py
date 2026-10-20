@@ -2,7 +2,8 @@
 
 A server that declares ``io.modelcontextprotocol/skills`` serves Agent Skills as
 MCP resources and answers ``skills/list`` and ``skills/get``. This module lists
-the skills, asks ``skills/get`` for one of them, and reads a bounded sample of
+the skills, asks ``skills/get`` for each of them (and for one it does not serve), reads
+directories when the server offers ``resources/directory/read``, and reads a bounded sample of
 skill files so the rules can compare what was served with what the listing
 promised. Skill content is untrusted text: it is hashed, parsed as YAML
 frontmatter with ``yaml.safe_load`` and scanned, never executed or followed.
@@ -51,7 +52,16 @@ MAX_TOTAL_BYTES = 8 * 1024 * 1024
 """Declared bytes read per audit across all skill files."""
 
 COLLECTION_TIMEOUT_S = 90.0
-"""Total budget for listing, the ``skills/get`` call and file reads."""
+"""Total budget for listing, the ``skills/get`` and directory calls, and file reads."""
+
+UNKNOWN_SKILL_NAME = "mcpscore-no-such-skill"
+"""Skill path segment of the URI asked of ``skills/get`` to check that an unknown skill is refused."""
+
+DIRECTORY_READ_KINDS = ("skill_root", "unknown", "file")
+"""The directory reads made when the server sets ``directoryRead``: see :class:`DirectoryRead`."""
+
+UNKNOWN_DIRECTORY_NAME = "mcpscore-no-such-directory"
+"""Child of a skill root read with ``resources/directory/read`` to check that an unknown directory is refused."""
 
 READ_CONCURRENCY = 4
 
@@ -87,6 +97,30 @@ class SkillFile:
 
 
 @dataclass
+class SkillGet:
+    """What one ``skills/get`` call returned."""
+
+    uri: str
+    entry: Any = None
+    """The result's ``skill`` object; None when the call failed or the result carried none."""
+    error: dict[str, Any] | None = None
+
+
+@dataclass
+class DirectoryRead:
+    """What one ``resources/directory/read`` of a URI returned, across its pages."""
+
+    uri: str
+    kind: str
+    """``skill_root`` (a listed skill's root), ``unknown`` (a child the server does not serve) or ``file``."""
+    resources: list[Any] | None = None
+    """The children across all pages read; None when the first page failed or carried no ``resources`` array."""
+    error: dict[str, Any] | None = None
+    incomplete: bool = False
+    """A later page failed, or the page limit was reached."""
+
+
+@dataclass
 class SkillsEvidence:
     """Everything the skills rules judge, collected once per audit."""
 
@@ -98,10 +132,12 @@ class SkillsEvidence:
     list_malformed: bool = False
     """The result had no ``skills`` array."""
     list_incomplete: bool = False
-    get_uri: str | None = None
-    """The listed ``SKILL.md`` URI passed to ``skills/get``."""
-    get_entry: Any = None
-    get_error: dict[str, Any] | None = None
+    gets: list[SkillGet] = field(default_factory=list)
+    """``skills/get`` for each listed ``SKILL.md`` URI (up to ``MAX_SKILL_FILES``), in listing order."""
+    unknown_get: SkillGet | None = None
+    """``skills/get`` for a skill the server does not serve; None when the call was not made."""
+    directory_reads: list[DirectoryRead] = field(default_factory=list)
+    """Made only when the server sets ``directoryRead: true``."""
     files: dict[str, SkillFile] = field(default_factory=dict)
     budget_exhausted: bool = False
 
@@ -625,7 +661,8 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence) -> None:
         next_cursor = result.get("nextCursor")
         if not isinstance(next_cursor, str) or next_cursor in seen:
             evidence.entries = entries
-            evidence.list_incomplete = isinstance(next_cursor, str)
+            # A repeated cursor, or one that is not a string, leaves pages unread.
+            evidence.list_incomplete = next_cursor is not None
             return
         seen.add(next_cursor)
         cursor = next_cursor
@@ -633,20 +670,141 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence) -> None:
     evidence.list_incomplete = True
 
 
-async def _get(session: SkillsSession, evidence: SkillsEvidence) -> None:
-    uri = next(
-        (e["uri"] for e in evidence.entries or [] if isinstance(e, dict) and isinstance(e.get("uri"), str)),
-        None,
+def _listed_skill_uris(entries: list[Any]) -> list[str]:
+    """Return the distinct ``SKILL.md`` URIs of the listing, in order, up to ``MAX_SKILL_FILES``."""
+    uris: dict[str, str] = {}
+    for e in entries:
+        if isinstance(e, dict) and isinstance(e.get("uri"), str):
+            uris.setdefault(normalize_uri(e["uri"]), e["uri"])
+    return list(uris.values())[:MAX_SKILL_FILES]
+
+
+def _unused_name(base: str, taken: set[str]) -> str:
+    """Return *base*, or *base* with the first numeric suffix that makes it absent from *taken*."""
+    name, suffix = base, 1
+    while name in taken:
+        suffix += 1
+        name = f"{base}-{suffix}"
+    return name
+
+
+def unknown_skill_uri(entries: list[Any]) -> str:
+    """Return a ``SKILL.md`` URI beside the first listed skill that no listed skill uses."""
+    listed = {normalize_uri(e["uri"]) for e in entries if isinstance(e, dict) and isinstance(e.get("uri"), str)}
+    parent = next(
+        (root.rpartition("/")[0] for uri in _listed_skill_uris(entries) if (root := skill_root(uri))),
+        "",
     )
-    if uri is None:
-        return
-    evidence.get_uri = uri
+    prefix = f"{parent}/" if parent else "skill://"
+    taken = {
+        uri.removeprefix(normalize_uri(prefix)).removesuffix(f"/{SKILL_FILE}")
+        for uri in listed
+        if uri.startswith(normalize_uri(prefix))
+    }
+    return f"{prefix}{_unused_name(UNKNOWN_SKILL_NAME, taken)}/{SKILL_FILE}"
+
+
+async def _get_one(session: SkillsSession, uri: str) -> SkillGet:
     try:
         result = await session.request_raw("skills/get", {"uri": uri})
     except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
-        evidence.get_error = _rpc_error(exc)
+        return SkillGet(uri, error=_rpc_error(exc))
+    return SkillGet(uri, result.get("skill") if isinstance(result, dict) else None)
+
+
+async def _get(session: SkillsSession, evidence: SkillsEvidence) -> None:
+    gate = asyncio.Semaphore(READ_CONCURRENCY)
+
+    async def one(uri: str) -> None:
+        async with gate:
+            # Stored as each call finishes, so a collection timeout keeps the answers already received.
+            evidence.gets.append(await _get_one(session, uri))
+
+    uris = _listed_skill_uris(evidence.entries or [])
+    await asyncio.gather(*(one(uri) for uri in uris))
+    order = {uri: index for index, uri in enumerate(uris)}
+    evidence.gets.sort(key=lambda got: order[got.uri])
+    evidence.unknown_get = await _get_one(session, unknown_skill_uri(evidence.entries or []))
+
+
+async def _read_directory(session: SkillsSession, uri: str, kind: str, reads: list[DirectoryRead]) -> DirectoryRead:
+    """Read *uri* as a directory across its pages, appended to *reads* before the first call.
+
+    Until the first page answers, the read records a timeout; once a page has answered, the children received
+    stay recorded as incomplete if the collection deadline cancels a later page.
+    """
+    read = DirectoryRead(uri, kind, error={"outcome": "timeout"}, incomplete=True)
+    reads.append(read)
+    children: list[Any] = []
+    cursor: str | None = None
+    seen: set[str] = set()
+    # The unknown-child and file probes judge their first answer alone: a refusal on a later page cannot undo it.
+    pages = MAX_LIST_PAGES if kind == "skill_root" else 1
+    for page in range(pages):
+        params: dict[str, Any] = {"uri": uri, **({"cursor": cursor} if cursor is not None else {})}
+        try:
+            result = await session.request_raw("resources/directory/read", params)
+        except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
+            error = _rpc_error(exc)
+            if page == 0:
+                read.error, read.incomplete = error, False
+            elif error["outcome"] not in UNOBSERVED_OUTCOMES:
+                # An answered failure on a later page is judged; the children received stay recorded.
+                read.error = error
+            return read
+        read.error = None
+        items = result.get("resources") if isinstance(result, dict) else None
+        if not isinstance(items, list):
+            # An answer that is not a directory result; the children of earlier pages stay recorded.
+            read.error = {"outcome": "malformed"}
+            read.resources = children if page else None
+            read.incomplete = bool(page)
+            return read
+        children.extend(items)
+        read.resources = children
+        next_cursor = result.get("nextCursor")
+        if next_cursor is not None and not isinstance(next_cursor, str):
+            # A cursor that is not a string is not a directory result; the children received stay recorded.
+            read.error, read.incomplete = {"outcome": "malformed"}, True
+            return read
+        if not isinstance(next_cursor, str) or next_cursor in seen:
+            read.incomplete = isinstance(next_cursor, str)
+            return read
+        seen.add(next_cursor)
+        cursor = next_cursor
+    return read
+
+
+async def _read_directories(session: SkillsSession, evidence: SkillsEvidence) -> None:
+    """Read a listed skill's root, a child that does not exist, and its ``SKILL.md`` as directories."""
+    if evidence.settings.get("directoryRead") is not True:
         return
-    evidence.get_entry = result.get("skill") if isinstance(result, dict) else None
+    skill_file = next((uri for uri in _listed_skill_uris(evidence.entries or []) if skill_root(uri)), None)
+    root = skill_root(skill_file) if skill_file else None
+    if skill_file is None or root is None:
+        return
+    root_read = await _read_directory(session, root, "skill_root", evidence.directory_reads)
+    if root_read.error is not None or root_read.resources is None or root_read.incomplete:
+        # Without the root's whole listing, no child name can be shown to be unknown.
+        return
+    # The unknown child is named after the root's listing and the skill's manifest, so it names nothing served.
+    taken = {_child_name(root, child.get("uri")) for child in root_read.resources or [] if isinstance(child, dict)}
+    entry = next(
+        (e for e in evidence.entries or [] if isinstance(e, dict) and e.get("uri") == skill_file),
+        {},
+    )
+    taken |= {_child_name(root, item.get("uri")) for item in manifest(entry) or [] if isinstance(item, dict)}
+    unknown = f"{root}/{_unused_name(UNKNOWN_DIRECTORY_NAME, taken)}"
+    await _read_directory(session, unknown, "unknown", evidence.directory_reads)
+    await _read_directory(session, skill_file, "file", evidence.directory_reads)
+
+
+def _child_name(root: str, uri: Any) -> str:
+    """Return the first path segment of *uri* below *root*, in normal form, or "" when it is not below it."""
+    prefix = normalize_uri(root) + "/"
+    if not isinstance(uri, str) or not normalize_uri(uri).startswith(prefix):
+        return ""
+    return normalize_uri(uri)[len(prefix) :].split("/", 1)[0]
 
 
 async def _read(session: SkillsSession, uri: str, keep_text: bool) -> SkillFile:
@@ -695,16 +853,18 @@ async def _read_files(session: SkillsSession, evidence: SkillsEvidence) -> None:
 
 
 async def collect_skills(session: SkillsSession, settings: dict[str, Any]) -> SkillsEvidence:
-    """List the server's skills, call ``skills/get`` once, and read a bounded sample of skill files."""
+    """List the server's skills, call ``skills/get`` for each, probe directory reads, and read a sample of files."""
     evidence = SkillsEvidence(settings=settings)
     phase = "list"
     try:
         async with asyncio.timeout(COLLECTION_TIMEOUT_S):
             await _list(session, evidence)
-            phase = "get"
-            await _get(session, evidence)
-            phase = "read"
-            await _read_files(session, evidence)
+            phase = "listed"
+            # Concurrent, so stalled skills/get or directory calls cannot starve the file reads the integrity and
+            # security rules need.
+            await asyncio.gather(
+                _get(session, evidence), _read_directories(session, evidence), _read_files(session, evidence)
+            )
     except TimeoutError:
         # The deadline cancels the call in flight, so its own handler never records the outcome.
         evidence.budget_exhausted = True
@@ -712,7 +872,10 @@ async def collect_skills(session: SkillsSession, settings: dict[str, Any]) -> Sk
             evidence.list_error = {"outcome": "timeout"}
         elif phase == "list":
             evidence.list_incomplete = True
-        elif phase == "get":
-            evidence.get_error = {"outcome": "timeout"}
+        else:
+            answered = {got.uri for got in evidence.gets}
+            for uri in _listed_skill_uris(evidence.entries or []):
+                if uri not in answered:
+                    evidence.gets.append(SkillGet(uri, error={"outcome": "timeout"}))
         logger.warning("Stopped collecting skills after %.0fs", COLLECTION_TIMEOUT_S)
     return evidence

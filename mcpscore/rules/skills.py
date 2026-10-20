@@ -10,10 +10,14 @@ from bisect import bisect_left
 from collections.abc import Iterator
 from typing import Any, ClassVar
 
+from ..probes import ERROR_INVALID_PARAMS
+from ..report_evidence import report_evidence
 from ..skills import (
     DIGEST_RE,
+    DIRECTORY_READ_KINDS,
     SKILL_FILE,
     UNOBSERVED_OUTCOMES,
+    DirectoryRead,
     SkillFile,
     SkillsEvidence,
     declared_settings,
@@ -227,9 +231,22 @@ class SkillsListSupportedRule(SkillsBaseRule):
         )
 
 
+def _listing_index(evidence: SkillsEvidence, uri: str) -> int | None:
+    """Return the listing index of the entry whose ``uri`` is *uri* in normal form."""
+    target = normalize_uri(uri)
+    return next(
+        (i for i, e in _entries(evidence) if isinstance(e.get("uri"), str) and normalize_uri(e["uri"]) == target),
+        None,
+    )
+
+
+def _refused_as_unknown(error: dict[str, Any] | None) -> bool:
+    return (error or {}).get("error_code") == ERROR_INVALID_PARAMS
+
+
 @register_rule
 class SkillsGetSupportedRule(SkillsBaseRule):
-    """Medium check: ``skills/get`` returns the entry of a listed skill."""
+    """Medium check: ``skills/get`` returns the entry of every listed skill."""
 
     rule_id = "skills_get_supported"
     basis = f"{SEP} §Retrieval via skills/get (MUST implement; MUST answer for every skill served)"
@@ -244,44 +261,234 @@ class SkillsGetSupportedRule(SkillsBaseRule):
         return RuleSeverity.MEDIUM
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when no listed skill had a URI to ask for, or the call got no answer."""
+        """Skip when no listed skill had a URI to ask for, or no call got an answer."""
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
-        evidence = self._evidence(audit_data)
-        if evidence.get_uri is None:
+        gets = self._evidence(audit_data).gets
+        if not gets:
             return SKIP_REASON_NOT_APPLICABLE
-        if (evidence.get_error or {}).get("outcome") in UNOBSERVED_OUTCOMES:
+        if all((got.error or {}).get("outcome") in UNOBSERVED_OUTCOMES for got in gets):
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """Medium check: ``skills/get`` for the first listed ``SKILL.md`` URI returns a complete skill entry.
+        """Medium check: ``skills/get`` for each listed ``SKILL.md`` URI returns a complete skill entry.
 
-        The entry has the same shape as a listing entry: that URI, the frontmatter with ``name`` and
+        Each entry has the same shape as a listing entry: that URI, the frontmatter with ``name`` and
         ``description``, and a valid ``resources`` manifest. Its values may differ from the listing's, since the
-        two are snapshots taken at different times.
+        two are snapshots taken at different times. Calls that got no answer are not judged.
         """
         evidence = self._evidence(audit_data)
-        entry = evidence.get_entry
-        passed = evidence.get_error is None and isinstance(entry, dict) and _complete_entry(entry, evidence.get_uri)
+        answered = [got for got in evidence.gets if (got.error or {}).get("outcome") not in UNOBSERVED_OUTCOMES]
+        failed = [
+            got
+            for got in answered
+            if got.error is not None or not isinstance(got.entry, dict) or not _complete_entry(got.entry, got.uri)
+        ]
+        passed = not failed
         if passed:
-            message = "✅ skills/get returned the entry of a listed skill"
-        elif evidence.get_error is not None:
-            code = evidence.get_error.get("error_code")
-            message = "❌ skills/get failed for a listed skill" + (f" with JSON-RPC error {code}" if code else "")
+            message = f"✅ skills/get returned the entry of every listed skill asked for ({len(answered)})"
         else:
-            message = "❌ skills/get did not return a complete skill entry for the requested URI"
+            codes = sorted({got.error["error_code"] for got in failed if got.error and "error_code" in got.error})
+            message = (
+                f"❌ skills/get did not return a complete entry for {len(failed)} of {len(answered)} listed skill(s)"
+                + (f" (JSON-RPC error {', '.join(map(str, codes))})" if codes else "")
+            )
         return self._result(
             passed=passed,
             message=message,
-            details={"error": evidence.get_error},
+            details={"skills_checked": len(answered), "errors": [got.error for got in failed if got.error]},
             fix=(
                 "Implement skills/get: given a skill's SKILL.md URI, return {skill: {...}}, the same entry skills/list "
                 "carries, for every skill you serve."
             ),
-            issues=[] if passed else [_issue(None, "/skill", "skills_get_failed", "a skill entry for the listed URI")],
+            issues=[
+                _issue(_listing_index(evidence, got.uri), "/skill", "skills_get_failed", "a skill entry for the URI")
+                for got in failed
+            ],
         )
+
+
+@register_rule
+class SkillsGetUnknownRejectedRule(SkillsBaseRule):
+    """Medium check: ``skills/get`` for a skill the server does not serve answers ``-32602``."""
+
+    rule_id = "skills_get_unknown_rejected"
+    basis = f"{SEP} §Retrieval via skills/get (a URI that identifies no served skill MUST return -32602)"
+    rule_order = 2
+    needs_listing = False
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - skills/get Refuses Unknown Skills"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when the call was not made, got no answer, or found a skill the listing does not show.
+
+        A server may serve skills it does not list (SEP-2640 §Enumeration allows a partial catalog), so a
+        complete entry for the requested URI is not evidence that it fails to refuse unknown skills.
+        """
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        got = self._evidence(audit_data).unknown_get
+        if got is None or (got.error or {}).get("outcome") in UNOBSERVED_OUTCOMES:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if got.error is None and isinstance(got.entry, dict) and _complete_entry(got.entry, got.uri):
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: a ``SKILL.md`` URI beside a listed skill, named so no server serves it, is refused.
+
+        The refusal must be JSON-RPC error ``-32602`` (Invalid params), the code ``resources/read`` uses for
+        unknown resources. Another error code, or a result that is not a skill entry for that URI, fails.
+        """
+        got = self._evidence(audit_data).unknown_get
+        assert got is not None  # noqa: S101 — guaranteed by skip_reason
+        passed = _refused_as_unknown(got.error)
+        if passed:
+            message = "✅ skills/get refused a skill the server does not serve with -32602"
+        elif got.error is not None and "error_code" in got.error:
+            message = (
+                f"❌ skills/get refused an unknown skill with JSON-RPC error {got.error['error_code']}, not -32602"
+            )
+        elif got.error is not None:
+            message = "❌ skills/get answered an unknown skill with a reply that is not a valid result or error"
+        else:
+            message = "❌ skills/get answered a URI that names no listed skill with neither a skill entry nor -32602"
+        return self._result(
+            passed=passed,
+            message=message,
+            # A skill URI may carry credentials in its userinfo; report_evidence masks them.
+            details=report_evidence({"requested_uri": got.uri, "error": got.error}),
+            fix=(
+                "Answer skills/get with JSON-RPC error -32602 (Invalid params) when the URI names no skill you serve, "
+                "as resources/read does for an unknown resource."
+            ),
+            issues=[] if passed else [_issue(None, "/skills/get", "unknown_skill_not_refused", "error -32602")],
+        )
+
+
+@register_rule
+class SkillsDirectoryReadRule(SkillsBaseRule):
+    """Medium check: a server declaring ``directoryRead`` serves ``resources/directory/read`` for its skills."""
+
+    rule_id = "skills_directory_read"
+    basis = (
+        f"{SEP} §Directory Listing, §resources/directory/read (MUST support every directory of a skill namespace; "
+        "unknown or non-directory URI MUST return -32602), §Capability Declaration (directoryRead)"
+    )
+    rule_order = 2
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - Directory Read Works"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless ``directoryRead`` is declared and the directory calls got answers."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        evidence = self._evidence(audit_data)
+        if evidence.settings.get("directoryRead") is not True:
+            return SKIP_REASON_NOT_APPLICABLE
+        # A violation in any answered read is judged; a pass needs all three answers, which a deadline, a
+        # truncated root listing or a lost call can withhold.
+        answered = _answered_directory_reads(evidence)
+        if _directory_issues(evidence) or {read.kind for read in answered} == set(DIRECTORY_READ_KINDS):
+            return None
+        return SKIP_REASON_INSUFFICIENT_DATA
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Medium check: reading a listed skill's root, an unknown child and its ``SKILL.md`` as directories.
+
+        The root lists its direct children, ``SKILL.md`` among them, each with a URI one level below the root
+        (subdirectories carry ``mimeType: inode/directory``). The unknown child and the ``SKILL.md`` file, which
+        is not a directory, are refused with ``-32602``.
+        """
+        evidence = self._evidence(audit_data)
+        issues = _directory_issues(evidence)
+        passed = not issues
+        message = (
+            "✅ resources/directory/read lists a skill's root and refuses unknown and non-directory URIs"
+            if passed
+            else f"❌ resources/directory/read failed {len(issues)} of {len(evidence.directory_reads)} checks"
+        )
+        return self._result(
+            passed=passed,
+            message=message,
+            details=report_evidence(
+                {
+                    "reads": [
+                        {"uri": read.uri, "kind": read.kind, "error": read.error, "children": len(read.resources or [])}
+                        for read in evidence.directory_reads
+                    ]
+                }
+            ),
+            fix=(
+                "Since you declare directoryRead, answer resources/directory/read for every directory of your skills "
+                "with its direct children ({resources: [...]}, subdirectories as mimeType inode/directory), and "
+                "return -32602 for a URI that is unknown or not a directory."
+            ),
+            issues=issues,
+        )
+
+
+def _answered_directory_reads(evidence: SkillsEvidence) -> list[DirectoryRead]:
+    return [read for read in evidence.directory_reads if (read.error or {}).get("outcome") not in UNOBSERVED_OUTCOMES]
+
+
+def _directory_issues(evidence: SkillsEvidence) -> list[dict[str, Any]]:
+    """Return the violations the answered directory reads show; unanswered reads show none."""
+    issues: list[dict[str, Any]] = []
+    skill_file = next((read.uri for read in evidence.directory_reads if read.kind == "file"), None)
+    index = _listing_index(evidence, skill_file) if skill_file else None
+    for read in _answered_directory_reads(evidence):
+        if read.kind == "skill_root":
+            problem = _root_listing_problem(read)
+            if problem is not None:
+                issues.append(_issue(index, "/resources/directory/read", problem[0], problem[1]))
+        elif not _refused_as_unknown(read.error):
+            reason = "unknown_directory_not_refused" if read.kind == "unknown" else "file_read_as_directory"
+            issues.append(_issue(index, "/resources/directory/read", reason, "error -32602"))
+    return issues
+
+
+def _root_listing_problem(read: DirectoryRead) -> tuple[str, str] | None:
+    """Return ``(reason, expected)`` when a skill root's directory listing is wrong, or None when it is right."""
+    if (read.error or {}).get("outcome") == "malformed":
+        return "malformed_directory_result", "a resources array"
+    if read.error is not None:
+        return "directory_read_failed", "the directory's children"
+    if read.resources is None:
+        return "malformed_directory_result", "a resources array"
+    root = normalize_uri(read.uri)
+    children: list[str] = []
+    for child in read.resources:
+        uri = child.get("uri") if isinstance(child, dict) else None
+        if not isinstance(uri, str) or not isinstance(child.get("name"), str):
+            return "malformed_directory_child", "a resource with a uri and a name"
+        # Directory URIs carry no trailing slash, so "SKILL.md/" is a different resource, not the skill file.
+        parent, _, name = normalize_uri(uri).rpartition("/")
+        # "." and ".." (also percent-encoded, which normal form decodes) name the directory or its parent.
+        if parent != root or name in ("", ".", ".."):
+            return "not_a_direct_child", "only direct children of the directory"
+        if name == SKILL_FILE and child.get("mimeType") == "inode/directory":
+            return "skill_file_listed_as_directory", f"{SKILL_FILE} listed as a file"
+        children.append(name)
+    if SKILL_FILE not in children and not read.incomplete:
+        return "skill_file_not_listed", f"{SKILL_FILE} among the skill root's children"
+    return None
 
 
 @register_rule
@@ -873,10 +1080,13 @@ def _skill_texts(evidence: SkillsEvidence) -> Iterator[tuple[int | None, str, st
                 body, first_line = text, 1
             for block in markdown_blocks(body, first_line):
                 yield index, f"/{SKILL_FILE}#L{block.line}", block.text, block.rendered, block.prose
-    # The sampled skills/get entry is its own snapshot: frontmatter that differs from the listing's is scanned
-    # too, under its own location; identical frontmatter was already scanned.
-    got = evidence.get_entry
-    if isinstance(got, dict):
+    # Each skills/get entry is its own snapshot: frontmatter that differs from the listing's is scanned too,
+    # under its own location; identical frontmatter was already scanned.
+    # The unknown-skill probe can return a skill the listing does not show; its text reaches a host the same way.
+    probed = [evidence.unknown_get] if evidence.unknown_get is not None else []
+    for got in (g.entry for g in [*evidence.gets, *probed]):
+        if not isinstance(got, dict):
+            continue
         got_uri = got.get("uri")
         listed = next(
             (
@@ -911,11 +1121,20 @@ class SkillsSecurityRule(SkillsBaseRule):
         raise NotImplementedError
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when no skill text was observed: no frontmatter string and no ``SKILL.md`` read."""
+        """Skip when no skill text was observed: no frontmatter string and no ``SKILL.md`` read.
+
+        Text a ``skills/get`` call returned counts even when the listing is empty or failed: a host receives it
+        the same way.
+        """
         reason = super().skip_reason(audit_data)
-        if reason is None and next(_skill_texts(self._evidence(audit_data)), None) is None:
-            return SKIP_REASON_INSUFFICIENT_DATA
-        return reason
+        if audit_data.capabilities is None or declared_settings(audit_data.capabilities) is None:
+            # The extension's own scope comes first: observed text never makes an undeclared server applicable.
+            return reason
+        evidence = audit_data.skills
+        has_text = evidence is not None and next(_skill_texts(evidence), None) is not None
+        if reason is None:
+            return None if has_text else SKIP_REASON_INSUFFICIENT_DATA
+        return None if has_text else reason
 
     @property
     def severity(self) -> RuleSeverity:
