@@ -1328,3 +1328,15 @@ def test_skill_uris_in_new_rule_details_hide_credentials(password: str) -> None:
     for rule_id in ("skills_get_unknown_rejected", "skills_directory_read"):
         wire = json.dumps(RULES[rule_id].check(audit).to_dict())
         assert json.dumps(password)[1:-1] not in wire, rule_id
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "reason"),
+    [(None, SKIP_REASON_INSUFFICIENT_DATA), ({"resources": {}}, SKIP_REASON_NOT_APPLICABLE)],
+)
+def test_observed_text_does_not_widen_the_extension_scope(capabilities: Any, reason: str) -> None:
+    served = {**skill("mcpscore-no-such-skill"), "uri": UNKNOWN}
+    audit = data(entries=[], unknown_get=SkillGet(UNKNOWN, served))
+    audit.capabilities = ServerCapabilities.model_validate(capabilities) if capabilities is not None else None
+    for rule_id in ("skills_hidden_unicode", "skills_no_embedded_secrets", "skills_prompt_injection_phrasing"):
+        assert RULES[rule_id].skip_reason(audit) == reason, rule_id

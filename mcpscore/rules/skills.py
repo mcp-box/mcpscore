@@ -1127,6 +1127,9 @@ class SkillsSecurityRule(SkillsBaseRule):
         the same way.
         """
         reason = super().skip_reason(audit_data)
+        if audit_data.capabilities is None or declared_settings(audit_data.capabilities) is None:
+            # The extension's own scope comes first: observed text never makes an undeclared server applicable.
+            return reason
         evidence = audit_data.skills
         has_text = evidence is not None and next(_skill_texts(evidence), None) is not None
         if reason is None:
