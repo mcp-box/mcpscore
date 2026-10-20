@@ -339,6 +339,19 @@ class TestCollector:
         assert (unknown.error, unknown.resources) == (None, [])
         assert (file.error, file.resources) == (None, [])
 
+    async def test_cursor_that_is_not_a_string(self):
+        root = "skill://a"
+        listing = {"resources": [{"uri": f"{root}/SKILL.md", "name": "SKILL.md"}], "nextCursor": 7}
+        session = FakeSession([{"skills": [entry("a")], "nextCursor": 7}], directories={f"{root}|": listing})
+        evidence = await collect_skills(session, {"directoryRead": True})
+        assert evidence.list_incomplete
+        (root_read,) = evidence.directory_reads
+        assert (root_read.error, root_read.incomplete, len(root_read.resources or [])) == (
+            {"outcome": "malformed"},
+            True,
+            1,
+        )
+
     async def test_directory_reads_only_when_declared(self):
         root = "skill://a"
         directories = {

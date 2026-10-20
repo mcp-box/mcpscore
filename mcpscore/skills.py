@@ -661,7 +661,8 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence) -> None:
         next_cursor = result.get("nextCursor")
         if not isinstance(next_cursor, str) or next_cursor in seen:
             evidence.entries = entries
-            evidence.list_incomplete = isinstance(next_cursor, str)
+            # A repeated cursor, or one that is not a string, leaves pages unread.
+            evidence.list_incomplete = next_cursor is not None
             return
         seen.add(next_cursor)
         cursor = next_cursor
@@ -762,6 +763,10 @@ async def _read_directory(session: SkillsSession, uri: str, kind: str, reads: li
         children.extend(items)
         read.resources = children
         next_cursor = result.get("nextCursor")
+        if next_cursor is not None and not isinstance(next_cursor, str):
+            # A cursor that is not a string is not a directory result; the children received stay recorded.
+            read.error, read.incomplete = {"outcome": "malformed"}, True
+            return read
         if not isinstance(next_cursor, str) or next_cursor in seen:
             read.incomplete = isinstance(next_cursor, str)
             return read
