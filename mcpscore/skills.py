@@ -642,11 +642,11 @@ def _rpc_error(exc: Exception) -> dict[str, Any]:
 
 
 def _scalar(value: Any) -> Any:
-    """Keep a JSON scalar (a string bounded to 200 characters); replace anything else with its JSON type name."""
+    """Keep a JSON scalar (a string masked, then bounded to 200 characters); replace anything else with its type."""
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        return value[:200]
+        return report_evidence(value)[:200]
     return {"type": "array" if isinstance(value, list) else "object" if isinstance(value, dict) else "other"}
 
 

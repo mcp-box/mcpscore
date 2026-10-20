@@ -51,7 +51,7 @@ from mcpscore.probes import (
     has_modern_support,
 )
 from mcpscore.report_evidence import evidence_preview
-from mcpscore.skills import UNOBSERVED_OUTCOMES
+from mcpscore.skills import UNOBSERVED_OUTCOMES, size_value
 from mcpscore.spec import DRAFT, LATEST
 
 from .base import (
@@ -77,6 +77,11 @@ READINESS_TARGET = (DRAFT or LATEST).version
 _JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
 _VALID_CACHE_SCOPES = frozenset({"public", "private"})
+
+
+def _valid_ttl(value: object) -> bool:
+    """Whether ``ttlMs`` is a non-negative integer; JSON does not tell 0 from 0.0, and a boolean is no number."""
+    return size_value(value) is not None
 
 
 def _valid_cache_scope(value: object) -> bool:
@@ -447,7 +452,7 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
     @staticmethod
     def _valid_hints(details: dict[str, Any]) -> bool:
         ttl_ms = details.get("ttl_ms")
-        return isinstance(ttl_ms, int) and ttl_ms >= 0 and _valid_cache_scope(details.get("cache_scope"))
+        return _valid_ttl(ttl_ms) and _valid_cache_scope(details.get("cache_scope"))
 
     def check(self, audit_data: AuditData) -> RuleResult:
         probes = audit_data.probes or {}
@@ -461,7 +466,7 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
         for pid in missing:
             observed = supported[pid].details
             ttl = observed.get("ttl_ms")
-            if not (isinstance(ttl, int) and ttl >= 0):
+            if not _valid_ttl(ttl):
                 issues.append(_response_issue(pid, "/ttlMs", ttl, "non-negative integer"))
             scope = observed.get("cache_scope")
             if not _valid_cache_scope(scope):
@@ -1330,7 +1335,7 @@ class SkillsListCacheHintsReadinessRule(ReadinessBaseRule):
             )
         else:
             ttl, scope = observed.get("ttl_ms"), observed.get("cache_scope")
-            if not (isinstance(ttl, int) and not isinstance(ttl, bool) and ttl >= 0):
+            if not _valid_ttl(ttl):
                 issues.append(_response_issue("skills/list", "/ttlMs", ttl, "non-negative integer"))
             if not _valid_cache_scope(scope):
                 issues.append(_response_issue("skills/list", "/cacheScope", scope, "public or private"))

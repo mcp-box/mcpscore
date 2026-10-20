@@ -109,6 +109,11 @@ class TestStatelessSession:
 
 
 class TestCollectorHints:
+    async def test_hint_strings_are_masked_before_truncation(self):
+        page = {"skills": [], "cacheScope": "https://user:" + "s" * 300 + "@cache.example/"}
+        hints = await stateless_list_hints(FakeSession([page]))
+        assert "sss" not in json.dumps(hints)
+
     async def test_hints_that_are_not_scalars_are_summarized(self):
         page = {"skills": [], "ttlMs": list(range(10_000)), "cacheScope": {"a": 1}, "resultType": "x" * 10_000}
         hints = await stateless_list_hints(FakeSession([page]))
@@ -314,6 +319,8 @@ class TestCacheHintsRule:
             ({"ttl_ms": True, "cache_scope": "public"}, False, ["/ttlMs"]),
             ({"ttl_ms": -1, "cache_scope": "shared"}, False, ["/ttlMs", "/cacheScope"]),
             ({"ttl_ms": 0, "cache_scope": []}, False, ["/cacheScope"]),
+            ({"ttl_ms": 1e3, "cache_scope": "public"}, True, []),
+            ({"ttl_ms": 0.5, "cache_scope": "public"}, False, ["/ttlMs"]),
             ({"ttl_ms": 0, "cache_scope": {}}, False, ["/cacheScope"]),
         ],
     )

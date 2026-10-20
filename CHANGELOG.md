@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (up to 32), not only the first, as the extension requires an answer for
   every skill the server serves. Calls that get no answer are not judged.
 
+### Fixed
+
+- **`readiness_2026_cache_metadata` judges `ttlMs` and `cacheScope` as JSON
+  values.** An integral `ttlMs` such as `0.0` now passes and `true` fails,
+  and a `cacheScope` that is an array or object fails instead of stopping
+  the audit with an error.
+
 ## [1.26.1] - 2026-10-19
 
 A reporting fix for partial audits; no score changes.
