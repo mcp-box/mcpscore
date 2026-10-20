@@ -1313,10 +1313,11 @@ def test_answered_later_page_error_fails_the_directory_rule() -> None:
     assert [issue["reason"] for issue in result.details["issues"]] == ["directory_read_failed"]
 
 
-def test_skill_uris_in_new_rule_details_hide_credentials() -> None:
-    secret_root = "https://user:hunter2@skills.example/acme/code-review"
+@pytest.mark.parametrize("password", ["hunter2", "can'ary"])
+def test_skill_uris_in_new_rule_details_hide_credentials(password: str) -> None:
+    secret_root = f"https://user:{password}@skills.example/acme/code-review"
     entry = {**skill("code-review"), "uri": f"{secret_root}/SKILL.md"}
-    unknown = "https://user:hunter2@skills.example/acme/mcpscore-no-such-skill/SKILL.md"
+    unknown = f"https://user:{password}@skills.example/acme/mcpscore-no-such-skill/SKILL.md"
     reads = [
         DirectoryRead(secret_root, "skill_root", [{"uri": f"{secret_root}/SKILL.md", "name": "SKILL.md"}]),
         DirectoryRead(f"{secret_root}/x", "unknown", error={"outcome": "rpc_error", "error_code": -32602}),
@@ -1326,4 +1327,4 @@ def test_skill_uris_in_new_rule_details_hide_credentials() -> None:
                  settings={"directoryRead": True}, directory_reads=reads)  # fmt: skip
     for rule_id in ("skills_get_unknown_rejected", "skills_directory_read"):
         wire = json.dumps(RULES[rule_id].check(audit).to_dict())
-        assert "hunter2" not in wire, rule_id
+        assert json.dumps(password)[1:-1] not in wire, rule_id

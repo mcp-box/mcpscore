@@ -193,6 +193,18 @@ def test_unobserved_probe_does_not_become_a_failure(outcome):
         assert rule.skip_reason(data) is not None, rule_id
 
 
+@pytest.mark.parametrize(
+    ("raw", "masked"),
+    [
+        ("https://alice:can'ary@skills.example/a/SKILL.md", "https://skills.example/a/SKILL.md"),
+        ("see 'https://u:p@host.example/x' here", "see 'https://host.example/x' here"),
+        ("see 'https://host.example/x' here", "see 'https://host.example/x' here"),
+    ],
+)
+def test_userinfo_with_an_apostrophe_is_masked(raw: str, masked: str):
+    assert report_evidence(raw) == masked
+
+
 def test_redaction_covers_rule_and_probe_reports_without_mutation():
     data = data_for("readiness_2026_no_session_id", failure=True)
     pid = RULES["readiness_2026_no_session_id"].probe_id
