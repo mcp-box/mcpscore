@@ -3176,8 +3176,11 @@ async def run_stdio_probes(
     }
 
 
-STATELESS_READ_LIMIT = 4 * 1024 * 1024
-"""Bytes of one stateless skills answer read before giving up: a 1 MiB file, base64 and JSON-escaped, fits."""
+STATELESS_READ_LIMIT = 6 * 1024 * 1024 + 64 * 1024
+"""Bytes of one stateless skills answer read before giving up.
+
+A 1 MiB file fits even when it is all control characters, each JSON-escaped in six bytes, plus the envelope.
+"""
 
 
 class StatelessSession:

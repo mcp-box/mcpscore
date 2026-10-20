@@ -300,8 +300,10 @@ class TestStatelessTransport:
             with pytest.raises(TimeoutError):
                 await session.request_raw("skills/list", {})
 
-    async def test_skill_sized_answer_is_read_whole(self):
-        text = "x" * (512 * 1024)
+    @pytest.mark.parametrize("char", ["x", "\x1b"])
+    async def test_skill_sized_answer_is_read_whole(self, char: str):
+        # A control character is escaped as \u001b on the wire: six bytes for one.
+        text = char * (1024 * 1024)
         reply = {"jsonrpc": "2.0", "id": 1001, "result": {"contents": [{"uri": "skill://a/SKILL.md", "text": text}]}}
         contents = await _http_session(reply).read_resource_contents("skill://a/SKILL.md")
         assert contents[0]["text"] == text
