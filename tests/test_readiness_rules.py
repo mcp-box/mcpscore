@@ -411,12 +411,13 @@ class TestCacheMetadataRule:
         assert not result.passed
         assert PROBE_STATELESS_LIST in result.message
 
-    def test_fail_when_cache_scope_invalid(self):
+    @pytest.mark.parametrize("scope", ["shared", [], {}])
+    def test_fail_when_cache_scope_invalid(self, scope: object):
         probes = modern_probes(
             probe_discover=ProbeResult(
                 PROBE_DISCOVER,
                 ProbeOutcome.SUPPORTED,
-                {"supported_versions": ["2026-07-28"], "result_type": "complete", "ttl_ms": 0, "cache_scope": "shared"},
+                {"supported_versions": ["2026-07-28"], "result_type": "complete", "ttl_ms": 0, "cache_scope": scope},
             )
         )
         assert not CacheMetadataReadinessRule().check(AuditData(probes=probes)).passed

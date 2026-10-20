@@ -830,8 +830,11 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
             skills["skills_with_allowed_tools"],
             skills["skills_with_scripts"],
             "fits an OpenAI import"
-            if openai["fits"]
-            else f"OpenAI imports at most {openai['skills_imported_at_most']} skills and 8 MiB per scan",
+            if openai["fits"] is True
+            else "OpenAI import fit unknown (sizes incomplete)"
+            if openai["fits"] is None
+            else f"OpenAI imports at most {openai['skills_imported_at_most']} skills and 8 MiB per scan, "
+            "within per-skill limits",
         )
 
 

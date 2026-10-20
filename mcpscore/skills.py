@@ -639,13 +639,22 @@ def _rpc_error(exc: Exception) -> dict[str, Any]:
     return {"outcome": "transport", "exception": type(exc).__name__}
 
 
+def _scalar(value: Any) -> Any:
+    """Keep a JSON scalar (a string bounded to 200 characters); replace anything else with its JSON type name."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:200]
+    return {"type": "array" if isinstance(value, list) else "object" if isinstance(value, dict) else "other"}
+
+
 def _list_hints(result: Any) -> dict[str, Any]:
-    """Return the caching attributes of a ``skills/list`` result (SEP-2549)."""
+    """Return the caching attributes of a ``skills/list`` result (SEP-2549), with non-scalar values summarized."""
     result = result if isinstance(result, dict) else {}
     return {
-        "result_type": result.get("resultType"),
-        "ttl_ms": result.get("ttlMs"),
-        "cache_scope": result.get("cacheScope"),
+        "result_type": _scalar(result.get("resultType")),
+        "ttl_ms": _scalar(result.get("ttlMs")),
+        "cache_scope": _scalar(result.get("cacheScope")),
     }
 
 
@@ -911,6 +920,11 @@ async def collect_skills(
 OPENAI_MAX_SKILLS = 5
 """Uniquely named skills OpenAI imports from one MCP server scan."""
 
+OPENAI_MAX_FILES = 100
+OPENAI_MAX_SKILL_FILE_BYTES = 256 * 1024
+OPENAI_MAX_FILE_BYTES = 1024 * 1024
+OPENAI_MAX_SKILL_BYTES = 5 * 1024 * 1024
+
 OPENAI_MAX_SCAN_BYTES = 8 * 1024 * 1024
 """OpenAI's cap on the skill archives generated in one scan, ZIP overhead included."""
 
@@ -932,6 +946,58 @@ def _script_uris(entry: dict[str, Any]) -> list[str]:
     ]
 
 
+def manifest_sizes(entry: dict[str, Any]) -> list[tuple[str, int | None]] | None:
+    """Return ``(uri, size)`` for each manifest item with a URI, size None when invalid; None for no manifest."""
+    items = manifest(entry)
+    if items is None:
+        return None
+    return [
+        (item["uri"], size_value(item.get("size")))
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("uri"), str)
+    ]
+
+
+def openai_import_issues(entry: dict[str, Any]) -> list[tuple[str, str, str]] | None:
+    """Return ``(pointer, reason, expected)`` for each OpenAI per-skill import limit the manifest exceeds.
+
+    None for a skill without a manifest. Items without a valid size count as empty.
+    """
+    sizes = manifest_sizes(entry)
+    if sizes is None:
+        return None
+    skill_file = normalize_uri(entry["uri"]) if isinstance(entry.get("uri"), str) else None
+    known = [(normalize_uri(uri), size or 0) for uri, size in sizes]
+    issues = []
+    if len(manifest(entry) or []) > OPENAI_MAX_FILES:
+        issues.append(("/resources", "too_many_files", "at most 100 files"))
+    if any(uri == skill_file and size > OPENAI_MAX_SKILL_FILE_BYTES for uri, size in known):
+        issues.append((f"/{SKILL_FILE}", "skill_file_too_large", "at most 256 KiB"))
+    if any(uri != skill_file and size > OPENAI_MAX_FILE_BYTES for uri, size in known):
+        issues.append(("/resources", "file_too_large", "at most 1 MiB per supporting file"))
+    if sum(size for _, size in known) > OPENAI_MAX_SKILL_BYTES:
+        issues.append(("/resources", "skill_too_large", "at most 5 MiB per skill"))
+    return issues
+
+
+def _openai_fit(evidence: SkillsEvidence, entries: list[dict[str, Any]], listed_bytes: int) -> bool | None:
+    """Whether the whole catalog fits one OpenAI import: False on any known excess, None when unknown."""
+    if (
+        len(entries) > OPENAI_MAX_SKILLS
+        or listed_bytes > OPENAI_MAX_SCAN_BYTES
+        or any(openai_import_issues(entry) for entry in entries)
+    ):
+        return False
+    complete = (
+        evidence.entries is not None
+        and not evidence.list_incomplete
+        and not evidence.list_malformed
+        and len(entries) == len(evidence.entries)
+        and all((sizes := manifest_sizes(e)) is not None and None not in (s for _, s in sizes) for e in entries)
+    )
+    return True if complete else None
+
+
 def skills_report(evidence: SkillsEvidence) -> dict[str, Any]:
     """Return the skills facts a report shows without scoring them.
 
@@ -950,12 +1016,12 @@ def skills_report(evidence: SkillsEvidence) -> dict[str, Any]:
         scripts = _script_uris(entry)
         with_tools += "allowed-tools" in frontmatter
         with_scripts += bool(scripts)
-        listed_bytes += sum(size_value(i.get("size")) or 0 for i in manifest(entry) or [] if isinstance(i, dict))
+        listed_bytes += sum(size or 0 for _, size in manifest_sizes(entry) or [])
         if ("allowed-tools" in frontmatter or scripts) and len(notable) < MAX_REPORTED_SKILLS:
             notable.append(
                 {
                     "uri": entry["uri"][:MAX_REPORTED_TEXT],
-                    "allowed_tools": tools[:MAX_REPORTED_TEXT] if isinstance(tools, str) else tools,
+                    "allowed_tools": tools[:MAX_REPORTED_TEXT] if isinstance(tools, str) else None,
                     "scripts": [uri[:MAX_REPORTED_TEXT] for uri in scripts[:MAX_REPORTED_SCRIPTS]],
                     "scripts_total": len(scripts),
                 }
@@ -970,6 +1036,6 @@ def skills_report(evidence: SkillsEvidence) -> dict[str, Any]:
             "skills_imported_at_most": OPENAI_MAX_SKILLS,
             "listed_bytes": listed_bytes,
             "scan_archive_limit_bytes": OPENAI_MAX_SCAN_BYTES,
-            "fits": len(entries) <= OPENAI_MAX_SKILLS and listed_bytes <= OPENAI_MAX_SCAN_BYTES,
+            "fits": _openai_fit(evidence, entries, listed_bytes),
         },
     }

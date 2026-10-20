@@ -1082,7 +1082,15 @@ class TestLogAuditOutcome:
                  "skills_with_scripts": 9, "openai_import": {"fits": False, "skills_imported_at_most": 5}},
                 (
                     "Skills (not scored): 25+ listed · 1 with allowed-tools · 9 with bundled scripts · "
-                    "OpenAI imports at most 5 skills and 8 MiB per scan"
+                    "OpenAI imports at most 5 skills and 8 MiB per scan, within per-skill limits"
+                ),
+            ),
+            (
+                {"skills_listed": 1, "listing_incomplete": True, "skills_with_allowed_tools": 0,
+                 "skills_with_scripts": 0, "openai_import": {"fits": None, "skills_imported_at_most": 5}},
+                (
+                    "Skills (not scored): 1+ listed · 0 with allowed-tools · 0 with bundled scripts · "
+                    "OpenAI import fit unknown (sizes incomplete)"
                 ),
             ),
             (

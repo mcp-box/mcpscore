@@ -961,7 +961,9 @@ class TestSkillsReport:
         assert [s["uri"] for s in report["skills"]] == ["skill://a/SKILL.md", "skill://b/SKILL.md"]
         assert report["skills"][0]["allowed_tools"] == "Read Bash(git:*)"
         assert report["skills"][1]["scripts"] == ["skill://b/scripts/run.py"]
-        assert report["openai_import"]["fits"] is True
+        # The junk entry may hide a skill, so the fit is unknown.
+        assert report["openai_import"]["fits"] is None
+        assert skills.skills_report(skills.SkillsEvidence(entries=[tools, scripted]))["openai_import"]["fits"] is True
 
     def test_openai_catalog_limits(self, monkeypatch):
         evidence = skills.SkillsEvidence(entries=[entry(name) for name in "abcdef"])
@@ -971,6 +973,29 @@ class TestSkillsReport:
         report = skills.skills_report(skills.SkillsEvidence(entries=[big]))
         assert report["openai_import"]["listed_bytes"] == skills.OPENAI_MAX_SCAN_BYTES + 1
         assert report["openai_import"]["fits"] is False
+
+    def test_openai_fit_needs_every_skill_within_its_own_limits(self):
+        crowded = entry("a")
+        crowded["resources"] += [{"uri": f"skill://a/f{i}.md", "digest": "x", "size": 1} for i in range(100)]
+        assert skills.skills_report(skills.SkillsEvidence(entries=[crowded]))["openai_import"]["fits"] is False
+
+    @pytest.mark.parametrize(
+        "evidence",
+        [
+            lambda: skills.SkillsEvidence(entries=[entry("a")], list_incomplete=True),
+            lambda: skills.SkillsEvidence(entries=None, list_error={"outcome": "timeout"}),
+            lambda: skills.SkillsEvidence(entries=[{**entry("a"), "resources": "dynamic"}]),
+            lambda: skills.SkillsEvidence(entries=[{**entry("a"), "resources": [{"uri": "skill://a/SKILL.md"}]}]),
+        ],
+    )
+    def test_openai_fit_is_unknown_on_incomplete_evidence(self, evidence: Any):
+        assert skills.skills_report(evidence())["openai_import"]["fits"] is None
+
+    def test_allowed_tools_that_is_not_a_string_is_not_copied(self):
+        odd = entry("a")
+        odd["frontmatter"]["allowed-tools"] = ["Read"] * 10_000
+        (reported,) = skills.skills_report(skills.SkillsEvidence(entries=[odd]))["skills"]
+        assert reported["allowed_tools"] is None
 
     def test_lists_are_bounded(self, monkeypatch):
         monkeypatch.setattr(skills, "MAX_REPORTED_SKILLS", 1)

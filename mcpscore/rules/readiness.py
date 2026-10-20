@@ -79,6 +79,11 @@ _JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 _VALID_CACHE_SCOPES = frozenset({"public", "private"})
 
 
+def _valid_cache_scope(value: object) -> bool:
+    """Whether ``cacheScope`` is one of the defined values; any JSON value may arrive, hashable or not."""
+    return isinstance(value, str) and value in _VALID_CACHE_SCOPES
+
+
 def _http_clause(audit_data: AuditData, text: str) -> str:
     """Return an HTTP-status clause, or nothing when there is no HTTP layer.
 
@@ -442,7 +447,7 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
     @staticmethod
     def _valid_hints(details: dict[str, Any]) -> bool:
         ttl_ms = details.get("ttl_ms")
-        return isinstance(ttl_ms, int) and ttl_ms >= 0 and details.get("cache_scope") in _VALID_CACHE_SCOPES
+        return isinstance(ttl_ms, int) and ttl_ms >= 0 and _valid_cache_scope(details.get("cache_scope"))
 
     def check(self, audit_data: AuditData) -> RuleResult:
         probes = audit_data.probes or {}
@@ -459,7 +464,7 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
             if not (isinstance(ttl, int) and ttl >= 0):
                 issues.append(_response_issue(pid, "/ttlMs", ttl, "non-negative integer"))
             scope = observed.get("cache_scope")
-            if scope not in _VALID_CACHE_SCOPES:
+            if not _valid_cache_scope(scope):
                 issues.append(_response_issue(pid, "/cacheScope", scope, "public or private"))
         passed = not missing
         if passed:
@@ -1327,7 +1332,7 @@ class SkillsListCacheHintsReadinessRule(ReadinessBaseRule):
             ttl, scope = observed.get("ttl_ms"), observed.get("cache_scope")
             if not (isinstance(ttl, int) and not isinstance(ttl, bool) and ttl >= 0):
                 issues.append(_response_issue("skills/list", "/ttlMs", ttl, "non-negative integer"))
-            if scope not in _VALID_CACHE_SCOPES:
+            if not _valid_cache_scope(scope):
                 issues.append(_response_issue("skills/list", "/cacheScope", scope, "public or private"))
             message = (
                 "✅ skills/list on the stateless lifecycle carries valid ttlMs and cacheScope"

@@ -1,13 +1,17 @@
 """Skills collected on the 2026-07-28 stateless lifecycle, and the skills/list caching-hints readiness rule."""
 
-from collections.abc import AsyncGenerator
+import asyncio
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 import json
 import logging
 from typing import Any
 
+import anyio
 import httpx2
 from mcp.shared.exceptions import MCPError
+from mcp.shared.message import SessionMessage
+from mcp_types import JSONRPCNotification, JSONRPCResponse
 import pytest
 
 from mcpscore import mcp_auditor, probes, skills
@@ -99,6 +103,11 @@ class TestStatelessSession:
 
 
 class TestCollectorHints:
+    async def test_hints_that_are_not_scalars_are_summarized(self):
+        page = {"skills": [], "ttlMs": list(range(10_000)), "cacheScope": {"a": 1}, "resultType": "x" * 10_000}
+        hints = await stateless_list_hints(FakeSession([page]))
+        assert hints == {"result_type": "x" * 200, "ttl_ms": {"type": "array"}, "cache_scope": {"type": "object"}}
+
     async def test_stateless_collection_records_the_first_page_hints(self):
         page = {"skills": [entry("a")], "resultType": "complete", "ttlMs": 0, "cacheScope": "private"}
         evidence = await collect_skills(FakeSession([page]), {}, stateless=True)
@@ -212,6 +221,69 @@ def probes_capabilities() -> Any:
     return ServerCapabilities.model_validate({"resources": {}, "extensions": {"io.modelcontextprotocol/skills": {}}})
 
 
+def _sse(*messages: dict[str, Any]) -> bytes:
+    return b"".join(b"data: " + json.dumps(m).encode() + b"\n\n" for m in messages)
+
+
+class TestStatelessTransport:
+    async def test_sse_reply_after_a_notification_is_found(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            body = _sse(
+                {"jsonrpc": "2.0", "method": "notifications/message", "params": {}},
+                {"jsonrpc": "2.0", "id": 1001, "result": {"skills": []}},
+            )
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+        client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+        assert await StatelessSession(_HttpTarget(client, URL)).request_raw("skills/list", {}) == {"skills": []}
+
+    async def test_open_stream_without_a_reply_times_out(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
+
+        async def heartbeats() -> AsyncIterator[bytes]:
+            while True:
+                yield b": ping\n\n"
+                await asyncio.sleep(0.01)
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=heartbeats())
+
+        session = StatelessSession(_HttpTarget(httpx2.AsyncClient(transport=httpx2.MockTransport(handler)), URL))
+        async with asyncio.timeout(5):
+            with pytest.raises(TimeoutError):
+                await session.request_raw("skills/list", {})
+
+    async def test_skill_sized_answer_is_read_whole(self):
+        text = "x" * (512 * 1024)
+        reply = {"jsonrpc": "2.0", "id": 1001, "result": {"contents": [{"uri": "skill://a/SKILL.md", "text": text}]}}
+        contents = await _http_session(reply).read_resource_contents("skill://a/SKILL.md")
+        assert contents[0]["text"] == text
+
+    async def test_concurrent_stdio_calls_each_get_their_reply(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 1.0)
+        to_server, server_in = anyio.create_memory_object_stream[Any](10)
+        server_out, from_server = anyio.create_memory_object_stream[Any](10)
+
+        async def server() -> None:
+            async for incoming in server_in:
+                request = incoming.message
+                # A notification ahead of each reply hands the stream to the other waiting call.
+                note = {"jsonrpc": "2.0", "method": "notifications/message", "params": {}}
+                await server_out.send(SessionMessage(JSONRPCNotification.model_validate(note)))
+                reply = {"jsonrpc": "2.0", "id": request.id, "result": {"method": request.method}}
+                await server_out.send(SessionMessage(JSONRPCResponse.model_validate(reply)))
+
+        session = StatelessSession(_StdioTarget(from_server, to_server))
+        async with to_server, server_in, server_out, from_server, anyio.create_task_group() as group:
+            group.start_soon(server)
+            results = await asyncio.gather(
+                session.request_raw("skills/get", {"uri": "skill://a/SKILL.md"}),
+                session.request_raw("skills/list", {}),
+            )
+            group.cancel_scope.cancel()
+        assert results == [{"method": "skills/get"}, {"method": "skills/list"}]
+
+
 class TestCacheHintsRule:
     rule = SkillsListCacheHintsReadinessRule()
 
@@ -235,6 +307,8 @@ class TestCacheHintsRule:
             ({"ttl_ms": 0, "cache_scope": "private"}, True, []),
             ({"ttl_ms": True, "cache_scope": "public"}, False, ["/ttlMs"]),
             ({"ttl_ms": -1, "cache_scope": "shared"}, False, ["/ttlMs", "/cacheScope"]),
+            ({"ttl_ms": 0, "cache_scope": []}, False, ["/cacheScope"]),
+            ({"ttl_ms": 0, "cache_scope": {}}, False, ["/cacheScope"]),
         ],
     )
     def test_hints(self, observed: dict[str, Any], passed: bool, paths: list[str]):

@@ -474,18 +474,19 @@ class _ReadCapReached(Exception):  # noqa: N818 — a signal, not an error condi
     """The answer exceeded ``_RPC_READ_LIMIT`` before the response was found."""
 
 
-async def _bounded_chunks(response: httpx2.Response) -> AsyncIterator[bytes]:
+async def _bounded_chunks(response: httpx2.Response, limit: int | None = None) -> AsyncIterator[bytes]:
     """Yield an identity body as received, counting bytes before anything is buffered.
 
     Callers only use this on a response without content-encoding, so
     ``aiter_bytes`` decodes nothing and yields the chunks as they arrive.
-    Raises ``_ReadCapReached`` past the cap.
+    Raises ``_ReadCapReached`` past ``limit`` (default ``_RPC_READ_LIMIT``).
     """
+    cap = _RPC_READ_LIMIT if limit is None else limit
     read = 0
     async for chunk in response.aiter_bytes():
-        space = _RPC_READ_LIMIT - read
+        space = cap - read
         read += len(chunk)
-        if read > _RPC_READ_LIMIT:
+        if read > cap:
             # The allowed prefix may already hold the answer; how the bytes were chunked must not matter.
             if space > 0:
                 yield chunk[:space]
@@ -522,12 +523,12 @@ def _take_lines(buffer: bytearray, skip_lf: bool) -> tuple[list[str], bool]:
     return lines, skip_lf
 
 
-async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
+async def _bounded_lines(response: httpx2.Response, limit: int | None = None) -> AsyncIterator[str]:
     """Yield an SSE body's lines, decoded only once complete, without a leading UTF-8 BOM."""
     buffer = bytearray()
     bom_checked = False
     skip_lf = False
-    async for chunk in _bounded_chunks(response):
+    async for chunk in _bounded_chunks(response, limit):
         buffer.extend(chunk)
         if not bom_checked:
             if len(buffer) < len(_UTF8_BOM) and _UTF8_BOM.startswith(bytes(buffer)):
@@ -542,10 +543,12 @@ async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
         yield bytes(buffer).decode("utf-8", errors="replace")
 
 
-async def _read_sse_response(response: httpx2.Response, request_id: object) -> dict[str, Any] | None:
+async def _read_sse_response(
+    response: httpx2.Response, request_id: object, limit: int | None = None
+) -> dict[str, Any] | None:
     """Return the first SSE event that answers ``request_id``; raise ``_ReadCapReached`` past the byte cap."""
     data: list[str] = []
-    async for line in _bounded_lines(response):
+    async for line in _bounded_lines(response, limit):
         if line.startswith("data:"):
             data.append(line[len("data:") :].strip())
             continue
@@ -660,6 +663,7 @@ class _HttpTarget:
         close_session_on_failure: bool = False,
         cleanup_headers: dict[str, str] | None = None,
         anonymous: bool = False,
+        read_limit: int | None = None,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -678,7 +682,7 @@ class _HttpTarget:
         closed at the URL that answered before any failure propagates;
         ``cleanup_headers`` are added to that DELETE. With ``anonymous``, the
         client's ``Authorization`` and cookies are removed from the request and its
-        cleanup; an ``Authorization`` passed in ``headers`` is kept.
+        cleanup; an ``Authorization`` passed in ``headers`` is kept. ``read_limit`` replaces the default byte cap.
         """
         request = self.client.build_request(
             "POST",
@@ -707,9 +711,9 @@ class _HttpTarget:
                     if encoding not in ("", "identity"):
                         unobservable = "encoded"
                     elif "text/event-stream" in content_type.lower():
-                        payload = await _read_sse_response(response, body.get("id"))
+                        payload = await _read_sse_response(response, body.get("id"), read_limit)
                     else:
-                        raw = b"".join([chunk async for chunk in _bounded_chunks(response)])
+                        raw = b"".join([chunk async for chunk in _bounded_chunks(response, read_limit)])
                         payload = _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type)
                 except _ReadCapReached:
                     unobservable = "capped"
@@ -3160,6 +3164,9 @@ async def run_stdio_probes(
 
 SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
 
+STATELESS_READ_LIMIT = 4 * 1024 * 1024
+"""Bytes of one stateless skills answer read before giving up: a 1 MiB file, base64 and JSON-escaped, fits."""
+
 
 class StatelessSession:
     """Answer the skills collector's calls with one stateless request each (SEP-2575).
@@ -3174,6 +3181,17 @@ class StatelessSession:
         super().__init__()
         self._target = target
         self._next_id = 0
+        # One stdio stream carries every reply and an exchange drops replies to other IDs, so exchanges take turns.
+        self._stdio_turn = asyncio.Lock()
+
+    async def _post(self, body: dict, headers: dict[str, str]) -> _ProbeResponse:
+        if isinstance(self._target, _StdioTarget):
+            async with self._stdio_turn:
+                return await self._target.post(body, headers)
+        try:
+            return await self._target.post_rpc(body, headers, read_limit=STATELESS_READ_LIMIT)
+        except httpx2.TimeoutException as exc:
+            raise TimeoutError(str(exc)) from exc
 
     async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Send one stateless request and return its result object."""
@@ -3182,7 +3200,7 @@ class StatelessSession:
         meta = _modern_meta(version)
         meta[f"{META_PREFIX}clientCapabilities"] = {"extensions": {SKILLS_EXTENSION_ID: {}}}
         name = params.get("uri") if method == "resources/read" and isinstance(params.get("uri"), str) else None
-        response = await self._target.post(
+        response = await self._post(
             _request_body(method, 1000 + self._next_id, meta, params), _request_headers(version, method, name)
         )
         error = response.error

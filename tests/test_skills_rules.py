@@ -133,7 +133,7 @@ def oversized(files: int, size: int) -> dict[str, Any]:
     return entry
 
 
-def markdown_as(mime_type: str) -> dict[str, SkillFile]:
+def markdown_as(mime_type: str | None) -> dict[str, SkillFile]:
     """Return the read of the code-review SKILL.md, served with *mime_type*."""
     text = skill_md("code-review")
     raw = text.encode("utf-8")
@@ -1352,6 +1352,7 @@ def test_dynamic_skills_have_nothing_to_count() -> None:
         (listed_resource(description="Something else."), ["description_differs"]),
         (listed_resource(mimeType="text/plain"), ["not_markdown"]),
         (listed_resource(mimeType="text/markdown; charset=utf-8"), []),
+        (listed_resource(mimeType=None), ["not_markdown"]),
     ],
 )
 def test_skill_file_listing_metadata(resource: Any, reasons: list[str]) -> None:
@@ -1359,6 +1360,11 @@ def test_skill_file_listing_metadata(resource: Any, reasons: list[str]) -> None:
     audit.resources = [resource]
     result = RULES["skills_skill_file_metadata"].check(audit)
     assert [issue["reason"] for issue in result.details.get("issues", [])] == reasons
+
+
+def test_skill_file_read_without_a_mime_type_is_flagged() -> None:
+    result = RULES["skills_skill_file_metadata"].check(data(skill("code-review"), files=markdown_as(None)))
+    assert [issue["reason"] for issue in result.details["issues"]] == ["not_markdown"]
 
 
 def test_skill_file_metadata_needs_a_read_or_a_listing() -> None:

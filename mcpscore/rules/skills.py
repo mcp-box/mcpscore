@@ -22,10 +22,12 @@ from ..skills import (
     SkillsEvidence,
     declared_settings,
     manifest,
+    manifest_sizes,
     markdown_blocks,
     name_problems,
     normalize_newlines,
     normalize_uri,
+    openai_import_issues,
     parse_frontmatter,
     relative_references,
     resolve_reference,
@@ -1032,28 +1034,11 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
 
 SEP_MAX_FILES = 512
 SEP_MAX_BYTES = 16 * 1024 * 1024
-OPENAI_MAX_FILES = 100
-OPENAI_MAX_SKILL_FILE_BYTES = 256 * 1024
-OPENAI_MAX_FILE_BYTES = 1024 * 1024
-OPENAI_MAX_SKILL_BYTES = 5 * 1024 * 1024
 OPENAI_IMPORT = (
     "OpenAI Apps SDK, Build an MCP server §Import skills from the MCP server "
     "(developers.openai.com/plugins/build/mcp-server, read 2026-10-20)"
 )
 SKILL_FILE_LINES_BELOW = 500
-
-
-def _manifest_sizes(entry: dict[str, Any]) -> list[tuple[str, int]] | None:
-    """Return ``(uri, size)`` for each manifest item with a URI and a valid size, or None for no manifest."""
-    items = manifest(entry)
-    if items is None:
-        return None
-    sizes = []
-    for item in items:
-        if isinstance(item, dict) and isinstance(item.get("uri"), str):
-            size = size_value(item.get("size"))
-            sizes.append((item["uri"], size or 0))
-    return sizes
 
 
 @register_rule
@@ -1081,12 +1066,12 @@ class SkillsWithinLimitsRule(SkillsBaseRule):
         evidence = self._evidence(audit_data)
         issues = []
         for index, entry in _entries(evidence):
-            sizes = _manifest_sizes(entry)
+            sizes = manifest_sizes(entry)
             if sizes is None:
                 continue
             if len(manifest(entry) or []) > SEP_MAX_FILES:
                 issues.append(_issue(index, "/resources", "too_many_resources", "at most 512 resources"))
-            if sum(size for _, size in sizes) > SEP_MAX_BYTES:
+            if sum(size or 0 for _, size in sizes) > SEP_MAX_BYTES:
                 issues.append(_issue(index, "/resources", "too_large", "at most 16 MiB in total"))
         passed = not issues
         return self._result(
@@ -1131,18 +1116,10 @@ class SkillsOpenAIImportLimitsRule(SkillsBaseRule):
         evidence = self._evidence(audit_data)
         issues = []
         for index, entry in _entries(evidence):
-            sizes = _manifest_sizes(entry)
-            if sizes is None:
-                continue
-            skill_file = normalize_uri(entry["uri"]) if isinstance(entry.get("uri"), str) else None
-            if len(manifest(entry) or []) > OPENAI_MAX_FILES:
-                issues.append(_issue(index, "/resources", "too_many_files", "at most 100 files"))
-            if any(normalize_uri(uri) == skill_file and size > OPENAI_MAX_SKILL_FILE_BYTES for uri, size in sizes):
-                issues.append(_issue(index, f"/{SKILL_FILE}", "skill_file_too_large", "at most 256 KiB"))
-            if any(normalize_uri(uri) != skill_file and size > OPENAI_MAX_FILE_BYTES for uri, size in sizes):
-                issues.append(_issue(index, "/resources", "file_too_large", "at most 1 MiB per supporting file"))
-            if sum(size for _, size in sizes) > OPENAI_MAX_SKILL_BYTES:
-                issues.append(_issue(index, "/resources", "skill_too_large", "at most 5 MiB per skill"))
+            issues.extend(
+                _issue(index, pointer, reason, expected)
+                for pointer, reason, expected in openai_import_issues(entry) or []
+            )
         passed = not issues
         return self._result(
             passed=passed,
@@ -1213,8 +1190,10 @@ class SkillsSkillFileMetadataRule(SkillsBaseRule):
         """
         issues = []
         for index, entry, read, resource in self._observations(audit_data):
-            types = [read.mime_type if read else None, getattr(resource, "mime_type", None)]
-            if any(t is not None and _media_type(t) != "text/markdown" for t in types):
+            # An observed resource without a mimeType misses the recommendation too.
+            types = [read.mime_type] if read is not None else []
+            types += [getattr(resource, "mime_type", None)] if resource is not None else []
+            if any(_media_type(t) != "text/markdown" for t in types):
                 issues.append(_issue(index, f"/{SKILL_FILE}/mimeType", "not_markdown", "text/markdown"))
             raw = entry.get("frontmatter")
             frontmatter: dict[str, Any] = raw if isinstance(raw, dict) else {}
