@@ -18,6 +18,8 @@ from mcpscore import mcp_auditor, probes, skills
 from mcpscore.mcp_auditor import MCPAuditor
 from mcpscore.probes import (
     PROBE_DISCOVER,
+    ProbeOutcome,
+    ProbeResult,
     StatelessSession,
     _HttpTarget,
     _StdioTarget,
@@ -45,6 +47,15 @@ def _http_session(reply: Any, seen: list[httpx2.Request] | None = None) -> State
         return httpx2.Response(200, json=reply)
 
     return StatelessSession(_HttpTarget(httpx2.AsyncClient(transport=httpx2.MockTransport(handler)), URL))
+
+
+def _discover(declared: bool) -> dict[str, ProbeResult]:
+    """Probes whose server/discover answer declares the Skills extension, or not."""
+    capabilities: dict[str, Any] = {"resources": {}}
+    if declared:
+        capabilities["extensions"] = {"io.modelcontextprotocol/skills": {}}
+    payload = {"supportedVersions": ["2026-07-28"], "capabilities": capabilities}
+    return {PROBE_DISCOVER: ProbeResult(PROBE_DISCOVER, ProbeOutcome.SUPPORTED, {}, payload=payload)}
 
 
 class TestStatelessSession:
@@ -88,6 +99,19 @@ class TestStatelessSession:
         session = _http_session({"jsonrpc": "2.0", "id": 1001, "result": result})
         evidence = await collect_skills(session, {}, stateless=True)
         assert evidence.list_error == {"outcome": "malformed"}
+
+    async def test_reply_to_another_request_is_no_answer(self):
+        session = _http_session({"jsonrpc": "2.0", "id": 9999, "result": {"skills": [entry("a")]}})
+        evidence = await collect_skills(session, {}, stateless=True)
+        assert evidence.list_error == {"outcome": "transport", "exception": "ConnectionError"}
+
+    async def test_discover_declares_the_extension(self):
+        seen: list[httpx2.Request] = []
+        await probes._probe_discover(_HttpTarget(_http_session({"jsonrpc": "2.0", "id": 1}, seen)._target.client, URL))
+        meta = json.loads(seen[0].content)["params"]["_meta"]
+        assert meta["io.modelcontextprotocol/clientCapabilities"] == {
+            "extensions": {"io.modelcontextprotocol/skills": {}}
+        }
 
     async def test_reply_without_result_is_no_answer(self):
         session = _http_session({"jsonrpc": "2.0", "id": 1001})
@@ -202,6 +226,7 @@ class TestAuditorWiring:
         assert "Could not collect skills on the stateless lifecycle (OSError)" in caplog.text
 
         auditor.audit_data.skills, auditor.audit_data.url, auditor.era = SkillsEvidence(), URL, Era.DUAL
+        auditor.audit_data.probes = _discover(declared=True)
         with caplog.at_level(logging.WARNING):
             await auditor._collect_stateless_skills_listing()
         assert "Could not list skills on the stateless lifecycle (OSError)" in caplog.text
@@ -215,8 +240,19 @@ class TestAuditorWiring:
         monkeypatch.setattr(mcp_auditor, "stateless_session", _fake_stateless(FakeSession([page])))
         auditor = MCPAuditor()
         auditor.audit_data.skills, auditor.audit_data.url, auditor.era = SkillsEvidence(), url, era
+        auditor.audit_data.probes = _discover(declared=True)
         await auditor._collect_stateless_skills_listing()
         assert (auditor.audit_data.skills.stateless_list is not None) is listed
+
+    @pytest.mark.parametrize("probes", [_discover(declared=False), {}])
+    async def test_dual_era_listing_needs_the_extension_on_the_stateless_lifecycle(self, monkeypatch, probes):
+        page = {"skills": [], "resultType": "complete", "ttlMs": 0, "cacheScope": "public"}
+        monkeypatch.setattr(mcp_auditor, "stateless_session", _fake_stateless(FakeSession([page])))
+        auditor = MCPAuditor()
+        auditor.audit_data.skills, auditor.audit_data.url, auditor.era = SkillsEvidence(), URL, Era.DUAL
+        auditor.audit_data.probes = probes
+        await auditor._collect_stateless_skills_listing()
+        assert auditor.audit_data.skills.stateless_list is None
 
     async def test_no_skills_evidence_means_no_listing(self, monkeypatch):
         monkeypatch.setattr(mcp_auditor, "stateless_session", None)

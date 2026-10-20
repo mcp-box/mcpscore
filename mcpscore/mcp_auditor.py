@@ -1016,11 +1016,23 @@ class MCPAuditor:
         url = self.audit_data.url
         if evidence is None or self.era is not Era.DUAL or not url or not url.startswith(("http://", "https://")):
             return
+        if not self._discover_declares_skills():
+            # The lifecycles may expose different capabilities: a stateless refusal is legitimate without it.
+            return
         try:
             async with stateless_session(url, self.headers) as session:
                 evidence.stateless_list = await stateless_list_hints(session)
         except Exception as exc:  # noqa: BLE001 — the readiness check then has nothing to judge
             logger.warning("Could not list skills on the stateless lifecycle (%s)", type(exc).__name__)
+
+    def _discover_declares_skills(self) -> bool:
+        """Whether ``server/discover`` declared the Skills extension, as the stateless lifecycle sees it."""
+        from mcp_types import ServerCapabilities
+
+        discover = (self.audit_data.probes or {}).get(PROBE_DISCOVER)
+        payload = discover.payload if discover is not None and isinstance(discover.payload, dict) else {}
+        capabilities = self._parse_payload_model(ServerCapabilities, payload.get("capabilities"))
+        return capabilities is not None and declared_settings(capabilities) is not None
 
     def get_audit_report(self) -> dict:
         """Generate a machine-readable report of the full audit.

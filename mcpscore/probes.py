@@ -403,6 +403,19 @@ def _modern_meta(protocol_version: str) -> dict[str, Any]:
     }
 
 
+SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
+
+
+def _skills_meta(protocol_version: str) -> dict[str, Any]:
+    """Build the modern ``_meta`` envelope declaring the Skills extension.
+
+    A server may expose skills only to clients that declare it.
+    """
+    meta = _modern_meta(protocol_version)
+    meta[f"{META_PREFIX}clientCapabilities"] = {"extensions": {SKILLS_EXTENSION_ID: {}}}
+    return meta
+
+
 def _request_body(method: str, request_id: int, meta: dict[str, Any], params: dict[str, Any] | None = None) -> dict:
     body_params: dict[str, Any] = dict(params or {})
     body_params["_meta"] = meta
@@ -982,7 +995,7 @@ async def _probe_discover(target: _ProbeTarget) -> ProbeResult:
     """
     target_version = _target_version()
     response = await target.post(
-        _request_body("server/discover", 1, _modern_meta(target_version)),
+        _request_body("server/discover", 1, _skills_meta(target_version)),
         _request_headers(target_version, "server/discover"),
     )
     details = _base_details(response)
@@ -3163,8 +3176,6 @@ async def run_stdio_probes(
     }
 
 
-SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
-
 STATELESS_READ_LIMIT = 4 * 1024 * 1024
 """Bytes of one stateless skills answer read before giving up: a 1 MiB file, base64 and JSON-escaped, fits."""
 
@@ -3198,18 +3209,21 @@ class StatelessSession:
         """Send one stateless request and return its result object."""
         self._next_id += 1
         version = _target_version()
-        meta = _modern_meta(version)
-        meta[f"{META_PREFIX}clientCapabilities"] = {"extensions": {SKILLS_EXTENSION_ID: {}}}
+        meta = _skills_meta(version)
         name = params.get("uri") if method == "resources/read" and isinstance(params.get("uri"), str) else None
+        request_id = 1000 + self._next_id
         response = await self._post(
-            _request_body(method, 1000 + self._next_id, meta, params), _request_headers(version, method, name)
+            _request_body(method, request_id, meta, params), _request_headers(version, method, name)
         )
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        if payload.get("id") != request_id and not (payload.get("id") is None and "error" in payload):
+            msg = f"{method} got no reply carrying its request ID"
+            raise ConnectionError(msg)
         error = response.error
         if error is not None:
             code = response.error_code
             message = error.get("message")
             raise MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
-        payload = response.payload if isinstance(response.payload, dict) else {}
         if "result" in payload and not isinstance(payload["result"], dict):
             # An answer whose result is not an object is malformed, not missing: raise pydantic's ValidationError.
             TypeAdapter(dict[str, Any]).validate_python(payload["result"])
