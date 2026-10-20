@@ -32,12 +32,13 @@ from .probes import (
     not_applicable_results,
     run_all_probes,
     run_stdio_probes,
+    stateless_session,
 )
 from .report_evidence import report_evidence
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
 from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, rule_sort_key
 from .rules.packaging import PACKAGING_GROUP
-from .skills import collect_skills, declared_settings
+from .skills import collect_skills, declared_settings, skills_report, stateless_list_hints
 from .spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,7 @@ class MCPAuditor:
         await self._collect_session_cursor_probes()
         self._recover_tools_from_stateless_probe()
         self.era = detect_era(self.audit_data.protocol_version, self.audit_data.probes)
+        await self._collect_stateless_skills_listing()
         self._run_all_rules()
 
         return self.score, self.max_score
@@ -309,6 +311,7 @@ class MCPAuditor:
 
         self._populate_from_probe_payloads()
         self.era = detect_era(None, probes)
+        await self._collect_skills_stateless(target)
         self._run_all_rules()
         return True
 
@@ -992,6 +995,45 @@ class MCPAuditor:
             return
         self.audit_data.skills = await collect_skills(self.mcp_client, settings)
 
+    async def _collect_skills_stateless(self, target: str | StdioServerParameters) -> None:
+        """Collect Skills evidence on the stateless lifecycle for a server with no session to call."""
+        settings = declared_settings(self.audit_data.capabilities)
+        if settings is None:
+            return
+        try:
+            async with stateless_session(target, self.headers) as session:
+                self.audit_data.skills = await collect_skills(session, settings, stateless=True)
+        except Exception as exc:  # noqa: BLE001 — a lost connection leaves the skills rules without data
+            logger.warning("Could not collect skills on the stateless lifecycle (%s)", type(exc).__name__)
+
+    async def _collect_stateless_skills_listing(self) -> None:
+        """Read one stateless ``skills/list`` page of a dual-era HTTP server for its caching attributes.
+
+        The skills were collected over the legacy session, whose results carry no ``ttlMs``/``cacheScope``;
+        the readiness check needs a listing from the lifecycle that requires them.
+        """
+        evidence = self.audit_data.skills
+        url = self.audit_data.url
+        if evidence is None or self.era is not Era.DUAL or not url or not url.startswith(("http://", "https://")):
+            return
+        if not self._discover_declares_skills():
+            # The lifecycles may expose different capabilities: a stateless refusal is legitimate without it.
+            return
+        try:
+            async with stateless_session(url, self.headers) as session:
+                evidence.stateless_list = await stateless_list_hints(session)
+        except Exception as exc:  # noqa: BLE001 — the readiness check then has nothing to judge
+            logger.warning("Could not list skills on the stateless lifecycle (%s)", type(exc).__name__)
+
+    def _discover_declares_skills(self) -> bool:
+        """Whether ``server/discover`` declared the Skills extension, as the stateless lifecycle sees it."""
+        from mcp_types import ServerCapabilities
+
+        discover = (self.audit_data.probes or {}).get(PROBE_DISCOVER)
+        payload = discover.payload if discover is not None and isinstance(discover.payload, dict) else {}
+        capabilities = self._parse_payload_model(ServerCapabilities, payload.get("capabilities"))
+        return capabilities is not None and declared_settings(capabilities) is not None
+
     def get_audit_report(self) -> dict:
         """Generate a machine-readable report of the full audit.
 
@@ -1052,6 +1094,8 @@ class MCPAuditor:
             # packaging rules alone — a different denominator from a server
             # audit's, since the two rule sets are disjoint.
             "package": self._package_report(),
+            # Facts about a server's skills that the score leaves out; None when it declares no skills.
+            "skills": report_evidence(skills_report(self.audit_data.skills)) if self.audit_data.skills else None,
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
             "skipped_rules": [s.to_dict() for s in self.skipped_rules],

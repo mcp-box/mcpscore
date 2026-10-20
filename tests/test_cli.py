@@ -1073,6 +1073,43 @@ class TestLogAuditOutcome:
         assert "3/3" in readiness_line
         assert "3 of 16 checks assessed" in readiness_line
 
+    @pytest.mark.parametrize(
+        ("skills", "expected"),
+        [
+            (None, None),
+            (
+                {"skills_listed": 25, "listing_incomplete": True, "skills_with_allowed_tools": 1,
+                 "skills_with_scripts": 9, "openai_import": {"fits": False, "skills_imported_at_most": 5}},
+                (
+                    "Skills (not scored): 25+ listed · 1 with allowed-tools · 9 with bundled scripts · "
+                    "OpenAI imports at most 5 skills and 8 MiB per scan, within per-skill limits"
+                ),
+            ),
+            (
+                {"skills_listed": 1, "listing_incomplete": True, "skills_with_allowed_tools": 0,
+                 "skills_with_scripts": 0, "openai_import": {"fits": None, "skills_imported_at_most": 5}},
+                (
+                    "Skills (not scored): 1+ listed · 0 with allowed-tools · 0 with bundled scripts · "
+                    "OpenAI import fit unknown"
+                ),
+            ),
+            (
+                {"skills_listed": 2, "listing_incomplete": False, "skills_with_allowed_tools": 0,
+                 "skills_with_scripts": 0, "openai_import": {"fits": True, "skills_imported_at_most": 5}},
+                "Skills (not scored): 2 listed · 0 with allowed-tools · 0 with bundled scripts · fits an OpenAI import",
+            ),
+        ],
+    )  # fmt: skip
+    def test_skills_facts_line(self, caplog: LogCaptureFixture, skills: dict | None, expected: str | None) -> None:
+        auditor = MagicMock(spec=MCPAuditor)
+        auditor.get_audit_report = MagicMock(return_value={**_report_payload(), "skills": skills})
+
+        with caplog.at_level(logging.INFO, logger="mcpscore.cli"):
+            log_audit_outcome(auditor)
+
+        lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith("Skills")]
+        assert lines == ([expected] if expected else [])
+
 
 class TestCollectHeaders:
     """Tests for --header / --token / MCPSCORE_TOKEN parsing."""

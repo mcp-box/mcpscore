@@ -411,12 +411,30 @@ class TestCacheMetadataRule:
         assert not result.passed
         assert PROBE_STATELESS_LIST in result.message
 
-    def test_fail_when_cache_scope_invalid(self):
+    @pytest.mark.parametrize(("ttl", "passed"), [(0.0, True), (1e3, True), (True, False), (0.5, False)])
+    def test_ttl_is_judged_as_a_json_number(self, ttl: object, passed: bool):
         probes = modern_probes(
             probe_discover=ProbeResult(
                 PROBE_DISCOVER,
                 ProbeOutcome.SUPPORTED,
-                {"supported_versions": ["2026-07-28"], "result_type": "complete", "ttl_ms": 0, "cache_scope": "shared"},
+                {
+                    "supported_versions": ["2026-07-28"],
+                    "result_type": "complete",
+                    "ttl_ms": ttl,
+                    "cache_scope": "public",
+                },
+            )
+        )
+        result = CacheMetadataReadinessRule().check(AuditData(probes=probes))
+        assert result.passed is passed
+
+    @pytest.mark.parametrize("scope", ["shared", [], {}])
+    def test_fail_when_cache_scope_invalid(self, scope: object):
+        probes = modern_probes(
+            probe_discover=ProbeResult(
+                PROBE_DISCOVER,
+                ProbeOutcome.SUPPORTED,
+                {"supported_versions": ["2026-07-28"], "result_type": "complete", "ttl_ms": 0, "cache_scope": scope},
             )
         )
         assert not CacheMetadataReadinessRule().check(AuditData(probes=probes)).passed

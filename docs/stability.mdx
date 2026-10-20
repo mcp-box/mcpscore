@@ -112,6 +112,7 @@ change bumps `schema_version`.
 | `skipped_rules[]` | array | One entry per rule that did not run: `rule_id`, `rule_name`, `reason`, `group_name` |
 | `spec` | object | `negotiated_version`, `session_protocol_version`, `latest_version`, `readiness_target`, `era`, `catalog_versions` |
 | `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus the coverage counts `assessed`, `skipped`, `total` |
+| `skills` | object or null | Facts about a server's skills that are not scored. `null` unless the server declares the Skills extension. See [skills facts](#skills-facts) |
 | `smoke` | object | Present only when the run used `--smoke`. See [smoke results](#smoke-results) |
 | `config` | object | Present only when a project configuration was applied. See [configuration](#configuration) |
 
@@ -136,6 +137,18 @@ must branch on this field.
 
 For a package audit, `transport` and `spec.negotiated_version` are both
 `null`.
+
+### Skills facts
+
+`skills` reports what a host decides about, so mcpscore shows it without
+scoring it:
+
+| Field | Meaning |
+|---|---|
+| `skills_listed`, `listing_incomplete` | Skills in the listing, and whether pages were left unread |
+| `skills_with_allowed_tools`, `skills_with_scripts` | Skills that request pre-approved tools, or bundle files under `scripts/` |
+| `skills[]` | Up to 32 of those skills: `uri`, `allowed_tools` (`null` when it is not a string), `scripts` (up to 20), `scripts_total` |
+| `openai_import` | OpenAI imports at most `skills_imported_at_most` skills and `scan_archive_limit_bytes` of archives per scan. `listed_bytes` sums the listed sizes. `fits` is `true` when the whole catalog would be imported even uncompressed, each skill within OpenAI's per-skill limits, and `false` when too many skills or a skill over its limits rule it out. It is `null` otherwise: the listing or a skill's sizes are incomplete, or only compression could bring the archives under the limit |
 
 ### Smoke results
 

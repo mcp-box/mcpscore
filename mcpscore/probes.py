@@ -31,6 +31,7 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -44,7 +45,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable
 
     from mcp import StdioServerParameters
 from urllib.parse import urlsplit
@@ -52,8 +53,10 @@ from uuid import uuid4
 
 import httpx2
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import MCPError
 from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
+from pydantic import TypeAdapter
 
 from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
@@ -400,6 +403,19 @@ def _modern_meta(protocol_version: str) -> dict[str, Any]:
     }
 
 
+SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
+
+
+def _skills_meta(protocol_version: str) -> dict[str, Any]:
+    """Build the modern ``_meta`` envelope declaring the Skills extension.
+
+    A server may expose skills only to clients that declare it.
+    """
+    meta = _modern_meta(protocol_version)
+    meta[f"{META_PREFIX}clientCapabilities"] = {"extensions": {SKILLS_EXTENSION_ID: {}}}
+    return meta
+
+
 def _request_body(method: str, request_id: int, meta: dict[str, Any], params: dict[str, Any] | None = None) -> dict:
     body_params: dict[str, Any] = dict(params or {})
     body_params["_meta"] = meta
@@ -472,18 +488,19 @@ class _ReadCapReached(Exception):  # noqa: N818 — a signal, not an error condi
     """The answer exceeded ``_RPC_READ_LIMIT`` before the response was found."""
 
 
-async def _bounded_chunks(response: httpx2.Response) -> AsyncIterator[bytes]:
+async def _bounded_chunks(response: httpx2.Response, limit: int | None = None) -> AsyncIterator[bytes]:
     """Yield an identity body as received, counting bytes before anything is buffered.
 
     Callers only use this on a response without content-encoding, so
     ``aiter_bytes`` decodes nothing and yields the chunks as they arrive.
-    Raises ``_ReadCapReached`` past the cap.
+    Raises ``_ReadCapReached`` past ``limit`` (default ``_RPC_READ_LIMIT``).
     """
+    cap = _RPC_READ_LIMIT if limit is None else limit
     read = 0
     async for chunk in response.aiter_bytes():
-        space = _RPC_READ_LIMIT - read
+        space = cap - read
         read += len(chunk)
-        if read > _RPC_READ_LIMIT:
+        if read > cap:
             # The allowed prefix may already hold the answer; how the bytes were chunked must not matter.
             if space > 0:
                 yield chunk[:space]
@@ -520,12 +537,12 @@ def _take_lines(buffer: bytearray, skip_lf: bool) -> tuple[list[str], bool]:
     return lines, skip_lf
 
 
-async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
+async def _bounded_lines(response: httpx2.Response, limit: int | None = None) -> AsyncIterator[str]:
     """Yield an SSE body's lines, decoded only once complete, without a leading UTF-8 BOM."""
     buffer = bytearray()
     bom_checked = False
     skip_lf = False
-    async for chunk in _bounded_chunks(response):
+    async for chunk in _bounded_chunks(response, limit):
         buffer.extend(chunk)
         if not bom_checked:
             if len(buffer) < len(_UTF8_BOM) and _UTF8_BOM.startswith(bytes(buffer)):
@@ -540,10 +557,12 @@ async def _bounded_lines(response: httpx2.Response) -> AsyncIterator[str]:
         yield bytes(buffer).decode("utf-8", errors="replace")
 
 
-async def _read_sse_response(response: httpx2.Response, request_id: object) -> dict[str, Any] | None:
+async def _read_sse_response(
+    response: httpx2.Response, request_id: object, limit: int | None = None
+) -> dict[str, Any] | None:
     """Return the first SSE event that answers ``request_id``; raise ``_ReadCapReached`` past the byte cap."""
     data: list[str] = []
-    async for line in _bounded_lines(response):
+    async for line in _bounded_lines(response, limit):
         if line.startswith("data:"):
             data.append(line[len("data:") :].strip())
             continue
@@ -658,6 +677,7 @@ class _HttpTarget:
         close_session_on_failure: bool = False,
         cleanup_headers: dict[str, str] | None = None,
         anonymous: bool = False,
+        read_limit: int | None = None,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -676,7 +696,7 @@ class _HttpTarget:
         closed at the URL that answered before any failure propagates;
         ``cleanup_headers`` are added to that DELETE. With ``anonymous``, the
         client's ``Authorization`` and cookies are removed from the request and its
-        cleanup; an ``Authorization`` passed in ``headers`` is kept.
+        cleanup; an ``Authorization`` passed in ``headers`` is kept. ``read_limit`` replaces the default byte cap.
         """
         request = self.client.build_request(
             "POST",
@@ -705,9 +725,9 @@ class _HttpTarget:
                     if encoding not in ("", "identity"):
                         unobservable = "encoded"
                     elif "text/event-stream" in content_type.lower():
-                        payload = await _read_sse_response(response, body.get("id"))
+                        payload = await _read_sse_response(response, body.get("id"), read_limit)
                     else:
-                        raw = b"".join([chunk async for chunk in _bounded_chunks(response)])
+                        raw = b"".join([chunk async for chunk in _bounded_chunks(response, read_limit)])
                         payload = _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type)
                 except _ReadCapReached:
                     unobservable = "capped"
@@ -975,7 +995,7 @@ async def _probe_discover(target: _ProbeTarget) -> ProbeResult:
     """
     target_version = _target_version()
     response = await target.post(
-        _request_body("server/discover", 1, _modern_meta(target_version)),
+        _request_body("server/discover", 1, _skills_meta(target_version)),
         _request_headers(target_version, "server/discover"),
     )
     details = _base_details(response)
@@ -3154,3 +3174,83 @@ async def run_stdio_probes(
         **not_applicable_results("probe subject is HTTP-specific", HTTP_ONLY_PROBE_IDS),
         **{result.probe_id: result for result in results},
     }
+
+
+STATELESS_READ_LIMIT = 6 * 1024 * 1024 + 64 * 1024
+"""Bytes of one stateless skills answer read before giving up.
+
+A 1 MiB file fits even when it is all control characters, each JSON-escaped in six bytes, plus the envelope.
+"""
+
+
+class StatelessSession:
+    """Answer the skills collector's calls with one stateless request each (SEP-2575).
+
+    Every request carries the modern ``_meta`` and declares the Skills extension in its client capabilities,
+    since a server may expose skills only to clients that declare it. A JSON-RPC error raises ``MCPError``; a
+    reply that is neither a result nor an error raises ``ConnectionError``, which the collector treats as no
+    answer.
+    """
+
+    def __init__(self, target: _HttpTarget | _StdioTarget) -> None:
+        super().__init__()
+        self._target = target
+        self._next_id = 0
+        # One stdio stream carries every reply and an exchange drops replies to other IDs, so exchanges take turns.
+        self._stdio_turn = asyncio.Lock()
+
+    async def _post(self, body: dict, headers: dict[str, str]) -> _ProbeResponse:
+        if isinstance(self._target, _StdioTarget):
+            async with self._stdio_turn:
+                return await self._target.post(body, headers)
+        try:
+            return await self._target.post_rpc(body, headers, read_limit=STATELESS_READ_LIMIT)
+        except httpx2.TimeoutException as exc:
+            raise TimeoutError(str(exc)) from exc
+
+    async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send one stateless request and return its result object."""
+        self._next_id += 1
+        version = _target_version()
+        meta = _skills_meta(version)
+        name = params.get("uri") if method == "resources/read" and isinstance(params.get("uri"), str) else None
+        request_id = 1000 + self._next_id
+        response = await self._post(
+            _request_body(method, request_id, meta, params), _request_headers(version, method, name)
+        )
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        if payload.get("id") != request_id and not (payload.get("id") is None and "error" in payload):
+            msg = f"{method} got no reply carrying its request ID"
+            raise ConnectionError(msg)
+        error = response.error
+        if error is not None:
+            code = response.error_code
+            message = error.get("message")
+            raise MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
+        if "result" in payload and not isinstance(payload["result"], dict):
+            # An answer whose result is not an object is malformed, not missing: raise pydantic's ValidationError.
+            TypeAdapter(dict[str, Any]).validate_python(payload["result"])
+        result = response.result
+        if result is None:
+            msg = f"{method} returned neither a result nor an error"
+            raise ConnectionError(msg)
+        return result
+
+    async def read_resource_contents(self, uri: str) -> list[dict[str, Any]]:
+        """Read one resource and return its ``contents`` entries."""
+        contents = (await self.request_raw("resources/read", {"uri": uri})).get("contents")
+        return [item for item in contents if isinstance(item, dict)] if isinstance(contents, list) else []
+
+
+@asynccontextmanager
+async def stateless_session(
+    target: str | StdioServerParameters, headers: dict[str, str] | None = None
+) -> AsyncGenerator[StatelessSession]:
+    """Open a stateless session on an HTTP endpoint or a fresh stdio process of the audited command."""
+    if isinstance(target, str):
+        async with async_client(headers=headers) as client:
+            yield StatelessSession(_HttpTarget(client, target))
+        return
+    errlog: TextIO = cast("Any", DEVNULL)
+    async with stdio_client(target, errlog=errlog) as (read_stream, write_stream):
+        yield StatelessSession(_StdioTarget(read_stream, write_stream))

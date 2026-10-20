@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -559,6 +560,7 @@ class TestAuditorWiring:
         results = {r.rule_id: r for r in auditor.results}
         assert results["skills_digest_integrity"].passed
         assert results["skills_frontmatter_matches"].passed
+        assert auditor.get_audit_report()["skills"]["skills_listed"] == 1
 
     async def test_undeclared_extension_is_not_collected(self):
         session = FakeSession([{"skills": []}])
@@ -568,6 +570,7 @@ class TestAuditorWiring:
         assert session.calls == []
         skipped = {s.rule_id: s.reason for s in auditor.skipped_rules}
         assert skipped["skills_list_supported"] == "not-applicable"
+        assert auditor.get_audit_report()["skills"] is None
 
 
 class TestRobustness:
@@ -938,3 +941,101 @@ def test_one_file_under_two_spellings_is_read_once() -> None:
 def test_skill_root_accepts_an_encoded_skill_md_and_keeps_the_root_spelling() -> None:
     assert skill_root("skill://acme/code%2Dreview/%53KILL.md") == "skill://acme/code%2Dreview"
     assert skill_root("skill://acme/code-review/skill.md") is None
+
+
+class TestSkillsReport:
+    def test_counts_and_lists_unscored_facts(self):
+        tools = entry("a")
+        tools["frontmatter"]["allowed-tools"] = "Read Bash(git:*)"
+        scripted = entry("b")
+        scripted["resources"] += [
+            {"uri": "skill://b/scripts/run.py", "digest": "x", "size": 10},
+            {"uri": "skill://b/scriptsx/not.py", "digest": "x", "size": 10},
+        ]
+        evidence = skills.SkillsEvidence(entries=[tools, scripted, entry("c"), "junk"])
+        report = skills.skills_report(evidence)
+        assert (report["skills_listed"], report["skills_with_allowed_tools"], report["skills_with_scripts"]) == (
+            3,
+            1,
+            1,
+        )
+        assert [s["uri"] for s in report["skills"]] == ["skill://a/SKILL.md", "skill://b/SKILL.md"]
+        assert report["skills"][0]["allowed_tools"] == "Read Bash(git:*)"
+        assert report["skills"][1]["scripts"] == ["skill://b/scripts/run.py"]
+        # The junk entry may hide a skill, so the fit is unknown.
+        assert report["openai_import"]["fits"] is None
+        assert skills.skills_report(skills.SkillsEvidence(entries=[tools, scripted]))["openai_import"]["fits"] is True
+
+    def test_openai_catalog_limits(self, monkeypatch):
+        evidence = skills.SkillsEvidence(entries=[entry(name) for name in "abcdef"])
+        assert skills.skills_report(evidence)["openai_import"]["fits"] is False
+        big = entry("a")
+        big["resources"][0]["size"] = skills.OPENAI_MAX_SCAN_BYTES + 1
+        report = skills.skills_report(skills.SkillsEvidence(entries=[big]))
+        assert report["openai_import"]["listed_bytes"] == skills.OPENAI_MAX_SCAN_BYTES + 1
+        assert report["openai_import"]["fits"] is False
+
+    def test_openai_fit_needs_every_skill_within_its_own_limits(self):
+        crowded = entry("a")
+        crowded["resources"] += [{"uri": f"skill://a/f{i}.md", "digest": "x", "size": 1} for i in range(100)]
+        assert skills.skills_report(skills.SkillsEvidence(entries=[crowded]))["openai_import"]["fits"] is False
+
+    @pytest.mark.parametrize(
+        "evidence",
+        [
+            lambda: skills.SkillsEvidence(entries=[entry("a")], list_incomplete=True),
+            lambda: skills.SkillsEvidence(entries=None, list_error={"outcome": "timeout"}),
+            lambda: skills.SkillsEvidence(entries=[{**entry("a"), "resources": "dynamic"}]),
+            lambda: skills.SkillsEvidence(entries=[{**entry("a"), "resources": [{"uri": "skill://a/SKILL.md"}]}]),
+        ],
+    )
+    def test_openai_fit_is_unknown_on_incomplete_evidence(self, evidence: Any):
+        assert skills.skills_report(evidence())["openai_import"]["fits"] is None
+
+    def test_manifest_item_without_a_uri_leaves_the_fit_unknown(self):
+        partial = entry("a")
+        partial["resources"].append({"size": 1})
+        assert skills.skills_report(skills.SkillsEvidence(entries=[partial]))["openai_import"]["fits"] is None
+
+    def test_archive_size_is_unknown_when_only_compression_could_fit(self):
+        mib = 1024 * 1024
+        catalog = []
+        for name in "ab":
+            e = entry(name)
+            e["resources"] += [{"uri": f"skill://{name}/f{i}.bin", "digest": "x", "size": mib - 100} for i in range(4)]
+            catalog.append(e)
+        report = skills.skills_report(skills.SkillsEvidence(entries=catalog))
+        assert report["openai_import"]["listed_bytes"] < skills.OPENAI_MAX_SCAN_BYTES
+        assert report["openai_import"]["fits"] is None
+
+    def test_credentials_are_masked_before_truncation(self):
+        secret = "s" * 600
+        odd = entry("a")
+        odd["uri"] = f"https://user:{secret}@skills.example/a/SKILL.md"
+        odd["frontmatter"]["allowed-tools"] = f"Fetch(https://user:{secret}@api.example/)"
+        odd["resources"].append({"uri": f"https://user:{secret}@skills.example/a/scripts/run.py", "size": 1})
+        report = skills.skills_report(skills.SkillsEvidence(entries=[odd]))
+        assert "sss" not in json.dumps(report)
+
+    def test_allowed_tools_that_is_not_a_string_is_not_copied(self):
+        odd = entry("a")
+        odd["frontmatter"]["allowed-tools"] = ["Read"] * 10_000
+        (reported,) = skills.skills_report(skills.SkillsEvidence(entries=[odd]))["skills"]
+        assert reported["allowed_tools"] is None
+
+    def test_lists_are_bounded(self, monkeypatch):
+        monkeypatch.setattr(skills, "MAX_REPORTED_SKILLS", 1)
+        monkeypatch.setattr(skills, "MAX_REPORTED_SCRIPTS", 1)
+        many = []
+        for name in "ab":
+            e = entry(name)
+            e["resources"] += [{"uri": f"skill://{name}/scripts/{i}.py", "size": 1} for i in range(3)]
+            many.append(e)
+        report = skills.skills_report(skills.SkillsEvidence(entries=many))
+        assert len(report["skills"]) == 1
+        assert (len(report["skills"][0]["scripts"]), report["skills"][0]["scripts_total"]) == (1, 3)
+        assert report["skills_with_scripts"] == 2
+
+    def test_skills_outside_a_skill_root_have_no_scripts(self):
+        odd = {"uri": "skill://a/README.md", "resources": [{"uri": "skill://a/scripts/x.py", "size": 1}]}
+        assert skills.skills_report(skills.SkillsEvidence(entries=[odd]))["skills"] == []

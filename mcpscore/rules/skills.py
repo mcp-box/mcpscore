@@ -22,16 +22,19 @@ from ..skills import (
     SkillsEvidence,
     declared_settings,
     manifest,
+    manifest_sizes,
     markdown_blocks,
     name_problems,
     normalize_newlines,
     normalize_uri,
+    openai_import_issues,
     parse_frontmatter,
     relative_references,
     resolve_reference,
     size_value,
     skill_path_name,
     skill_root,
+    source_lines,
     split_frontmatter,
 )
 from .base import (
@@ -106,7 +109,14 @@ class SkillsBaseRule(BaseRule):
         return audit_data.skills
 
     def _result(
-        self, *, passed: bool, message: str, details: dict[str, Any], fix: str, issues: list[dict[str, Any]]
+        self,
+        *,
+        passed: bool,
+        message: str,
+        details: dict[str, Any],
+        fix: str,
+        issues: list[dict[str, Any]],
+        recommendation: bool = False,
     ) -> RuleResult:
         return catalog_result(
             rule_name=self.rule_name,
@@ -116,6 +126,7 @@ class SkillsBaseRule(BaseRule):
             details=details,
             suggested_fix=fix,
             issues=issues,
+            recommendation=recommendation,
         )
 
 
@@ -1017,6 +1028,306 @@ class SkillsReferencesResolveRule(SkillsBaseRule):
                 "Link supporting files by their path relative to the skill root (references/GUIDE.md) and list each "
                 "linked file in the skill's resources."
             ),
+            issues=issues,
+        )
+
+
+SEP_MAX_FILES = 512
+SEP_MAX_BYTES = 16 * 1024 * 1024
+OPENAI_IMPORT = (
+    "OpenAI Apps SDK, Build an MCP server §Import skills from the MCP server "
+    "(developers.openai.com/plugins/build/mcp-server, read 2026-10-20)"
+)
+SKILL_FILE_LINES_BELOW = 500
+
+
+@register_rule
+class SkillsWithinLimitsRule(SkillsBaseRule):
+    """Low check: each skill stays within the extension's per-skill limits."""
+
+    rule_id = "skills_within_limits"
+    basis = f"{SEP} §Limits (servers SHOULD NOT serve a skill over 512 resources or 16 MiB)"
+    rule_order = 11
+
+    def judges(self, entry: Any) -> bool:
+        """Judge entries with a manifest: a ``"dynamic"`` skill offers nothing to count."""
+        return isinstance(entry, dict) and manifest(entry) is not None
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - Within Skill Limits"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Low check: at most 512 resources and 16 MiB of listed sizes per skill, counted from the manifest."""
+        evidence = self._evidence(audit_data)
+        issues = []
+        for index, entry in _entries(evidence):
+            sizes = manifest_sizes(entry)
+            if sizes is None:
+                continue
+            if len(manifest(entry) or []) > SEP_MAX_FILES:
+                issues.append(_issue(index, "/resources", "too_many_resources", "at most 512 resources"))
+            if sum(size or 0 for _, size in sizes) > SEP_MAX_BYTES:
+                issues.append(_issue(index, "/resources", "too_large", "at most 16 MiB in total"))
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ Every skill is within 512 resources and 16 MiB"
+            if passed
+            else f"❌ Number of skill limits exceeded: {len(issues)} (512 resources, 16 MiB per skill)",
+            details={},
+            fix=(
+                "Keep each skill within 512 files and 16 MiB in total, the limits every host must accept; "
+                "split a larger skill into several."
+            ),
+            issues=issues,
+        )
+
+
+@register_rule
+class SkillsOpenAIImportLimitsRule(SkillsBaseRule):
+    """Low check: each skill fits OpenAI's per-skill limits for importing skills from an MCP server."""
+
+    rule_id = "skills_openai_import_limits"
+    basis = f"{OPENAI_IMPORT}: 100 files, SKILL.md 256 KiB, 1 MiB per file, 5 MiB per skill"
+    rule_order = 12
+
+    def judges(self, entry: Any) -> bool:
+        """Judge entries with a manifest: a ``"dynamic"`` skill offers nothing to count."""
+        return isinstance(entry, dict) and manifest(entry) is not None
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - Fit OpenAI Import Limits"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Low check: per skill, at most 100 files, a 256 KiB ``SKILL.md``, 1 MiB per file and 5 MiB in total.
+
+        ChatGPT and Codex import a skill only when it fits; judged from the manifest's sizes, with no reads.
+        """
+        evidence = self._evidence(audit_data)
+        issues = []
+        for index, entry in _entries(evidence):
+            issues.extend(
+                _issue(index, pointer, reason, expected)
+                for pointer, reason, expected in openai_import_issues(entry) or []
+            )
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ Every skill fits OpenAI's import limits"
+            if passed
+            else f"❌ Number of OpenAI import limits exceeded: {len(issues)}",
+            details={},
+            fix=(
+                "To be importable into ChatGPT and Codex, keep each skill within 100 files, a SKILL.md of 256 KiB, "
+                "1 MiB per supporting file and 5 MiB in total."
+            ),
+            issues=issues,
+            recommendation=True,
+        )
+
+
+def _media_type(value: Any) -> str | None:
+    return value.partition(";")[0].strip().lower() if isinstance(value, str) else None
+
+
+@register_rule
+class SkillsSkillFileMetadataRule(SkillsBaseRule):
+    """Low check: each ``SKILL.md`` resource carries the metadata the extension recommends."""
+
+    rule_id = "skills_skill_file_metadata"
+    basis = (
+        f"{SEP} §Resource Metadata (mimeType SHOULD be text/markdown; name and description SHOULD come from the "
+        "frontmatter)"
+    )
+    rule_order = 13
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - SKILL.md Resource Metadata"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when no ``SKILL.md`` was read or listed in ``resources/list``."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        if not list(self._observations(audit_data)):
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def _observations(self, audit_data: AuditData) -> Iterator[tuple[int, dict[str, Any], Any, Any]]:
+        """Yield ``(index, entry, read, listed)`` for each skill whose ``SKILL.md`` was read or listed."""
+        evidence = self._evidence(audit_data)
+        listed = {normalize_uri(str(r.uri)): r for r in audit_data.resources or []}
+        for index, entry in _entries(evidence):
+            uri = entry.get("uri")
+            if not isinstance(uri, str):
+                continue
+            read = next((f for u, f in evidence.files.items() if normalize_uri(u) == normalize_uri(uri)), None)
+            read = read if read is not None and read.error is None else None
+            resource = listed.get(normalize_uri(uri))
+            if read is not None or resource is not None:
+                yield index, entry, read, resource
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Low check: ``SKILL.md`` is ``text/markdown`` and listed with the frontmatter's name and description.
+
+        The served type comes from ``resources/read``; the listed type, name and description from the
+        resource's ``resources/list`` entry when the server lists it.
+        """
+        issues = []
+        for index, entry, read, resource in self._observations(audit_data):
+            # An observed resource without a mimeType misses the recommendation too.
+            types = [read.mime_type] if read is not None else []
+            types += [getattr(resource, "mime_type", None)] if resource is not None else []
+            if any(_media_type(t) != "text/markdown" for t in types):
+                issues.append(_issue(index, f"/{SKILL_FILE}/mimeType", "not_markdown", "text/markdown"))
+            raw = entry.get("frontmatter")
+            frontmatter: dict[str, Any] = raw if isinstance(raw, dict) else {}
+            if resource is not None:
+                for field in ("name", "description"):
+                    wanted = frontmatter.get(field)
+                    if isinstance(wanted, str) and getattr(resource, field, None) != wanted:
+                        issues.append(
+                            _issue(index, f"/{SKILL_FILE}/{field}", f"{field}_differs", f"the frontmatter {field}")
+                        )
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ SKILL.md resources are text/markdown and carry the frontmatter's name and description"
+            if passed
+            else f"❌ Number of SKILL.md metadata differences: {len(issues)}",
+            details={},
+            fix=(
+                "Serve and list each SKILL.md as text/markdown, with the resource name and description set from "
+                "its frontmatter."
+            ),
+            issues=issues,
+        )
+
+
+@register_rule
+class SkillsSkillFileLengthRule(SkillsBaseRule):
+    """Low check: each ``SKILL.md`` stays under the length agents load whole."""
+
+    rule_id = "skills_skill_file_length"
+    basis = f"{AGENT_SKILLS} §Progressive disclosure (keep the main SKILL.md under 500 lines)"
+    rule_order = 14
+
+    def judges(self, entry: Any) -> bool:
+        """Judge entries whose ``SKILL.md`` text was read."""
+        return isinstance(entry, dict)
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - SKILL.md Length"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when no ``SKILL.md`` text was read."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        evidence = self._evidence(audit_data)
+        if not any(_skill_file(evidence, entry) for _, entry in _entries(evidence)):
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Low check: each ``SKILL.md`` read is under 500 lines; agents load the whole file on activation."""
+        evidence = self._evidence(audit_data)
+        issues = []
+        for index, entry in _entries(evidence):
+            read = _skill_file(evidence, entry)
+            if read is None or read.text is None:
+                continue
+            lines = source_lines(normalize_newlines(read.text).removesuffix("\n"))
+            if len(lines) >= SKILL_FILE_LINES_BELOW:
+                issues.append(_issue(index, f"/{SKILL_FILE}", "too_long", "under 500 lines"))
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ Every SKILL.md read is under 500 lines"
+            if passed
+            else f"❌ Number of SKILL.md files of 500 lines or more: {len(issues)}",
+            details={},
+            fix="Keep SKILL.md under 500 lines and move detailed material into referenced files under the skill.",
+            issues=issues,
+            recommendation=True,
+        )
+
+
+@register_rule
+class SkillsAllowedToolsValidRule(SkillsBaseRule):
+    """Low check: ``allowed-tools``, when a skill sets it, is a space-separated string."""
+
+    rule_id = "skills_allowed_tools_valid"
+    basis = f"{AGENT_SKILLS} §allowed-tools field (a space-separated string)"
+    rule_order = 15
+
+    def judges(self, entry: Any) -> bool:
+        """Judge entries whose frontmatter sets ``allowed-tools``."""
+        return (
+            isinstance(entry, dict)
+            and isinstance(entry.get("frontmatter"), dict)
+            and "allowed-tools" in entry["frontmatter"]
+        )
+
+    @property
+    def rule_name(self) -> str:
+        return "Skills - allowed-tools Well Formed"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip as not applicable when no listed skill sets ``allowed-tools``."""
+        reason = super().skip_reason(audit_data)
+        evidence = audit_data.skills
+        if (
+            reason == SKIP_REASON_INSUFFICIENT_DATA
+            and evidence is not None
+            and any(isinstance(e, dict) and isinstance(e.get("frontmatter"), dict) for e in evidence.entries or [])
+        ):
+            return SKIP_REASON_NOT_APPLICABLE
+        return reason
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Low check: each ``allowed-tools`` value is a non-empty string of space-separated tool names."""
+        evidence = self._evidence(audit_data)
+        issues = [
+            _issue(index, "/frontmatter/allowed-tools", "not_a_string", "a space-separated string of tools")
+            for index, entry in _entries(evidence)
+            if self.judges(entry)
+            and not (
+                isinstance(entry["frontmatter"]["allowed-tools"], str) and entry["frontmatter"]["allowed-tools"].strip()
+            )
+        ]
+        passed = not issues
+        return self._result(
+            passed=passed,
+            message="✅ Every allowed-tools value is a space-separated string"
+            if passed
+            else f"❌ Number of malformed allowed-tools values: {len(issues)}",
+            details={},
+            fix="Write allowed-tools as one space-separated string of tool names, e.g. allowed-tools: Read Grep.",
             issues=issues,
         )
 

@@ -90,7 +90,7 @@ whether a complete tools catalog is empty.
 The main score always includes three categories. Readiness is the fourth:
 it has its own score, and it also counts in the main score on a full audit
 of a modern or dual-era server. Legacy servers and partial audits leave it
-out. The server audit has 127 rules today. The
+out. The server audit has 133 rules today. The
 [rules reference](/rules) lists each one with its weight and the spec
 revisions it applies to.
 
@@ -154,12 +154,18 @@ returns is still scanned by the security checks.
 | Listing entries: a `uri`, the frontmatter with `name` and `description`, a complete file list with `sha256` digests and sizes (or `"dynamic"`), a URI ending in `<name>/SKILL.md`, and a name that follows the [Agent Skills naming rules](https://agentskills.io/specification#name-field) | `skills_entries_well_formed`, `skills_resources_manifest`, `skills_name_matches_uri`, `skills_name_valid` (MEDIUM) |
 | Integrity: the files served match their listed digest and size, and the served `SKILL.md` frontmatter equals the listing's ([§Integrity and verification](https://modelcontextprotocol.io/extensions/skills#integrity-and-verification)) | `skills_digest_integrity`, `skills_frontmatter_matches` (HIGH) |
 | Relative links in `SKILL.md` point at files the skill lists | `skills_references_resolve` (LOW) |
+| Size: each skill stays within 512 files and 16 MiB ([§Implementation requirements](https://modelcontextprotocol.io/extensions/skills#implementation-requirements)) | `skills_within_limits` (LOW) |
+| `SKILL.md` is served and listed as `text/markdown`, with the frontmatter's name and description | `skills_skill_file_metadata` (LOW) |
+| Recommendations: each skill fits [OpenAI's import limits](https://developers.openai.com/plugins/build/mcp-server#import-skills-from-the-mcp-server) (100 files, 256 KiB `SKILL.md`, 1 MiB per file, 5 MiB), `SKILL.md` is under 500 lines ([Agent Skills §Progressive disclosure](https://agentskills.io/specification#progressive-disclosure)), and `allowed-tools` is a space-separated string ([§allowed-tools](https://agentskills.io/specification#allowed-tools-field)) | `skills_openai_import_limits`, `skills_skill_file_length`, `skills_allowed_tools_valid` (LOW) |
 | Skill text: the catalog-text checks run on skill frontmatter and every `SKILL.md` line. Chat-template tokens inside code count as examples. ([§Security considerations](https://modelcontextprotocol.io/extensions/skills#security-considerations)) | `skills_hidden_unicode`, `skills_no_embedded_secrets`, `skills_prompt_injection_phrasing` (HIGH, Security & Auth) |
 
 mcpscore reads skill content as data. It never runs a bundled script, follows
-an instruction from a skill, or grants what `allowed-tools` asks for. The
-skills calls run in the audit's own session, so a modern-only server without
-the `initialize` handshake skips these rules as `insufficient-data`.
+an instruction from a skill, or grants what `allowed-tools` asks for. Which
+skills request `allowed-tools` or bundle scripts, and whether the catalog fits
+one OpenAI import, are reported under `skills` in the JSON report and on one
+CLI line, and never scored. The skills calls run in the audit's own session.
+A modern-only server, which has no `initialize` handshake, is asked the same
+calls on the stateless lifecycle, each declaring the Skills extension.
 
 ## How an audit runs
 
@@ -285,6 +291,7 @@ a revision goes final.
 | `readiness_2026_meta_validation` | HIGH | Requests missing required `_meta` fields MUST be rejected with `-32602` + HTTP 400 ([Base Protocol §_meta](https://modelcontextprotocol.io/specification/2026-07-28/basic#_meta)) |
 | `readiness_2026_header_validation` | HIGH | Header/body mismatches MUST be rejected with `-32020` (HeaderMismatch) + HTTP 400 ([Streamable HTTP §Server Validation](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation); SEP-2243) |
 | `readiness_2026_cache_metadata` | HIGH | List/discover results MUST carry `ttlMs >= 0` and `cacheScope` ([Caching §Cacheable Model](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching#cacheable-model); SEP-2549) |
+| `readiness_2026_skills_list_cache_hints` | HIGH | A server declaring the Skills extension answers a stateless `skills/list` with `ttlMs >= 0` and `cacheScope` ([Skills §Listing skills](https://modelcontextprotocol.io/extensions/skills#listing-skills); SEP-2549) |
 | `readiness_2026_no_session_id` | HIGH | No `Mcp-Session-Id` minted or echoed on modern requests ([Streamable HTTP §Earlier Streamable HTTP Revisions](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#earlier-streamable-http-revisions); SEP-2567) |
 | `readiness_2026_unsupported_version_error` | MEDIUM | Unknown protocol versions MUST be rejected with `-32022` naming the supported versions ([Lifecycle §Protocol Version Negotiation](https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle#protocol-version-negotiation)) |
 | `readiness_2026_error_code_migration` | MEDIUM | Missing resources yield `-32602`; the legacy `-32002` MUST NOT be emitted ([Base Protocol §Error Codes](https://modelcontextprotocol.io/specification/2026-07-28/basic#error-codes); SEP-2164) |

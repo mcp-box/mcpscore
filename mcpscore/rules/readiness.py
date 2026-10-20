@@ -51,6 +51,7 @@ from mcpscore.probes import (
     has_modern_support,
 )
 from mcpscore.report_evidence import evidence_preview
+from mcpscore.skills import UNOBSERVED_OUTCOMES, size_value
 from mcpscore.spec import DRAFT, LATEST
 
 from .base import (
@@ -76,6 +77,16 @@ READINESS_TARGET = (DRAFT or LATEST).version
 _JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
 _VALID_CACHE_SCOPES = frozenset({"public", "private"})
+
+
+def _valid_ttl(value: object) -> bool:
+    """Whether ``ttlMs`` is a non-negative integer; JSON does not tell 0 from 0.0, and a boolean is no number."""
+    return size_value(value) is not None
+
+
+def _valid_cache_scope(value: object) -> bool:
+    """Whether ``cacheScope`` is one of the defined values; any JSON value may arrive, hashable or not."""
+    return isinstance(value, str) and value in _VALID_CACHE_SCOPES
 
 
 def _http_clause(audit_data: AuditData, text: str) -> str:
@@ -441,7 +452,7 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
     @staticmethod
     def _valid_hints(details: dict[str, Any]) -> bool:
         ttl_ms = details.get("ttl_ms")
-        return isinstance(ttl_ms, int) and ttl_ms >= 0 and details.get("cache_scope") in _VALID_CACHE_SCOPES
+        return _valid_ttl(ttl_ms) and _valid_cache_scope(details.get("cache_scope"))
 
     def check(self, audit_data: AuditData) -> RuleResult:
         probes = audit_data.probes or {}
@@ -455,10 +466,10 @@ class CacheMetadataReadinessRule(ReadinessBaseRule):
         for pid in missing:
             observed = supported[pid].details
             ttl = observed.get("ttl_ms")
-            if not (isinstance(ttl, int) and ttl >= 0):
+            if not _valid_ttl(ttl):
                 issues.append(_response_issue(pid, "/ttlMs", ttl, "non-negative integer"))
             scope = observed.get("cache_scope")
-            if scope not in _VALID_CACHE_SCOPES:
+            if not _valid_cache_scope(scope):
                 issues.append(_response_issue(pid, "/cacheScope", scope, "public or private"))
         passed = not missing
         if passed:
@@ -1283,4 +1294,69 @@ class GetStreamRemovedReadinessRule(ModernOnlyHttpProbeBackedReadinessRule):
             else None,
             audit_data=audit_data,
             expected={"http_status": 405},
+        )
+
+
+@register_rule
+class SkillsListCacheHintsReadinessRule(ReadinessBaseRule):
+    """A ``skills/list`` result on the stateless lifecycle carries ``ttlMs`` and ``cacheScope`` (SEP-2640, SEP-2549)."""
+
+    rule_id = "readiness_2026_skills_list_cache_hints"
+    rule_order = 5
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - skills/list caching hints"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless a server declaring the Skills extension answered a stateless ``skills/list``."""
+        if audit_data.skills is None:
+            return SKIP_REASON_NOT_APPLICABLE
+        if not has_modern_support(audit_data.probes):
+            return SKIP_REASON_REQUIRES_MODERN_SUPPORT
+        observed = audit_data.skills.stateless_list
+        if observed is None or (observed.get("error") or {}).get("outcome") in UNOBSERVED_OUTCOMES:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Judge the first stateless ``skills/list`` page: ``ttlMs`` >= 0 and ``cacheScope`` public or private."""
+        assert audit_data.skills is not None  # noqa: S101 — guaranteed by skip_reason
+        observed = audit_data.skills.stateless_list or {}
+        error = observed.get("error")
+        issues = []
+        if error is not None:
+            message = "❌ skills/list failed on the stateless lifecycle" + (
+                f" with JSON-RPC error {error['error_code']}" if "error_code" in error else ""
+            )
+        else:
+            ttl, scope = observed.get("ttl_ms"), observed.get("cache_scope")
+            if not _valid_ttl(ttl):
+                issues.append(_response_issue("skills/list", "/ttlMs", ttl, "non-negative integer"))
+            if not _valid_cache_scope(scope):
+                issues.append(_response_issue("skills/list", "/cacheScope", scope, "public or private"))
+            message = (
+                "✅ skills/list on the stateless lifecycle carries valid ttlMs and cacheScope"
+                if not issues
+                else "❌ skills/list on the stateless lifecycle has absent or invalid ttlMs/cacheScope (SEP-2549)"
+            )
+        passed = error is None and not issues
+        return diagnostic_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"sep": "SEP-2640, SEP-2549", "target_version": READINESS_TARGET, "observed": observed},
+            suggested_fix=(
+                "Serve skills/list on the stateless lifecycle with ttlMs (a non-negative integer) and cacheScope "
+                "(public or private), as for tools/list and resources/list."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
+            issues=issues,
         )
