@@ -657,6 +657,25 @@ class TestRobustness:
         else:
             assert (read.error, read.resources) == ({"outcome": "timeout"}, None)
 
+    @pytest.mark.parametrize("stall", ["skills/get", "resources/directory/read"])
+    async def test_stalled_calls_do_not_starve_file_reads(self, monkeypatch, stall: str):
+        monkeypatch.setattr(skills, "COLLECTION_TIMEOUT_S", 0.3)
+
+        class Stalling(FakeSession):
+            async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+                if method == stall:
+                    await asyncio.sleep(5)
+                return await super().request_raw(method, params)
+
+        session = Stalling(
+            [{"skills": [entry("a")]}],
+            {"skill://a/SKILL.md": "---\nname: a\ndescription: d\n---\n"},
+            directories={"skill://a|": {"resources": [{"uri": "skill://a/SKILL.md", "name": "SKILL.md"}]}},
+        )
+        evidence = await collect_skills(session, {"directoryRead": True})
+        assert evidence.budget_exhausted
+        assert evidence.files["skill://a/SKILL.md"].text is not None
+
     def test_link_extraction_is_linear_on_unmatched_brackets(self):
         import time
 

@@ -859,12 +859,12 @@ async def collect_skills(session: SkillsSession, settings: dict[str, Any]) -> Sk
     try:
         async with asyncio.timeout(COLLECTION_TIMEOUT_S):
             await _list(session, evidence)
-            phase = "get"
-            await _get(session, evidence)
-            phase = "directory"
-            await _read_directories(session, evidence)
-            phase = "read"
-            await _read_files(session, evidence)
+            phase = "listed"
+            # Concurrent, so stalled skills/get or directory calls cannot starve the file reads the integrity and
+            # security rules need.
+            await asyncio.gather(
+                _get(session, evidence), _read_directories(session, evidence), _read_files(session, evidence)
+            )
     except TimeoutError:
         # The deadline cancels the call in flight, so its own handler never records the outcome.
         evidence.budget_exhausted = True
@@ -872,7 +872,7 @@ async def collect_skills(session: SkillsSession, settings: dict[str, Any]) -> Sk
             evidence.list_error = {"outcome": "timeout"}
         elif phase == "list":
             evidence.list_incomplete = True
-        elif phase == "get":
+        else:
             answered = {got.uri for got in evidence.gets}
             for uri in _listed_skill_uris(evidence.entries or []):
                 if uri not in answered:
