@@ -1090,7 +1090,7 @@ class TestLogAuditOutcome:
                  "skills_with_scripts": 0, "openai_import": {"fits": None, "skills_imported_at_most": 5}},
                 (
                     "Skills (not scored): 1+ listed · 0 with allowed-tools · 0 with bundled scripts · "
-                    "OpenAI import fit unknown (sizes incomplete)"
+                    "OpenAI import fit unknown"
                 ),
             ),
             (

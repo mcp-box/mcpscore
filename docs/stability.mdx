@@ -148,7 +148,7 @@ scoring it:
 | `skills_listed`, `listing_incomplete` | Skills in the listing, and whether pages were left unread |
 | `skills_with_allowed_tools`, `skills_with_scripts` | Skills that request pre-approved tools, or bundle files under `scripts/` |
 | `skills[]` | Up to 32 of those skills: `uri`, `allowed_tools` (`null` when it is not a string), `scripts` (up to 20), `scripts_total` |
-| `openai_import` | OpenAI imports at most `skills_imported_at_most` skills and `scan_archive_limit_bytes` of archives per scan. `listed_bytes` sums the listed sizes. `fits` says whether the whole catalog would be imported, each skill within OpenAI's per-skill limits; it is `null` when the listing or a skill's sizes are incomplete |
+| `openai_import` | OpenAI imports at most `skills_imported_at_most` skills and `scan_archive_limit_bytes` of archives per scan. `listed_bytes` sums the listed sizes. `fits` is `true` when the whole catalog would be imported even uncompressed, each skill within OpenAI's per-skill limits, and `false` when too many skills or a skill over its limits rule it out. It is `null` otherwise: the listing or a skill's sizes are incomplete, or only compression could bring the archives under the limit |
 
 ### Smoke results
 

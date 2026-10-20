@@ -83,6 +83,12 @@ class TestStatelessSession:
             await session.request_raw("skills/get", {"uri": "skill://x/SKILL.md"})
         assert raised.value.error.code == code
 
+    @pytest.mark.parametrize("result", [[], "x", None])
+    async def test_result_that_is_not_an_object_is_malformed(self, result: Any):
+        session = _http_session({"jsonrpc": "2.0", "id": 1001, "result": result})
+        evidence = await collect_skills(session, {}, stateless=True)
+        assert evidence.list_error == {"outcome": "malformed"}
+
     async def test_reply_without_result_is_no_answer(self):
         session = _http_session({"jsonrpc": "2.0", "id": 1001})
         with pytest.raises(ConnectionError):

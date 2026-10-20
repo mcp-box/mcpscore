@@ -29,6 +29,8 @@ from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 from pydantic import ValidationError
 import yaml
 
+from .report_evidence import report_evidence
+
 logger = logging.getLogger(__name__)
 
 SKILLS_EXTENSION = "io.modelcontextprotocol/skills"
@@ -928,9 +930,20 @@ OPENAI_MAX_SKILL_BYTES = 5 * 1024 * 1024
 OPENAI_MAX_SCAN_BYTES = 8 * 1024 * 1024
 """OpenAI's cap on the skill archives generated in one scan, ZIP overhead included."""
 
+ZIP_FILE_OVERHEAD_BYTES = 128
+"""ZIP headers per file, besides the name twice and the data (local header 30, central directory entry 46)."""
+
+ZIP_ARCHIVE_OVERHEAD_BYTES = 22
+"""ZIP end-of-central-directory record, once per archive."""
+
 MAX_REPORTED_SKILLS = 32
 MAX_REPORTED_SCRIPTS = 20
 MAX_REPORTED_TEXT = 500
+
+
+def _reported(text: str) -> str:
+    """Mask credentials in the whole string, then bound it: a cut first could hide the URL that holds them."""
+    return report_evidence(text)[:MAX_REPORTED_TEXT]
 
 
 def _script_uris(entry: dict[str, Any]) -> list[str]:
@@ -980,22 +993,42 @@ def openai_import_issues(entry: dict[str, Any]) -> list[tuple[str, str, str]] | 
     return issues
 
 
-def _openai_fit(evidence: SkillsEvidence, entries: list[dict[str, Any]], listed_bytes: int) -> bool | None:
-    """Whether the whole catalog fits one OpenAI import: False on any known excess, None when unknown."""
-    if (
-        len(entries) > OPENAI_MAX_SKILLS
-        or listed_bytes > OPENAI_MAX_SCAN_BYTES
-        or any(openai_import_issues(entry) for entry in entries)
-    ):
+def _archive_bytes_at_most(entries: list[dict[str, Any]]) -> int:
+    """Return an upper bound on the ZIP archives of these skills: every file stored, never compressed.
+
+    Deflate output can exceed its input by about 0.1%, which the bound includes.
+    """
+    total = 0
+    for entry in entries:
+        total += ZIP_ARCHIVE_OVERHEAD_BYTES
+        for uri, size in manifest_sizes(entry) or []:
+            data = size or 0
+            total += data + data // 1000 + 5 + ZIP_FILE_OVERHEAD_BYTES + 2 * len(uri.encode("utf-8"))
+    return total
+
+
+def _manifest_complete(entry: dict[str, Any]) -> bool:
+    """Whether every manifest item carries a URI and a valid size."""
+    items, sizes = manifest(entry), manifest_sizes(entry)
+    return items is not None and sizes is not None and len(sizes) == len(items) and all(s is not None for _, s in sizes)
+
+
+def _openai_fit(evidence: SkillsEvidence, entries: list[dict[str, Any]]) -> bool | None:
+    """Whether the whole catalog fits one OpenAI import: False on a known excess, None when it cannot be known.
+
+    Archive sizes are not observable: the catalog fits when even its uncompressed archives would, and is unknown
+    when they would not, since compression may still bring them under the limit.
+    """
+    if len(entries) > OPENAI_MAX_SKILLS or any(openai_import_issues(entry) for entry in entries):
         return False
     complete = (
         evidence.entries is not None
         and not evidence.list_incomplete
         and not evidence.list_malformed
         and len(entries) == len(evidence.entries)
-        and all((sizes := manifest_sizes(e)) is not None and None not in (s for _, s in sizes) for e in entries)
+        and all(_manifest_complete(e) for e in entries)
     )
-    return True if complete else None
+    return True if complete and _archive_bytes_at_most(entries) <= OPENAI_MAX_SCAN_BYTES else None
 
 
 def skills_report(evidence: SkillsEvidence) -> dict[str, Any]:
@@ -1020,9 +1053,9 @@ def skills_report(evidence: SkillsEvidence) -> dict[str, Any]:
         if ("allowed-tools" in frontmatter or scripts) and len(notable) < MAX_REPORTED_SKILLS:
             notable.append(
                 {
-                    "uri": entry["uri"][:MAX_REPORTED_TEXT],
-                    "allowed_tools": tools[:MAX_REPORTED_TEXT] if isinstance(tools, str) else None,
-                    "scripts": [uri[:MAX_REPORTED_TEXT] for uri in scripts[:MAX_REPORTED_SCRIPTS]],
+                    "uri": _reported(entry["uri"]),
+                    "allowed_tools": _reported(tools) if isinstance(tools, str) else None,
+                    "scripts": [_reported(uri) for uri in scripts[:MAX_REPORTED_SCRIPTS]],
                     "scripts_total": len(scripts),
                 }
             )
@@ -1036,6 +1069,6 @@ def skills_report(evidence: SkillsEvidence) -> dict[str, Any]:
             "skills_imported_at_most": OPENAI_MAX_SKILLS,
             "listed_bytes": listed_bytes,
             "scan_archive_limit_bytes": OPENAI_MAX_SCAN_BYTES,
-            "fits": _openai_fit(evidence, entries, listed_bytes),
+            "fits": _openai_fit(evidence, entries),
         },
     }

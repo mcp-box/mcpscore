@@ -56,6 +56,7 @@ from mcp.client.stdio import stdio_client
 from mcp.shared.exceptions import MCPError
 from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
+from pydantic import TypeAdapter
 
 from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
@@ -3208,6 +3209,10 @@ class StatelessSession:
             code = response.error_code
             message = error.get("message")
             raise MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        if "result" in payload and not isinstance(payload["result"], dict):
+            # An answer whose result is not an object is malformed, not missing: raise pydantic's ValidationError.
+            TypeAdapter(dict[str, Any]).validate_python(payload["result"])
         result = response.result
         if result is None:
             msg = f"{method} returned neither a result nor an error"
