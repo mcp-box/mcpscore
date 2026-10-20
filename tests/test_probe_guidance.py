@@ -23,12 +23,14 @@ from mcpscore.report_evidence import report_evidence
 from mcpscore.rules.base import AuditData
 from mcpscore.rules.protocol_version import DeprecatedVersionRule
 from mcpscore.rules.registry import create_all_rules
+from mcpscore.skills import SkillsEvidence
 
 from .conftest import FakePromptsCaps, FakeResourcesCaps, FakeServerCapabilities, FakeToolsCaps
 from .test_readiness_rules import modern_probes
 
 MODULES = {"protocol_version", "transport", "security", "auth", "pagination", "catalog_stability", "readiness"}
 RULES = {r.rule_id: r for r in create_all_rules() if type(r).__module__.rsplit(".", 1)[-1] in MODULES}
+
 URL = "https://example.com/mcp"
 
 
@@ -91,6 +93,10 @@ def data_for(rule_id: str, *, failure: bool) -> AuditData:
         ),
         tools=[Tool(name="工具🔎", input_schema={"type": "object"})],
     )
+    # A stateless skills/list page: valid hints, unless this is the skills hints rule's failing case.
+    bad = failure and rule_id == "readiness_2026_skills_list_cache_hints"
+    hints = {"ttl_ms": None if bad else 0, "cache_scope": None if bad else "private"}
+    data.skills = SkillsEvidence(stateless_list={"result_type": "complete", **hints})
     rule = RULES[rule_id]
     probe_id = (
         PROBE_PAGINATION_CACHE_SCOPE
@@ -177,9 +183,9 @@ def test_each_rule_guidance_contract(rule_id, failure, monkeypatch):
         assert "suggested_fix" not in wire
 
 
-def test_inventory_covers_all_52_rules():
-    assert len(RULES) == 52
-    assert sum(r.group_name == "readiness" for r in RULES.values()) == 20
+def test_inventory_covers_all_53_rules():
+    assert len(RULES) == 53
+    assert sum(r.group_name == "readiness" for r in RULES.values()) == 21
     assert sum(r.group_name == "security" for r in RULES.values()) == 14
 
 

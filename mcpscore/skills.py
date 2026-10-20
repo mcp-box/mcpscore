@@ -138,6 +138,9 @@ class SkillsEvidence:
     """``skills/get`` for a skill the server does not serve; None when the call was not made."""
     directory_reads: list[DirectoryRead] = field(default_factory=list)
     """Made only when the server sets ``directoryRead: true``."""
+    stateless_list: dict[str, Any] | None = None
+    """``resultType``, ``ttlMs`` and ``cacheScope`` of a first ``skills/list`` page on the stateless lifecycle
+    (or the call's ``error``); None when no stateless listing was made."""
     files: dict[str, SkillFile] = field(default_factory=dict)
     budget_exhausted: bool = False
 
@@ -636,7 +639,25 @@ def _rpc_error(exc: Exception) -> dict[str, Any]:
     return {"outcome": "transport", "exception": type(exc).__name__}
 
 
-async def _list(session: SkillsSession, evidence: SkillsEvidence) -> None:
+def _list_hints(result: Any) -> dict[str, Any]:
+    """Return the caching attributes of a ``skills/list`` result (SEP-2549)."""
+    result = result if isinstance(result, dict) else {}
+    return {
+        "result_type": result.get("resultType"),
+        "ttl_ms": result.get("ttlMs"),
+        "cache_scope": result.get("cacheScope"),
+    }
+
+
+async def stateless_list_hints(session: SkillsSession) -> dict[str, Any]:
+    """Return the caching attributes of a first ``skills/list`` page on a stateless session, or the call's error."""
+    try:
+        return _list_hints(await session.request_raw("skills/list", {}))
+    except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
+        return {"error": _rpc_error(exc)}
+
+
+async def _list(session: SkillsSession, evidence: SkillsEvidence, *, stateless: bool = False) -> None:
     entries: list[Any] = []
     cursor: str | None = None
     seen: set[str] = set()
@@ -646,10 +667,14 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence) -> None:
         except Exception as exc:  # noqa: BLE001 — a failed listing is evidence, not an audit abort
             if page == 0:
                 evidence.list_error = _rpc_error(exc)
+                if stateless:
+                    evidence.stateless_list = {"error": evidence.list_error}
             else:
                 evidence.entries = entries
                 evidence.list_incomplete = True
             return
+        if stateless and page == 0:
+            evidence.stateless_list = _list_hints(result)
         skills = result.get("skills") if isinstance(result, dict) else None
         if not isinstance(skills, list):
             evidence.list_malformed = True
@@ -852,13 +877,15 @@ async def _read_files(session: SkillsSession, evidence: SkillsEvidence) -> None:
     await asyncio.gather(*(one(uri, keep) for uri, keep in planned))
 
 
-async def collect_skills(session: SkillsSession, settings: dict[str, Any]) -> SkillsEvidence:
+async def collect_skills(
+    session: SkillsSession, settings: dict[str, Any], *, stateless: bool = False
+) -> SkillsEvidence:
     """List the server's skills, call ``skills/get`` for each, probe directory reads, and read a sample of files."""
     evidence = SkillsEvidence(settings=settings)
     phase = "list"
     try:
         async with asyncio.timeout(COLLECTION_TIMEOUT_S):
-            await _list(session, evidence)
+            await _list(session, evidence, stateless=stateless)
             phase = "listed"
             # Concurrent, so stalled skills/get or directory calls cannot starve the file reads the integrity and
             # security rules need.
@@ -879,3 +906,70 @@ async def collect_skills(session: SkillsSession, settings: dict[str, Any]) -> Sk
                     evidence.gets.append(SkillGet(uri, error={"outcome": "timeout"}))
         logger.warning("Stopped collecting skills after %.0fs", COLLECTION_TIMEOUT_S)
     return evidence
+
+
+OPENAI_MAX_SKILLS = 5
+"""Uniquely named skills OpenAI imports from one MCP server scan."""
+
+OPENAI_MAX_SCAN_BYTES = 8 * 1024 * 1024
+"""OpenAI's cap on the skill archives generated in one scan, ZIP overhead included."""
+
+MAX_REPORTED_SKILLS = 32
+MAX_REPORTED_SCRIPTS = 20
+MAX_REPORTED_TEXT = 500
+
+
+def _script_uris(entry: dict[str, Any]) -> list[str]:
+    """Return the manifest URIs under the skill's ``scripts/`` directory."""
+    root = skill_root(entry["uri"]) if isinstance(entry.get("uri"), str) else None
+    if root is None:
+        return []
+    prefix = normalize_uri(root) + "/scripts/"
+    return [
+        item["uri"]
+        for item in manifest(entry) or []
+        if isinstance(item, dict) and isinstance(item.get("uri"), str) and normalize_uri(item["uri"]).startswith(prefix)
+    ]
+
+
+def skills_report(evidence: SkillsEvidence) -> dict[str, Any]:
+    """Return the skills facts a report shows without scoring them.
+
+    ``allowed-tools`` and bundled scripts are gated by the host (SEP-2640 §Security Implications), and OpenAI's
+    catalog limits (five skills, 8 MiB of archives per scan) say nothing wrong about a larger catalog. Lists are
+    bounded; the counts are complete for the skills listed.
+    """
+    entries = [e for e in evidence.entries or [] if isinstance(e, dict) and isinstance(e.get("uri"), str)]
+    notable: list[dict[str, Any]] = []
+    with_tools = with_scripts = 0
+    listed_bytes = 0
+    for entry in entries:
+        raw = entry.get("frontmatter")
+        frontmatter: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        tools = frontmatter.get("allowed-tools")
+        scripts = _script_uris(entry)
+        with_tools += "allowed-tools" in frontmatter
+        with_scripts += bool(scripts)
+        listed_bytes += sum(size_value(i.get("size")) or 0 for i in manifest(entry) or [] if isinstance(i, dict))
+        if ("allowed-tools" in frontmatter or scripts) and len(notable) < MAX_REPORTED_SKILLS:
+            notable.append(
+                {
+                    "uri": entry["uri"][:MAX_REPORTED_TEXT],
+                    "allowed_tools": tools[:MAX_REPORTED_TEXT] if isinstance(tools, str) else tools,
+                    "scripts": [uri[:MAX_REPORTED_TEXT] for uri in scripts[:MAX_REPORTED_SCRIPTS]],
+                    "scripts_total": len(scripts),
+                }
+            )
+    return {
+        "skills_listed": len(entries),
+        "listing_incomplete": evidence.list_incomplete,
+        "skills_with_allowed_tools": with_tools,
+        "skills_with_scripts": with_scripts,
+        "skills": notable,
+        "openai_import": {
+            "skills_imported_at_most": OPENAI_MAX_SKILLS,
+            "listed_bytes": listed_bytes,
+            "scan_archive_limit_bytes": OPENAI_MAX_SCAN_BYTES,
+            "fits": len(entries) <= OPENAI_MAX_SKILLS and listed_bytes <= OPENAI_MAX_SCAN_BYTES,
+        },
+    }

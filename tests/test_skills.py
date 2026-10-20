@@ -559,6 +559,7 @@ class TestAuditorWiring:
         results = {r.rule_id: r for r in auditor.results}
         assert results["skills_digest_integrity"].passed
         assert results["skills_frontmatter_matches"].passed
+        assert auditor.get_audit_report()["skills"]["skills_listed"] == 1
 
     async def test_undeclared_extension_is_not_collected(self):
         session = FakeSession([{"skills": []}])
@@ -568,6 +569,7 @@ class TestAuditorWiring:
         assert session.calls == []
         skipped = {s.rule_id: s.reason for s in auditor.skipped_rules}
         assert skipped["skills_list_supported"] == "not-applicable"
+        assert auditor.get_audit_report()["skills"] is None
 
 
 class TestRobustness:
@@ -938,3 +940,51 @@ def test_one_file_under_two_spellings_is_read_once() -> None:
 def test_skill_root_accepts_an_encoded_skill_md_and_keeps_the_root_spelling() -> None:
     assert skill_root("skill://acme/code%2Dreview/%53KILL.md") == "skill://acme/code%2Dreview"
     assert skill_root("skill://acme/code-review/skill.md") is None
+
+
+class TestSkillsReport:
+    def test_counts_and_lists_unscored_facts(self):
+        tools = entry("a")
+        tools["frontmatter"]["allowed-tools"] = "Read Bash(git:*)"
+        scripted = entry("b")
+        scripted["resources"] += [
+            {"uri": "skill://b/scripts/run.py", "digest": "x", "size": 10},
+            {"uri": "skill://b/scriptsx/not.py", "digest": "x", "size": 10},
+        ]
+        evidence = skills.SkillsEvidence(entries=[tools, scripted, entry("c"), "junk"])
+        report = skills.skills_report(evidence)
+        assert (report["skills_listed"], report["skills_with_allowed_tools"], report["skills_with_scripts"]) == (
+            3,
+            1,
+            1,
+        )
+        assert [s["uri"] for s in report["skills"]] == ["skill://a/SKILL.md", "skill://b/SKILL.md"]
+        assert report["skills"][0]["allowed_tools"] == "Read Bash(git:*)"
+        assert report["skills"][1]["scripts"] == ["skill://b/scripts/run.py"]
+        assert report["openai_import"]["fits"] is True
+
+    def test_openai_catalog_limits(self, monkeypatch):
+        evidence = skills.SkillsEvidence(entries=[entry(name) for name in "abcdef"])
+        assert skills.skills_report(evidence)["openai_import"]["fits"] is False
+        big = entry("a")
+        big["resources"][0]["size"] = skills.OPENAI_MAX_SCAN_BYTES + 1
+        report = skills.skills_report(skills.SkillsEvidence(entries=[big]))
+        assert report["openai_import"]["listed_bytes"] == skills.OPENAI_MAX_SCAN_BYTES + 1
+        assert report["openai_import"]["fits"] is False
+
+    def test_lists_are_bounded(self, monkeypatch):
+        monkeypatch.setattr(skills, "MAX_REPORTED_SKILLS", 1)
+        monkeypatch.setattr(skills, "MAX_REPORTED_SCRIPTS", 1)
+        many = []
+        for name in "ab":
+            e = entry(name)
+            e["resources"] += [{"uri": f"skill://{name}/scripts/{i}.py", "size": 1} for i in range(3)]
+            many.append(e)
+        report = skills.skills_report(skills.SkillsEvidence(entries=many))
+        assert len(report["skills"]) == 1
+        assert (len(report["skills"][0]["scripts"]), report["skills"][0]["scripts_total"]) == (1, 3)
+        assert report["skills_with_scripts"] == 2
+
+    def test_skills_outside_a_skill_root_have_no_scripts(self):
+        odd = {"uri": "skill://a/README.md", "resources": [{"uri": "skill://a/scripts/x.py", "size": 1}]}
+        assert skills.skills_report(skills.SkillsEvidence(entries=[odd]))["skills"] == []

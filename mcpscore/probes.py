@@ -31,6 +31,7 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -44,7 +45,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable
 
     from mcp import StdioServerParameters
 from urllib.parse import urlsplit
@@ -52,6 +53,7 @@ from uuid import uuid4
 
 import httpx2
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import MCPError
 from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
 
@@ -3154,3 +3156,61 @@ async def run_stdio_probes(
         **not_applicable_results("probe subject is HTTP-specific", HTTP_ONLY_PROBE_IDS),
         **{result.probe_id: result for result in results},
     }
+
+
+SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
+
+
+class StatelessSession:
+    """Answer the skills collector's calls with one stateless request each (SEP-2575).
+
+    Every request carries the modern ``_meta`` and declares the Skills extension in its client capabilities,
+    since a server may expose skills only to clients that declare it. A JSON-RPC error raises ``MCPError``; a
+    reply that is neither a result nor an error raises ``ConnectionError``, which the collector treats as no
+    answer.
+    """
+
+    def __init__(self, target: _HttpTarget | _StdioTarget) -> None:
+        super().__init__()
+        self._target = target
+        self._next_id = 0
+
+    async def request_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send one stateless request and return its result object."""
+        self._next_id += 1
+        version = _target_version()
+        meta = _modern_meta(version)
+        meta[f"{META_PREFIX}clientCapabilities"] = {"extensions": {SKILLS_EXTENSION_ID: {}}}
+        name = params.get("uri") if method == "resources/read" and isinstance(params.get("uri"), str) else None
+        response = await self._target.post(
+            _request_body(method, 1000 + self._next_id, meta, params), _request_headers(version, method, name)
+        )
+        error = response.error
+        if error is not None:
+            code = response.error_code
+            message = error.get("message")
+            raise MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
+        result = response.result
+        if result is None:
+            msg = f"{method} returned neither a result nor an error"
+            raise ConnectionError(msg)
+        return result
+
+    async def read_resource_contents(self, uri: str) -> list[dict[str, Any]]:
+        """Read one resource and return its ``contents`` entries."""
+        contents = (await self.request_raw("resources/read", {"uri": uri})).get("contents")
+        return [item for item in contents if isinstance(item, dict)] if isinstance(contents, list) else []
+
+
+@asynccontextmanager
+async def stateless_session(
+    target: str | StdioServerParameters, headers: dict[str, str] | None = None
+) -> AsyncGenerator[StatelessSession]:
+    """Open a stateless session on an HTTP endpoint or a fresh stdio process of the audited command."""
+    if isinstance(target, str):
+        async with async_client(headers=headers) as client:
+            yield StatelessSession(_HttpTarget(client, target))
+        return
+    errlog: TextIO = cast("Any", DEVNULL)
+    async with stdio_client(target, errlog=errlog) as (read_stream, write_stream):
+        yield StatelessSession(_StdioTarget(read_stream, write_stream))

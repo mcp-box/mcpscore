@@ -93,11 +93,15 @@ GOOD_SKILL_CHILD = {"uri": "skill://acme/code-review/SKILL.md", "name": "SKILL.m
 def good() -> AuditData:
     body = "See [the guide](references/GUIDE.md) and ![chart](assets/chart.png).\n"
     files = {
-        "SKILL.md": skill_md("code-review", body=body),
+        "SKILL.md": skill_md("code-review", body=body).replace(
+            "\n---\n", "\nallowed-tools: Read Bash(git:*)\n---\n", 1
+        ),
         "references/GUIDE.md": "# Guide\n",
         "assets/chart.png": "png",
     }
-    return data(skill("code-review", files, prefix="acme/"), **directory_evidence())
+    return data(
+        skill("code-review", files, prefix="acme/", **{"allowed-tools": "Read Bash(git:*)"}), **directory_evidence()
+    )
 
 
 def directory_evidence(children: list[Any] | None = None, **refusals: Any) -> dict[str, Any]:
@@ -118,6 +122,23 @@ def directory_evidence(children: list[Any] | None = None, **refusals: Any) -> di
             DirectoryRead(f"{root}/SKILL.md", "file", error=refusals.get("file", refused)),
         ],
     }
+
+
+def oversized(files: int, size: int) -> dict[str, Any]:
+    """Return a listing entry whose manifest has *files* items of *size* bytes each."""
+    entry = skill("code-review")
+    entry["resources"] += [
+        {"uri": f"skill://code-review/f{i}.md", "digest": "sha256:" + "0" * 64, "size": size} for i in range(files - 1)
+    ]
+    return entry
+
+
+def markdown_as(mime_type: str) -> dict[str, SkillFile]:
+    """Return the read of the code-review SKILL.md, served with *mime_type*."""
+    text = skill_md("code-review")
+    raw = text.encode("utf-8")
+    uri = "skill://code-review/SKILL.md"
+    return {uri: SkillFile(uri, len(raw), "sha256:" + hashlib.sha256(raw).hexdigest(), mime_type, text)}
 
 
 def failure_cases() -> list[tuple[str, AuditData, str, str]]:
@@ -161,6 +182,15 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
          "/skills/get", "-32602"),
         ("skills_directory_read", data(skill("code-review", prefix="acme/"), **directory_evidence([])),
          "/resources/directory/read", "directoryRead"),
+        ("skills_within_limits", data(oversized(513, 1)), "/resources", "512 files"),
+        ("skills_openai_import_limits", data(oversized(101, 1)), "/resources", "100 files"),
+        ("skills_skill_file_metadata", data(skill("code-review"), files=markdown_as("text/plain")),
+         "/SKILL.md/mimeType", "text/markdown"),
+        ("skills_skill_file_length",
+         data(skill("code-review", {"SKILL.md": skill_md("code-review", body="line\n" * 500)})),
+         "/SKILL.md", "500 lines"),
+        ("skills_allowed_tools_valid", data(skill("code-review", **{"allowed-tools": ["Read", "Bash"]})),
+         "/frontmatter/allowed-tools", "space-separated"),
     ]  # fmt: skip
 
 
@@ -195,6 +225,16 @@ def test_conforming_skill_passes(rule_id: str) -> None:
     assert "suggested_fix" not in result.to_dict()
 
 
+LOW_RULES = {
+    "skills_references_resolve",
+    "skills_within_limits",
+    "skills_openai_import_limits",
+    "skills_skill_file_metadata",
+    "skills_skill_file_length",
+    "skills_allowed_tools_valid",
+}
+
+
 def test_severities_and_categories() -> None:
     high = {"skills_digest_integrity", "skills_frontmatter_matches"}
     security = {"skills_hidden_unicode", "skills_no_embedded_secrets", "skills_prompt_injection_phrasing"}
@@ -204,7 +244,7 @@ def test_severities_and_categories() -> None:
             assert (rule.group_name, rule.severity) == ("security", RuleSeverity.HIGH)
         elif rule_id in high:
             assert (rule.group_name, rule.severity) == ("skills", RuleSeverity.HIGH)
-        elif rule_id == "skills_references_resolve":
+        elif rule_id in LOW_RULES:
             assert (rule.group_name, rule.severity) == ("skills", RuleSeverity.LOW)
         else:
             assert (rule.group_name, rule.severity) == ("skills", RuleSeverity.MEDIUM)
@@ -1256,6 +1296,123 @@ def test_unlisted_skill_answered_for_the_probe_is_not_judged() -> None:
     served = {**skill("mcpscore-no-such-skill"), "uri": UNKNOWN}
     audit = data(skill("code-review"), unknown_get=SkillGet(UNKNOWN, served))
     assert RULES["skills_get_unknown_rejected"].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def listed_resource(**fields: Any) -> Any:
+    from mcp_types import Resource
+
+    base = {"uri": "skill://code-review/SKILL.md", "name": "code-review", "mimeType": "text/markdown"}
+    base["description"] = "Review a pull request. Use when asked for a review."
+    return Resource.model_validate({**base, **fields})
+
+
+@pytest.mark.parametrize(
+    ("files", "size", "reasons"),
+    [
+        (2, 16 * 1024 * 1024, ["too_large"]),
+        (513, 0, ["too_many_resources"]),
+        (512, 16 * 1024 * 1024 // 512, []),
+    ],
+)
+def test_skill_limits(files: int, size: int, reasons: list[str]) -> None:
+    result = RULES["skills_within_limits"].check(data(oversized(files, size)))
+    assert [issue["reason"] for issue in result.details.get("issues", [])] == reasons
+
+
+@pytest.mark.parametrize(
+    ("entry", "reasons"),
+    [
+        (lambda: oversized(100, 1024), []),
+        (lambda: oversized(2, 1024 * 1024 + 1), ["file_too_large"]),
+        (lambda: oversized(6, 1024 * 1024), ["skill_too_large"]),
+        (
+            lambda: {**oversized(1, 0), "resources": [{"uri": "skill://code-review/SKILL.md", "size": 256 * 1024 + 1}]},
+            ["skill_file_too_large"],
+        ),
+    ],
+)
+def test_openai_import_limits(entry: Any, reasons: list[str]) -> None:
+    result = RULES["skills_openai_import_limits"].check(data(entry()))
+    assert [issue["reason"] for issue in result.details.get("issues", [])] == reasons
+    if reasons:
+        assert "optional quality recommendation" in result.message
+
+
+def test_dynamic_skills_have_nothing_to_count() -> None:
+    dynamic = {**skill("code-review"), "resources": "dynamic"}
+    for rule_id in ("skills_within_limits", "skills_openai_import_limits"):
+        assert RULES[rule_id].skip_reason(data(dynamic)) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+@pytest.mark.parametrize(
+    ("resource", "reasons"),
+    [
+        (listed_resource(), []),
+        (listed_resource(name="SKILL.md"), ["name_differs"]),
+        (listed_resource(description="Something else."), ["description_differs"]),
+        (listed_resource(mimeType="text/plain"), ["not_markdown"]),
+        (listed_resource(mimeType="text/markdown; charset=utf-8"), []),
+    ],
+)
+def test_skill_file_listing_metadata(resource: Any, reasons: list[str]) -> None:
+    audit = data(skill("code-review"))
+    audit.resources = [resource]
+    result = RULES["skills_skill_file_metadata"].check(audit)
+    assert [issue["reason"] for issue in result.details.get("issues", [])] == reasons
+
+
+def test_skill_file_metadata_needs_a_read_or_a_listing() -> None:
+    audit = data(skill("code-review"), files={})
+    assert RULES["skills_skill_file_metadata"].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+    audit.resources = [listed_resource()]
+    assert RULES["skills_skill_file_metadata"].skip_reason(audit) is None
+
+
+@pytest.mark.parametrize(("lines", "passed"), [(499, True), (500, False)])
+def test_skill_file_length_counts_lines(lines: int, passed: bool) -> None:
+    # skill_md adds six lines of frontmatter and heading before the body.
+    body = "line\n" * (lines - 6)
+    entry = skill("code-review", {"SKILL.md": skill_md("code-review", body=body)})
+    assert len(skill_md("code-review", body=body).splitlines()) == lines
+    result = RULES["skills_skill_file_length"].check(data(entry))
+    assert result.passed is passed
+
+
+def test_skill_file_length_needs_text() -> None:
+    audit = data(skill("code-review"), files={})
+    assert RULES["skills_skill_file_length"].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+@pytest.mark.parametrize(
+    ("value", "passed"), [("Read Bash(git:*)", True), ("  ", False), (["Read"], False), (7, False)]
+)
+def test_allowed_tools_must_be_a_string(value: Any, passed: bool) -> None:
+    result = RULES["skills_allowed_tools_valid"].check(data(skill("code-review", **{"allowed-tools": value})))
+    assert result.passed is passed
+
+
+def test_allowed_tools_rule_is_not_applicable_without_the_field() -> None:
+    assert RULES["skills_allowed_tools_valid"].skip_reason(data(skill("code-review"))) == SKIP_REASON_NOT_APPLICABLE
+    junk = data(entries=["junk"])
+    assert RULES["skills_allowed_tools_valid"].skip_reason(junk) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_new_rules_judge_only_what_a_mixed_catalog_offers() -> None:
+    dynamic = {**skill("beta"), "resources": "dynamic"}
+    odd_item = skill("gamma")
+    odd_item["resources"].append("junk")
+    unread = skill("delta")
+    unread["_files"] = {}
+    audit = data(skill("alpha"), dynamic, odd_item, unread, {"frontmatter": {"name": "x"}})
+    for rule_id in (
+        "skills_within_limits",
+        "skills_openai_import_limits",
+        "skills_skill_file_metadata",
+        "skills_skill_file_length",
+    ):
+        rule = RULES[rule_id]
+        assert rule.skip_reason(audit) is None, rule_id
+        assert rule.check(audit).passed, rule_id
 
 
 def test_directory_violation_is_judged_without_every_answer() -> None:

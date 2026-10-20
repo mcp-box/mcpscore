@@ -820,6 +820,19 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
             "Readiness for MCP %s: not assessed (no usable probe observations)",
             spec["readiness_target"],
         )
+    skills = report.get("skills")
+    if skills:
+        openai = skills["openai_import"]
+        logger.info(
+            "Skills (not scored): %s%s listed · %s with allowed-tools · %s with bundled scripts · %s",
+            skills["skills_listed"],
+            "+" if skills["listing_incomplete"] else "",
+            skills["skills_with_allowed_tools"],
+            skills["skills_with_scripts"],
+            "fits an OpenAI import"
+            if openai["fits"]
+            else f"OpenAI imports at most {openai['skills_imported_at_most']} skills and 8 MiB per scan",
+        )
 
 
 def log_smoke_outcome(smoke: SmokeReport) -> None:

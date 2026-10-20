@@ -19,6 +19,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     which must list its direct children with `SKILL.md` among them, and
     expects `-32602` for an unknown directory and for a file.
 
+- **Five LOW skills rules.**
+  - `skills_within_limits`: each skill stays within the extension's
+    512 files and 16 MiB, counted from its file list.
+  - `skills_skill_file_metadata`: `SKILL.md` is served and listed as
+    `text/markdown`, with the frontmatter's name and description.
+  - `skills_openai_import_limits`, a recommendation: each skill fits the
+    limits ChatGPT and Codex import (100 files, `SKILL.md` 256 KiB, 1 MiB per
+    file, 5 MiB per skill).
+  - `skills_skill_file_length`, a recommendation: `SKILL.md` is under 500
+    lines, as the Agent Skills specification advises.
+  - `skills_allowed_tools_valid`: `allowed-tools`, when present, is a
+    space-separated string.
+- **Modern-only servers get the skills rules.** A server with no
+  `initialize` handshake is asked `skills/list`, `skills/get` and
+  `resources/read` on the 2026-07-28 stateless lifecycle, each request
+  declaring the Skills extension; these servers skipped every skills rule
+  before.
+- **`readiness_2026_skills_list_cache_hints` (HIGH, readiness)**: a stateless
+  `skills/list` carries `ttlMs` and `cacheScope`. Dual-era HTTP servers get
+  one extra stateless `skills/list` request for it.
+- **The JSON report gains `skills`**: which skills request `allowed-tools`
+  or bundle scripts, and whether the catalog fits one OpenAI import (at most
+  five skills and 8 MiB per scan). The CLI prints it on one line. None of it
+  is scored: hosts decide about these.
+
 ### Changed
 
 - **`skills_get_supported` now asks `skills/get` for every listed skill**
