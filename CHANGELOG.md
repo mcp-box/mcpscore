@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-10-20
+
+Servers that publish Agent Skills are checked on eight more rules: two
+MEDIUM rules for `skills/get` on unknown skills and for directory reads,
+five LOW rules for limits, `SKILL.md` metadata and length, OpenAI import
+limits and `allowed-tools`, and a HIGH readiness rule for caching hints on a
+stateless `skills/list`. Their scores can fall where a check fails; every
+other server skips these rules. Servers that only speak the 2026-07-28
+stateless lifecycle now get the skills rules too, and the JSON report gains
+an unscored `skills` section.
+
 ### Added
 
 - **Two MEDIUM skills rules for the rest of the extension's required
@@ -49,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`skills_get_supported` now asks `skills/get` for every listed skill**
   (up to 32), not only the first, as the extension requires an answer for
   every skill the server serves. Calls that get no answer are not judged.
+- **Dependencies refreshed.** No runtime package moved; the `mcp==2.3.0` pin
+  is the latest SDK release.
 
 ### Fixed
 
@@ -2210,7 +2223,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.26.1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/mcp-box/mcpscore/compare/v1.26.1...v1.27.0
 [1.26.1]: https://github.com/mcp-box/mcpscore/compare/v1.26.0...v1.26.1
 [1.26.0]: https://github.com/mcp-box/mcpscore/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/mcp-box/mcpscore/compare/v1.24.0...v1.25.0
