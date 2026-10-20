@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from typing import Any, ClassVar
 
 from ..probes import ERROR_INVALID_PARAMS
+from ..report_evidence import report_evidence
 from ..skills import (
     DIGEST_RE,
     DIRECTORY_READ_KINDS,
@@ -364,7 +365,8 @@ class SkillsGetUnknownRejectedRule(SkillsBaseRule):
         return self._result(
             passed=passed,
             message=message,
-            details={"requested_uri": got.uri, "error": got.error},
+            # A skill URI may carry credentials in its userinfo; report_evidence masks them.
+            details=report_evidence({"requested_uri": got.uri, "error": got.error}),
             fix=(
                 "Answer skills/get with JSON-RPC error -32602 (Invalid params) when the URI names no skill you serve, "
                 "as resources/read does for an unknown resource."
@@ -425,12 +427,14 @@ class SkillsDirectoryReadRule(SkillsBaseRule):
         return self._result(
             passed=passed,
             message=message,
-            details={
-                "reads": [
-                    {"uri": read.uri, "kind": read.kind, "error": read.error, "children": len(read.resources or [])}
-                    for read in evidence.directory_reads
-                ]
-            },
+            details=report_evidence(
+                {
+                    "reads": [
+                        {"uri": read.uri, "kind": read.kind, "error": read.error, "children": len(read.resources or [])}
+                        for read in evidence.directory_reads
+                    ]
+                }
+            ),
             fix=(
                 "Since you declare directoryRead, answer resources/directory/read for every directory of your skills "
                 "with its direct children ({resources: [...]}, subdirectories as mimeType inode/directory), and "

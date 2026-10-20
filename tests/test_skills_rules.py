@@ -1311,3 +1311,19 @@ def test_answered_later_page_error_fails_the_directory_rule() -> None:
     evidence["directory_reads"][0].incomplete = True
     result = RULES["skills_directory_read"].check(data(skill("code-review", prefix="acme/"), **evidence))
     assert [issue["reason"] for issue in result.details["issues"]] == ["directory_read_failed"]
+
+
+def test_skill_uris_in_new_rule_details_hide_credentials() -> None:
+    secret_root = "https://user:hunter2@skills.example/acme/code-review"
+    entry = {**skill("code-review"), "uri": f"{secret_root}/SKILL.md"}
+    unknown = "https://user:hunter2@skills.example/acme/mcpscore-no-such-skill/SKILL.md"
+    reads = [
+        DirectoryRead(secret_root, "skill_root", [{"uri": f"{secret_root}/SKILL.md", "name": "SKILL.md"}]),
+        DirectoryRead(f"{secret_root}/x", "unknown", error={"outcome": "rpc_error", "error_code": -32602}),
+        DirectoryRead(f"{secret_root}/SKILL.md", "file", error={"outcome": "rpc_error", "error_code": -32602}),
+    ]
+    audit = data(entry, unknown_get=SkillGet(unknown, error={"outcome": "rpc_error", "error_code": -32602}),
+                 settings={"directoryRead": True}, directory_reads=reads)  # fmt: skip
+    for rule_id in ("skills_get_unknown_rejected", "skills_directory_read"):
+        wire = json.dumps(RULES[rule_id].check(audit).to_dict())
+        assert "hunter2" not in wire, rule_id
