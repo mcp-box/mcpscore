@@ -718,6 +718,7 @@ class _HtmlUrls(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.urls: list[tuple[str, bool]] = []
         self.srcdocs: list[str] = []
+        self.uncheckable = False  # markup this parser reads differently from a browser
         self.base: str | None = None
         self.inert: list[str] = []  # open elements whose content is never rendered
         self.open: list[tuple[str, str]] = []  # open elements, and the namespace of their children
@@ -728,8 +729,12 @@ class _HtmlUrls(HTMLParser):
             if tag in _INERT_TAGS:
                 self.inert.append(tag)
             return
+        values: dict[str, str] = {}
+        for name, value in attrs:
+            values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
         parent = self.open[-1][1] if self.open else "html"
-        if parent != "html" and tag in _FOREIGN_BREAKOUT_TAGS:
+        breakout = tag in _FOREIGN_BREAKOUT_TAGS or (tag == "font" and values.keys() & {"color", "face", "size"})
+        if parent != "html" and breakout:
             while self.open and self.open[-1][1] != "html":
                 self.open.pop()
             parent = "html"
@@ -737,9 +742,6 @@ class _HtmlUrls(HTMLParser):
         if tag in _INERT_TAGS and self.namespace == "html":
             self.inert.append(tag)
             return
-        values: dict[str, str] = {}
-        for name, value in attrs:
-            values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
         if not (tag in _VOID_TAGS and self.namespace == "html"):
             integration = _SVG_INTEGRATION_POINTS if self.namespace == "svg" else _MATHML_INTEGRATION_POINTS
             html_annotation = (
@@ -799,6 +801,12 @@ class _HtmlUrls(HTMLParser):
             )
         return _LOADING_ATTRIBUTES.get(tag, frozenset())
 
+    def unknown_decl(self, data: str) -> None:
+        # A CDATA section is text in SVG and MathML, but in HTML a browser reads "<![" as a comment
+        # ending at the first ">", while this parser skips to "]]>"; what follows cannot be checked.
+        if not self.inert and (self.open[-1][1] if self.open else "html") == "html":
+            self.uncheckable = True
+
     def handle_endtag(self, tag: str) -> None:
         if tag in self.inert:  # closes the innermost matching element; a stray end tag is ignored
             del self.inert[len(self.inert) - 1 - self.inert[::-1].index(tag) :]
@@ -835,7 +843,7 @@ def _resolve(base: str, url: str) -> str:
 
 
 def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tuple[str, bool]], bool]:
-    """Return a document's URLs resolved against its base, and whether srcdoc nesting went too deep.
+    """Return a document's URLs resolved against its base, and whether some markup cannot be checked.
 
     A srcdoc document inherits its parent's base unless it sets its own. Each level's srcdoc text is
     part of its parent, so the work is bounded by the input size times ``MAX_SRCDOC_DEPTH``.
@@ -845,7 +853,7 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
     parser.close()
     base = _resolve(inherited_base, parser.base) if parser.base else inherited_base
     urls = [(_resolve(base, url), loads) for url, loads in parser.urls]
-    too_deep = False
+    too_deep = parser.uncheckable
     for srcdoc in parser.srcdocs:
         if depth >= MAX_SRCDOC_DEPTH:
             too_deep = True
