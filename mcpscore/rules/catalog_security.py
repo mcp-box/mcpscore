@@ -737,12 +737,17 @@ class _HtmlUrls(HTMLParser):
         if tag in _INERT_TAGS and self.namespace == "html":
             self.inert.append(tag)
             return
-        if not (tag in _VOID_TAGS and self.namespace == "html"):
-            integration = _SVG_INTEGRATION_POINTS if self.namespace == "svg" else _MATHML_INTEGRATION_POINTS
-            self.open.append((tag, "html" if tag in integration else self.namespace))
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
+        if not (tag in _VOID_TAGS and self.namespace == "html"):
+            integration = _SVG_INTEGRATION_POINTS if self.namespace == "svg" else _MATHML_INTEGRATION_POINTS
+            html_annotation = (
+                self.namespace == "math"
+                and tag == "annotation-xml"
+                and values.get("encoding", "").strip().lower() in ("text/html", "application/xhtml+xml")
+            )
+            self.open.append((tag, "html" if tag in integration or html_annotation else self.namespace))
         if self.namespace == "math":
             return  # MathML elements fetch and follow nothing
         if self.namespace == "svg":
@@ -755,7 +760,8 @@ class _HtmlUrls(HTMLParser):
             loading = self._loading_attributes(tag, values)
             acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
         for name, value in values.items():
-            if not value or not (name in loading or name in acting):
+            # An empty link destination still navigates, to the document's base URL; an empty source loads nothing.
+            if not (name in loading or name in acting) or not (value or (name == "href" and name not in loading)):
                 continue
             if name == "ping":  # URLs separated by whitespace, each requested when the link is followed
                 urls = [url for url in re.split(f"[{_HTML_SPACE}]+", value) if url]
@@ -807,12 +813,23 @@ class _HtmlUrls(HTMLParser):
             self.handle_endtag(tag)
 
 
+def _web_url(url: str) -> str:
+    """Read backslashes as slashes in an http(s) or network-path URL, as a browser does."""
+    visible = _visible(url)
+    if re.match(r"(?i)(?:https?:|[/\\]{2})", visible):
+        return visible.replace("\\", "/")
+    return url
+
+
 def _resolve(base: str, url: str) -> str:
     """Resolve *url* against a document base, leaving it as written when it cannot be resolved."""
     if not base:
         return url
+    base = _web_url(base)
+    if not re.match(r"(?i)https?:|//", base):
+        return url
     try:
-        return urljoin(base, url)
+        return urljoin(base, url.replace("\\", "/") if not re.match(r"(?i)[a-z][a-z0-9+.-]*:", url) else url)
     except ValueError:
         return url
 

