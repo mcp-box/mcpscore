@@ -584,6 +584,8 @@ _LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
 _SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
     tag: frozenset({"href", "xlink:href"}) for tag in ("image", "feimage", "use", "script")
 }
+# Inside <svg>, only an anchor follows a link.
+_SVG_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {"a": frozenset({"href", "xlink:href"})}
 # HTML parsing in foreign content (HTML §13.2.6.5): SVG children of these integration points are HTML
 # again, and these HTML start tags inside SVG end the SVG content and parse as HTML.
 _SVG_INTEGRATION_POINTS = frozenset({"foreignobject", "desc", "title"})
@@ -641,7 +643,7 @@ _VOID_TAGS = frozenset(
 )
 # The pairs that act on a click or a form submission, judged like a link.
 _ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {
-    "a": frozenset({"href", "xlink:href", "ping"}),
+    "a": frozenset({"href", "ping"}),
     "area": frozenset({"href", "ping"}),
     "form": frozenset({"action"}),
     "button": frozenset({"formaction"}),
@@ -740,14 +742,13 @@ class _HtmlUrls(HTMLParser):
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
-        if tag == "base" and self.base is None and "href" in values:
-            self.base = values["href"]  # the first base with an href sets the base URL, even an empty one
-        if tag == "meta" and values.get("http-equiv", "").strip().lower() == "refresh":
-            self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
-        if tag == "iframe" and values.get("srcdoc"):
-            self.srcdocs.append(values["srcdoc"])
-        loading = self._loading_attributes(tag, values)
-        acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
+        if self.svg:
+            loading = _SVG_LOADING_ATTRIBUTES.get(tag, frozenset())
+            acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset())
+        else:
+            self._html_document_effects(tag, values)
+            loading = self._loading_attributes(tag, values)
+            acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
         for name, value in values.items():
             if not value or not (name in loading or name in acting):
                 continue
@@ -759,8 +760,17 @@ class _HtmlUrls(HTMLParser):
                 urls = [value]
             self.urls.extend((url, name in loading) for url in urls)
 
+    def _html_document_effects(self, tag: str, values: dict[str, str]) -> None:
+        """Record what an HTML element does to the whole document: its base URL, a refresh, a srcdoc."""
+        if tag == "base" and self.base is None and "href" in values:
+            self.base = values["href"]  # the first base with an href sets the base URL, even an empty one
+        if tag == "meta" and values.get("http-equiv", "").strip().lower() == "refresh":
+            self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
+        if tag == "iframe" and values.get("srcdoc"):
+            self.srcdocs.append(values["srcdoc"])
+
     def _loading_attributes(self, tag: str, values: dict[str, str]) -> frozenset[str]:
-        """Return the attributes this element fetches on render, given its type, relation and context."""
+        """Return the attributes this HTML element fetches on render, given its type and relation."""
         if tag == "input" and values.get("type", "").strip().lower() == "image":
             return frozenset({"src"})
         if tag == "link":
@@ -771,7 +781,7 @@ class _HtmlUrls(HTMLParser):
             return loading
         if tag == "iframe" and "srcdoc" in values:
             return frozenset()  # srcdoc replaces src, even when empty
-        return (_SVG_LOADING_ATTRIBUTES if self.svg else _LOADING_ATTRIBUTES).get(tag, frozenset())
+        return _LOADING_ATTRIBUTES.get(tag, frozenset())
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self.inert:  # closes the innermost matching element; a stray end tag is ignored
