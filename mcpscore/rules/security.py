@@ -291,7 +291,7 @@ class ErrorDataLeakRule(BaseRule):
             ),
             "stack trace",
         ),
-        (r"\bat\s+[\w.$]{1,300}\([\w$]{1,100}\.(?:java|kt|scala):\d+\)", "stack trace"),  # JVM frame
+        (r"\bat\s+[\w.$/@-]{1,300}\([\w$]{1,100}\.(?:java|kt|scala):\d+\)", "stack trace"),  # JVM frame
         (r'\bException in thread "[^"\n]{1,100}"', "stack trace"),  # JVM uncaught exception
         (r"\bgoroutine\s+\d+\s+\[", "stack trace"),  # Go panic goroutine dump
         (r"(?<![\w./-])[\w./-]{1,200}\.rb:\d+:in\s+['`]", "stack trace"),  # Ruby frame

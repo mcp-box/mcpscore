@@ -631,8 +631,12 @@ class _HtmlUrls(HTMLParser):
         for name, value in values.items():
             if not value:
                 continue
-            if name == "srcset":
+            if name in ("srcset", "imagesrcset"):
                 self.urls.extend((url, True) for url in _srcset_urls(value))
+            elif name == "srcdoc" and tag == "iframe":
+                # The iframe renders this HTML as its document. Each nested level must escape the
+                # previous one's quotes or ampersands, so text bounded in size nests only a few levels.
+                self.urls.extend(_html_urls(value))
             elif name in ("href", "xlink:href"):
                 self.urls.append((value, tag not in _NAVIGATING_TAGS))
             elif name in _LOADING_ATTRIBUTES or (name in ("data", "classid") and tag == "object"):
