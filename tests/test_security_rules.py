@@ -350,7 +350,11 @@ class TestErrorDataLeakRule:
         assert result.passed is False
         assert result.details["leaks"] == [{"type": "stack trace", "count": 1}]
 
-    @pytest.mark.parametrize("body", ["{not json", "[" * 100_000 + "]" * 100_000, '{"error": "Parse error"}'])
+    @pytest.mark.parametrize(
+        "body",
+        ["{not json", "[" * 100_000 + "]" * 100_000, '{"error": "Parse error"}'],
+        ids=["not-json", "too-deep", "clean-json"],
+    )
     def test_unparsable_or_clean_bodies_pass(self, rule, body):
         """A body that is not JSON, or nests too deep to decode, is scanned raw and does not crash the rule."""
         assert rule.check(_leak_audit(body)).passed is True

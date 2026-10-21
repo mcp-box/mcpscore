@@ -564,8 +564,9 @@ _PLACEHOLDER_URL_RE = re.compile(
     r"\{\{?\s*[A-Za-z_][\w.\- ]{0,63}\}\}?|\$\{[^{}]{1,64}\}|<[A-Za-z_][\w.\- ]{0,63}>|\$[A-Z_][A-Z0-9_]{2,63}\b"
 )
 _HTML_URL_ATTRIBUTES = frozenset({"src", "href", "xlink:href", "srcset", "poster", "background"})
-# SVG elements whose href loads a resource instead of navigating.
-_LOADING_HREF_TAGS = frozenset({"image", "feimage", "use"})
+# The only elements whose href navigates on a click (HTML and SVG); on any other
+# element (link, image, feImage, use, ...) an href loads or applies a resource.
+_NAVIGATING_TAGS = frozenset({"a", "area"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
 """Longer strings are not parsed as Markdown; they are judged as a whole, see ``_oversized_classes``."""
 # Script schemes in oversized text, also when split by whitespace or control characters.
@@ -575,9 +576,12 @@ _RAW_SCRIPT_RE = re.compile(
     re.IGNORECASE,
 )
 _RAW_UNSAFE_DATA_RE = re.compile(
-    r"\bdata:(?!image/(?:png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,])", re.IGNORECASE
+    _SCHEME_GAP.join("data")
+    + _SCHEME_GAP
+    + r":(?!image/(?:png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,])",
+    re.IGNORECASE,
 )
-_RAW_NETWORK_URL_RE = re.compile(r"\bhttps?:|//", re.IGNORECASE)
+_RAW_NETWORK_URL_RE = re.compile(r"\bhttps?:|[/\\]{2}", re.IGNORECASE)
 
 
 def _srcset_urls(value: str) -> Iterator[str]:
@@ -615,7 +619,7 @@ class _HtmlUrls(HTMLParser):
             if name == "srcset":
                 self.urls.extend((url, True) for url in _srcset_urls(value))
             else:
-                navigates = name in ("href", "xlink:href") and tag not in _LOADING_HREF_TAGS
+                navigates = name in ("href", "xlink:href") and tag in _NAVIGATING_TAGS
                 self.urls.append((value, not navigates))
 
     handle_startendtag = handle_starttag
