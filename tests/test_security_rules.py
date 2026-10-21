@@ -1,5 +1,6 @@
 """Unit tests for security audit rules."""
 
+import json
 import re
 import time
 
@@ -330,6 +331,29 @@ class TestErrorDataLeakRule:
     def test_prose_near_trace_vocabulary_passes(self, rule, body):
         """Error prose that shares words with traces carries no source location and passes."""
         assert rule.check(_leak_audit(body)).passed is True, body
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"stack": "Error: bad\n    at /srv/app/server.js:12:5"},
+            '  File "/srv/app/handlers.py", line 88, in dispatch',
+            ["ok", {"trace": "thread 'main' panicked at src/main.rs:10:5"}],
+        ],
+    )
+    def test_traces_inside_a_json_error_body_fail(self, rule, data):
+        """A JSON body escapes newlines and quotes, so its decoded strings are scanned as well."""
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error", "data": data}}
+        )
+        result = rule.check(_leak_audit(body))
+
+        assert result.passed is False
+        assert result.details["leaks"] == [{"type": "stack trace", "count": 1}]
+
+    @pytest.mark.parametrize("body", ["{not json", "[" * 100_000 + "]" * 100_000, '{"error": "Parse error"}'])
+    def test_unparsable_or_clean_bodies_pass(self, rule, body):
+        """A body that is not JSON, or nests too deep to decode, is scanned raw and does not crash the rule."""
+        assert rule.check(_leak_audit(body)).passed is True
 
     def test_newline_only_body_scans_in_linear_time(self, rule):
         """A body of blank lines must not make the line-anchored Node pattern retry from every line."""

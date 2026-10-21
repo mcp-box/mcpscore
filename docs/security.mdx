@@ -142,7 +142,10 @@ replay an injected instruction.
     such as `{conversation}`, `{{secret}}`, `${TOKEN}` or `<data>`. An image
     loads without a click, so a slot anywhere in its URL counts; a link counts
     only with the slot in its query, because a path such as `/users/{id}` is
-    usually an API route. Code spans are examples and pass.
+    usually an API route. Code spans and image alt text are text, not links,
+    and pass. A string over 64 KiB is not parsed but judged whole: it fails
+    on a script scheme, a `data:` URI other than a raster image, or a URL and
+    a slot anywhere in it.
   - All four skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.
   - `skills_hidden_unicode`, `skills_no_embedded_secrets` and

@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Any, ClassVar
 
@@ -208,6 +209,26 @@ class MalformedRequestHandlingRule(BaseRule):
         )
 
 
+def _json_strings(body: str) -> list[str]:
+    """Return every string key and value of a JSON body, or nothing when the body is not JSON."""
+    try:
+        document = json.loads(body)
+    except (ValueError, RecursionError):
+        return []
+    strings: list[str] = []
+    pending = [document]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            strings.append(value)
+        elif isinstance(value, dict):
+            strings.extend(str(key) for key in value)
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return strings
+
+
 @register_rule
 class ErrorDataLeakRule(BaseRule):
     """Check if error responses leak sensitive data.
@@ -382,10 +403,13 @@ class ErrorDataLeakRule(BaseRule):
         # echoing the server's leaked secret back into our own output would
         # re-leak it. The count lets the server owner gauge severity.
         leaks_found = []
+        # A JSON body escapes newlines and quotes inside strings, which hides line-anchored frames;
+        # its decoded string values are scanned too, and the larger count is reported.
+        decoded = "\n".join(_json_strings(error_response))
         for pattern, leak_type in self.STRUCTURAL_PATTERNS:
-            matches = re.findall(pattern, error_response, re.IGNORECASE)
-            if matches:
-                leaks_found.append({"type": leak_type, "count": len(matches)})
+            count = max(len(re.findall(pattern, view, re.IGNORECASE)) for view in (error_response, decoded))
+            if count:
+                leaks_found.append({"type": leak_type, "count": count})
         for pattern, leak_type in self.CREDENTIAL_PATTERNS:
             # A credential keyword is a leak only if its value is a real secret,
             # not a placeholder ("Bearer token required", "password=redacted").

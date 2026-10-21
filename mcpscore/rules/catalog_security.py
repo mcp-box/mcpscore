@@ -563,16 +563,21 @@ _SAFE_DATA_IMAGE_RE = re.compile(
 _PLACEHOLDER_URL_RE = re.compile(
     r"\{\{?\s*[A-Za-z_][\w.\- ]{0,63}\}\}?|\$\{[^{}]{1,64}\}|<[A-Za-z_][\w.\- ]{0,63}>|\$[A-Z_][A-Z0-9_]{2,63}\b"
 )
-_HTML_URL_ATTRIBUTES = frozenset({"src", "href", "srcset", "poster", "background"})
+_HTML_URL_ATTRIBUTES = frozenset({"src", "href", "xlink:href", "srcset", "poster", "background"})
+# SVG elements whose href loads a resource instead of navigating.
+_LOADING_HREF_TAGS = frozenset({"image", "feimage", "use"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
-"""Longer strings are not parsed as Markdown; every URL in them is checked as an image, which loads unasked."""
+"""Longer strings are not parsed as Markdown; they are judged as a whole, see ``_oversized_classes``."""
 # Script schemes in oversized text, also when split by whitespace or control characters.
 _SCHEME_GAP = r"[\s\x00-\x1f]*"
 _RAW_SCRIPT_RE = re.compile(
     "(?:" + "|".join(_SCHEME_GAP.join(word) for word in sorted(_SCRIPT_SCHEMES)) + ")" + _SCHEME_GAP + ":",
     re.IGNORECASE,
 )
-_RAW_URL_RE = re.compile(r"(?:(?:data|https?):|//)[^\s\"'()\[\]]+", re.IGNORECASE)
+_RAW_UNSAFE_DATA_RE = re.compile(
+    r"\bdata:(?!image/(?:png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,])", re.IGNORECASE
+)
+_RAW_NETWORK_URL_RE = re.compile(r"\bhttps?:|//", re.IGNORECASE)
 
 
 def _srcset_urls(value: str) -> Iterator[str]:
@@ -610,7 +615,8 @@ class _HtmlUrls(HTMLParser):
             if name == "srcset":
                 self.urls.extend((url, True) for url in _srcset_urls(value))
             else:
-                self.urls.append((value, name != "href"))
+                navigates = name in ("href", "xlink:href") and tag not in _LOADING_HREF_TAGS
+                self.urls.append((value, not navigates))
 
     handle_startendtag = handle_starttag
 
@@ -627,25 +633,44 @@ def _token_urls(tokens: list[Token]) -> Iterator[tuple[str, bool]]:
         if token.type == "link_open":
             yield str(token.attrs.get("href", "")), False
         elif token.type == "image":
+            # Alt text is text, not markup: links nested in it are not rendered as links.
             yield str(token.attrs.get("src", "")), True
+            continue
         elif token.type in ("html_inline", "html_block"):
             yield from _html_urls(token.content)
         if token.children:
             yield from _token_urls(token.children)
 
 
-def _oversized_urls(text: str) -> list[tuple[str, bool]]:
-    """Find URLs in text too long to parse, conservatively: every one counts as a loading image."""
+def _oversized(text: str) -> bool:
+    # surrogatepass: a lone surrogate from a server's JSON must be measured, not raise.
+    return len(text.encode("utf-8", "surrogatepass")) > MAX_LINK_MARKDOWN_BYTES
+
+
+def _oversized_classes(text: str) -> list[str]:
+    """Judge text too long to parse as a whole, conservatively, without extracting single URLs.
+
+    After decoding entities and percent-escapes: a script scheme anywhere, a ``data:`` URI other
+    than a raster image anywhere, and a slot anywhere in text that also holds a network URL.
+    """
     decoded = unquote(html_unescape(text))
-    return [(match.group(0), True) for pattern in (_RAW_SCRIPT_RE, _RAW_URL_RE) for match in pattern.finditer(decoded)]
+    found: list[str] = []
+    if _RAW_SCRIPT_RE.search(decoded):
+        found.append("script_uri")
+    if _RAW_UNSAFE_DATA_RE.search(decoded):
+        found.append("data_uri")
+    if _RAW_NETWORK_URL_RE.search(decoded) and _PLACEHOLDER_URL_RE.search(decoded):
+        found.append("exfiltration_query")
+    return found
 
 
 def markdown_urls(text: str) -> list[tuple[str, bool]]:
-    """Return each URL a Markdown renderer would link or load, with whether it loads without a click."""
-    if not any(hint in text for hint in _LINK_HINTS):
+    """Return each URL a Markdown renderer would link or load, with whether it loads without a click.
+
+    Text over ``MAX_LINK_MARKDOWN_BYTES`` is not parsed and yields no URLs.
+    """
+    if not any(hint in text for hint in _LINK_HINTS) or _oversized(text):
         return []
-    if len(text.encode("utf-8")) > MAX_LINK_MARKDOWN_BYTES:
-        return _oversized_urls(text)
     return list(_token_urls(_LINK_MARKDOWN.parse(text)))
 
 
@@ -661,6 +686,8 @@ def _query(url: str) -> str:
 
 def exfiltration_link_classes(text: str) -> list[str]:
     """Classify Markdown and HTML links that run script or carry data out of the conversation."""
+    if any(hint in text for hint in _LINK_HINTS) and _oversized(text):
+        return _oversized_classes(text)
     found: list[str] = []
     for raw, loads in markdown_urls(text):
         url = _visible(raw)
