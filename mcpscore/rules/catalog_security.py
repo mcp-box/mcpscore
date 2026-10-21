@@ -563,15 +563,41 @@ _SAFE_DATA_IMAGE_RE = re.compile(
 _PLACEHOLDER_URL_RE = re.compile(
     r"\{\{?\s*[A-Za-z_][\w.\- ]{0,63}\}\}?|\$\{[^{}]{1,64}\}|<[A-Za-z_][\w.\- ]{0,63}>|\$[A-Z_][A-Z0-9_]{0,63}\b"
 )
-# URL-valued attributes (HTML §URL attributes, SVG xlink:href). Those listed as loading fetch on
-# render; the rest act on a click or a form submission and are judged like a link.
-_LOADING_ATTRIBUTES = frozenset(
-    {"src", "srcset", "poster", "background", "lowsrc", "dynsrc", "icon", "manifest", "codebase", "archive"}
-)
-_ACTION_ATTRIBUTES = frozenset({"action", "formaction", "cite", "longdesc"})
-# The only elements whose href navigates on a click (HTML and SVG); on any other
-# element (link, image, feImage, use, ...) an href loads or applies a resource.
-_NAVIGATING_TAGS = frozenset({"a", "area"})
+# The element and attribute pairs a browser fetches on render (HTML and SVG); an attribute on any
+# other element is inert. srcset-style lists are split into candidates.
+_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
+    "img": frozenset({"src", "srcset"}),
+    "source": frozenset({"src", "srcset"}),
+    "video": frozenset({"src", "poster"}),
+    "audio": frozenset({"src"}),
+    "track": frozenset({"src"}),
+    "iframe": frozenset({"src"}),
+    "frame": frozenset({"src"}),
+    "embed": frozenset({"src"}),
+    "script": frozenset({"src"}),
+    "object": frozenset({"data"}),
+    "link": frozenset({"href", "imagesrcset"}),
+    "body": frozenset({"background"}),
+    "table": frozenset({"background"}),
+    "td": frozenset({"background"}),
+    "th": frozenset({"background"}),
+    "image": frozenset({"href", "xlink:href"}),
+    "feimage": frozenset({"href", "xlink:href"}),
+    "use": frozenset({"href", "xlink:href"}),
+}
+# The pairs that act on a click or a form submission, judged like a link.
+_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {
+    "a": frozenset({"href", "xlink:href", "ping"}),
+    "area": frozenset({"href", "ping"}),
+    "form": frozenset({"action"}),
+    "button": frozenset({"formaction"}),
+    "input": frozenset({"formaction"}),
+    "blockquote": frozenset({"cite"}),
+    "q": frozenset({"cite"}),
+    "del": frozenset({"cite"}),
+    "ins": frozenset({"cite"}),
+}
+_LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
 _HTML_SPACE = " \t\n\f\r"
 """ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
 # <meta http-equiv="refresh" content="0; url=..."> navigates on render.
@@ -616,7 +642,7 @@ def _srcset_urls(value: str) -> Iterator[str]:
 
 
 class _HtmlUrls(HTMLParser):
-    """Collect the URL attributes of raw HTML; ``href`` navigates, the others load on render."""
+    """Collect the URL attributes of raw HTML that a browser fetches on render or follows on a click."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -628,24 +654,26 @@ class _HtmlUrls(HTMLParser):
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
         if tag == "meta" and values.get("http-equiv", "").strip().lower() == "refresh":
             self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
+        loading = _LOADING_ATTRIBUTES.get(tag, frozenset())
+        if tag == "input" and values.get("type", "").strip().lower() == "image":
+            loading = frozenset({"src"})
+        acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
         for name, value in values.items():
             if not value:
                 continue
-            if name in ("srcset", "imagesrcset"):
-                self.urls.extend((url, True) for url in _srcset_urls(value))
-            elif name == "srcdoc" and tag == "iframe":
+            if name == "srcdoc" and tag == "iframe":
                 # The iframe renders this HTML as its document. Each nested level must escape the
                 # previous one's quotes or ampersands, so text bounded in size nests only a few levels.
                 self.urls.extend(_html_urls(value))
-            elif name in ("href", "xlink:href"):
-                self.urls.append((value, tag not in _NAVIGATING_TAGS))
-            elif name in _LOADING_ATTRIBUTES or (name in ("data", "classid") and tag == "object"):
-                self.urls.append((value, True))
-            elif name == "ping":
-                # A space-separated list of URLs, each requested when the link is followed.
-                self.urls.extend((url, False) for url in re.split(f"[{_HTML_SPACE}]+", value) if url)
-            elif name in _ACTION_ATTRIBUTES:
-                self.urls.append((value, False))
+            elif name in loading or name in acting:
+                loads = name in loading
+                if name == "ping":  # URLs separated by whitespace, each requested when the link is followed
+                    urls = [url for url in re.split(f"[{_HTML_SPACE}]+", value) if url]
+                elif name in _LIST_ATTRIBUTES:
+                    urls = list(_srcset_urls(value))
+                else:
+                    urls = [value]
+                self.urls.extend((url, loads) for url in urls)
 
     handle_startendtag = handle_starttag
 
