@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anywhere in its URL counts; a link counts only with the slot in its query.
   Code spans pass as examples. Raw HTML is read per element, the way a
   browser treats it. A string with markup over 64 KiB, iframe `srcdoc`
-  nested more than three deep, or a CDATA section in HTML cannot be checked
-  and fails as `uncheckable_markup`. Like the other catalog rules, a finding names the
+  nested more than three deep, a CDATA section in HTML, or script and style
+  content inside SVG or MathML cannot be checked and fails as
+  `uncheckable_markup`. Like the other catalog rules, a finding names the
   location and class, never the text, and a partial audit skips it.
   Every full audit gains 3 points of maximum score, and of score unless a
   link is flagged: DeepWiki moves from 92/109 to 95/112.

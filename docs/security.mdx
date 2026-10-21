@@ -154,8 +154,9 @@ replay an injected instruction.
     `<base href>`. Markup that cannot be checked fails as
     `uncheckable_markup`: a string with markup over 64 KiB (real catalog
     strings stay far below), iframe `srcdoc` documents nested more than
-    three deep, or a CDATA section in HTML, which browsers and parsers read
-    differently.
+    three deep, and constructs that browsers and parsers read differently: a
+    CDATA section in HTML, or `<script>` and `<style>` content inside SVG or
+    MathML.
   - All four skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.
   - `skills_hidden_unicode`, `skills_no_embedded_secrets` and

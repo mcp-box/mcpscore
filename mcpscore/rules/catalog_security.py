@@ -719,6 +719,7 @@ class _HtmlUrls(HTMLParser):
         self.urls: list[tuple[str, bool]] = []
         self.srcdocs: list[str] = []
         self.uncheckable = False  # markup this parser reads differently from a browser
+        self.closing = False  # the current start tag closes itself with "/>"
         self.base: str | None = None
         self.inert: list[str] = []  # open elements whose content is never rendered
         self.open: list[tuple[str, str]] = []  # open elements, and the namespace of their children
@@ -732,13 +733,7 @@ class _HtmlUrls(HTMLParser):
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
-        parent = self.open[-1][1] if self.open else "html"
-        breakout = tag in _FOREIGN_BREAKOUT_TAGS or (tag == "font" and values.keys() & {"color", "face", "size"})
-        if parent != "html" and breakout:
-            while self.open and self.open[-1][1] != "html":
-                self.open.pop()
-            parent = "html"
-        self.namespace = tag if parent == "html" and tag in ("svg", "math") else parent
+        self._enter(tag, values)
         if tag in _INERT_TAGS and self.namespace == "html":
             self.inert.append(tag)
             return
@@ -761,6 +756,29 @@ class _HtmlUrls(HTMLParser):
             self._html_document_effects(tag, values)
             loading = self._loading_attributes(tag, values)
             acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
+        self._collect(values, loading, acting)
+
+    def _enter(self, tag: str, values: dict[str, str]) -> None:
+        """Set the namespace of the element starting now, leaving foreign content where HTML says it ends."""
+        parent = self.open[-1][1] if self.open else "html"
+        breakout = tag in _FOREIGN_BREAKOUT_TAGS or (tag == "font" and values.keys() & {"color", "face", "size"})
+        if parent != "html" and breakout:
+            while self.open and self.open[-1][1] != "html":
+                self.open.pop()
+            parent = "html"
+        if parent == "html" and tag in ("svg", "math"):
+            self.namespace = tag
+        elif parent == "math" and tag == "svg" and self.open[-1][0] == "annotation-xml":
+            self.namespace = "svg"  # SVG may start directly inside annotation-xml, whatever its encoding
+        else:
+            self.namespace = parent
+        if tag in ("script", "style") and self.namespace != "html" and not self.closing:
+            # The parser reads their content as raw text in any namespace; a browser parses it as markup
+            # in SVG and MathML, so the content cannot be checked.
+            self.uncheckable = True
+
+    def _collect(self, values: dict[str, str], loading: frozenset[str], acting: frozenset[str]) -> None:
+        """Record the URLs in the element's loading and acting attributes."""
         for name, value in values.items():
             # An empty link destination still navigates, to the document's base URL; an empty source loads nothing.
             if not (name in loading or name in acting) or not (value or (name == "href" and name not in loading)):
@@ -815,7 +833,9 @@ class _HtmlUrls(HTMLParser):
                 pass
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.closing = True
         self.handle_starttag(tag, attrs)
+        self.closing = False
         # HTML ignores "/>" on non-void elements, so <template/> stays open; SVG and MathML honor it.
         if self.namespace != "html" and not self.inert:
             self.handle_endtag(tag)
@@ -852,6 +872,8 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
     parser.feed(html)
     parser.close()
     base = _resolve(inherited_base, parser.base) if parser.base else inherited_base
+    if _visible(base).split(":", 1)[0].lower() in ("javascript", "data"):
+        base = inherited_base  # browsers reject these bases and keep the fallback
     urls = [(_resolve(base, url), loads) for url, loads in parser.urls]
     too_deep = parser.uncheckable
     for srcdoc in parser.srcdocs:
