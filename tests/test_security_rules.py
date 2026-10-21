@@ -331,6 +331,12 @@ class TestErrorDataLeakRule:
         """Error prose that shares words with traces carries no source location and passes."""
         assert rule.check(_leak_audit(body)).passed is True, body
 
+    def test_newline_only_body_scans_in_linear_time(self, rule):
+        """A body of blank lines must not make the line-anchored Node pattern retry from every line."""
+        started = time.perf_counter()
+        assert rule.check(_leak_audit("\n" * 65_536)).passed is True
+        assert time.perf_counter() - started < 2
+
     def test_trace_patterns_stay_fast_on_adversarial_bodies(self, rule):
         """The added patterns are bounded, so a large hostile body is scanned quickly."""
         bodies = ["at " + "a" * 200_000, " at x (" + "/a" * 100_000, 'File "' + "x" * 200_000, "#1 " + "a" * 200_000]

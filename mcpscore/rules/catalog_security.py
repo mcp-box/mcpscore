@@ -11,10 +11,11 @@ from abc import abstractmethod
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
+from html import unescape as html_unescape
 from html.parser import HTMLParser
 import re
 from typing import Any, ClassVar
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -564,8 +565,35 @@ _PLACEHOLDER_URL_RE = re.compile(
 )
 _HTML_URL_ATTRIBUTES = frozenset({"src", "href", "srcset", "poster", "background"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
-"""Longer strings are not parsed as Markdown; every URL in them is checked as a link instead."""
-_RAW_URL_RE = re.compile(r"(?:javascript|vbscript|data|https?):[^\s\"'<>()\[\]]+", re.IGNORECASE)
+"""Longer strings are not parsed as Markdown; every URL in them is checked as an image, which loads unasked."""
+# Script schemes in oversized text, also when split by whitespace or control characters.
+_SCHEME_GAP = r"[\s\x00-\x1f]*"
+_RAW_SCRIPT_RE = re.compile(
+    "(?:" + "|".join(_SCHEME_GAP.join(word) for word in sorted(_SCRIPT_SCHEMES)) + ")" + _SCHEME_GAP + ":",
+    re.IGNORECASE,
+)
+_RAW_URL_RE = re.compile(r"(?:(?:data|https?):|//)[^\s\"'()\[\]]+", re.IGNORECASE)
+
+
+def _srcset_urls(value: str) -> Iterator[str]:
+    """Yield each candidate URL of a ``srcset``; commas inside a URL belong to it (HTML §srcset parsing)."""
+    position, size = 0, len(value)
+    while position < size:
+        while position < size and (value[position].isspace() or value[position] == ","):
+            position += 1
+        start = position
+        while position < size and not value[position].isspace():
+            position += 1
+        url = value[start:position]
+        if url.endswith(","):
+            url = url.rstrip(",")
+        else:
+            depth = 0
+            while position < size and (value[position] != "," or depth):
+                depth += {"(": 1, ")": -1 if depth else 0}.get(value[position], 0)
+                position += 1
+        if url:
+            yield url
 
 
 class _HtmlUrls(HTMLParser):
@@ -580,7 +608,7 @@ class _HtmlUrls(HTMLParser):
             if name not in _HTML_URL_ATTRIBUTES or not value:
                 continue
             if name == "srcset":
-                self.urls.extend((part.split()[0], True) for part in value.split(",") if part.split())
+                self.urls.extend((url, True) for url in _srcset_urls(value))
             else:
                 self.urls.append((value, name != "href"))
 
@@ -606,33 +634,48 @@ def _token_urls(tokens: list[Token]) -> Iterator[tuple[str, bool]]:
             yield from _token_urls(token.children)
 
 
+def _oversized_urls(text: str) -> list[tuple[str, bool]]:
+    """Find URLs in text too long to parse, conservatively: every one counts as a loading image."""
+    decoded = unquote(html_unescape(text))
+    return [(match.group(0), True) for pattern in (_RAW_SCRIPT_RE, _RAW_URL_RE) for match in pattern.finditer(decoded)]
+
+
 def markdown_urls(text: str) -> list[tuple[str, bool]]:
     """Return each URL a Markdown renderer would link or load, with whether it loads without a click."""
     if not any(hint in text for hint in _LINK_HINTS):
         return []
     if len(text.encode("utf-8")) > MAX_LINK_MARKDOWN_BYTES:
-        return [
-            (match.group(0), bool(_SAFE_DATA_IMAGE_RE.match(match.group(0)))) for match in _RAW_URL_RE.finditer(text)
-        ]
+        return _oversized_urls(text)
     return list(_token_urls(_LINK_MARKDOWN.parse(text)))
+
+
+def _visible(url: str) -> str:
+    """Drop whitespace and control characters, which browsers strip from URLs before resolving them."""
+    return "".join(char for char in url if char.isprintable() and not char.isspace())
+
+
+def _query(url: str) -> str:
+    """Return the query the way a browser splits it: after the first ``?``, before the first ``#``."""
+    return url.split("#", 1)[0].partition("?")[2]
 
 
 def exfiltration_link_classes(text: str) -> list[str]:
     """Classify Markdown and HTML links that run script or carry data out of the conversation."""
     found: list[str] = []
     for raw, loads in markdown_urls(text):
-        url = "".join(char for char in unquote(raw) if char.isprintable() and not char.isspace())
-        scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+        url = _visible(raw)
+        decoded = _visible(unquote(raw))
+        scheme = decoded.split(":", 1)[0].lower() if ":" in decoded else ""
+        network_path = decoded.replace("\\", "/").startswith("//")
         if scheme in _SCRIPT_SCHEMES:
             found.append("script_uri")
         elif scheme == "data":
-            if not (loads and _SAFE_DATA_IMAGE_RE.match(url)):
+            if not (loads and _SAFE_DATA_IMAGE_RE.match(decoded)):
                 found.append("data_uri")
-        elif scheme in ("http", "https"):
-            parts = urlsplit(url)
+        elif scheme in ("http", "https") or network_path:
             # An image loads with no click, so a slot anywhere in it sends data;
             # a link sends only what its query carries, as path slots are usually API routes.
-            exposed = url if loads else parts.query
+            exposed = decoded if loads else unquote(_query(url))
             if _PLACEHOLDER_URL_RE.search(exposed):
                 found.append("exfiltration_query")
     return found

@@ -264,7 +264,10 @@ class ErrorDataLeakRule(BaseRule):
         # runtime-specific banner, so prose cannot match; quantifiers are bounded to stay linear.
         (r'File "[^"\n]{1,300}", line \d+, in ', "stack trace"),  # Python frame
         (  # Node frame with an absolute path
-            r"(?m)^\s*at\s+(?:[^\n]{0,300}\s)?\(?(?:/|[A-Z]:[\\/]|node:|file://)[^\s()]{0,300}:\d+:\d+\)?\s*$",
+            (
+                r"(?m)^[ \t]*at[ \t]+(?:[^\n]{0,300}[ \t])?"
+                r"\(?(?:/|[A-Z]:[\\/]|node:|file://)[^\s()]{0,300}:\d+:\d+\)?[ \t]*$"
+            ),
             "stack trace",
         ),
         (r"\bat\s+[\w.$]{1,300}\([\w$]{1,100}\.(?:java|kt|scala):\d+\)", "stack trace"),  # JVM frame
