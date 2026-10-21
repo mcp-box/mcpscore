@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 import re
 from typing import Any, ClassVar
-from urllib.parse import unquote, urljoin
+from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
 from mcp_types import Icon
@@ -755,7 +755,7 @@ class _HtmlUrls(HTMLParser):
         else:
             self._html_document_effects(tag, values)
             loading = self._loading_attributes(tag, values)
-            acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
+            acting = _ACTION_ATTRIBUTES.get(tag, frozenset()) if self._can_act(tag, values) else frozenset()
         self._collect(values, loading, acting)
 
     def _enter(self, tag: str, values: dict[str, str]) -> None:
@@ -770,6 +770,13 @@ class _HtmlUrls(HTMLParser):
             self.namespace = tag
         elif parent == "math" and tag == "svg" and self.open[-1][0] == "annotation-xml":
             self.namespace = "svg"  # SVG may start directly inside annotation-xml, whatever its encoding
+        elif (
+            parent == "html"
+            and tag in ("mglyph", "malignmark")
+            and self.open[-1:]
+            and (self.open[-1][0] in _MATHML_INTEGRATION_POINTS)
+        ):
+            self.namespace = "math"  # the two MathML children a text integration point keeps in MathML
         else:
             self.namespace = parent
         if tag in ("script", "style") and self.namespace != "html" and not self.closing:
@@ -790,6 +797,16 @@ class _HtmlUrls(HTMLParser):
             else:
                 urls = [value]
             self.urls.extend((url, name in loading) for url in urls)
+
+    @staticmethod
+    def _can_act(tag: str, values: dict[str, str]) -> bool:
+        """Whether a form control can submit: an input of type submit or image, a button not of type button or reset."""
+        kind = values.get("type", "").strip().lower()
+        if tag == "input":
+            return kind in ("submit", "image")
+        if tag == "button":
+            return kind not in ("button", "reset")
+        return True
 
     def _html_document_effects(self, tag: str, values: dict[str, str]) -> None:
         """Record what an HTML element does to the whole document: its base URL, a refresh, a srcdoc."""
@@ -836,6 +853,9 @@ class _HtmlUrls(HTMLParser):
         self.closing = True
         self.handle_starttag(tag, attrs)
         self.closing = False
+        if tag in ("script", "style") and self.namespace == "html" and not self.inert:
+            # HTML ignores "/>" here and reads what follows as raw text; the parser does not.
+            self.uncheckable = True
         # HTML ignores "/>" on non-void elements, so <template/> stays open; SVG and MathML honor it.
         if self.namespace != "html" and not self.inert:
             self.handle_endtag(tag)
@@ -862,6 +882,18 @@ def _resolve(base: str, url: str) -> str:
         return url
 
 
+def _document_base(inherited: str, declared: str | None) -> str:
+    """Return a document's base URL; a malformed, javascript: or data: base is rejected for the inherited one."""
+    if not declared:
+        return inherited
+    candidate = _resolve(inherited, declared)
+    try:
+        scheme = urlsplit(_web_url(candidate)).scheme.lower()
+    except ValueError:
+        return inherited
+    return inherited if scheme in ("javascript", "data") else candidate
+
+
 def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tuple[str, bool]], bool]:
     """Return a document's URLs resolved against its base, and whether some markup cannot be checked.
 
@@ -871,9 +903,7 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
     parser = _HtmlUrls()
     parser.feed(html)
     parser.close()
-    base = _resolve(inherited_base, parser.base) if parser.base else inherited_base
-    if _visible(base).split(":", 1)[0].lower() in ("javascript", "data"):
-        base = inherited_base  # browsers reject these bases and keep the fallback
+    base = _document_base(inherited_base, parser.base)
     urls = [(_resolve(base, url), loads) for url, loads in parser.urls]
     too_deep = parser.uncheckable
     for srcdoc in parser.srcdocs:
