@@ -11,9 +11,13 @@ from abc import abstractmethod
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
+from html.parser import HTMLParser
 import re
 from typing import Any, ClassVar
+from urllib.parse import unquote, urlsplit
 
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from mcp_types import Icon
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
@@ -143,7 +147,12 @@ def _publishable_path(path: str) -> tuple[str, bool]:
     segments = path.split("/")
     for position, segment in enumerate(segments[1:], start=1):
         text = segment.replace("~1", "/").replace("~0", "~")
-        if hidden_unicode_classes(text) or secret_classes(text) or injection_classes(text):
+        if (
+            hidden_unicode_classes(text)
+            or secret_classes(text)
+            or injection_classes(text)
+            or exfiltration_link_classes(text)
+        ):
             return "/".join(segments[:position]), True
     return path, False
 
@@ -527,3 +536,143 @@ class CatalogPromptInjectionPhrasingRule(CatalogSecurityRule):
     def matches(self, text: str) -> list[str]:
         """Return the injection-phrasing classes found in *text*."""
         return injection_classes(text)
+
+
+class _AllLinksMarkdown(MarkdownIt):
+    """CommonMark parser that keeps every link.
+
+    The default validator drops javascript:, vbscript:, file: and most data:
+    links before they become tokens; this rule needs to see exactly those.
+    """
+
+    def validateLink(self, url: str) -> bool:  # noqa: N802 - overrides markdown-it's method name
+        """Accept every destination so the rule can classify it."""
+        return True
+
+
+_LINK_MARKDOWN = _AllLinksMarkdown("commonmark")
+# Only text that can hold a Markdown link, image, autolink or HTML tag is parsed.
+_LINK_HINTS = ("](", "]:", "<")
+_SCRIPT_SCHEMES = frozenset({"javascript", "vbscript"})
+# Raster images that cannot carry script; SVG can, so it is not here.
+_SAFE_DATA_IMAGE_RE = re.compile(
+    r"^data:image/(?:png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,]", re.IGNORECASE
+)
+# A slot the model is asked to fill: {x}, {{x}}, ${x}, <x>, $NAME.
+_PLACEHOLDER_URL_RE = re.compile(
+    r"\{\{?\s*[A-Za-z_][\w.\- ]{0,63}\}\}?|\$\{[^{}]{1,64}\}|<[A-Za-z_][\w.\- ]{0,63}>|\$[A-Z_][A-Z0-9_]{2,63}\b"
+)
+_HTML_URL_ATTRIBUTES = frozenset({"src", "href", "srcset", "poster", "background"})
+MAX_LINK_MARKDOWN_BYTES = 64 * 1024
+"""Longer strings are not parsed as Markdown; every URL in them is checked as a link instead."""
+_RAW_URL_RE = re.compile(r"(?:javascript|vbscript|data|https?):[^\s\"'<>()\[\]]+", re.IGNORECASE)
+
+
+class _HtmlUrls(HTMLParser):
+    """Collect the URL attributes of raw HTML; ``href`` navigates, the others load on render."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.urls: list[tuple[str, bool]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if name not in _HTML_URL_ATTRIBUTES or not value:
+                continue
+            if name == "srcset":
+                self.urls.extend((part.split()[0], True) for part in value.split(",") if part.split())
+            else:
+                self.urls.append((value, name != "href"))
+
+    handle_startendtag = handle_starttag
+
+
+def _html_urls(html: str) -> list[tuple[str, bool]]:
+    parser = _HtmlUrls()
+    parser.feed(html)
+    parser.close()
+    return parser.urls
+
+
+def _token_urls(tokens: list[Token]) -> Iterator[tuple[str, bool]]:
+    for token in tokens:
+        if token.type == "link_open":
+            yield str(token.attrs.get("href", "")), False
+        elif token.type == "image":
+            yield str(token.attrs.get("src", "")), True
+        elif token.type in ("html_inline", "html_block"):
+            yield from _html_urls(token.content)
+        if token.children:
+            yield from _token_urls(token.children)
+
+
+def markdown_urls(text: str) -> list[tuple[str, bool]]:
+    """Return each URL a Markdown renderer would link or load, with whether it loads without a click."""
+    if not any(hint in text for hint in _LINK_HINTS):
+        return []
+    if len(text.encode("utf-8")) > MAX_LINK_MARKDOWN_BYTES:
+        return [
+            (match.group(0), bool(_SAFE_DATA_IMAGE_RE.match(match.group(0)))) for match in _RAW_URL_RE.finditer(text)
+        ]
+    return list(_token_urls(_LINK_MARKDOWN.parse(text)))
+
+
+def exfiltration_link_classes(text: str) -> list[str]:
+    """Classify Markdown and HTML links that run script or carry data out of the conversation."""
+    found: list[str] = []
+    for raw, loads in markdown_urls(text):
+        url = "".join(char for char in unquote(raw) if char.isprintable() and not char.isspace())
+        scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+        if scheme in _SCRIPT_SCHEMES:
+            found.append("script_uri")
+        elif scheme == "data":
+            if not (loads and _SAFE_DATA_IMAGE_RE.match(url)):
+                found.append("data_uri")
+        elif scheme in ("http", "https"):
+            parts = urlsplit(url)
+            # An image loads with no click, so a slot anywhere in it sends data;
+            # a link sends only what its query carries, as path slots are usually API routes.
+            exposed = url if loads else parts.query
+            if _PLACEHOLDER_URL_RE.search(exposed):
+                found.append("exfiltration_query")
+    return found
+
+
+@register_rule
+class CatalogExfiltrationLinksRule(CatalogSecurityRule):
+    """High check: catalog text has no links that run script or carry data out.
+
+    A client that renders Markdown fetches an image without a click. When a
+    description asks the model to fill a slot in that image's URL, the
+    conversation leaves with the request. ``javascript:`` and ``data:`` links
+    run or display content the reviewer never sees.
+
+    Scoring: 3 points (HIGH)
+    """
+
+    rule_id = "catalog_exfiltration_links"
+    basis = (
+        "OWASP MCP Top 10 (beta) MCP03:2025 Tool Poisoning and MCP06:2025 Prompt Injection via Contextual "
+        "Payloads; MCP 2025-11-25 §Security and Trust & Safety (Tool Safety: tool descriptions are untrusted)"
+    )
+    rule_order = 23
+    issue_reason = "exfiltration_link"
+    expected = "links to fixed http(s) addresses, with no script or data URIs and no slots for the model to fill"
+    passed_message = "Catalog text contains no script links or data-carrying URLs"
+    failure_label = "catalog strings with script links or data-carrying URLs"
+    fix = (
+        "Remove javascript: and data: links from the listed fields, and remove placeholders from link and image "
+        "URLs. Link to fixed pages; return data in tool results, never through a URL the model fills in."
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return "No Exfiltration Links in Catalog Text"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def matches(self, text: str) -> list[str]:
+        """Return the exfiltration-link classes found in *text*."""
+        return exfiltration_link_classes(text)

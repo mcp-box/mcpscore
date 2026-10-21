@@ -1,6 +1,7 @@
 """Unit tests for security audit rules."""
 
 import re
+import time
 
 import pytest
 
@@ -287,6 +288,56 @@ class TestErrorDataLeakRule:
 
         assert result.passed is False
         assert "stack trace" in result.message.lower()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '  File "/srv/app/handlers.py", line 88, in dispatch\n    payload = json.loads(raw)',
+            "SyntaxError: Unexpected token\n    at parse (/srv/app/node_modules/body/index.js:14:21)",
+            "Error\n    at C:\\srv\\app\\server.js:12:5",
+            "java.lang.IllegalStateException: bad\n\tat com.acme.mcp.Handler.parse(Handler.java:42)",
+            "at com.acme.mcp.Router.route(Router.kt:17)",
+            'Exception in thread "main" java.lang.NullPointerException',
+            "panic: runtime error: index out of range\n\ngoroutine 1 [running]:\nmain.main()",
+            "app/server.rb:12:in `parse': unexpected token (JSON::ParserError)",
+            "at Acme.Mcp.Handler.Parse(String body) in C:\\src\\Handler.cs:line 31",
+            "thread 'tokio-runtime-worker' panicked at src/main.rs:10:5",
+            "PHP Fatal error:  Uncaught JsonException: Syntax error",
+            "Fatal error: Uncaught TypeError: json_decode()",
+            "#0 /var/www/app/src/Server.php(42): App\\Server->parse()",
+            "terminate called after throwing an instance of 'nlohmann::json::parse_error'",
+            "** (ArgumentError) argument error\n    (stdlib) :erlang.binary_to_term",
+        ],
+    )
+    def test_stack_traces_of_other_runtimes_fail(self, rule, body):
+        """Frames and crash banners from each common server runtime count as a stack trace."""
+        result = rule.check(_leak_audit(body))
+
+        assert result.passed is False, body
+        assert "stack trace" in result.message.lower()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '{"error": {"code": -32700, "message": "Parse error at line 1, column 5"}}',
+            "Meet at 10:30:45 in the lobby",
+            "The thread panicked earlier; retry the request",
+            "Invalid request: the field 'at' must be a string",
+            "See README.md for the request format",
+            "Fatal error: request body is not JSON",
+        ],
+    )
+    def test_prose_near_trace_vocabulary_passes(self, rule, body):
+        """Error prose that shares words with traces carries no source location and passes."""
+        assert rule.check(_leak_audit(body)).passed is True, body
+
+    def test_trace_patterns_stay_fast_on_adversarial_bodies(self, rule):
+        """The added patterns are bounded, so a large hostile body is scanned quickly."""
+        bodies = ["at " + "a" * 200_000, " at x (" + "/a" * 100_000, 'File "' + "x" * 200_000, "#1 " + "a" * 200_000]
+        started = time.perf_counter()
+        for body in bodies:
+            rule.check(_leak_audit(body))
+        assert time.perf_counter() - started < 20
 
     def test_absent_probe_is_insufficient_data(self, rule):
         """No malformed probe at all — nothing to scan."""

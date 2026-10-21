@@ -260,6 +260,25 @@ class ErrorDataLeakRule(BaseRule):
         (r"C:\\Users\\", "file path"),
         (r"Traceback \(most recent call last\)", "stack trace"),
         (r"at \w+\.\w+ \([^)]+:\d+:\d+\)", "stack trace"),  # JavaScript stack trace
+        # Frames and crash banners of other runtimes. Each needs a source location or a
+        # runtime-specific banner, so prose cannot match; quantifiers are bounded to stay linear.
+        (r'File "[^"\n]{1,300}", line \d+, in ', "stack trace"),  # Python frame
+        (  # Node frame with an absolute path
+            r"(?m)^\s*at\s+(?:[^\n]{0,300}\s)?\(?(?:/|[A-Z]:[\\/]|node:|file://)[^\s()]{0,300}:\d+:\d+\)?\s*$",
+            "stack trace",
+        ),
+        (r"\bat\s+[\w.$]{1,300}\([\w$]{1,100}\.(?:java|kt|scala):\d+\)", "stack trace"),  # JVM frame
+        (r'\bException in thread "[^"\n]{1,100}"', "stack trace"),  # JVM uncaught exception
+        (r"\bgoroutine\s+\d+\s+\[", "stack trace"),  # Go panic goroutine dump
+        (r"(?<![\w./-])[\w./-]{1,200}\.rb:\d+:in\s+['`]", "stack trace"),  # Ruby frame
+        (r"\bat\s+[\w.<>+`]{1,300}\([^)\n]{0,300}\)\s+in\s+\S{1,300}:line\s+\d+", "stack trace"),  # .NET frame
+        (r"\bthread\s+'[^'\n]{1,100}'\s+panicked\s+at\b", "stack trace"),  # Rust panic
+        (  # PHP fatal banner or frame
+            r"\bPHP\s+(?:Fatal|Parse)\s+error:|\bFatal error:\s+Uncaught\b|#\d+\s+\S{1,300}\.php\(\d+\):",
+            "stack trace",
+        ),
+        (r"\bterminate called after throwing an instance of\b", "stack trace"),  # C++ uncaught exception
+        (r"\*\*\s+\((?:RuntimeError|ArgumentError|ErlangError|exit|throw)\)", "stack trace"),  # Elixir crash
     ]
 
     # The realistic alphabet of a leaked credential value. Covers RFC 6750

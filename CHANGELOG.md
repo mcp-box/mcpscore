@@ -19,6 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pagination left incomplete. Every server with two or more described tools
   gains a point of maximum score, and gains it in its score unless its tools
   share a description: DeepWiki moves from 91/108 to 92/109.
+- **`catalog_exfiltration_links` (HIGH): no link in catalog text runs script
+  or carries data out.** Every catalog string is read as Markdown, the way a
+  client renders it, with raw HTML tags and reference-style links. The rule
+  flags `javascript:` and `vbscript:` links, `data:` links other than a raster
+  image, and a link or image URL with a slot for the model to fill, such as
+  `{conversation}` or `${TOKEN}`. An image loads without a click, so a slot
+  anywhere in its URL counts; a link counts only with the slot in its query.
+  Code spans pass as examples. Like the other catalog rules, a finding names
+  the location and class, never the text, and a partial audit skips it.
+  Every full audit gains 3 points of maximum score, and of score unless a
+  link is flagged: DeepWiki moves from 92/109 to 95/112.
+
+### Changed
+
+- **`security_error_data_leak` recognizes stack traces from more runtimes.**
+  Besides Python tracebacks and JavaScript frames, the error body is checked
+  for Python and Node frames with a source location, JVM (Java, Kotlin,
+  Scala) frames and uncaught-exception banners, Go goroutine dumps, and Ruby,
+  .NET, Rust, PHP, C++ and Elixir crash output. A server whose malformed-request
+  error carries one of these now fails the rule.
 
 ## [1.27.0] - 2026-10-20
 
