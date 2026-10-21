@@ -8,6 +8,7 @@ This module tests all tool-related audit rules including:
 - ToolsNamesValidFormatRule
 - ToolsTitlePresentRule
 - ToolsDescriptionPresentRule
+- ToolsDescriptionsUniqueRule
 - ToolsInputSchemaValidRule
 - ToolsOutputSchemaValidRule
 
@@ -27,6 +28,7 @@ from mcpscore.rules.tools import (
     ToolsAtLeastOneRule,
     ToolsBaseRule,
     ToolsDescriptionPresentRule,
+    ToolsDescriptionsUniqueRule,
     ToolsExecutionConsistentRule,
     ToolsInputPropertiesDocumentedRule,
     ToolsInputSchemaValidRule,
@@ -43,6 +45,7 @@ from mcpscore.rules.tools import (
     ToolsTitlePresentRule,
     is_valid_output_schema,
     is_valid_schema,
+    normalized_description,
 )
 
 # ============================================================================
@@ -865,6 +868,112 @@ class TestToolsAnnotationsPresentRule:
         """A failed tools/list provides no annotations to judge."""
         data = AuditData(tools=None, capabilities=capabilities_full)
         assert ToolsAnnotationsPresentRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+# ============================================================================
+# ToolsDescriptionsUniqueRule Tests
+# ============================================================================
+
+
+def described(name: str, description: str | None) -> Tool:
+    """Build a minimal tool with the given description."""
+    return Tool(name=name, description=description, input_schema={"type": "object"})
+
+
+class TestToolsDescriptionsUniqueRule:
+    """Test ToolsDescriptionsUniqueRule."""
+
+    def test_rule_properties(self) -> None:
+        """The rule is a LOW tools rule citing the spec's interaction model."""
+        rule = ToolsDescriptionsUniqueRule()
+        assert rule.rule_id == "tools_descriptions_unique"
+        assert rule.severity == RuleSeverity.LOW
+        assert rule.basis is not None
+        assert "User Interaction Model" in rule.basis
+
+    def test_distinct_descriptions_pass(self) -> None:
+        """Pass: every described tool has its own description."""
+        tools = [described("get_user", "Get one user by ID."), described("list_users", "List users.")]
+        result = ToolsDescriptionsUniqueRule().check(AuditData(tools=tools))
+        assert result.passed is True
+        assert result.details is not None
+        assert result.details["duplicate_description_groups"] == []
+
+    def test_two_tools_sharing_a_description_fail(self) -> None:
+        """Fail: two tools carry the same description, and the text is not echoed."""
+        tools = [
+            described("appstore_apps", "Query the App Store."),
+            described("appstore_apps_appId", "Query the App Store."),
+            described("other", "Something else."),
+        ]
+        result = ToolsDescriptionsUniqueRule().check(AuditData(tools=tools))
+        assert result.passed is False
+        assert result.details is not None
+        assert result.details["duplicate_description_groups"] == [["appstore_apps", "appstore_apps_appId"]]
+        assert '"appstore_apps", "appstore_apps_appId"' in result.message
+        assert "1 group)" in result.message
+        assert "App Store" not in result.message
+        assert "App Store" not in str(result.details)
+        assert [issue["entity_index"] for issue in result.details["issues"]] == [0, 1]
+        assert {issue["path"] for issue in result.details["issues"]} == {"/description"}
+
+    def test_several_groups_are_summarized(self) -> None:
+        """Fail: each group is named, a few tools and groups at a time."""
+        tools = [described(f"tpl_{i}", "List predefined templates") for i in range(6)]
+        for group in range(4):
+            tools += [described(f"g{group}_a", f"Alias {group}"), described(f"g{group}_b", f"alias {group}")]
+        result = ToolsDescriptionsUniqueRule().check(AuditData(tools=tools))
+        assert result.passed is False
+        assert result.details is not None
+        assert len(result.details["duplicate_description_groups"]) == 5
+        assert "(5 groups)" in result.message
+        assert '"tpl_0", "tpl_1", "tpl_2" and 3 more' in result.message
+        assert "tpl_3" not in result.message
+        assert "2 more groups" in result.message
+        assert "g3_a" not in result.message
+
+    @pytest.mark.parametrize(
+        "variant",
+        ["Search the docs.", "search the docs", "  Search   the\tdocs  ", "SEARCH THE DOCS.", "Search the docs .\n"],
+    )
+    def test_case_whitespace_and_period_variants_match(self, variant: str) -> None:
+        """Fail: descriptions that differ only by case, whitespace or a trailing period match."""
+        tools = [described("a", "Search the docs"), described("b", variant)]
+        assert ToolsDescriptionsUniqueRule().check(AuditData(tools=tools)).passed is False
+
+    def test_only_one_trailing_period_is_dropped(self) -> None:
+        """Pass: an ellipsis is not the same text as no period."""
+        assert normalized_description("Wait..") == "wait."
+        tools = [described("a", "Wait"), described("b", "Wait..")]
+        assert ToolsDescriptionsUniqueRule().check(AuditData(tools=tools)).passed is True
+
+    def test_blank_descriptions_are_ignored(self) -> None:
+        """Pass: missing and blank descriptions are another rule's concern."""
+        tools = [
+            described("a", None),
+            described("b", ""),
+            described("c", " . "),
+            described("d", "One"),
+            described("e", "Two"),
+        ]
+        rule = ToolsDescriptionsUniqueRule()
+        data = AuditData(tools=tools)
+        assert rule.skip_reason(data) is None
+        assert rule.check(data).passed is True
+
+    def test_fewer_than_two_described_tools_is_not_applicable(self) -> None:
+        """Skip: nothing to compare with one described tool."""
+        rule = ToolsDescriptionsUniqueRule()
+        assert rule.skip_reason(AuditData(tools=[described("a", "One"), described("b", "  ")])) == (
+            SKIP_REASON_NOT_APPLICABLE
+        )
+        assert rule.skip_reason(AuditData(tools=[])) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_incomplete_listing_is_insufficient_data(self) -> None:
+        """Skip: the duplicate may be on a page that was never fetched."""
+        tools = [described("a", "One"), described("b", "Two")]
+        data = AuditData(tools=tools, incomplete_listings=frozenset({"tools"}))
+        assert ToolsDescriptionsUniqueRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 # ============================================================================

@@ -44,6 +44,12 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
         ("names_valid_format", [tool(name="search customers")], "/name", "1-128"),
         ("title_present_in_all", [tool()], "/title", "title"),
         ("description_present_in_all", [tool(description=" \t")], "/description", "when to use"),
+        (
+            "descriptions_unique",
+            [tool(name="a", description="Search."), tool(name="b", description="search")],
+            "/description",
+            "instead of the others",
+        ),
         ("input_schema_valid", [tool(input_schema={"type": "bad"})], "/inputSchema/type", "inputSchema"),
         ("output_schema_valid", [tool(output_schema={"type": "bad"})], "/outputSchema/type", "outputSchema"),
         (
