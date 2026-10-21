@@ -303,6 +303,7 @@ class TestErrorDataLeakRule:
             "\tat com.acme.Handler.<init>(Handler.java:42)",
             "\tat com.acme.Config.<clinit>(Config.java:7)",
             "at Program.<Main>$(String[] args) in C:\\src\\Program.cs:line 5",
+            "at Acme.Mcp.Handler.Parse(String body) in C:\\src\\My App\\Handler.cs:line 31",
             "Error\n    at C:\\Program Files\\Acme\\server.js:12:5",
             "\tat app//com.acme.Main.main(Main.java:9)",
             "\tat com.acme.core@2.1.0/com.acme.Server.start(Server.java:44)",

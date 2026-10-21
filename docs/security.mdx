@@ -138,7 +138,8 @@ replay an injected instruction.
   - `catalog_exfiltration_links` reads each string as Markdown, the way a
     client renders it, including reference-style links and raw HTML. In HTML
     it reads the attributes a browser fetches on render (`<img src>`,
-    `srcset`, `<video poster>`, `<object data>`, `<link href>`, SVG
+    `srcset`, `<video poster>`, `<object data>`, a stylesheet, icon or
+    preload `<link href>`, SVG
     `<image href>`, a refresh `<meta>`) or follows on a click (`<a href>`,
     `<form action>`); the same attribute on an element that ignores it is
     inert. It

@@ -576,7 +576,6 @@ _LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
     "embed": frozenset({"src"}),
     "script": frozenset({"src"}),
     "object": frozenset({"data"}),
-    "link": frozenset({"href", "imagesrcset"}),
     "body": frozenset({"background"}),
     "table": frozenset({"background"}),
     "td": frozenset({"background"}),
@@ -592,12 +591,23 @@ _ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {
     "form": frozenset({"action"}),
     "button": frozenset({"formaction"}),
     "input": frozenset({"formaction"}),
-    "blockquote": frozenset({"cite"}),
-    "q": frozenset({"cite"}),
-    "del": frozenset({"cite"}),
-    "ins": frozenset({"cite"}),
 }
+# <link> relations that fetch their href on render; any other relation is metadata.
+_FETCHING_LINK_RELATIONS = frozenset(
+    {
+        "stylesheet",
+        "icon",
+        "apple-touch-icon",
+        "mask-icon",
+        "manifest",
+        "preload",
+        "prefetch",
+        "modulepreload",
+        "prerender",
+    }
+)
 _LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
+_MAX_DECODE_PASSES = 12
 _HTML_SPACE = " \t\n\f\r"
 """ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
 # <meta http-equiv="refresh" content="0; url=..."> navigates on render.
@@ -657,6 +667,13 @@ class _HtmlUrls(HTMLParser):
         loading = _LOADING_ATTRIBUTES.get(tag, frozenset())
         if tag == "input" and values.get("type", "").strip().lower() == "image":
             loading = frozenset({"src"})
+        elif tag == "link":
+            relations = set(values.get("rel", "").lower().split())
+            loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
+            if "preload" in relations and values.get("as", "").strip().lower() == "image":
+                loading |= {"imagesrcset"}
+        elif tag == "iframe" and "srcdoc" in values:
+            loading = frozenset()  # srcdoc replaces src, even when empty
         acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
         for name, value in values.items():
             if not value:
@@ -710,7 +727,14 @@ def _oversized_classes(text: str) -> list[str]:
     After decoding entities and percent-escapes: a script scheme anywhere, a ``data:`` URI other
     than a raster image anywhere, and a slot anywhere in text that also holds a network URL.
     """
-    decoded = unquote(html_unescape(text))
+    decoded = text
+    # Decode once per possible srcdoc level. Each level escapes the previous one's "&" (five times
+    # longer), so 12 passes see through any nesting a string under hundreds of megabytes can hold.
+    for _ in range(_MAX_DECODE_PASSES):
+        step = unquote(html_unescape(decoded))
+        if step == decoded:
+            break
+        decoded = step
     found: list[str] = []
     if _RAW_SCRIPT_RE.search(decoded):
         found.append("script_uri")

