@@ -578,10 +578,11 @@ _LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
     "table": frozenset({"background"}),
     "td": frozenset({"background"}),
     "th": frozenset({"background"}),
-    # SVG <image href>, and the legacy HTML <image src>, which browsers parse as <img>.
-    "image": frozenset({"href", "xlink:href", "src", "srcset"}),
-    "feimage": frozenset({"href", "xlink:href"}),
-    "use": frozenset({"href", "xlink:href"}),
+    "image": frozenset({"src", "srcset"}),  # legacy HTML <image>, which browsers parse as <img>
+}
+# Inside <svg>, these elements load from href or xlink:href instead.
+_SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
+    tag: frozenset({"href", "xlink:href"}) for tag in ("image", "feimage", "use", "script")
 }
 # The pairs that act on a click or a form submission, judged like a link.
 _ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {
@@ -661,13 +662,16 @@ class _HtmlUrls(HTMLParser):
         self.urls: list[tuple[str, bool]] = []
         self.srcdocs: list[str] = []
         self.base: str | None = None
-        self.inert = 0
+        self.inert: list[str] = []  # open elements whose content is never rendered
+        self.svg = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _INERT_TAGS:
-            self.inert += 1
+            self.inert.append(tag)
         if self.inert:
             return
+        if tag == "svg":
+            self.svg += 1
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
@@ -675,18 +679,9 @@ class _HtmlUrls(HTMLParser):
             self.base = values["href"]  # the first base with an href sets the base URL, even an empty one
         if tag == "meta" and values.get("http-equiv", "").strip().lower() == "refresh":
             self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
-        loading = _LOADING_ATTRIBUTES.get(tag, frozenset())
-        if tag == "input" and values.get("type", "").strip().lower() == "image":
-            loading = frozenset({"src"})
-        elif tag == "link":
-            relations = set(values.get("rel", "").lower().split())
-            loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
-            if "preload" in relations and values.get("as", "").strip().lower() == "image":
-                loading |= {"imagesrcset"}
-        elif tag == "iframe" and "srcdoc" in values:
-            loading = frozenset()  # srcdoc replaces src, even when empty
-            if values["srcdoc"]:
-                self.srcdocs.append(values["srcdoc"])
+        if tag == "iframe" and values.get("srcdoc"):
+            self.srcdocs.append(values["srcdoc"])
+        loading = self._loading_attributes(tag, values)
         acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
         for name, value in values.items():
             if not value or not (name in loading or name in acting):
@@ -699,13 +694,31 @@ class _HtmlUrls(HTMLParser):
                 urls = [value]
             self.urls.extend((url, name in loading) for url in urls)
 
+    def _loading_attributes(self, tag: str, values: dict[str, str]) -> frozenset[str]:
+        """Return the attributes this element fetches on render, given its type, relation and context."""
+        if tag == "input" and values.get("type", "").strip().lower() == "image":
+            return frozenset({"src"})
+        if tag == "link":
+            relations = set(values.get("rel", "").lower().split())
+            loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
+            if "preload" in relations and values.get("as", "").strip().lower() == "image":
+                loading |= {"imagesrcset"}
+            return loading
+        if tag == "iframe" and "srcdoc" in values:
+            return frozenset()  # srcdoc replaces src, even when empty
+        return (_SVG_LOADING_ATTRIBUTES if self.svg else _LOADING_ATTRIBUTES).get(tag, frozenset())
+
     def handle_endtag(self, tag: str) -> None:
-        if tag in _INERT_TAGS and self.inert:
-            self.inert -= 1
+        if tag in self.inert:  # closes the innermost matching element; a stray end tag is ignored
+            del self.inert[len(self.inert) - 1 - self.inert[::-1].index(tag) :]
+        elif tag == "svg" and self.svg and not self.inert:
+            self.svg -= 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
-        self.handle_endtag(tag)
+        # HTML ignores "/>" on non-void elements, so <template/> stays open; SVG honors it.
+        if tag not in _INERT_TAGS or self.svg:
+            self.handle_endtag(tag)
 
 
 def _resolve(base: str, url: str) -> str:
@@ -777,7 +790,8 @@ def exfiltration_link_classes(text: str) -> list[str]:
         elif scheme in ("http", "https") or network_path:
             # An image loads with no click, so a slot anywhere in it sends data;
             # a link sends only what its query carries, as path slots are usually API routes.
-            exposed = decoded if loads else unquote(_query(url))
+            # A browser never sends the fragment, so a slot after a literal "#" carries nothing.
+            exposed = _visible(unquote(url.split("#", 1)[0])) if loads else unquote(_query(url))
             if _PLACEHOLDER_URL_RE.search(exposed):
                 found.append("exfiltration_query")
     if too_deep:

