@@ -296,6 +296,7 @@ class TestErrorDataLeakRule:
             '  File "/srv/app/handlers.py", line 88, in dispatch\n    payload = json.loads(raw)',
             "SyntaxError: Unexpected token\n    at parse (/srv/app/node_modules/body/index.js:14:21)",
             "Error\n    at C:\\srv\\app\\server.js:12:5",
+            "Error\r\n    at C:\\srv\\app\\server.js:12:5\r\n",
             "java.lang.IllegalStateException: bad\n\tat com.acme.mcp.Handler.parse(Handler.java:42)",
             "at com.acme.mcp.Router.route(Router.kt:17)",
             'Exception in thread "main" java.lang.NullPointerException',

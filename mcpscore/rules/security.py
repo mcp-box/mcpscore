@@ -287,7 +287,7 @@ class ErrorDataLeakRule(BaseRule):
         (  # Node frame with an absolute path
             (
                 r"(?m)^[ \t]*at[ \t]+(?:[^\n]{0,300}[ \t])?"
-                r"\(?(?:/|[A-Z]:[\\/]|node:|file://)[^\s()]{0,300}:\d+:\d+\)?[ \t]*$"
+                r"\(?(?:/|[A-Z]:[\\/]|node:|file://)[^\s()]{0,300}:\d+:\d+\)?[ \t]*\r?$"
             ),
             "stack trace",
         ),

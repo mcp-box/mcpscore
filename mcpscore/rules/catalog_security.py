@@ -563,10 +563,19 @@ _SAFE_DATA_IMAGE_RE = re.compile(
 _PLACEHOLDER_URL_RE = re.compile(
     r"\{\{?\s*[A-Za-z_][\w.\- ]{0,63}\}\}?|\$\{[^{}]{1,64}\}|<[A-Za-z_][\w.\- ]{0,63}>|\$[A-Z_][A-Z0-9_]{2,63}\b"
 )
-_HTML_URL_ATTRIBUTES = frozenset({"src", "href", "xlink:href", "srcset", "poster", "background"})
+# URL-valued attributes (HTML §URL attributes, SVG xlink:href). Those listed as loading fetch on
+# render; the rest act on a click or a form submission and are judged like a link.
+_LOADING_ATTRIBUTES = frozenset(
+    {"src", "srcset", "poster", "background", "lowsrc", "dynsrc", "icon", "manifest", "codebase", "archive"}
+)
+_ACTION_ATTRIBUTES = frozenset({"action", "formaction", "ping", "cite", "longdesc"})
 # The only elements whose href navigates on a click (HTML and SVG); on any other
 # element (link, image, feImage, use, ...) an href loads or applies a resource.
 _NAVIGATING_TAGS = frozenset({"a", "area"})
+_HTML_SPACE = " \t\n\f\r"
+"""ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
+# <meta http-equiv="refresh" content="0; url=..."> navigates on render.
+_REFRESH_URL_RE = re.compile(r"^[\s\d.]*[;,]?\s*(?:url\s*=\s*)?['\"]?([^'\"]*)", re.IGNORECASE)
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
 """Longer strings are not parsed as Markdown; they are judged as a whole, see ``_oversized_classes``."""
 # Script schemes in oversized text, also when split by whitespace or control characters.
@@ -576,7 +585,8 @@ _RAW_SCRIPT_RE = re.compile(
     re.IGNORECASE,
 )
 _RAW_UNSAFE_DATA_RE = re.compile(
-    _SCHEME_GAP.join("data")
+    r"(?<![A-Za-z0-9+.-])"
+    + _SCHEME_GAP.join("data")
     + _SCHEME_GAP
     + r":(?!image/(?:png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,])",
     re.IGNORECASE,
@@ -588,10 +598,10 @@ def _srcset_urls(value: str) -> Iterator[str]:
     """Yield each candidate URL of a ``srcset``; commas inside a URL belong to it (HTML §srcset parsing)."""
     position, size = 0, len(value)
     while position < size:
-        while position < size and (value[position].isspace() or value[position] == ","):
+        while position < size and (value[position] in _HTML_SPACE or value[position] == ","):
             position += 1
         start = position
-        while position < size and not value[position].isspace():
+        while position < size and value[position] not in _HTML_SPACE:
             position += 1
         url = value[start:position]
         if url.endswith(","):
@@ -613,14 +623,21 @@ class _HtmlUrls(HTMLParser):
         self.urls: list[tuple[str, bool]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values: dict[str, str] = {}
         for name, value in attrs:
-            if name not in _HTML_URL_ATTRIBUTES or not value:
-                continue
+            if value:
+                values.setdefault(name, value)  # a browser keeps the first of duplicate attributes
+        if tag == "meta" and values.get("http-equiv", "").strip().lower() == "refresh":
+            self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
+        for name, value in values.items():
             if name == "srcset":
                 self.urls.extend((url, True) for url in _srcset_urls(value))
-            else:
-                navigates = name in ("href", "xlink:href") and tag in _NAVIGATING_TAGS
-                self.urls.append((value, not navigates))
+            elif name in ("href", "xlink:href"):
+                self.urls.append((value, tag not in _NAVIGATING_TAGS))
+            elif name in _LOADING_ATTRIBUTES or (name in ("data", "classid") and tag == "object"):
+                self.urls.append((value, True))
+            elif name in _ACTION_ATTRIBUTES:
+                self.urls.append((value, False))
 
     handle_startendtag = handle_starttag
 

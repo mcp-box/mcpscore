@@ -136,7 +136,9 @@ replay an injected instruction.
     an attempt ("attempts to override the system prompt") names an attack
     rather than performing it, and passes. No model judges the text.
   - `catalog_exfiltration_links` reads each string as Markdown, the way a
-    client renders it, including raw HTML tags and reference-style links. It
+    client renders it, including reference-style links and raw HTML: every
+    URL attribute, with `src`, `srcset`, `<object data>`, a refresh `<meta>`
+    and an `href` on anything but `<a>` and `<area>` counted as loading. It
     flags `javascript:` and `vbscript:` links, `data:` links other than a
     raster image, and a link or image URL with a slot for the model to fill,
     such as `{conversation}`, `{{secret}}`, `${TOKEN}` or `<data>`. An image
