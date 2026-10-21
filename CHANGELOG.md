@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`tools_descriptions_unique` (LOW): no two tools share a description.**
+  The model picks a tool by its name and description, so tools with the same
+  description give it nothing to choose by. Descriptions match after trimming,
+  ignoring case and whitespace, and dropping one trailing period. Missing and
+  blank descriptions are left to `tools_description_present_in_all`. The
+  finding names the tools in each group, never the description text. The rule
+  skips a catalog with fewer than two described tools, and a tool listing that
+  pagination left incomplete. Every server with two or more described tools
+  gains a point of maximum score, and gains it in its score unless its tools
+  share a description: DeepWiki moves from 91/108 to 92/109.
+
 ## [1.27.0] - 2026-10-20
 
 Servers that publish Agent Skills are checked on eight more rules: two

@@ -464,6 +464,98 @@ class ToolsDescriptionPresentRule(ToolsBaseRule):
         )
 
 
+def normalized_description(description: str | None) -> str | None:
+    """Return the comparable form of a description, or None when it is missing or blank.
+
+    Trims, case-folds, collapses whitespace and drops one trailing period, so
+    descriptions that differ only in those ways compare equal.
+    """
+    if description is None:
+        return None
+    text = " ".join(description.split()).casefold().removesuffix(".").rstrip()
+    return text or None
+
+
+@register_rule
+class ToolsDescriptionsUniqueRule(ToolsBaseRule):
+    """Low check: Verify that no two tools share a description."""
+
+    rule_id = "tools_descriptions_unique"
+    basis = "MCP 2025-11-25 Tools §User Interaction Model (model-controlled: the model picks tools by description)"
+    rule_order = 21
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Each tool should have its own description"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip a partial listing, and a catalog with fewer than two described tools."""
+        if reason := super().skip_reason(audit_data):
+            return reason
+        if "tools" in audit_data.incomplete_listings:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        described = [tool for tool in audit_data.tools or [] if normalized_description(tool.description)]
+        return SKIP_REASON_NOT_APPLICABLE if len(described) < 2 else None
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Low check: Group tools whose normalized descriptions are identical.
+
+        Args:
+            tools: The tools to validate
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        groups: dict[str, list[str]] = {}
+        for tool in tools:
+            if key := normalized_description(tool.description):
+                groups.setdefault(key, []).append(tool.name)
+        shared = [names for names in groups.values() if len(names) > 1]
+        duplicated = {key for key, names in groups.items() if len(names) > 1}
+
+        passed = not shared
+        # Tool names only: the description text is publisher-controlled and never echoed.
+        summaries = [
+            ", ".join(quoted_preview(name) for name in names[:3])
+            + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+            for names in shared[:3]
+        ]
+        message = (
+            "✅ Every described tool has its own description"
+            if passed
+            else (
+                f"❌ Tools sharing one description ({len(shared)} group{'s' if len(shared) != 1 else ''}): "
+                + "; ".join(summaries)
+                + (f"; {len(shared) - 3} more groups" if len(shared) > 3 else "")
+            )
+        )
+
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"duplicate_description_groups": shared},
+            suggested_fix=(
+                "Say in each reported tool's description when to use it instead of the others. "
+                "If two tools are aliases of one operation, remove the alias."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/description",
+                "duplicate_description",
+                "a description that tells this tool apart from the others",
+                lambda tool: normalized_description(tool.description) in duplicated,
+            ),
+            recommendation=True,
+        )
+
+
 _VALID_JSON_TYPES = {"string", "number", "integer", "boolean", "array", "object", "null"}
 _HTTP_FIELD_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 # Deliberately strict: a JSON Schema type array (e.g. ["string", "null"]) also
