@@ -283,7 +283,7 @@ class ErrorDataLeakRule(BaseRule):
         (r"at \w+\.\w+ \([^)]+:\d+:\d+\)", "stack trace"),  # JavaScript stack trace
         # Frames and crash banners of other runtimes. Each needs a source location or a
         # runtime-specific banner, so prose cannot match; quantifiers are bounded to stay linear.
-        (r'File "[^"\n]{1,300}", line \d+, in ', "stack trace"),  # Python frame
+        (r'File "[^"\n]{1,300}", line \d+', "stack trace"),  # Python frame or syntax-error location
         (  # Node frame with an absolute path
             (
                 r"(?m)^[ \t]*at[ \t]+(?:[^\n]{0,300}[ \t])?"

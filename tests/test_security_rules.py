@@ -294,6 +294,7 @@ class TestErrorDataLeakRule:
         "body",
         [
             '  File "/srv/app/handlers.py", line 88, in dispatch\n    payload = json.loads(raw)',
+            '  File "/srv/app/handlers.py", line 88\n    def broken(:\n                ^\nSyntaxError: invalid syntax',
             "SyntaxError: Unexpected token\n    at parse (/srv/app/node_modules/body/index.js:14:21)",
             "Error\n    at C:\\srv\\app\\server.js:12:5",
             "Error\r\n    at C:\\srv\\app\\server.js:12:5\r\n",

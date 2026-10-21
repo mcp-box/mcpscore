@@ -578,7 +578,8 @@ _LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
     "table": frozenset({"background"}),
     "td": frozenset({"background"}),
     "th": frozenset({"background"}),
-    "image": frozenset({"href", "xlink:href"}),
+    # SVG <image href>, and the legacy HTML <image src>, which browsers parse as <img>.
+    "image": frozenset({"href", "xlink:href", "src", "srcset"}),
     "feimage": frozenset({"href", "xlink:href"}),
     "use": frozenset({"href", "xlink:href"}),
 }
@@ -670,8 +671,8 @@ class _HtmlUrls(HTMLParser):
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
-        if tag == "base" and self.base is None and values.get("href"):
-            self.base = values["href"]  # the first base with an href sets the document's base URL
+        if tag == "base" and self.base is None and "href" in values:
+            self.base = values["href"]  # the first base with an href sets the base URL, even an empty one
         if tag == "meta" and values.get("http-equiv", "").strip().lower() == "refresh":
             self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
         loading = _LOADING_ATTRIBUTES.get(tag, frozenset())

