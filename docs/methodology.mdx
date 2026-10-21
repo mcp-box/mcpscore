@@ -54,7 +54,7 @@ The same DeepWiki audit, grouped by category:
 | Protocol | 40 | 47 | `protocol_version_latest` (2), `server_title_present` (2), `server_websiteurl_present` (1), `server_icons_present` (1), `transport_invalid_request_error_code` (1) |
 | Primitives | 36 | 43 | `tools_annotations_present` (2), `tools_title_present_in_all` (1), four `pagination_*_invalid_cursor` rules (1 each) |
 | Security & Auth | 16 | 19 | `security_origin_validation` (3) |
-| **Total** | **92** | **109** | 12 failed, 32 passed, 86 skipped |
+| **Total** | **92** | **109** | 12 failed, 32 passed, 69 skipped |
 
 Fixing the one Security & Auth failure moves the score to 95/109. The
 `--json` report carries the same arithmetic per rule in `results[].severity_value`
