@@ -584,6 +584,61 @@ _LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
 _SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
     tag: frozenset({"href", "xlink:href"}) for tag in ("image", "feimage", "use", "script")
 }
+# HTML parsing in foreign content (HTML §13.2.6.5): SVG children of these integration points are HTML
+# again, and these HTML start tags inside SVG end the SVG content and parse as HTML.
+_SVG_INTEGRATION_POINTS = frozenset({"foreignobject", "desc", "title"})
+_SVG_BREAKOUT_TAGS = frozenset(
+    [
+        "b",
+        "big",
+        "blockquote",
+        "body",
+        "br",
+        "center",
+        "code",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "embed",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "listing",
+        "menu",
+        "meta",
+        "nobr",
+        "ol",
+        "p",
+        "pre",
+        "ruby",
+        "s",
+        "small",
+        "span",
+        "strong",
+        "strike",
+        "sub",
+        "sup",
+        "table",
+        "tt",
+        "u",
+        "ul",
+        "var",
+    ]
+)
+# HTML elements without an end tag, never left open.
+_VOID_TAGS = frozenset(
+    ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]
+)
 # The pairs that act on a click or a form submission, judged like a link.
 _ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {
     "a": frozenset({"href", "xlink:href", "ping"}),
@@ -663,15 +718,25 @@ class _HtmlUrls(HTMLParser):
         self.srcdocs: list[str] = []
         self.base: str | None = None
         self.inert: list[str] = []  # open elements whose content is never rendered
-        self.svg = 0
+        self.open: list[tuple[str, bool]] = []  # open elements, and whether their children are SVG
+        self.svg = False  # whether the current element is in the SVG namespace
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in _INERT_TAGS:
-            self.inert.append(tag)
         if self.inert:
+            if tag in _INERT_TAGS:
+                self.inert.append(tag)
             return
-        if tag == "svg":
-            self.svg += 1
+        in_svg = bool(self.open) and self.open[-1][1]
+        if in_svg and tag in _SVG_BREAKOUT_TAGS:
+            while self.open and self.open[-1][1]:
+                self.open.pop()
+            in_svg = False
+        self.svg = in_svg or tag == "svg"
+        if tag in _INERT_TAGS and not self.svg:
+            self.inert.append(tag)
+            return
+        if not (tag in _VOID_TAGS and not self.svg):
+            self.open.append((tag, self.svg and tag not in _SVG_INTEGRATION_POINTS))
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
@@ -711,13 +776,14 @@ class _HtmlUrls(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag in self.inert:  # closes the innermost matching element; a stray end tag is ignored
             del self.inert[len(self.inert) - 1 - self.inert[::-1].index(tag) :]
-        elif tag == "svg" and self.svg and not self.inert:
-            self.svg -= 1
+        elif not self.inert and any(name == tag for name, _ in self.open):
+            while self.open.pop()[0] != tag:
+                pass
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
         # HTML ignores "/>" on non-void elements, so <template/> stays open; SVG honors it.
-        if tag not in _INERT_TAGS or self.svg:
+        if self.svg and not self.inert:
             self.handle_endtag(tag)
 
 

