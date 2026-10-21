@@ -565,7 +565,6 @@ _PLACEHOLDER_URL_RE = re.compile(
 # other element is inert. srcset-style lists are split into candidates.
 _LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
     "img": frozenset({"src", "srcset"}),
-    "source": frozenset({"src", "srcset"}),
     "video": frozenset({"src", "poster"}),
     "audio": frozenset({"src"}),
     "track": frozenset({"src"}),
@@ -586,10 +585,11 @@ _SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
 }
 # Inside <svg>, only an anchor follows a link.
 _SVG_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {"a": frozenset({"href", "xlink:href"})}
-# HTML parsing in foreign content (HTML §13.2.6.5): SVG children of these integration points are HTML
-# again, and these HTML start tags inside SVG end the SVG content and parse as HTML.
+# HTML parsing in foreign content (HTML §13.2.6.5): children of these SVG and MathML integration points
+# are HTML again, and these HTML start tags inside SVG or MathML end the foreign content.
 _SVG_INTEGRATION_POINTS = frozenset({"foreignobject", "desc", "title"})
-_SVG_BREAKOUT_TAGS = frozenset(
+_MATHML_INTEGRATION_POINTS = frozenset({"mi", "mo", "mn", "ms", "mtext"})
+_FOREIGN_BREAKOUT_TAGS = frozenset(
     [
         "b",
         "big",
@@ -720,29 +720,34 @@ class _HtmlUrls(HTMLParser):
         self.srcdocs: list[str] = []
         self.base: str | None = None
         self.inert: list[str] = []  # open elements whose content is never rendered
-        self.open: list[tuple[str, bool]] = []  # open elements, and whether their children are SVG
-        self.svg = False  # whether the current element is in the SVG namespace
+        self.open: list[tuple[str, str]] = []  # open elements, and the namespace of their children
+        self.namespace = "html"  # of the current element: "html", "svg" or "math"
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self.inert:
             if tag in _INERT_TAGS:
                 self.inert.append(tag)
             return
-        in_svg = bool(self.open) and self.open[-1][1]
-        if in_svg and tag in _SVG_BREAKOUT_TAGS:
-            while self.open and self.open[-1][1]:
+        parent = self.open[-1][1] if self.open else "html"
+        if parent != "html" and tag in _FOREIGN_BREAKOUT_TAGS:
+            while self.open and self.open[-1][1] != "html":
                 self.open.pop()
-            in_svg = False
-        self.svg = in_svg or tag == "svg"
-        if tag in _INERT_TAGS and not self.svg:
+            parent = "html"
+        self.namespace = tag if parent == "html" and tag in ("svg", "math") else parent
+        if tag in _INERT_TAGS and self.namespace == "html":
             self.inert.append(tag)
             return
-        if not (tag in _VOID_TAGS and not self.svg):
-            self.open.append((tag, self.svg and tag not in _SVG_INTEGRATION_POINTS))
+        if not (tag in _VOID_TAGS and self.namespace == "html"):
+            integration = _SVG_INTEGRATION_POINTS if self.namespace == "svg" else _MATHML_INTEGRATION_POINTS
+            self.open.append((tag, "html" if tag in integration else self.namespace))
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
-        if self.svg:
+        if self.namespace == "math":
+            return  # MathML elements fetch and follow nothing
+        if self.namespace == "svg":
+            if "href" in values:
+                values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
             loading = _SVG_LOADING_ATTRIBUTES.get(tag, frozenset())
             acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset())
         else:
@@ -781,6 +786,11 @@ class _HtmlUrls(HTMLParser):
             return loading
         if tag == "iframe" and "srcdoc" in values:
             return frozenset()  # srcdoc replaces src, even when empty
+        if tag == "source":  # srcset in a picture, src in audio or video; elsewhere nothing
+            parent = self.open[-1][0] if self.open else ""
+            return {"picture": frozenset({"srcset"}), "audio": frozenset({"src"}), "video": frozenset({"src"})}.get(
+                parent, frozenset()
+            )
         return _LOADING_ATTRIBUTES.get(tag, frozenset())
 
     def handle_endtag(self, tag: str) -> None:
@@ -792,8 +802,8 @@ class _HtmlUrls(HTMLParser):
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
-        # HTML ignores "/>" on non-void elements, so <template/> stays open; SVG honors it.
-        if self.svg and not self.inert:
+        # HTML ignores "/>" on non-void elements, so <template/> stays open; SVG and MathML honor it.
+        if self.namespace != "html" and not self.inert:
             self.handle_endtag(tag)
 
 
