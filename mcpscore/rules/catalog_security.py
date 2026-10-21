@@ -11,14 +11,12 @@ from abc import abstractmethod
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
-from html import unescape as html_unescape
 from html.parser import HTMLParser
 import re
 from typing import Any, ClassVar
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin
 
 from markdown_it import MarkdownIt
-from markdown_it.token import Token
 from mcp_types import Icon
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
@@ -607,27 +605,30 @@ _FETCHING_LINK_RELATIONS = frozenset(
     }
 )
 _LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
-_MAX_DECODE_PASSES = 12
+# <link> relations that fetch their href on render; any other relation is metadata.
+_FETCHING_LINK_RELATIONS = frozenset(
+    {
+        "stylesheet",
+        "icon",
+        "apple-touch-icon",
+        "mask-icon",
+        "manifest",
+        "preload",
+        "prefetch",
+        "modulepreload",
+        "prerender",
+    }
+)
 _HTML_SPACE = " \t\n\f\r"
 """ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
 # <meta http-equiv="refresh" content="0; url=..."> navigates on render.
 _REFRESH_URL_RE = re.compile(r"^[\s\d.]*[;,]?\s*(?:url\s*=\s*)?['\"]?([^'\"]*)", re.IGNORECASE)
+# Content of these elements is never rendered as markup (script and style are raw text to HTMLParser).
+_INERT_TAGS = frozenset({"template", "textarea", "title"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
-"""Longer strings are not parsed as Markdown; they are judged as a whole, see ``_oversized_classes``."""
-# Script schemes in oversized text, also when split by whitespace or control characters.
-_SCHEME_GAP = r"[\s\x00-\x1f]*"
-_RAW_SCRIPT_RE = re.compile(
-    "(?:" + "|".join(_SCHEME_GAP.join(word) for word in sorted(_SCRIPT_SCHEMES)) + ")" + _SCHEME_GAP + ":",
-    re.IGNORECASE,
-)
-_RAW_UNSAFE_DATA_RE = re.compile(
-    r"(?<![A-Za-z0-9+.-])"
-    + _SCHEME_GAP.join("data")
-    + _SCHEME_GAP
-    + r":(?!image/(?:png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,])",
-    re.IGNORECASE,
-)
-_RAW_NETWORK_URL_RE = re.compile(r"\bhttps?:|[/\\]{2}", re.IGNORECASE)
+"""Longer strings holding markup are not parsed and fail as uncheckable; real catalog strings stay far below."""
+MAX_SRCDOC_DEPTH = 3
+"""Iframe srcdoc documents nested deeper are not followed and fail as uncheckable."""
 
 
 def _srcset_urls(value: str) -> Iterator[str]:
@@ -652,16 +653,25 @@ def _srcset_urls(value: str) -> Iterator[str]:
 
 
 class _HtmlUrls(HTMLParser):
-    """Collect the URL attributes of raw HTML that a browser fetches on render or follows on a click."""
+    """Collect, for one HTML document, the URLs a browser fetches on render or follows on a click."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.urls: list[tuple[str, bool]] = []
+        self.srcdocs: list[str] = []
+        self.base: str | None = None
+        self.inert = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _INERT_TAGS:
+            self.inert += 1
+        if self.inert:
+            return
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
+        if tag == "base" and self.base is None and values.get("href"):
+            self.base = values["href"]  # the first base with an href sets the document's base URL
         if tag == "meta" and values.get("http-equiv", "").strip().lower() == "refresh":
             self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
         loading = _LOADING_ATTRIBUTES.get(tag, frozenset())
@@ -674,85 +684,64 @@ class _HtmlUrls(HTMLParser):
                 loading |= {"imagesrcset"}
         elif tag == "iframe" and "srcdoc" in values:
             loading = frozenset()  # srcdoc replaces src, even when empty
+            if values["srcdoc"]:
+                self.srcdocs.append(values["srcdoc"])
         acting = _ACTION_ATTRIBUTES.get(tag, frozenset())
         for name, value in values.items():
-            if not value:
+            if not value or not (name in loading or name in acting):
                 continue
-            if name == "srcdoc" and tag == "iframe":
-                # The iframe renders this HTML as its document. Each nested level must escape the
-                # previous one's quotes or ampersands, so text bounded in size nests only a few levels.
-                self.urls.extend(_html_urls(value))
-            elif name in loading or name in acting:
-                loads = name in loading
-                if name == "ping":  # URLs separated by whitespace, each requested when the link is followed
-                    urls = [url for url in re.split(f"[{_HTML_SPACE}]+", value) if url]
-                elif name in _LIST_ATTRIBUTES:
-                    urls = list(_srcset_urls(value))
-                else:
-                    urls = [value]
-                self.urls.extend((url, loads) for url in urls)
+            if name == "ping":  # URLs separated by whitespace, each requested when the link is followed
+                urls = [url for url in re.split(f"[{_HTML_SPACE}]+", value) if url]
+            elif name in _LIST_ATTRIBUTES:
+                urls = list(_srcset_urls(value))
+            else:
+                urls = [value]
+            self.urls.extend((url, name in loading) for url in urls)
 
-    handle_startendtag = handle_starttag
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _INERT_TAGS and self.inert:
+            self.inert -= 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
 
 
-def _html_urls(html: str) -> list[tuple[str, bool]]:
+def _resolve(base: str, url: str) -> str:
+    """Resolve *url* against a document base, leaving it as written when it cannot be resolved."""
+    if not base:
+        return url
+    try:
+        return urljoin(base, url)
+    except ValueError:
+        return url
+
+
+def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tuple[str, bool]], bool]:
+    """Return a document's URLs resolved against its base, and whether srcdoc nesting went too deep.
+
+    A srcdoc document inherits its parent's base unless it sets its own. Each level's srcdoc text is
+    part of its parent, so the work is bounded by the input size times ``MAX_SRCDOC_DEPTH``.
+    """
     parser = _HtmlUrls()
     parser.feed(html)
     parser.close()
-    return parser.urls
-
-
-def _token_urls(tokens: list[Token]) -> Iterator[tuple[str, bool]]:
-    for token in tokens:
-        if token.type == "link_open":
-            yield str(token.attrs.get("href", "")), False
-        elif token.type == "image":
-            # Alt text is text, not markup: links nested in it are not rendered as links.
-            yield str(token.attrs.get("src", "")), True
-            continue
-        elif token.type in ("html_inline", "html_block"):
-            yield from _html_urls(token.content)
-        if token.children:
-            yield from _token_urls(token.children)
+    base = _resolve(inherited_base, parser.base) if parser.base else inherited_base
+    urls = [(_resolve(base, url), loads) for url, loads in parser.urls]
+    too_deep = False
+    for srcdoc in parser.srcdocs:
+        if depth >= MAX_SRCDOC_DEPTH:
+            too_deep = True
+            break
+        nested, nested_too_deep = _document_urls(srcdoc, base, depth + 1)
+        urls += nested
+        too_deep |= nested_too_deep
+    return urls, too_deep
 
 
 def _oversized(text: str) -> bool:
     # surrogatepass: a lone surrogate from a server's JSON must be measured, not raise.
     return len(text.encode("utf-8", "surrogatepass")) > MAX_LINK_MARKDOWN_BYTES
-
-
-def _oversized_classes(text: str) -> list[str]:
-    """Judge text too long to parse as a whole, conservatively, without extracting single URLs.
-
-    After decoding entities and percent-escapes: a script scheme anywhere, a ``data:`` URI other
-    than a raster image anywhere, and a slot anywhere in text that also holds a network URL.
-    """
-    decoded = text
-    # Decode once per possible srcdoc level. Each level escapes the previous one's "&" (five times
-    # longer), so 12 passes see through any nesting a string under hundreds of megabytes can hold.
-    for _ in range(_MAX_DECODE_PASSES):
-        step = unquote(html_unescape(decoded))
-        if step == decoded:
-            break
-        decoded = step
-    found: list[str] = []
-    if _RAW_SCRIPT_RE.search(decoded):
-        found.append("script_uri")
-    if _RAW_UNSAFE_DATA_RE.search(decoded):
-        found.append("data_uri")
-    if _RAW_NETWORK_URL_RE.search(decoded) and _PLACEHOLDER_URL_RE.search(decoded):
-        found.append("exfiltration_query")
-    return found
-
-
-def markdown_urls(text: str) -> list[tuple[str, bool]]:
-    """Return each URL a Markdown renderer would link or load, with whether it loads without a click.
-
-    Text over ``MAX_LINK_MARKDOWN_BYTES`` is not parsed and yields no URLs.
-    """
-    if not any(hint in text for hint in _LINK_HINTS) or _oversized(text):
-        return []
-    return list(_token_urls(_LINK_MARKDOWN.parse(text)))
 
 
 def _visible(url: str) -> str:
@@ -767,10 +756,14 @@ def _query(url: str) -> str:
 
 def exfiltration_link_classes(text: str) -> list[str]:
     """Classify Markdown and HTML links that run script or carry data out of the conversation."""
-    if any(hint in text for hint in _LINK_HINTS) and _oversized(text):
-        return _oversized_classes(text)
+    if not any(hint in text for hint in _LINK_HINTS):
+        return []
+    if _oversized(text):
+        return ["uncheckable_markup"]
+    # Render as a Markdown client would, then read the resulting HTML document.
+    urls, too_deep = _document_urls(_LINK_MARKDOWN.render(text), "", 0)
     found: list[str] = []
-    for raw, loads in markdown_urls(text):
+    for raw, loads in urls:
         url = _visible(raw)
         decoded = _visible(unquote(raw))
         scheme = decoded.split(":", 1)[0].lower() if ":" in decoded else ""
@@ -786,6 +779,8 @@ def exfiltration_link_classes(text: str) -> list[str]:
             exposed = decoded if loads else unquote(_query(url))
             if _PLACEHOLDER_URL_RE.search(exposed):
                 found.append("exfiltration_query")
+    if too_deep:
+        found.append("uncheckable_markup")
     return found
 
 
@@ -812,8 +807,8 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
     passed_message = "Catalog text contains no script links or data-carrying URLs"
     failure_label = "catalog strings with script links or data-carrying URLs"
     fix = (
-        "Remove javascript: and data: links from the listed fields, and remove placeholders from link and image "
-        "URLs. Link to fixed pages; return data in tool results, never through a URL the model fills in."
+        "Remove javascript: and data: links and URL placeholders from the listed fields. Link to fixed pages and "
+        "return data in tool results, never through a URL the model fills in. Keep markup short and flat."
     )
 
     @property

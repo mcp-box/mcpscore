@@ -149,9 +149,12 @@ replay an injected instruction.
     loads without a click, so a slot anywhere in its URL counts; a link counts
     only with the slot in its query, because a path such as `/users/{id}` is
     usually an API route. Code spans and image alt text are text, not links,
-    and pass. A string over 64 KiB is not parsed but judged whole: it fails
-    on a script scheme, a `data:` URI other than a raster image, or a URL and
-    a slot anywhere in it.
+    and pass, and so does the content of `<template>`, `<script>` and
+    `<textarea>`. A relative URL is resolved against the document's
+    `<base href>`. Markup that cannot be checked fails as
+    `uncheckable_markup`: a string with markup over 64 KiB (real catalog
+    strings stay far below), or iframe `srcdoc` documents nested more than
+    three deep.
   - All four skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.
   - `skills_hidden_unicode`, `skills_no_embedded_secrets` and
