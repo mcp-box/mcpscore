@@ -681,11 +681,9 @@ _REFRESH_URL_RE = re.compile(
 _AUTHORITY_RE = re.compile(r"(?i)^(?:https?:)?//(?:[^/?#]*@)?([^/?#]*)")
 # A port after the hostname: digits, or one slot standing for them.
 _PORT_RE = re.compile(r":(?:\d*|\{\{?[^{}:]*\}\}?|\$\{[^{}:]*\}|<[^<>:]*>|\$[A-Z_][A-Z0-9_]*)$")
-# CSS comments, escapes (hex code points or one escaped character), and the tokens that can name a resource:
-# url(...) and strings, which image-set() and @import take.
-_CSS_COMMENT_RE = re.compile(r"/\*[\s\S]*?(?:\*/|$)")
-_CSS_ESCAPE_RE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[ \t\n\r\f])?|([\s\S]))")
-_CSS_URL_RE = re.compile(r"(?i)url\(\s*(?:\"([^\"]*)\"|'([^']*)'|([^)\s]*))|\"([^\"]*)\"|'([^']*)'")
+# A CSS escape's hex digits, and the whitespace CSS tokenizing knows after newlines are normalized.
+_CSS_HEX_RE = re.compile(r"[0-9a-fA-F]{1,6}")
+_CSS_SPACE = " \t\n"
 # Content of these elements is never rendered as markup (script and style are raw text to HTMLParser).
 _INERT_TAGS = frozenset({"template", "textarea", "title"})
 # HTML elements whose content a browser with scripting reads as raw text up to their own end tag, whatever
@@ -723,32 +721,94 @@ def _srcset_urls(value: str) -> Iterator[str]:
 
 
 def _css_urls(css: str) -> list[str]:
-    """Yield what a stylesheet may load: every url() and every string.
+    """Return what a stylesheet may load: every url() token and every string, which image-set() and @import take.
 
-    Comments, strings and escapes interact (a comment marker inside a string is text, an escaped parenthesis
-    belongs to the URL), so the text is read as written, without comments, and with escapes decoded; a URL
-    from any of these readings counts.
+    Tokenizes as CSS Syntax §4 does, so comments, strings and url() boundaries are found before escapes are
+    decoded inside each token.
     """
-    decoded = _CSS_ESCAPE_RE.sub(_css_unescape, css)
-    views = (
-        css,
-        _CSS_COMMENT_RE.sub("", css),
-        decoded,
-        _CSS_ESCAPE_RE.sub(_css_unescape, _CSS_COMMENT_RE.sub("", css)),
-    )
-    urls = (
-        next((group for group in match.groups() if group is not None), "")
-        for text in dict.fromkeys(views)
-        for match in _CSS_URL_RE.finditer(text)
-    )
+    css = re.sub(r"\r\n?|\f", "\n", css).replace("\0", "\ufffd")
+    urls: list[str] = []
+    position, size = 0, len(css)
+    while position < size:
+        char = css[position]
+        if css.startswith("/*", position):
+            end = css.find("*/", position + 2)
+            position = size if end < 0 else end + 2
+        elif char in "\"'":
+            value, position = _css_string(css, position + 1, char)
+            urls.append(value)
+        elif _css_name_char(char) or _css_valid_escape(css, position):
+            name, position = _css_name(css, position)
+            if name.lower() == "url" and css.startswith("(", position):
+                start = position + 1
+                while start < size and css[start] in _CSS_SPACE:
+                    start += 1
+                if not css.startswith(('"', "'"), start):  # url("...") is a function taking a string
+                    value, position = _css_url(css, start)
+                    urls.append(value)
+        else:
+            position += 1
     return [url for url in dict.fromkeys(urls) if url]
 
 
-def _css_unescape(match: re.Match[str]) -> str:
-    if match.group(1):
-        code = int(match.group(1), 16)
-        return chr(code) if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF else "\ufffd"
-    return "" if match.group(2) in ("\n", "\r", "\f") else match.group(2)
+def _css_name_char(char: str) -> bool:
+    return (char.isascii() and (char.isalnum() or char in "-_")) or not char.isascii()
+
+
+def _css_valid_escape(css: str, position: int) -> bool:
+    return css.startswith("\\", position) and position + 1 < len(css) and css[position + 1] != "\n"
+
+
+def _css_escape(css: str, position: int) -> tuple[str, int]:
+    """Decode the escape whose backslash is at *position*; return the character and the position after it."""
+    digits = _CSS_HEX_RE.match(css, position + 1)
+    if digits is None:
+        return css[position + 1], position + 2
+    end = digits.end() + (digits.end() < len(css) and css[digits.end()] in _CSS_SPACE)
+    code = int(digits.group(), 16)
+    return (chr(code) if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF else "\ufffd"), end
+
+
+def _css_name(css: str, position: int) -> tuple[str, int]:
+    name: list[str] = []
+    while position < len(css):
+        if _css_name_char(css[position]):
+            name.append(css[position])
+            position += 1
+        elif _css_valid_escape(css, position):
+            char, position = _css_escape(css, position)
+            name.append(char)
+        else:
+            break
+    return "".join(name), position
+
+
+def _css_string(css: str, position: int, quote: str) -> tuple[str, int]:
+    value: list[str] = []
+    while position < len(css) and css[position] not in (quote, "\n"):
+        if css[position] != "\\":
+            value.append(css[position])
+            position += 1
+        elif position + 1 >= len(css) or css[position + 1] == "\n":
+            position += 2  # an escaped newline continues the string
+        else:
+            char, position = _css_escape(css, position)
+            value.append(char)
+    return "".join(value), position + 1
+
+
+def _css_url(css: str, position: int) -> tuple[str, int]:
+    """Read an unquoted url() token's value up to ")"; a malformed one is read on, the stricter side."""
+    value: list[str] = []
+    while position < len(css) and css[position] != ")":
+        if _css_valid_escape(css, position):
+            char, position = _css_escape(css, position)
+            value.append(char)
+        else:
+            if css[position] not in _CSS_SPACE:
+                value.append(css[position])
+            position += 1
+    return "".join(value), position + 1
 
 
 def _relations(values: dict[str, str]) -> set[str]:
@@ -791,6 +851,8 @@ class _HtmlUrls(HTMLParser):
         self._enter(tag, values)
         if "style" in values:  # inline CSS loads its images on render, in every namespace and on inert elements
             self.urls.extend((url, True) for url in _css_urls(values["style"]))
+        if tag == "frameset" and self.namespace == "html":
+            self.uncheckable = True  # frameset parsing ignores most tags, which this parser does not model
         if (tag in _INERT_TAGS or tag == "plaintext") and self.namespace == "html":
             self._open_inert(tag)
             return
