@@ -551,11 +551,17 @@ class _AllLinksMarkdown(MarkdownIt):
         """Accept every destination so the rule can classify it."""
         return True
 
+    def normalizeLink(self, url: str) -> str:  # noqa: N802 - overrides markdown-it's method name
+        """Keep the destination as written: percent-encoding a tab or space would hide a scheme a client keeps."""
+        return url
+
 
 _LINK_MARKDOWN = _AllLinksMarkdown("commonmark")
 # Only text that can hold a Markdown link, image, autolink or HTML tag is parsed.
 _LINK_HINTS = ("](", "]:", "<")
 _SCRIPT_SCHEMES = frozenset({"javascript", "vbscript"})
+# The open-element count key for declarative shadow roots, the only HTML templates kept on the open stack.
+_SHADOW_ROOT = "#shadow-root"
 # Raster images that cannot carry script; SVG can, so it is not here.
 _SAFE_DATA_IMAGE_RE = re.compile(
     r"^data:image/(?:a?png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,]", re.IGNORECASE
@@ -950,6 +956,7 @@ class _HtmlUrls(HTMLParser):
             children = "html" if tag in integration or html_annotation else self.namespace
             self.open.append((tag, self.namespace, children))
             self.open_tags[tag] += 1
+            self.open_tags[_SHADOW_ROOT] += (tag, self.namespace) == ("template", "html")
         if self.namespace == "math":
             return  # MathML elements fetch and follow nothing
         if self.namespace == "svg":
@@ -1058,8 +1065,10 @@ class _HtmlUrls(HTMLParser):
 
     def _html_document_effects(self, tag: str, values: dict[str, str]) -> None:
         """Record what an HTML element does to the whole document: its base URL, a refresh, a srcdoc."""
-        if tag == "base" and self.base is None and "href" in values:
-            self.base = values["href"]  # the first base with an href sets the base URL, even an empty one
+        if tag == "base" and self.base is None and "href" in values and not self.open_tags[_SHADOW_ROOT]:
+            # The first base with an href sets the base URL, even an empty one; one in a shadow tree is not
+            # in the document tree and sets nothing.
+            self.base = values["href"]
         if tag == "meta" and values.get("http-equiv", "").lower() == "refresh":
             refresh = _REFRESH_URL_RE.match(values.get("content", ""))
             destination = next((group for group in refresh.groups() if group is not None), "") if refresh else ""
@@ -1179,6 +1188,7 @@ class _HtmlUrls(HTMLParser):
     def _pop(self) -> tuple[str, str, str]:
         element = self.open.pop()
         self.open_tags[element[0]] -= 1
+        self.open_tags[_SHADOW_ROOT] -= element[:2] == ("template", "html")
         return element
 
     def _leave_foreign_content(self) -> None:
@@ -1332,14 +1342,14 @@ def exfiltration_link_classes(text: str) -> list[str]:
     urls, too_deep = _document_urls(_LINK_MARKDOWN.renderer.render(tokens, _LINK_MARKDOWN.options, env), "", 0)
     found: list[str] = []
     for raw, loads in urls:
+        # A browser reads the scheme and authority before any percent-decoding, so "javascript%3A" is a path.
         url = _visible(raw)
-        decoded = _visible(unquote(raw))
-        scheme = decoded.split(":", 1)[0].lower() if ":" in decoded else ""
-        network_path = decoded.replace("\\", "/").startswith("//")
+        scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+        network_path = url.replace("\\", "/").startswith("//")
         if scheme in _SCRIPT_SCHEMES:
             found.append("script_uri")
         elif scheme == "data":
-            if not _SAFE_DATA_IMAGE_RE.match(decoded):  # a raster image runs no script, loaded or followed
+            if not _SAFE_DATA_IMAGE_RE.match(url):  # a raster image runs no script, loaded or followed
                 found.append("data_uri")
         elif scheme in ("http", "https") or network_path:
             # An image loads with no click, so a slot anywhere in it sends data;

