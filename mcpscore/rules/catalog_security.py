@@ -896,7 +896,7 @@ def _runs_as_script(values: dict[str, str]) -> bool:
         language = values.get("language", "")
         kind = f"text/{language}" if language else ""
     kind = kind.strip(_HTML_SPACE).lower()
-    return kind in ("", "module") or kind.split(";", 1)[0].strip(_HTML_SPACE) in _JAVASCRIPT_TYPES
+    return kind in ("", "module") or kind in _JAVASCRIPT_TYPES  # an exact essence match: parameters make a data block
 
 
 def _relations(values: dict[str, str]) -> set[str]:
@@ -1241,6 +1241,7 @@ def _document_base(inherited: str, declared: str | None) -> str:
     candidate = _resolve(inherited, declared)
     try:
         parts = urlsplit(_web_url(candidate))
+        _ = parts.port  # an out-of-range or non-numeric port raises only when read
     except ValueError:
         return inherited
     scheme = parts.scheme.lower()
@@ -1338,7 +1339,7 @@ def exfiltration_link_classes(text: str) -> list[str]:
         if scheme in _SCRIPT_SCHEMES:
             found.append("script_uri")
         elif scheme == "data":
-            if not (loads and _SAFE_DATA_IMAGE_RE.match(decoded)):
+            if not _SAFE_DATA_IMAGE_RE.match(decoded):  # a raster image runs no script, loaded or followed
                 found.append("data_uri")
         elif scheme in ("http", "https") or network_path:
             # An image loads with no click, so a slot anywhere in it sends data;

