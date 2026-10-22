@@ -140,8 +140,8 @@ replay an injected instruction.
     it reads the attributes a browser fetches on render (`<img src>`,
     `srcset`, `<video poster>`, `<object data>`, a stylesheet, icon or
     preload `<link href>`, SVG
-    `<image href>`, a refresh `<meta>`, `url()` and the strings `@import` and
-    `image-set()` take, in a `style` attribute on any element or in a
+    `<image href>`, a refresh `<meta>`, `url()` and the strings `@import`,
+    `image-set()` and custom properties take, in a `style` attribute on any element or in a
     `<style>` block, `url()` in an SVG
     presentation attribute such as `fill` or `cursor`, and the values an SVG
     `<set>` or `<animate>` gives an `href` or such an attribute) or follows on a click (`<a href>`,
@@ -156,7 +156,7 @@ replay an injected instruction.
     usually an API route. A form action's query counts whatever the
     form's method.
     Code spans and image alt text are text, not links,
-    and pass, and so does the content of `<template>`, `<script>` and
+    and pass, and so does the content of a `<template>` (unless it declares a shadow root), `<script>` and
     `<textarea>`. A relative URL is resolved against the document's
     `<base href>`. Markup that cannot be checked fails as
     `uncheckable_markup`: a string with markup over 64 KiB (real catalog

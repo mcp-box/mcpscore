@@ -757,6 +757,7 @@ class _CssScanner:
         self.functions: list[str] = []  # open functions and parentheses, innermost last
         self.loading_functions = 0  # how many open functions take a string as an image
         self.importing = False
+        self.custom = False  # inside a custom property's value, which var() can carry into image-set()
         self.position = 0
 
     def scan(self) -> None:
@@ -768,12 +769,14 @@ class _CssScanner:
                 self.position = len(css) if end < 0 else end + 2
             elif char in "\"'":
                 value, self.position = _css_string(css, self.position + 1, char)
-                if self.strings and (self.importing or self.loading_functions):
+                if self.strings and (self.importing or self.loading_functions or self.custom):
                     self.urls.append(value)
             elif _css_name_char(char) or _css_valid_escape(css, self.position):
                 name, self.position = _css_name(css, self.position)
                 if css.startswith("(", self.position):
                     self._function(name.lower())
+                elif name.startswith("--") and css[self.position :].lstrip(_CSS_SPACE).startswith(":"):
+                    self.custom = True
             else:
                 self._delimiter(char)
 
@@ -799,7 +802,7 @@ class _CssScanner:
             name, self.position = _css_name(self.css, self.position)
             self.importing = name.lower() == "import"
         elif char in ";{}":
-            self.importing = False
+            self.importing = self.custom = False
         elif char == "(":
             self.functions.append("")
         elif char == ")" and self.functions:
@@ -902,8 +905,9 @@ class _HtmlUrls(HTMLParser):
             self.uncheckable = True  # inside a select a browser ignores this start tag; the parser does not
         if tag == "frameset" and self.namespace == "html":
             self.uncheckable = True  # frameset parsing ignores most tags, which this parser does not model
-        if (tag in _INERT_TAGS or tag == "plaintext") and self.namespace == "html":
-            self._open_inert(tag)
+        shadow_root = tag == "template" and values.get("shadowrootmode", "").lower() in ("open", "closed")
+        if (tag in _INERT_TAGS or tag == "plaintext") and self.namespace == "html" and not shadow_root:
+            self._open_inert(tag)  # a declarative shadow root renders its content, so it is read as markup
             return
         if not (tag in _VOID_TAGS and self.namespace == "html"):
             integration = _SVG_INTEGRATION_POINTS if self.namespace == "svg" else _MATHML_INTEGRATION_POINTS
@@ -935,8 +939,9 @@ class _HtmlUrls(HTMLParser):
             self._open_inert(tag)
         elif tag in _RAW_TEXT_TAGS:
             self.set_cdata_mode(tag)
-        elif tag in ("svg", "math"):
-            self.uncheckable = True  # template content keeps namespaces this parser does not track
+        elif tag in ("svg", "math", "select"):
+            # Template content keeps namespaces and insertion modes this parser does not track.
+            self.uncheckable = True
 
     def _svg_attributes(self, tag: str, values: dict[str, str]) -> tuple[frozenset[str], frozenset[str]]:
         """Collect url() in SVG presentation attributes; return the element's loading and acting attributes."""
