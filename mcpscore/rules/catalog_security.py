@@ -671,7 +671,7 @@ _HTML_SPACE = " \t\n\f\r"
 """ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
 # <meta http-equiv="refresh" content="0; url=..."> navigates on render; without a leading delay it is ignored.
 _REFRESH_URL_RE = re.compile(
-    r"[ \t\n\f\r]*[\d.]+(?=$|[;, \t\n\f\r])[ \t\n\f\r]*[;,]?[ \t\n\f\r]*"
+    r"[ \t\n\f\r]*[\d.]+(?![^;, \t\n\f\r])[ \t\n\f\r]*[;,]?[ \t\n\f\r]*"
     r"(?:url[ \t\n\f\r]*=[ \t\n\f\r]*)?['\"]?([^'\"]*)",
     re.IGNORECASE,
 )
@@ -723,7 +723,7 @@ class _HtmlUrls(HTMLParser):
         self.closing = False  # the current start tag closes itself with "/>"
         self.base: str | None = None
         self.inert: list[str] = []  # open elements whose content is never rendered
-        self.open: list[tuple[str, str]] = []  # open elements, and the namespace of their children
+        self.open: list[tuple[str, str, str]] = []  # open elements: tag, namespace, namespace of children
         self.namespace = "html"  # of the current element: "html", "svg" or "math"
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -745,7 +745,8 @@ class _HtmlUrls(HTMLParser):
                 and tag == "annotation-xml"
                 and values.get("encoding", "").lower() in ("text/html", "application/xhtml+xml")
             )
-            self.open.append((tag, "html" if tag in integration or html_annotation else self.namespace))
+            children = "html" if tag in integration or html_annotation else self.namespace
+            self.open.append((tag, self.namespace, children))
         if self.namespace == "math":
             return  # MathML elements fetch and follow nothing
         if self.namespace == "svg":
@@ -762,10 +763,10 @@ class _HtmlUrls(HTMLParser):
 
     def _enter(self, tag: str, values: dict[str, str]) -> None:
         """Set the namespace of the element starting now, leaving foreign content where HTML says it ends."""
-        parent = self.open[-1][1] if self.open else "html"
+        parent = self.open[-1][2] if self.open else "html"
         breakout = tag in _FOREIGN_BREAKOUT_TAGS or (tag == "font" and values.keys() & {"color", "face", "size"})
         if parent != "html" and breakout:
-            while self.open and self.open[-1][1] != "html":
+            while self.open and self.open[-1][2] != "html":
                 self.open.pop()
             parent = "html"
         if parent == "html" and tag in ("svg", "math"):
@@ -776,7 +777,8 @@ class _HtmlUrls(HTMLParser):
             parent == "html"
             and tag in ("mglyph", "malignmark")
             and self.open[-1:]
-            and (self.open[-1][0] in _MATHML_INTEGRATION_POINTS)
+            and self.open[-1][0] in _MATHML_INTEGRATION_POINTS
+            and self.open[-1][1] == "math"
         ):
             self.namespace = "math"  # the two MathML children a text integration point keeps in MathML
         else:
@@ -847,19 +849,25 @@ class _HtmlUrls(HTMLParser):
     def unknown_decl(self, data: str) -> None:
         # A CDATA section is text in SVG and MathML, but in HTML a browser reads "<![" as a comment
         # ending at the first ">", while this parser skips to "]]>"; what follows cannot be checked.
-        if not self.inert and (self.open[-1][1] if self.open else "html") == "html":
+        if not self.inert and (self.open[-1][2] if self.open else "html") == "html":
             self.uncheckable = True
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("p", "br") and not self.inert:
             # These end tags leave foreign content even with nothing to close (HTML §13.2.6.5).
-            while self.open and self.open[-1][1] != "html":
+            while self.open and self.open[-1][2] != "html":
                 self.open.pop()
         if tag in self.inert:  # closes the innermost matching element; a stray end tag is ignored
             del self.inert[len(self.inert) - 1 - self.inert[::-1].index(tag) :]
-        elif not self.inert and any(name == tag for name, _ in self.open):
-            while self.open.pop()[0] != tag:
-                pass
+        elif not self.inert:
+            matches = [index for index, (name, _, _) in enumerate(self.open) if name == tag]
+            if matches:
+                closed = self.open[matches[-1] :]
+                # Closing several elements across a namespace boundary follows HTML scope rules this parser
+                # does not model (a browser may ignore the end tag), so the rest cannot be checked.
+                if len(closed) > 1 and len({closed[0][1]} | {children for _, _, children in closed}) > 1:
+                    self.uncheckable = True
+                del self.open[matches[-1] :]
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.closing = True

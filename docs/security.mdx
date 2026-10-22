@@ -157,7 +157,8 @@ replay an injected instruction.
     strings stay far below), iframe `srcdoc` documents nested more than
     three deep, and constructs that browsers and parsers read differently: a
     CDATA section in HTML, a self-closing `<script/>` or `<style/>` in HTML,
-    or `<script>` and `<style>` content inside SVG or MathML.
+    `<script>` and `<style>` content inside SVG or MathML, or an end tag that
+    closes unclosed elements across the edge of SVG or MathML content.
   - All four skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.
   - `skills_hidden_unicode`, `skills_no_embedded_secrets` and
