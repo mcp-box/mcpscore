@@ -700,6 +700,8 @@ _INERT_TAGS = frozenset({"template", "textarea", "title"})
 # HTML elements whose content a browser with scripting reads as raw text up to their own end tag, whatever
 # the Python version's tokenizer does; plaintext content runs to the end of the document.
 _RAW_TEXT_TAGS = frozenset({"iframe", "noembed", "noframes", "noscript", "script", "style", "xmp"})
+# Raw-text and inert start tags that HTML's "in select" insertion mode ignores (script is still processed).
+_SELECT_IGNORED_TAGS = (_RAW_TEXT_TAGS - {"script"}) | {"plaintext", "title"}
 # Elements whose child list (picture, audio, video) decides what a <source> loads.
 _SOURCE_PARENTS = frozenset({"picture", "audio", "video"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
@@ -859,6 +861,8 @@ class _HtmlUrls(HTMLParser):
         self._enter(tag, values)
         if "style" in values:  # inline CSS loads its images on render, in every namespace and on inert elements
             self.urls.extend((url, True) for url in _css_urls(values["style"]))
+        if self.namespace == "html" and self.open_tags["select"] and tag in _SELECT_IGNORED_TAGS:
+            self.uncheckable = True  # inside a select a browser ignores this start tag; the parser does not
         if tag == "frameset" and self.namespace == "html":
             self.uncheckable = True  # frameset parsing ignores most tags, which this parser does not model
         if (tag in _INERT_TAGS or tag == "plaintext") and self.namespace == "html":
@@ -1143,12 +1147,17 @@ def _document_base(inherited: str, declared: str | None) -> str:
     return inherited if scheme in ("javascript", "data") else candidate
 
 
-def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tuple[str, bool]], bool]:
+def _document_urls(
+    html: str, inherited_base: str, depth: int, budget: list[int] | None = None
+) -> tuple[list[tuple[str, bool]], bool]:
     """Return a document's URLs resolved against its base, and whether some markup cannot be checked.
 
     A srcdoc document inherits its parent's base unless it sets its own. Each level's srcdoc text is
-    part of its parent, so the work is bounded by the input size times ``MAX_SRCDOC_DEPTH``.
+    part of its parent, so parsing is bounded by the input size times ``MAX_SRCDOC_DEPTH``. A long base
+    repeats in every relative URL, so the resolved URLs share a budget of ``MAX_RENDERED_CHARS``, spent
+    before each URL is built; past it the markup cannot be checked.
     """
+    budget = [MAX_RENDERED_CHARS] if budget is None else budget
     parser = _HtmlUrls()
     try:
         parser.feed(bound_charrefs(html))
@@ -1156,9 +1165,17 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
     except ValueError:  # malformed markup the standard parser rejects
         return [], True
     base = _document_base(inherited_base, parser.base)
-    urls = [(_resolve(base, url), loads) for url, loads in parser.urls]
-    for href in parser.hosts:  # a connection hint sends the hostname alone, so only it is checked
-        authority = _AUTHORITY_RE.match(_web_url(_resolve(base, href)))
+    urls: list[tuple[str, bool]] = []
+    for url, loads in [*parser.urls, *((href, None) for href in parser.hosts)]:
+        budget[0] -= len(base) + len(url)  # a resolved URL is never longer than its base and itself
+        if budget[0] < 0:
+            return urls, True
+        resolved = _resolve(base, url)
+        if loads is not None:
+            urls.append((resolved, loads))
+            continue
+        # A connection hint sends the hostname alone, so only it is checked.
+        authority = _AUTHORITY_RE.match(_web_url(resolved))
         host = _PORT_RE.sub("", authority.group(1)) if authority else ""
         if host:
             urls.append((f"//{host}", True))
@@ -1167,7 +1184,7 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
         if depth >= MAX_SRCDOC_DEPTH:
             too_deep = True
             break
-        nested, nested_too_deep = _document_urls(srcdoc, base, depth + 1)
+        nested, nested_too_deep = _document_urls(srcdoc, base, depth + 1, budget)
         urls += nested
         too_deep |= nested_too_deep
     return urls, too_deep

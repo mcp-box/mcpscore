@@ -159,11 +159,11 @@ replay an injected instruction.
     `<textarea>`. A relative URL is resolved against the document's
     `<base href>`. Markup that cannot be checked fails as
     `uncheckable_markup`: a string with markup over 64 KiB (real catalog
-    strings stay far below), Markdown whose reference links would repeat a
-    destination past four times that size, iframe `srcdoc` documents nested more than
+    strings stay far below), Markdown whose reference links, or a long
+    `<base href>`, would repeat a destination past four times that size, iframe `srcdoc` documents nested more than
     three deep, and constructs that browsers and parsers read differently: a
     CDATA section in HTML, a comment closed early by `<!-->` or `--!>`, a
-    `<frameset>`, raw-text content such as `<script>` or `<xmp>`
+    `<frameset>`, a raw-text tag inside a `<select>`, raw-text content such as `<script>` or `<xmp>`
     inside SVG or MathML, SVG or MathML
     inside a `<template>`, an end tag that closes unclosed elements across
     the edge of SVG or MathML content or out of a `<video>`, `<audio>` or
