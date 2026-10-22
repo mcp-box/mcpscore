@@ -558,7 +558,7 @@ _LINK_HINTS = ("](", "]:", "<")
 _SCRIPT_SCHEMES = frozenset({"javascript", "vbscript"})
 # Raster images that cannot carry script; SVG can, so it is not here.
 _SAFE_DATA_IMAGE_RE = re.compile(
-    r"^data:image/(?:png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,]", re.IGNORECASE
+    r"^data:image/(?:a?png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,]", re.IGNORECASE
 )
 # A slot the model is asked to fill: {x}, {{x}}, ${x}, <x>, $NAME.
 _PLACEHOLDER_URL_RE = re.compile(
@@ -590,6 +590,12 @@ _SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
 _SVG_URL_PROPERTIES = frozenset(
     {"clip-path", "cursor", "fill", "filter", "marker-end", "marker-mid", "marker-start", "mask", "stroke"}
 )
+# SVG animation elements, which set an attribute to the values in these attributes over time.
+_SVG_ANIMATIONS = frozenset({"animate", "set"})
+_SVG_ANIMATION_VALUES = ("from", "to", "by", "values")
+# Elements that bound an end tag's scope (HTML §13.2.4.2): a browser ignores an end tag for an element
+# outside them.
+_SCOPE_BOUNDARIES = frozenset({"applet", "caption", "html", "marquee", "object", "table", "td", "template", "th"})
 # Inside <svg>, only an anchor follows a link.
 _SVG_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {"a": frozenset({"href", "xlink:href", "ping"})}
 # HTML parsing in foreign content (HTML §13.2.6.5): children of these SVG and MathML integration points
@@ -896,6 +902,12 @@ class _HtmlUrls(HTMLParser):
         """Collect url() in SVG presentation attributes; return the element's loading and acting attributes."""
         for name in values.keys() & _SVG_URL_PROPERTIES:
             self.urls.extend((url, True) for url in _css_urls(values[name], strings=False))
+        target = values.get("attributename", "").strip().lower()
+        if tag in _SVG_ANIMATIONS and (target in ("href", "xlink:href") or target in _SVG_URL_PROPERTIES):
+            # An animation can set a resource URL that no attribute of the target holds.
+            for value in (part for name in _SVG_ANIMATION_VALUES for part in values.get(name, "").split(";")):
+                urls = [value.strip()] if target.endswith("href") else _css_urls(value, strings=False)
+                self.urls.extend((url, True) for url in urls if url)
         if "href" in values:
             values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
         linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
@@ -1019,6 +1031,10 @@ class _HtmlUrls(HTMLParser):
             # leaving later <source> elements as its children.
             if len(closed) > 1 and tag in _SOURCE_PARENTS:
                 self.uncheckable = True
+            # And an ancestor's end tag that closes a media element across a scope boundary, which a browser ignores.
+            inside = {name for name, _, _ in closed[:-1]}
+            if inside & _SOURCE_PARENTS and inside & _SCOPE_BOUNDARIES:
+                self.uncheckable = True
 
     def _open_inert(self, tag: str) -> None:
         self.inert.append(tag)
@@ -1055,7 +1071,8 @@ class _HtmlUrls(HTMLParser):
             self.uncheckable = True
         # "<!--" then "<script" in script text enters the double-escaped state, where a browser reads past the
         # next "</script>"; the parser does not.
-        if self.cdata_elem == "script" and re.search(r"(?is)<!--.*<script[\s/>]", data):
+        opener = data.find("<!--") if self.cdata_elem == "script" else -1
+        if opener >= 0 and re.search(r"(?i)<script[\s/>]", data[opener:]):
             self.uncheckable = True
 
     def _pop(self) -> tuple[str, str, str]:
