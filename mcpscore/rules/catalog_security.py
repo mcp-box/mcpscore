@@ -782,7 +782,7 @@ class _CssScanner:
                 name, self.position = _css_name(css, self.position)
                 if css.startswith("(", self.position):
                     self._function(name.lower())
-                elif name.startswith("--") and css[self.position :].lstrip(_CSS_SPACE).startswith(":"):
+                elif name.startswith("--") and css.startswith(":", _css_skip_blank(css, self.position)):
                     self.custom = True
             else:
                 self._delimiter(char)
@@ -862,6 +862,19 @@ def _css_string(css: str, position: int, quote: str) -> tuple[str, int]:
     return "".join(value), position + 1
 
 
+def _css_skip_blank(css: str, position: int) -> int:
+    """Return the position past any whitespace and comments, which CSS allows between a property name and colon."""
+    while position < len(css):
+        if css[position] in _CSS_SPACE:
+            position += 1
+        elif css.startswith("/*", position):
+            end = css.find("*/", position + 2)
+            position = len(css) if end < 0 else end + 2
+        else:
+            break
+    return position
+
+
 def _css_url(css: str, position: int) -> tuple[str, int]:
     """Read an unquoted url() token's value up to ")"; a malformed one is read on, the stricter side."""
     value: list[str] = []
@@ -879,7 +892,7 @@ def _css_url(css: str, position: int) -> tuple[str, int]:
 def _runs_as_script(values: dict[str, str]) -> bool:
     """Whether a script element runs, and so fetches its src: a classic or module script, not a data block."""
     kind = values.get("type")
-    if not kind:
+    if kind is None:  # language is consulted only when type is absent; an empty type is JavaScript
         language = values.get("language", "")
         kind = f"text/{language}" if language else ""
     kind = kind.strip(_HTML_SPACE).lower()
