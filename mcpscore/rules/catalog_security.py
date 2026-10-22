@@ -708,15 +708,6 @@ def _srcset_urls(value: str) -> Iterator[str]:
             yield url
 
 
-def _without_query(url: str) -> str:
-    """Drop the query of a web URL, as a GET form submission replaces it with the form data."""
-    scheme = re.match(r"(?i)([a-z][a-z0-9+.-]*):", _visible(url))
-    if scheme and scheme.group(1).lower() not in ("http", "https"):
-        return url
-    address, hash_sign, fragment = url.partition("#")
-    return address.split("?", 1)[0] + hash_sign + fragment
-
-
 def _relations(values: dict[str, str]) -> set[str]:
     """Return a link's relations: its rel keywords, split on ASCII whitespace and matched case-insensitively."""
     return set(re.split(f"[{_HTML_SPACE}]+", values.get("rel", "").lower()))
@@ -735,7 +726,6 @@ class _HtmlUrls(HTMLParser):
         self.base: str | None = None
         self.inert: list[str] = []  # open elements whose content is never rendered
         self.inert_tags: Counter[str] = Counter()
-        self.form_method: str | None = None  # the method of the open form, lowercased
         self.open: list[tuple[str, str, str]] = []  # open elements: tag, namespace, namespace of children
         self.open_tags: Counter[str] = Counter()  # how many of each tag are open, so end tags never scan the stack
         self.namespace = "html"  # of the current element: "html", "svg" or "math"
@@ -774,7 +764,6 @@ class _HtmlUrls(HTMLParser):
             self._html_document_effects(tag, values)
             loading = self._loading_attributes(tag, values)
             acting = _ACTION_ATTRIBUTES.get(tag, frozenset()) if self._can_act(tag, values) else frozenset()
-            acting = self._submission(tag, values, acting)
         self._collect(values, loading, acting)
 
     def _enter(self, tag: str, values: dict[str, str]) -> None:
@@ -829,23 +818,6 @@ class _HtmlUrls(HTMLParser):
             return kind not in ("button", "reset")
         return True
 
-    def _submission(self, tag: str, values: dict[str, str], acting: frozenset[str]) -> frozenset[str]:
-        """Apply the form method to a form action: GET replaces the action's query, dialog navigates nowhere."""
-        if tag == "form":
-            method = values.get("method", "").lower()
-            if self.form_method is None:  # a nested form start tag is ignored, keeping the outer form
-                self.form_method = method
-        elif tag in ("button", "input"):
-            method = values["formmethod"].lower() if "formmethod" in values else (self.form_method or "")
-        else:
-            return acting
-        if method == "dialog":
-            return acting - {"action", "formaction"}
-        if method != "post":
-            for name in acting & {"action", "formaction"} & values.keys():
-                values[name] = _without_query(values[name])
-        return acting
-
     def _html_document_effects(self, tag: str, values: dict[str, str]) -> None:
         """Record what an HTML element does to the whole document: its base URL, a refresh, a srcdoc."""
         if tag == "base" and self.base is None and "href" in values:
@@ -893,8 +865,6 @@ class _HtmlUrls(HTMLParser):
                 self.inert_tags[closed] -= 1
             self.inert_tags[tag] -= 1
         elif not self.inert and self.open_tags[tag]:
-            if tag == "form":
-                self.form_method = None
             closed = [self._pop()]
             while closed[-1][0] != tag:
                 closed.append(self._pop())
