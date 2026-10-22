@@ -722,13 +722,26 @@ def _srcset_urls(value: str) -> Iterator[str]:
             yield url
 
 
-def _css_urls(css: str) -> Iterator[str]:
-    """Yield what a stylesheet may load: every url() and every string, after comments and escapes are removed."""
-    text = _CSS_ESCAPE_RE.sub(_css_unescape, _CSS_COMMENT_RE.sub("", css))
-    for match in _CSS_URL_RE.finditer(text):
-        url = next((group for group in match.groups() if group is not None), "")
-        if url:
-            yield url
+def _css_urls(css: str) -> list[str]:
+    """Yield what a stylesheet may load: every url() and every string.
+
+    Comments, strings and escapes interact (a comment marker inside a string is text, an escaped parenthesis
+    belongs to the URL), so the text is read as written, without comments, and with escapes decoded; a URL
+    from any of these readings counts.
+    """
+    decoded = _CSS_ESCAPE_RE.sub(_css_unescape, css)
+    views = (
+        css,
+        _CSS_COMMENT_RE.sub("", css),
+        decoded,
+        _CSS_ESCAPE_RE.sub(_css_unescape, _CSS_COMMENT_RE.sub("", css)),
+    )
+    urls = (
+        next((group for group in match.groups() if group is not None), "")
+        for text in dict.fromkeys(views)
+        for match in _CSS_URL_RE.finditer(text)
+    )
+    return [url for url in dict.fromkeys(urls) if url]
 
 
 def _css_unescape(match: re.Match[str]) -> str:
@@ -776,6 +789,8 @@ class _HtmlUrls(HTMLParser):
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
         self._enter(tag, values)
+        if "style" in values:  # inline CSS loads its images on render, in every namespace and on inert elements
+            self.urls.extend((url, True) for url in _css_urls(values["style"]))
         if (tag in _INERT_TAGS or tag == "plaintext") and self.namespace == "html":
             self._open_inert(tag)
             return
@@ -789,8 +804,6 @@ class _HtmlUrls(HTMLParser):
             children = "html" if tag in integration or html_annotation else self.namespace
             self.open.append((tag, self.namespace, children))
             self.open_tags[tag] += 1
-        if "style" in values:  # inline CSS loads its images on render, in every namespace
-            self.urls.extend((url, True) for url in _css_urls(values["style"]))
         if self.namespace == "math":
             return  # MathML elements fetch and follow nothing
         if self.namespace == "svg":
