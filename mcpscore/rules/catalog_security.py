@@ -1041,7 +1041,8 @@ class _HtmlUrls(HTMLParser):
                 urls = list(_srcset_urls(value))
             else:
                 urls = [value]
-            self.urls.extend((url, name in loading) for url in urls)
+            # A ping is a background request, not the page the user sees, so it is checked like a load.
+            self.urls.extend((url, name in loading or name == "ping") for url in urls)
 
     @staticmethod
     def _can_act(tag: str, values: dict[str, str]) -> bool:
@@ -1125,6 +1126,9 @@ class _HtmlUrls(HTMLParser):
             # And an ancestor's end tag that closes a media element across a scope boundary, which a browser ignores.
             inside = {name for name, _, _ in closed[:-1]}
             if inside & _SOURCE_PARENTS and inside & _SCOPE_BOUNDARIES:
+                self.uncheckable = True
+            # A browser in select insertion mode ignores an ancestor's end tag, so the select stays open.
+            if "select" in inside:
                 self.uncheckable = True
 
     def _open_inert(self, tag: str) -> None:

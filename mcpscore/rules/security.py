@@ -403,11 +403,15 @@ class ErrorDataLeakRule(BaseRule):
         # echoing the server's leaked secret back into our own output would
         # re-leak it. The count lets the server owner gauge severity.
         leaks_found = []
-        # A JSON body escapes newlines and quotes inside strings, which hides line-anchored frames;
-        # its decoded string values are scanned too, and the larger count is reported.
-        decoded = "\n".join(_json_strings(error_response))
+        # A JSON body escapes newlines and quotes inside strings, which hides line-anchored frames; each decoded
+        # string value is scanned on its own (joined, separate fields could form a frame), and the larger total
+        # of the raw and decoded counts is reported.
+        decoded = _json_strings(error_response)
         for pattern, leak_type in self.STRUCTURAL_PATTERNS:
-            count = max(len(re.findall(pattern, view, re.IGNORECASE)) for view in (error_response, decoded))
+            count = max(
+                len(re.findall(pattern, error_response, re.IGNORECASE)),
+                sum(len(re.findall(pattern, value, re.IGNORECASE)) for value in decoded),
+            )
             if count:
                 leaks_found.append({"type": leak_type, "count": count})
         for pattern, leak_type in self.CREDENTIAL_PATTERNS:

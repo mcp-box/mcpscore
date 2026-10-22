@@ -362,6 +362,13 @@ class TestErrorDataLeakRule:
         assert result.passed is False
         assert result.details["leaks"] == [{"type": "stack trace", "count": 1}]
 
+    @pytest.mark.parametrize("data", [["[", "1", "goroutine"], ["goroutine", "1", "["]])
+    def test_separate_json_fields_never_join_into_a_trace(self, rule, data):
+        """Each decoded string is scanned on its own, so fields that form a frame only when joined pass."""
+        body = json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "x", "data": data}})
+
+        assert rule.check(_leak_audit(body)).passed is True
+
     @pytest.mark.parametrize(
         "body",
         ["{not json", "[" * 100_000 + "]" * 100_000, '{"error": "Parse error"}'],
