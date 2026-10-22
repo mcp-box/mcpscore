@@ -904,10 +904,16 @@ class _HtmlUrls(HTMLParser):
         target = values.get("attributename", "").strip().lower()
         if tag in _SVG_ANIMATIONS and (target in ("href", "xlink:href") or target in _SVG_URL_PROPERTIES):
             # An animation can set a resource URL that no attribute of the target holds.
+            # Without its own href an animation targets its parent; on an SVG anchor an href is followed on a
+            # click, not loaded. A target named by href is not resolved and counts as a load.
+            on_anchor = (
+                "href" not in values and "xlink:href" not in values and self.open[-2:-1] == [("a", "svg", "svg")]
+            )
+            loads = not (on_anchor and target.endswith("href"))
             animated = [values.get(name, "") for name in ("from", "to", "by")] + values.get("values", "").split(";")
             for value in animated:  # only values is a semicolon-separated list
                 urls = [value.strip()] if target.endswith("href") else _css_urls(value, strings=False)
-                self.urls.extend((url, True) for url in urls if url)
+                self.urls.extend((url, loads) for url in urls if url)
         if "href" in values:
             values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
         linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination

