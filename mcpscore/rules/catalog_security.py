@@ -1173,6 +1173,9 @@ class _HtmlUrls(HTMLParser):
                 self.uncheckable = True
             if any(element[:2] == ("template", "html") for element in closed[:-1]):
                 self.uncheckable = True
+            # </form> removes only the form and </body> or </html> nothing, keeping the elements inside open.
+            if len(closed) > 1 and tag in ("body", "form", "html") and closed[-1][1] == "html":
+                self.uncheckable = True
             # And an unlisted end tag above an open special element, which a browser ignores.
             if tag not in _LISTED_END_TAGS and any(
                 name in _SPECIAL_TAGS and namespace == "html" for name, namespace, _ in closed[:-1]
@@ -1287,6 +1290,36 @@ def _starts_host(url: str, base: str) -> bool:
     return explicit.group(1).lower() != base.split(":", 1)[0].lower() or len(explicit.group(2)) >= 2
 
 
+def _ipv4_number(part: str) -> int | None:
+    """Parse one IPv4 address part as a browser does: decimal, 0x hexadecimal or leading-zero octal."""
+    if re.fullmatch(r"0[xX][0-9A-Fa-f]*", part):
+        digits, radix = part[2:], 16
+    elif re.fullmatch(r"0[0-9]+", part):
+        if not re.fullmatch(r"[0-7]+", part):
+            return None
+        digits, radix = part, 8
+    elif re.fullmatch(r"[0-9]+", part):
+        digits, radix = part, 10
+    else:
+        return None
+    digits = digits.lstrip("0") or "0"
+    return 2**64 if len(digits) > 24 else int(digits, radix)  # past any address, below Python's digit limit
+
+
+def _invalid_ipv4(host: str) -> bool:
+    """Whether a host ends in a number but is no valid IPv4 address, which a browser rejects (URL Standard §3.5)."""
+    parts = host.split(".")
+    if len(parts) > 1 and not parts[-1]:
+        parts.pop()  # one trailing dot is allowed
+    if not re.fullmatch(r"[0-9]+", parts[-1]) and _ipv4_number(parts[-1]) is None:
+        return False  # a domain, not an IPv4 address
+    numbers = [_ipv4_number(part) for part in parts]
+    if len(numbers) > 4 or any(number is None for number in numbers):
+        return True
+    values = [number for number in numbers if number is not None]
+    return any(value > 255 for value in values[:-1]) or values[-1] >= 256 ** (5 - len(values))
+
+
 def _document_base(inherited: str, declared: str | None) -> str:
     """Return a document's base URL; a malformed, hostless, javascript: or data: base yields the inherited one."""
     if not declared:
@@ -1300,10 +1333,11 @@ def _document_base(inherited: str, declared: str | None) -> str:
     scheme = parts.scheme.lower()
     web = scheme in ("http", "https")
     hostless = web and not parts.hostname  # a browser rejects http:// with no host
+    host = unquote(parts.hostname or "")
     invalid_host = (
         web
         and not parts.netloc.rpartition("@")[2].startswith("[")
-        and bool(_FORBIDDEN_DOMAIN_RE.search(unquote(parts.hostname or "")))
+        and bool(_FORBIDDEN_DOMAIN_RE.search(host) or _invalid_ipv4(host))
     )
     return inherited if scheme in ("javascript", "data") or hostless or invalid_host else candidate
 
