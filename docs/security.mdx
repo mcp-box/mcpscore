@@ -149,7 +149,9 @@ replay an injected instruction.
     such as `{conversation}`, `{{secret}}`, `${TOKEN}` or `<data>`. An image
     loads without a click, so a slot anywhere in its URL counts; a link counts
     only with the slot in its query, because a path such as `/users/{id}` is
-    usually an API route. Code spans and image alt text are text, not links,
+    usually an API route. A form sent with GET replaces its action's
+    query with the form fields, so only a POST form's action query counts.
+    Code spans and image alt text are text, not links,
     and pass, and so does the content of `<template>`, `<script>` and
     `<textarea>`. A relative URL is resolved against the document's
     `<base href>`. Markup that cannot be checked fails as
