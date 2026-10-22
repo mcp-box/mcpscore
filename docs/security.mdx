@@ -158,10 +158,11 @@ replay an injected instruction.
     `uncheckable_markup`: a string with markup over 64 KiB (real catalog
     strings stay far below), iframe `srcdoc` documents nested more than
     three deep, and constructs that browsers and parsers read differently: a
-    CDATA section in HTML, a self-closing `<script/>` or `<style/>` in HTML,
-    `<script>` and `<style>` content inside SVG or MathML, SVG or MathML
+    CDATA section in HTML, raw-text content such as `<script>` or `<xmp>`
+    inside SVG or MathML, SVG or MathML
     inside a `<template>`, an end tag that closes unclosed elements across
-    the edge of SVG or MathML content, or a raw-text end tag such as
+    the edge of SVG or MathML content or out of a `<video>`, `<audio>` or
+    `<picture>`, or a raw-text end tag such as
     `</script/>` that a browser accepts and the parser reads as text.
   - All four skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.

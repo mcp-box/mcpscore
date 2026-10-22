@@ -682,6 +682,11 @@ _AUTHORITY_RE = re.compile(r"(?i)^(?:https?:)?//(?:[^/?#]*@)?([^/?#]*)")
 _PORT_RE = re.compile(r":(?:\d*|\{\{?[^{}:]*\}\}?|\$\{[^{}:]*\}|<[^<>:]*>|\$[A-Z_][A-Z0-9_]*)$")
 # Content of these elements is never rendered as markup (script and style are raw text to HTMLParser).
 _INERT_TAGS = frozenset({"template", "textarea", "title"})
+# HTML elements whose content a browser with scripting reads as raw text up to their own end tag, whatever
+# the Python version's tokenizer does; plaintext content runs to the end of the document.
+_RAW_TEXT_TAGS = frozenset({"iframe", "noembed", "noframes", "noscript", "script", "style", "xmp"})
+# Elements whose child list (picture, audio, video) decides what a <source> loads.
+_SOURCE_PARENTS = frozenset({"picture", "audio", "video"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
 """Longer strings holding markup are not parsed and fail as uncheckable; real catalog strings stay far below."""
 MAX_SRCDOC_DEPTH = 3
@@ -735,8 +740,10 @@ class _HtmlUrls(HTMLParser):
             # Template content is parsed as markup, so templates and raw-text elements open inside it;
             # textarea and title content is raw text, where no tag opens.
             if self.inert[-1] == "template":
-                if tag in _INERT_TAGS:
+                if tag in _INERT_TAGS or tag == "plaintext":
                     self._open_inert(tag)
+                elif tag in _RAW_TEXT_TAGS:
+                    self.set_cdata_mode(tag)
                 elif tag in ("svg", "math"):
                     self.uncheckable = True  # template content keeps namespaces this parser does not track
             return
@@ -744,7 +751,7 @@ class _HtmlUrls(HTMLParser):
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
         self._enter(tag, values)
-        if tag in _INERT_TAGS and self.namespace == "html":
+        if (tag in _INERT_TAGS or tag == "plaintext") and self.namespace == "html":
             self._open_inert(tag)
             return
         if not (tag in _VOID_TAGS and self.namespace == "html"):
@@ -770,6 +777,8 @@ class _HtmlUrls(HTMLParser):
             loading = self._loading_attributes(tag, values)
             acting = _ACTION_ATTRIBUTES.get(tag, frozenset()) if self._can_act(tag, values) else frozenset()
         self._collect(values, loading, acting)
+        if self.namespace == "html" and tag in _RAW_TEXT_TAGS:
+            self.set_cdata_mode(tag)  # after the element's own attributes, such as an iframe's src
 
     def _enter(self, tag: str, values: dict[str, str]) -> None:
         """Set the namespace of the element starting now, leaving foreign content where HTML says it ends."""
@@ -869,7 +878,7 @@ class _HtmlUrls(HTMLParser):
         if self.inert:
             # Open inert elements are templates with at most one raw-text element on top, so a matching end tag
             # always closes the top one; any other end tag is text or stray, and ignored.
-            if tag == self.inert[-1]:
+            if tag == self.inert[-1] and tag != "plaintext":  # nothing ends plaintext
                 self.inert.pop()
         elif not self.inert and self.open_tags[tag]:
             closed = [self._pop()]
@@ -879,10 +888,14 @@ class _HtmlUrls(HTMLParser):
             # does not model (a browser may ignore the end tag), so the rest cannot be checked.
             if len(closed) > 1 and len({closed[-1][1]} | {children for _, _, children in closed}) > 1:
                 self.uncheckable = True
+            # Likewise a media element's end tag with elements still open inside it, which a browser may ignore,
+            # leaving later <source> elements as its children.
+            if len(closed) > 1 and tag in _SOURCE_PARENTS:
+                self.uncheckable = True
 
     def _open_inert(self, tag: str) -> None:
         self.inert.append(tag)
-        if tag != "template":
+        if tag in ("textarea", "title"):
             self.set_cdata_mode(tag)  # textarea and title content is text up to the matching end tag
 
     def handle_data(self, data: str) -> None:
@@ -893,9 +906,16 @@ class _HtmlUrls(HTMLParser):
         self._check_raw_text(self.rawdata)  # some Python versions keep unparsed raw text here instead
 
     def _check_raw_text(self, data: str) -> None:
+        if not self.cdata_elem:
+            return
         # Raw text holding an end tag a browser accepts (such as "</script/>") that this parser did not close on:
         # what follows is markup to a browser and text here, so it cannot be checked.
-        if self.cdata_elem and re.search(rf"(?i)</{self.cdata_elem}[{_HTML_SPACE}/>]", data):
+        if self.cdata_elem != "plaintext" and re.search(rf"(?i)</{self.cdata_elem}[{_HTML_SPACE}/>]", data):
+            self.uncheckable = True
+        # Some Python tokenizers read these elements as raw text in SVG and MathML too, where a browser parses
+        # their content as markup.
+        foreign = bool(self.open) and self.open[-1][0] == self.cdata_elem and self.open[-1][1] != "html"
+        if foreign and "<" in data:
             self.uncheckable = True
 
     def _pop(self) -> tuple[str, str, str]:
@@ -911,9 +931,6 @@ class _HtmlUrls(HTMLParser):
         self.closing = True
         self.handle_starttag(tag, attrs)
         self.closing = False
-        if tag in ("script", "style") and self.namespace == "html" and not self.inert:
-            # HTML ignores "/>" here and reads what follows as raw text; the parser does not.
-            self.uncheckable = True
         # HTML ignores "/>" on non-void elements, so <template/> stays open; SVG and MathML honor it.
         if self.namespace != "html" and not self.inert:
             self.handle_endtag(tag)
