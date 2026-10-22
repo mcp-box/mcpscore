@@ -590,9 +590,8 @@ _SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
 _SVG_URL_PROPERTIES = frozenset(
     {"clip-path", "cursor", "fill", "filter", "marker-end", "marker-mid", "marker-start", "mask", "stroke"}
 )
-# SVG animation elements, which set an attribute to the values in these attributes over time.
+# SVG animation elements, which set an attribute to their from, to, by and values over time.
 _SVG_ANIMATIONS = frozenset({"animate", "set"})
-_SVG_ANIMATION_VALUES = ("from", "to", "by", "values")
 # Elements that bound an end tag's scope (HTML §13.2.4.2): a browser ignores an end tag for an element
 # outside them.
 _SCOPE_BOUNDARIES = frozenset({"applet", "caption", "html", "marquee", "object", "table", "td", "template", "th"})
@@ -905,7 +904,8 @@ class _HtmlUrls(HTMLParser):
         target = values.get("attributename", "").strip().lower()
         if tag in _SVG_ANIMATIONS and (target in ("href", "xlink:href") or target in _SVG_URL_PROPERTIES):
             # An animation can set a resource URL that no attribute of the target holds.
-            for value in (part for name in _SVG_ANIMATION_VALUES for part in values.get(name, "").split(";")):
+            animated = [values.get(name, "") for name in ("from", "to", "by")] + values.get("values", "").split(";")
+            for value in animated:  # only values is a semicolon-separated list
                 urls = [value.strip()] if target.endswith("href") else _css_urls(value, strings=False)
                 self.urls.extend((url, True) for url in urls if url)
         if "href" in values:
@@ -1040,6 +1040,12 @@ class _HtmlUrls(HTMLParser):
         self.inert.append(tag)
         if tag in ("textarea", "title"):
             self.set_cdata_mode(tag)  # textarea and title content is text up to the matching end tag
+
+    def handle_comment(self, data: str) -> None:
+        # A browser ends "<!-->" and "<!--->" at once and a comment at "--!>"; older Python tokenizers read on
+        # to "-->", so what they took as comment may be markup.
+        if data.startswith((">", "->")) or "--!>" in data:
+            self.uncheckable = True
 
     def handle_data(self, data: str) -> None:
         self._check_raw_text(data)

