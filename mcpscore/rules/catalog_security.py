@@ -896,11 +896,14 @@ def _css_url(css: str, position: int) -> tuple[str, int]:
     return "".join(value), position + 1
 
 
-def _runs_as_script(values: dict[str, str]) -> bool:
-    """Whether a script element runs, and so fetches its src: a classic or module script, not a data block."""
+def _runs_as_script(values: dict[str, str], *, html: bool = True) -> bool:
+    """Whether a script element runs, and so fetches its source: a classic or module script, not a data block.
+
+    Only an HTML script has a language attribute.
+    """
     kind = values.get("type")
     if kind is None:  # language is consulted only when type is absent; an empty type is JavaScript
-        language = values.get("language", "")
+        language = values.get("language", "") if html else ""
         kind = f"text/{language}" if language else ""
     kind = kind.strip(_HTML_SPACE).lower()
     return kind in ("", "module") or kind in _JAVASCRIPT_TYPES  # an exact essence match: parameters make a data block
@@ -999,7 +1002,8 @@ class _HtmlUrls(HTMLParser):
             values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
         linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
         acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset()) if linked else frozenset()
-        loading = _SVG_LOADING_ATTRIBUTES.get(tag, frozenset()) if tag != "script" or self.scripting else frozenset()
+        runs = tag != "script" or (self.scripting and _runs_as_script(values, html=False))
+        loading = _SVG_LOADING_ATTRIBUTES.get(tag, frozenset()) if runs else frozenset()
         return loading, acting
 
     def _svg_animation(self, tag: str, values: dict[str, str]) -> None:

