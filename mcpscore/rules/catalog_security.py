@@ -20,6 +20,8 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 from mcp_types import Icon
 
+from mcpscore.html_text import bound_charrefs
+
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
 from .catalog_diagnostics import catalog_result, field_issue, pointer_token
 from .registry import register_rule
@@ -584,6 +586,10 @@ _LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
 _SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
     tag: frozenset({"href", "xlink:href"}) for tag in ("image", "feimage", "use", "script")
 }
+# SVG presentation attributes whose value can name a resource with url().
+_SVG_URL_PROPERTIES = frozenset(
+    {"clip-path", "cursor", "fill", "filter", "marker-end", "marker-mid", "marker-start", "mask", "stroke"}
+)
 # Inside <svg>, only an anchor follows a link.
 _SVG_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {"a": frozenset({"href", "xlink:href", "ping"})}
 # HTML parsing in foreign content (HTML §13.2.6.5): children of these SVG and MathML integration points
@@ -888,9 +894,8 @@ class _HtmlUrls(HTMLParser):
 
     def _svg_attributes(self, tag: str, values: dict[str, str]) -> tuple[frozenset[str], frozenset[str]]:
         """Collect url() in SVG presentation attributes; return the element's loading and acting attributes."""
-        for name, value in values.items():  # presentation attributes such as fill, filter and cursor take url()
-            if name not in ("style", "href", "xlink:href"):
-                self.urls.extend((url, True) for url in _css_urls(value, strings=False))
+        for name in values.keys() & _SVG_URL_PROPERTIES:
+            self.urls.extend((url, True) for url in _css_urls(values[name], strings=False))
         if "href" in values:
             values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
         linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
@@ -1048,6 +1053,10 @@ class _HtmlUrls(HTMLParser):
         foreign = bool(self.open) and self.open[-1][0] == self.cdata_elem and self.open[-1][1] != "html"
         if foreign and "<" in data:
             self.uncheckable = True
+        # "<!--" then "<script" in script text enters the double-escaped state, where a browser reads past the
+        # next "</script>"; the parser does not.
+        if self.cdata_elem == "script" and re.search(r"(?is)<!--.*<script[\s/>]", data):
+            self.uncheckable = True
 
     def _pop(self) -> tuple[str, str, str]:
         element = self.open.pop()
@@ -1112,8 +1121,11 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
     part of its parent, so the work is bounded by the input size times ``MAX_SRCDOC_DEPTH``.
     """
     parser = _HtmlUrls()
-    parser.feed(html)
-    parser.close()
+    try:
+        parser.feed(bound_charrefs(html))
+        parser.close()
+    except ValueError:  # malformed markup the standard parser rejects
+        return [], True
     base = _document_base(inherited_base, parser.base)
     urls = [(_resolve(base, url), loads) for url, loads in parser.urls]
     for href in parser.hosts:  # a connection hint sends the hostname alone, so only it is checked

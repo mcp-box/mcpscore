@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   .NET, Rust, PHP, C++ and Elixir crash output. A server whose malformed-request
   error carries one of these now fails the rule.
 
+### Fixed
+
+- **A skill file with a very long numeric character reference no longer
+  aborts the audit.** Raw HTML in a `SKILL.md` holding a reference such as
+  `&#` followed by thousands of digits raised an error in the skills rules.
+  References past the last Unicode code point now decode to U+FFFD, as in a
+  browser.
+
 ## [1.27.0] - 2026-10-20
 
 Servers that publish Agent Skills are checked on eight more rules: two

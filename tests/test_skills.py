@@ -811,6 +811,20 @@ class TestRobustness:
             # Generous: CI runners parse adversarial input several times slower than a laptop.
             assert time.perf_counter() - started < 20.0
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<div>&#" + "9" * 5000 + ";</div>\n",
+            "<p title='&#x" + "f" * 5000 + "'>x</p>\n",
+            "a <b>&#" + "9" * 5000 + ";</b>\n",
+        ],
+        ids=["html-block", "attribute", "inline-html"],
+    )
+    def test_long_numeric_character_references_do_not_raise(self, body: str):
+        from mcpscore.skills import markdown_blocks
+
+        assert markdown_blocks(body)
+
     @pytest.mark.parametrize("separator", ["", "\n\n"])
     def test_repeated_references_to_one_destination_do_not_multiply_the_text(self, separator: str):
         from mcpscore.skills import markdown_blocks

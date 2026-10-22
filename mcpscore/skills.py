@@ -15,7 +15,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
 import hashlib
-import html as html_lib
 import json
 import logging
 import re
@@ -29,6 +28,7 @@ from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 from pydantic import ValidationError
 import yaml
 
+from .html_text import unescape
 from .report_evidence import report_evidence
 
 logger = logging.getLogger(__name__)
@@ -337,7 +337,7 @@ def _html_text(html: str, tag: str = "") -> str:
         else:
             parts.append("<")
             i = start + 1
-    return html_lib.unescape("".join(parts))
+    return unescape("".join(parts))
 
 
 @dataclass(frozen=True)
@@ -383,7 +383,7 @@ def _decode_extra(kind: str, raw: str) -> str:
     """Return the text a reader sees for a raw destination, title or inline tag."""
     if kind == "href":
         return unquote(raw)
-    return html_lib.unescape(raw) if kind == "html" else raw
+    return unescape(raw) if kind == "html" else raw
 
 
 def _render(
@@ -446,7 +446,7 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
             # content drops blockquote and list markers, as for code blocks.
             content = token.content
             rendered = "\n".join([_html_text(content), _html_text(content, "\n")])
-            prose = f"{html_lib.unescape(content)}\n{rendered}"
+            prose = f"{unescape(content)}\n{rendered}"
         blocks.append(MarkdownBlock(first_line + start, text, prose, rendered))
     run: list[int] = []
     for number in [*range(len(lines)), len(lines)]:
@@ -455,11 +455,11 @@ def markdown_blocks(body: str, first_line: int = 1) -> list[MarkdownBlock]:
         elif run:
             text = "\n".join(lines[run[0] : run[-1] + 1])
             if parsed:
-                blocks.append(MarkdownBlock(first_line + run[0], text, text, html_lib.unescape(text)))
+                blocks.append(MarkdownBlock(first_line + run[0], text, text, unescape(text)))
             else:
                 # Code cannot be told from prose here, so code-exempt classes are not judged; HTML is read the
                 # way a parsed HTML block is, so a tag cannot split a directive.
-                rendered = "\n".join([html_lib.unescape(text), _html_text(text), _html_text(text, "\n")])
+                rendered = "\n".join([unescape(text), _html_text(text), _html_text(text, "\n")])
                 blocks.append(MarkdownBlock(first_line + run[0], text, "", rendered))
             run = []
     return sorted(blocks, key=lambda block: block.line)
