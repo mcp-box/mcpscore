@@ -1143,9 +1143,12 @@ class _HtmlUrls(HTMLParser):
             # leaving later <source> elements as its children.
             if len(closed) > 1 and tag in _SOURCE_PARENTS:
                 self.uncheckable = True
-            # And an ancestor's end tag that closes a media element across a scope boundary, which a browser ignores.
+            # And an ancestor's end tag that closes a media element or a shadow-root template across a scope
+            # boundary, which a browser ignores.
             inside = {name for name, _, _ in closed[:-1]}
             if inside & _SOURCE_PARENTS and inside & _SCOPE_BOUNDARIES:
+                self.uncheckable = True
+            if any(element[:2] == ("template", "html") for element in closed[:-1]):
                 self.uncheckable = True
             # A browser in select insertion mode ignores an ancestor's end tag, so the select stays open.
             if "select" in inside:

