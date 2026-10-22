@@ -598,6 +598,23 @@ _SVG_URL_PROPERTIES = frozenset(
 )
 # SVG animation elements, which set an attribute to their from, to, by and values over time.
 _SVG_ANIMATIONS = frozenset({"animate", "set"})
+# HTML's special elements (HTML §13.2.4.2): an end tag the body insertion mode does not list, such as a
+# custom element's, is ignored when one of them is open above its match.
+_SPECIAL_TAG_NAMES = (
+    "address applet area article aside base basefont bgsound blockquote body br button caption center col colgroup"
+    " dd details dir div dl dt embed fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head"
+    " header hgroup hr html iframe img input keygen li link listing main marquee menu meta nav noembed noframes"
+    " noscript object ol p param plaintext pre script search section select source style summary table tbody td"
+    " template textarea tfoot th thead title tr track ul wbr xmp"
+)
+_SPECIAL_TAGS = frozenset(_SPECIAL_TAG_NAMES.split())
+# End tags the body insertion mode handles by name; every other end tag takes the "any other end tag" steps.
+_LISTED_END_TAG_NAMES = (
+    "a address applet article aside b big blockquote body br button center code dd details dialog dir div dl dt"
+    " em fieldset figcaption figure font footer form h1 h2 h3 h4 h5 h6 header hgroup html i li listing main"
+    " marquee menu nav nobr object ol p pre s search section small strike strong summary template tt u ul"
+)
+_LISTED_END_TAGS = frozenset(_LISTED_END_TAG_NAMES.split())
 # Elements that bound an end tag's scope (HTML §13.2.4.2): a browser ignores an end tag for an element
 # outside them.
 _SCOPE_BOUNDARIES = frozenset({"applet", "caption", "html", "marquee", "object", "table", "td", "template", "th"})
@@ -687,6 +704,8 @@ _LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
 _CONNECTION_HINT_RELATIONS = frozenset({"dns-prefetch", "preconnect"})
 _HTML_SPACE = " \t\n\f\r"
 _URL_TRIMMED = "".join(map(chr, range(0x21)))  # C0 controls and space
+# Forbidden domain code points (URL Standard §3.2), which make a browser reject a host, percent-decoded or not.
+_FORBIDDEN_DOMAIN_RE = re.compile(r"[\x00-\x20#%/:<>?@\[\\\]^|\x7f]")
 # The JavaScript MIME type essences (MIME Sniffing §4.6), which make a script element a classic script.
 _JAVASCRIPT_TYPES = frozenset(
     {"application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript"}
@@ -1154,6 +1173,11 @@ class _HtmlUrls(HTMLParser):
                 self.uncheckable = True
             if any(element[:2] == ("template", "html") for element in closed[:-1]):
                 self.uncheckable = True
+            # And an unlisted end tag above an open special element, which a browser ignores.
+            if tag not in _LISTED_END_TAGS and any(
+                name in _SPECIAL_TAGS and namespace == "html" for name, namespace, _ in closed[:-1]
+            ):
+                self.uncheckable = True
             # A browser in select insertion mode ignores an ancestor's end tag, so the select stays open.
             if "select" in inside:
                 self.uncheckable = True
@@ -1274,8 +1298,14 @@ def _document_base(inherited: str, declared: str | None) -> str:
     except ValueError:
         return inherited
     scheme = parts.scheme.lower()
-    hostless = scheme in ("http", "https") and not parts.hostname  # a browser rejects http:// with no host
-    return inherited if scheme in ("javascript", "data") or hostless else candidate
+    web = scheme in ("http", "https")
+    hostless = web and not parts.hostname  # a browser rejects http:// with no host
+    invalid_host = (
+        web
+        and not parts.netloc.rpartition("@")[2].startswith("[")
+        and bool(_FORBIDDEN_DOMAIN_RE.search(unquote(parts.hostname or "")))
+    )
+    return inherited if scheme in ("javascript", "data") or hostless or invalid_host else candidate
 
 
 def _document_urls(
