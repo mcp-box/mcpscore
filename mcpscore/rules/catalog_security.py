@@ -720,8 +720,10 @@ def _srcset_urls(value: str) -> Iterator[str]:
             yield url
 
 
-def _css_urls(css: str) -> list[str]:
-    """Return what a stylesheet may load: every url() token and every string, which image-set() and @import take.
+def _css_urls(css: str, *, strings: bool = True) -> list[str]:
+    """Return what a stylesheet may load: every url() token and, unless *strings* is false, every string.
+
+    Strings count because image-set() and @import take them.
 
     Tokenizes as CSS Syntax §4 does, so comments, strings and url() boundaries are found before escapes are
     decoded inside each token.
@@ -736,16 +738,19 @@ def _css_urls(css: str) -> list[str]:
             position = size if end < 0 else end + 2
         elif char in "\"'":
             value, position = _css_string(css, position + 1, char)
-            urls.append(value)
+            if strings:
+                urls.append(value)
         elif _css_name_char(char) or _css_valid_escape(css, position):
             name, position = _css_name(css, position)
             if name.lower() == "url" and css.startswith("(", position):
                 start = position + 1
                 while start < size and css[start] in _CSS_SPACE:
                     start += 1
-                if not css.startswith(('"', "'"), start):  # url("...") is a function taking a string
+                if css.startswith(('"', "'"), start):  # url("...") is a function taking a string
+                    value, position = _css_string(css, start + 1, css[start])
+                else:
                     value, position = _css_url(css, start)
-                    urls.append(value)
+                urls.append(value)
         else:
             position += 1
     return [url for url in dict.fromkeys(urls) if url]
@@ -835,15 +840,7 @@ class _HtmlUrls(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self.inert:
-            # Template content is parsed as markup, so templates and raw-text elements open inside it;
-            # textarea and title content is raw text, where no tag opens.
-            if self.inert[-1] == "template":
-                if tag in _INERT_TAGS or tag == "plaintext":
-                    self._open_inert(tag)
-                elif tag in _RAW_TEXT_TAGS:
-                    self.set_cdata_mode(tag)
-                elif tag in ("svg", "math"):
-                    self.uncheckable = True  # template content keeps namespaces this parser does not track
+            self._start_in_inert(tag)
             return
         values: dict[str, str] = {}
         for name, value in attrs:
@@ -869,11 +866,7 @@ class _HtmlUrls(HTMLParser):
         if self.namespace == "math":
             return  # MathML elements fetch and follow nothing
         if self.namespace == "svg":
-            if "href" in values:
-                values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
-            loading = _SVG_LOADING_ATTRIBUTES.get(tag, frozenset())
-            linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
-            acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset()) if linked else frozenset()
+            loading, acting = self._svg_attributes(tag, values)
         else:
             self._html_document_effects(tag, values)
             loading = self._loading_attributes(tag, values)
@@ -881,6 +874,28 @@ class _HtmlUrls(HTMLParser):
         self._collect(values, loading, acting)
         if self.namespace == "html" and tag in _RAW_TEXT_TAGS:
             self.set_cdata_mode(tag)  # after the element's own attributes, such as an iframe's src
+
+    def _start_in_inert(self, tag: str) -> None:
+        """Handle a start tag in inert content: only template content is markup, where some elements still open."""
+        if self.inert[-1] != "template":
+            return  # textarea and title content is raw text, where no tag opens
+        if tag in _INERT_TAGS or tag == "plaintext":
+            self._open_inert(tag)
+        elif tag in _RAW_TEXT_TAGS:
+            self.set_cdata_mode(tag)
+        elif tag in ("svg", "math"):
+            self.uncheckable = True  # template content keeps namespaces this parser does not track
+
+    def _svg_attributes(self, tag: str, values: dict[str, str]) -> tuple[frozenset[str], frozenset[str]]:
+        """Collect url() in SVG presentation attributes; return the element's loading and acting attributes."""
+        for name, value in values.items():  # presentation attributes such as fill, filter and cursor take url()
+            if name not in ("style", "href", "xlink:href"):
+                self.urls.extend((url, True) for url in _css_urls(value, strings=False))
+        if "href" in values:
+            values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
+        linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
+        acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset()) if linked else frozenset()
+        return _SVG_LOADING_ATTRIBUTES.get(tag, frozenset()), acting
 
     def _enter(self, tag: str, values: dict[str, str]) -> None:
         """Set the namespace of the element starting now, leaving foreign content where HTML says it ends."""
@@ -1056,7 +1071,9 @@ def _web_url(url: str) -> str:
     """Read backslashes as slashes in an http(s) or network-path URL, as a browser does."""
     visible = _visible(url)
     if re.match(r"(?i)(?:https?:|[/\\]{2})", visible):
-        return visible.replace("\\", "/")
+        # Any run of slashes after the scheme, or none, leads to the host, as a browser parses it.
+        slashed = visible.replace("\\", "/")
+        return re.sub(r"(?i)^(https?:)?/*", lambda match: (match.group(1) or "") + "//", slashed, count=1)
     return url
 
 
@@ -1068,7 +1085,10 @@ def _resolve(base: str, url: str) -> str:
     if not re.match(r"(?i)https?:|//", base):
         return url
     try:
-        return urljoin(base, url.replace("\\", "/") if not re.match(r"(?i)[a-z][a-z0-9+.-]*:", url) else url)
+        if not re.match(r"(?i)[a-z][a-z0-9+.-]*:", url):
+            # Against an http(s) base, backslashes are slashes and a run of slashes starts a host.
+            url = re.sub(r"^/{3,}", "//", url.replace("\\", "/"))
+        return urljoin(base, url)
     except ValueError:
         return url
 
