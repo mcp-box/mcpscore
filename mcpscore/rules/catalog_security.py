@@ -17,6 +17,7 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from mcp_types import Icon
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
@@ -691,6 +692,8 @@ MAX_LINK_MARKDOWN_BYTES = 64 * 1024
 """Longer strings holding markup are not parsed and fail as uncheckable; real catalog strings stay far below."""
 MAX_SRCDOC_DEPTH = 3
 """Iframe srcdoc documents nested deeper are not followed and fail as uncheckable."""
+MAX_RENDERED_CHARS = 4 * MAX_LINK_MARKDOWN_BYTES
+"""Markdown rendering to more text and URLs than this (reference links repeat a destination) is uncheckable."""
 
 
 def _srcset_urls(value: str) -> Iterator[str]:
@@ -996,6 +999,16 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
     return urls, too_deep
 
 
+def _rendered_chars(tokens: list[Token]) -> int:
+    """Count the characters of text and attribute values the tokens render to, before HTML escaping."""
+    total = 0
+    for token in tokens:
+        total += len(token.content) + sum(len(str(value)) for value in token.attrs.values())
+        if token.children:
+            total += _rendered_chars(token.children)
+    return total
+
+
 def _oversized(text: str) -> bool:
     # surrogatepass: a lone surrogate from a server's JSON must be measured, not raise.
     return len(text.encode("utf-8", "surrogatepass")) > MAX_LINK_MARKDOWN_BYTES
@@ -1017,8 +1030,13 @@ def exfiltration_link_classes(text: str) -> list[str]:
         return []
     if _oversized(text):
         return ["uncheckable_markup"]
-    # Render as a Markdown client would, then read the resulting HTML document.
-    urls, too_deep = _document_urls(_LINK_MARKDOWN.render(text), "", 0)
+    # Render as a Markdown client would, then read the resulting HTML document. Reference links repeat
+    # their destination at every use, so the rendered size is bounded before rendering.
+    env: dict[str, Any] = {}
+    tokens = _LINK_MARKDOWN.parse(text, env)
+    if _rendered_chars(tokens) > MAX_RENDERED_CHARS:
+        return ["uncheckable_markup"]
+    urls, too_deep = _document_urls(_LINK_MARKDOWN.renderer.render(tokens, _LINK_MARKDOWN.options, env), "", 0)
     found: list[str] = []
     for raw, loads in urls:
         url = _visible(raw)

