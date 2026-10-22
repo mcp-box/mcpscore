@@ -686,6 +686,7 @@ _LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
 # <link> relations that resolve their href's hostname on render, sending only the hostname.
 _CONNECTION_HINT_RELATIONS = frozenset({"dns-prefetch", "preconnect"})
 _HTML_SPACE = " \t\n\f\r"
+_URL_TRIMMED = "".join(map(chr, range(0x21)))  # C0 controls and space
 # The JavaScript MIME type essences (MIME Sniffing §4.6), which make a script element a classic script.
 _JAVASCRIPT_TYPES = frozenset(
     {"application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript"}
@@ -905,18 +906,26 @@ def _runs_as_script(values: dict[str, str]) -> bool:
     return kind in ("", "module") or kind in _JAVASCRIPT_TYPES  # an exact essence match: parameters make a data block
 
 
+def _tokens(value: str) -> set[str]:
+    """Return an attribute's keywords, split on ASCII whitespace and matched case-insensitively."""
+    return set(re.split(f"[{_HTML_SPACE}]+", value.lower()))
+
+
 def _relations(values: dict[str, str]) -> set[str]:
-    """Return a link's relations: its rel keywords, split on ASCII whitespace and matched case-insensitively."""
-    return set(re.split(f"[{_HTML_SPACE}]+", values.get("rel", "").lower()))
+    """Return a link's relations, its rel keywords."""
+    return _tokens(values.get("rel", ""))
 
 
 class _HtmlUrls(HTMLParser):
     """Collect, for one HTML document, the URLs a browser fetches on render or follows on a click."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, scripting: bool = True) -> None:
         super().__init__(convert_charrefs=True)
+        self.scripting = scripting
+        # With scripting disabled, as in a sandboxed frame without allow-scripts, noscript content is markup.
+        self.raw_text_tags = _RAW_TEXT_TAGS if scripting else _RAW_TEXT_TAGS - {"noscript"}
         self.urls: list[tuple[str, bool]] = []
-        self.srcdocs: list[str] = []
+        self.srcdocs: list[tuple[str, bool]] = []  # each srcdoc and whether scripting is enabled in it
         self.hosts: list[str] = []  # hrefs whose hostname alone is resolved
         self.stylesheet: list[str] = []  # the text of the open HTML style block
         self.uncheckable = False  # markup this parser reads differently from a browser
@@ -966,7 +975,7 @@ class _HtmlUrls(HTMLParser):
             loading = self._loading_attributes(tag, values)
             acting = _ACTION_ATTRIBUTES.get(tag, frozenset()) if self._can_act(tag, values) else frozenset()
         self._collect(values, loading, acting)
-        if self.namespace == "html" and tag in _RAW_TEXT_TAGS:
+        if self.namespace == "html" and tag in self.raw_text_tags:
             self.set_cdata_mode(tag)  # after the element's own attributes, such as an iframe's src
 
     def _start_in_inert(self, tag: str) -> None:
@@ -975,7 +984,7 @@ class _HtmlUrls(HTMLParser):
             return  # textarea and title content is raw text, where no tag opens
         if tag in _INERT_TAGS or tag == "plaintext":
             self._open_inert(tag)
-        elif tag in _RAW_TEXT_TAGS:
+        elif tag in self.raw_text_tags:
             self.set_cdata_mode(tag)
         elif tag in ("svg", "math", "select"):
             # Template content keeps namespaces and insertion modes this parser does not track.
@@ -1077,7 +1086,8 @@ class _HtmlUrls(HTMLParser):
         if tag == "link" and _relations(values) & _CONNECTION_HINT_RELATIONS and values.get("href"):
             self.hosts.append(values["href"])
         if tag == "iframe" and values.get("srcdoc"):
-            self.srcdocs.append(values["srcdoc"])
+            sandboxed = "sandbox" in values and "allow-scripts" not in _tokens(values["sandbox"])
+            self.srcdocs.append((values["srcdoc"], self.scripting and not sandboxed))  # sandboxing is inherited
 
     def _loading_attributes(self, tag: str, values: dict[str, str]) -> frozenset[str]:
         """Return the attributes this HTML element fetches on render, given its type and relation."""
@@ -1260,7 +1270,7 @@ def _document_base(inherited: str, declared: str | None) -> str:
 
 
 def _document_urls(
-    html: str, inherited_base: str, depth: int, budget: list[int] | None = None
+    html: str, inherited_base: str, depth: int, budget: list[int] | None = None, *, scripting: bool = True
 ) -> tuple[list[tuple[str, bool]], bool]:
     """Return a document's URLs resolved against its base, and whether some markup cannot be checked.
 
@@ -1270,7 +1280,7 @@ def _document_urls(
     before each URL is built; past it the markup cannot be checked.
     """
     budget = [MAX_RENDERED_CHARS] if budget is None else budget
-    parser = _HtmlUrls()
+    parser = _HtmlUrls(scripting=scripting)
     try:
         parser.feed(bound_charrefs(html))
         parser.close()
@@ -1292,11 +1302,11 @@ def _document_urls(
         if host:
             urls.append((f"//{host}", True))
     too_deep = parser.uncheckable
-    for srcdoc in parser.srcdocs:
+    for srcdoc, srcdoc_scripting in parser.srcdocs:
         if depth >= MAX_SRCDOC_DEPTH:
             too_deep = True
             break
-        nested, nested_too_deep = _document_urls(srcdoc, base, depth + 1, budget)
+        nested, nested_too_deep = _document_urls(srcdoc, base, depth + 1, budget, scripting=srcdoc_scripting)
         urls += nested
         too_deep |= nested_too_deep
     return urls, too_deep
@@ -1318,8 +1328,8 @@ def _oversized(text: str) -> bool:
 
 
 def _visible(url: str) -> str:
-    """Drop whitespace and control characters, which browsers strip from URLs before resolving them."""
-    return "".join(char for char in url if char.isprintable() and not char.isspace())
+    """Remove what a browser's URL parser drops: every ASCII tab or newline, and leading or trailing C0 or space."""
+    return re.sub("[\t\n\r]", "", url).strip(_URL_TRIMMED)
 
 
 def _query(url: str) -> str:

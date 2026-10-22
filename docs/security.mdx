@@ -158,7 +158,8 @@ replay an injected instruction.
     form's method.
     Code spans and image alt text are text, not links,
     and pass, and so does the content of a `<template>` (unless it declares a shadow root), `<script>` and
-    `<textarea>`. A relative URL is resolved against the document's
+    `<textarea>`, and of a `<noscript>` except in an iframe `srcdoc` sandboxed without `allow-scripts`, where
+    it renders. A relative URL is resolved against the document's
     `<base href>`. Markup that cannot be checked fails as
     `uncheckable_markup`: a string with markup over 64 KiB (real catalog
     strings stay far below), Markdown whose reference links, or a long
