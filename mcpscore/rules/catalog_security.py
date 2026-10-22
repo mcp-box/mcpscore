@@ -677,6 +677,8 @@ _REFRESH_URL_RE = re.compile(
 )
 # The authority of an http(s) or network-path URL, after any userinfo.
 _AUTHORITY_RE = re.compile(r"(?i)^(?:https?:)?//(?:[^/?#]*@)?([^/?#]*)")
+# A port after the hostname: digits, or one slot standing for them.
+_PORT_RE = re.compile(r":(?:\d*|\{\{?[^{}:]*\}\}?|\$\{[^{}:]*\}|<[^<>:]*>|\$[A-Z_][A-Z0-9_]*)$")
 # Content of these elements is never rendered as markup (script and style are raw text to HTMLParser).
 _INERT_TAGS = frozenset({"template", "textarea", "title"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
@@ -723,20 +725,22 @@ class _HtmlUrls(HTMLParser):
         self.closing = False  # the current start tag closes itself with "/>"
         self.base: str | None = None
         self.inert: list[str] = []  # open elements whose content is never rendered
+        self.inert_tags: Counter[str] = Counter()
         self.open: list[tuple[str, str, str]] = []  # open elements: tag, namespace, namespace of children
+        self.open_tags: Counter[str] = Counter()  # how many of each tag are open, so end tags never scan the stack
         self.namespace = "html"  # of the current element: "html", "svg" or "math"
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self.inert:
             if tag in _INERT_TAGS:
-                self.inert.append(tag)
+                self._open_inert(tag)
             return
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
         self._enter(tag, values)
         if tag in _INERT_TAGS and self.namespace == "html":
-            self.inert.append(tag)
+            self._open_inert(tag)
             return
         if not (tag in _VOID_TAGS and self.namespace == "html"):
             integration = _SVG_INTEGRATION_POINTS if self.namespace == "svg" else _MATHML_INTEGRATION_POINTS
@@ -747,6 +751,7 @@ class _HtmlUrls(HTMLParser):
             )
             children = "html" if tag in integration or html_annotation else self.namespace
             self.open.append((tag, self.namespace, children))
+            self.open_tags[tag] += 1
         if self.namespace == "math":
             return  # MathML elements fetch and follow nothing
         if self.namespace == "svg":
@@ -766,8 +771,7 @@ class _HtmlUrls(HTMLParser):
         parent = self.open[-1][2] if self.open else "html"
         breakout = tag in _FOREIGN_BREAKOUT_TAGS or (tag == "font" and values.keys() & {"color", "face", "size"})
         if parent != "html" and breakout:
-            while self.open and self.open[-1][2] != "html":
-                self.open.pop()
+            self._leave_foreign_content()
             parent = "html"
         if parent == "html" and tag in ("svg", "math"):
             self.namespace = tag
@@ -855,19 +859,32 @@ class _HtmlUrls(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag in ("p", "br") and not self.inert:
             # These end tags leave foreign content even with nothing to close (HTML §13.2.6.5).
-            while self.open and self.open[-1][2] != "html":
-                self.open.pop()
-        if tag in self.inert:  # closes the innermost matching element; a stray end tag is ignored
-            del self.inert[len(self.inert) - 1 - self.inert[::-1].index(tag) :]
-        elif not self.inert:
-            matches = [index for index, (name, _, _) in enumerate(self.open) if name == tag]
-            if matches:
-                closed = self.open[matches[-1] :]
-                # Closing several elements across a namespace boundary follows HTML scope rules this parser
-                # does not model (a browser may ignore the end tag), so the rest cannot be checked.
-                if len(closed) > 1 and len({closed[0][1]} | {children for _, _, children in closed}) > 1:
-                    self.uncheckable = True
-                del self.open[matches[-1] :]
+            self._leave_foreign_content()
+        if self.inert_tags[tag]:  # closes the innermost matching element; a stray end tag is ignored
+            while (closed := self.inert.pop()) != tag:
+                self.inert_tags[closed] -= 1
+            self.inert_tags[tag] -= 1
+        elif not self.inert and self.open_tags[tag]:
+            closed = [self._pop()]
+            while closed[-1][0] != tag:
+                closed.append(self._pop())
+            # Closing several elements across a namespace boundary follows HTML scope rules this parser
+            # does not model (a browser may ignore the end tag), so the rest cannot be checked.
+            if len(closed) > 1 and len({closed[-1][1]} | {children for _, _, children in closed}) > 1:
+                self.uncheckable = True
+
+    def _open_inert(self, tag: str) -> None:
+        self.inert.append(tag)
+        self.inert_tags[tag] += 1
+
+    def _pop(self) -> tuple[str, str, str]:
+        element = self.open.pop()
+        self.open_tags[element[0]] -= 1
+        return element
+
+    def _leave_foreign_content(self) -> None:
+        while self.open and self.open[-1][2] != "html":
+            self._pop()
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.closing = True
@@ -927,8 +944,9 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
     urls = [(_resolve(base, url), loads) for url, loads in parser.urls]
     for href in parser.hosts:  # a connection hint sends the hostname alone, so only it is checked
         authority = _AUTHORITY_RE.match(_web_url(_resolve(base, href)))
-        if authority and authority.group(1):
-            urls.append((f"//{authority.group(1)}", True))
+        host = _PORT_RE.sub("", authority.group(1)) if authority else ""
+        if host:
+            urls.append((f"//{host}", True))
     too_deep = parser.uncheckable
     for srcdoc in parser.srcdocs:
         if depth >= MAX_SRCDOC_DEPTH:

