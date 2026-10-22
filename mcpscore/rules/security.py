@@ -287,7 +287,7 @@ class ErrorDataLeakRule(BaseRule):
         (  # Node frame with an absolute path
             (
                 r"(?m)^[ \t]*at[ \t]+(?:[^\n]{0,300}[ \t])?"
-                r"\(?(?:/|[A-Z]:[\\/]|node:|file://)[^\r\n()]{0,300}:\d+:\d+\)?[ \t]*\r?$"
+                r"\(?(?:/|[A-Z]:[\\/]|node:|file://)[^\r\n]{0,300}:\d+:\d+\)?[ \t]*\r?$"
             ),
             "stack trace",
         ),
@@ -296,7 +296,7 @@ class ErrorDataLeakRule(BaseRule):
         (r"\bgoroutine\s+\d+\s+\[", "stack trace"),  # Go panic goroutine dump
         (r"(?<![\w./-])[\w./-]{1,200}\.rb:\d+:in\s+['`]", "stack trace"),  # Ruby frame
         (r"\bat\s+[\w.<>+`$\[\],]{1,300}\([^)\n]{0,300}\)\s+in\s+[^\r\n]{1,300}?:line\s+\d+", "stack trace"),  # .NET
-        (r"\bthread\s+'[^'\n]{1,100}'\s+panicked\s+at\b", "stack trace"),  # Rust panic
+        (r"\bthread\s+'[^'\n]{1,100}'(?:\s+\(\d{1,20}\))?\s+panicked\s+at\b", "stack trace"),  # Rust panic
         (  # PHP fatal banner or frame
             r"\bPHP\s+(?:Fatal|Parse)\s+error:|\bFatal error:\s+Uncaught\b|#\d+\s+\S{1,300}\.php\(\d+\):",
             "stack trace",

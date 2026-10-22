@@ -717,7 +717,7 @@ _INERT_TAGS = frozenset({"template", "textarea", "title"})
 # the Python version's tokenizer does; plaintext content runs to the end of the document.
 _RAW_TEXT_TAGS = frozenset({"iframe", "noembed", "noframes", "noscript", "script", "style", "xmp"})
 # Raw-text and inert start tags that HTML's "in select" insertion mode ignores (script is still processed).
-_SELECT_IGNORED_TAGS = (_RAW_TEXT_TAGS - {"script"}) | {"math", "plaintext", "svg", "title"}
+_SELECT_IGNORED_TAGS = (_RAW_TEXT_TAGS - {"script"}) | {"base", "math", "plaintext", "svg", "title"}
 # Elements whose child list (picture, audio, video) decides what a <source> loads.
 _SOURCE_PARENTS = frozenset({"picture", "audio", "video"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
@@ -999,7 +999,8 @@ class _HtmlUrls(HTMLParser):
             values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
         linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
         acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset()) if linked else frozenset()
-        return _SVG_LOADING_ATTRIBUTES.get(tag, frozenset()), acting
+        loading = _SVG_LOADING_ATTRIBUTES.get(tag, frozenset()) if tag != "script" or self.scripting else frozenset()
+        return loading, acting
 
     def _svg_animation(self, tag: str, values: dict[str, str]) -> None:
         """Collect the URLs an SVG animation sets: on an href, or on a presentation attribute that takes url()."""
@@ -1093,8 +1094,8 @@ class _HtmlUrls(HTMLParser):
         """Return the attributes this HTML element fetches on render, given its type and relation."""
         if tag == "input" and values.get("type", "").lower() == "image":
             return frozenset({"src"})
-        if tag == "script" and not _runs_as_script(values):
-            return frozenset()  # a data block, such as JSON-LD, never fetches its src
+        if tag == "script" and not (self.scripting and _runs_as_script(values)):
+            return frozenset()  # a data block, such as JSON-LD, or any script with scripting disabled fetches nothing
         if tag == "link":
             relations = _relations(values)
             loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
@@ -1226,6 +1227,7 @@ def _web_url(url: str) -> str:
 
 def _resolve(base: str, url: str) -> str:
     """Resolve *url* against a document base, leaving it as written when it cannot be resolved."""
+    url = _visible(url)  # a browser trims the URL before reading its scheme or host
     if not base:
         return url
     base = _web_url(base)

