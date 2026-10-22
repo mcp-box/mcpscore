@@ -681,6 +681,11 @@ _REFRESH_URL_RE = re.compile(
 _AUTHORITY_RE = re.compile(r"(?i)^(?:https?:)?//(?:[^/?#]*@)?([^/?#]*)")
 # A port after the hostname: digits, or one slot standing for them.
 _PORT_RE = re.compile(r":(?:\d*|\{\{?[^{}:]*\}\}?|\$\{[^{}:]*\}|<[^<>:]*>|\$[A-Z_][A-Z0-9_]*)$")
+# CSS comments, escapes (hex code points or one escaped character), and the tokens that can name a resource:
+# url(...) and strings, which image-set() and @import take.
+_CSS_COMMENT_RE = re.compile(r"/\*[\s\S]*?(?:\*/|$)")
+_CSS_ESCAPE_RE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[ \t\n\r\f])?|([\s\S]))")
+_CSS_URL_RE = re.compile(r"(?i)url\(\s*(?:\"([^\"]*)\"|'([^']*)'|([^)\s]*))|\"([^\"]*)\"|'([^']*)'")
 # Content of these elements is never rendered as markup (script and style are raw text to HTMLParser).
 _INERT_TAGS = frozenset({"template", "textarea", "title"})
 # HTML elements whose content a browser with scripting reads as raw text up to their own end tag, whatever
@@ -717,6 +722,22 @@ def _srcset_urls(value: str) -> Iterator[str]:
             yield url
 
 
+def _css_urls(css: str) -> Iterator[str]:
+    """Yield what a stylesheet may load: every url() and every string, after comments and escapes are removed."""
+    text = _CSS_ESCAPE_RE.sub(_css_unescape, _CSS_COMMENT_RE.sub("", css))
+    for match in _CSS_URL_RE.finditer(text):
+        url = next((group for group in match.groups() if group is not None), "")
+        if url:
+            yield url
+
+
+def _css_unescape(match: re.Match[str]) -> str:
+    if match.group(1):
+        code = int(match.group(1), 16)
+        return chr(code) if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF else "\ufffd"
+    return "" if match.group(2) in ("\n", "\r", "\f") else match.group(2)
+
+
 def _relations(values: dict[str, str]) -> set[str]:
     """Return a link's relations: its rel keywords, split on ASCII whitespace and matched case-insensitively."""
     return set(re.split(f"[{_HTML_SPACE}]+", values.get("rel", "").lower()))
@@ -730,6 +751,7 @@ class _HtmlUrls(HTMLParser):
         self.urls: list[tuple[str, bool]] = []
         self.srcdocs: list[str] = []
         self.hosts: list[str] = []  # hrefs whose hostname alone is resolved
+        self.stylesheet: list[str] = []  # the text of the open HTML style block
         self.uncheckable = False  # markup this parser reads differently from a browser
         self.closing = False  # the current start tag closes itself with "/>"
         self.base: str | None = None
@@ -767,6 +789,8 @@ class _HtmlUrls(HTMLParser):
             children = "html" if tag in integration or html_annotation else self.namespace
             self.open.append((tag, self.namespace, children))
             self.open_tags[tag] += 1
+        if "style" in values:  # inline CSS loads its images on render, in every namespace
+            self.urls.extend((url, True) for url in _css_urls(values["style"]))
         if self.namespace == "math":
             return  # MathML elements fetch and follow nothing
         if self.namespace == "svg":
@@ -863,6 +887,9 @@ class _HtmlUrls(HTMLParser):
             return frozenset()  # srcdoc replaces src, even when empty
         if tag == "source":  # srcset in a picture, src in audio or video; elsewhere nothing
             parent = self.open[-1][0] if self.open else ""
+            if parent not in _SOURCE_PARENTS and any(self.open_tags[media] for media in _SOURCE_PARENTS):
+                # Implied end tags and table parsing can make it a media element's child in the browser's tree.
+                self.uncheckable |= bool(values.keys() & {"src", "srcset"})
             return {"picture": frozenset({"srcset"}), "audio": frozenset({"src"}), "video": frozenset({"src"})}.get(
                 parent, frozenset()
             )
@@ -884,6 +911,8 @@ class _HtmlUrls(HTMLParser):
             if tag == self.inert[-1] and tag != "plaintext":  # nothing ends plaintext
                 self.inert.pop()
         elif not self.inert and self.open_tags[tag]:
+            if tag == "style":
+                self._flush_stylesheet()
             closed = [self._pop()]
             while closed[-1][0] != tag:
                 closed.append(self._pop())
@@ -903,10 +932,19 @@ class _HtmlUrls(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         self._check_raw_text(data)
+        if self.cdata_elem == "style" and self.open and self.open[-1][:2] == ("style", "html"):
+            self.stylesheet.append(data)  # a style block may arrive in several pieces
 
     def close(self) -> None:
         super().close()
         self._check_raw_text(self.rawdata)  # some Python versions keep unparsed raw text here instead
+        if self.cdata_elem == "style" and self.open and self.open[-1][:2] == ("style", "html"):
+            self.stylesheet.append(self.rawdata)
+        self._flush_stylesheet()
+
+    def _flush_stylesheet(self) -> None:
+        self.urls.extend((url, True) for url in _css_urls("".join(self.stylesheet)))
+        self.stylesheet.clear()
 
     def _check_raw_text(self, data: str) -> None:
         if not self.cdata_elem:

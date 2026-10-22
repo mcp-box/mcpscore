@@ -140,7 +140,8 @@ replay an injected instruction.
     it reads the attributes a browser fetches on render (`<img src>`,
     `srcset`, `<video poster>`, `<object data>`, a stylesheet, icon or
     preload `<link href>`, SVG
-    `<image href>`, a refresh `<meta>`) or follows on a click (`<a href>`,
+    `<image href>`, a refresh `<meta>`, `url()` and strings in a `style`
+    attribute or `<style>` block) or follows on a click (`<a href>`,
     `<form action>`); the same attribute on an element that ignores it is
     inert. A `dns-prefetch` or `preconnect` `<link>` sends only its
     hostname, so only the hostname is checked. It
@@ -163,7 +164,8 @@ replay an injected instruction.
     inside SVG or MathML, SVG or MathML
     inside a `<template>`, an end tag that closes unclosed elements across
     the edge of SVG or MathML content or out of a `<video>`, `<audio>` or
-    `<picture>`, or a raw-text end tag such as
+    `<picture>`, a `<source>` inside a media element but not its direct
+    child, or a raw-text end tag such as
     `</script/>` that a browser accepts and the parser reads as text.
   - All four skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.

