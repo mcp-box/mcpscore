@@ -670,9 +670,10 @@ _CONNECTION_HINT_RELATIONS = frozenset({"dns-prefetch", "preconnect"})
 _HTML_SPACE = " \t\n\f\r"
 """ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
 # <meta http-equiv="refresh" content="0; url=..."> navigates on render; without a leading delay it is ignored.
+# A quoted destination ends at the matching quote, an unquoted one at the end of the content.
 _REFRESH_URL_RE = re.compile(
     r"[ \t\n\f\r]*[\d.]+(?![^;, \t\n\f\r])[ \t\n\f\r]*[;,]?[ \t\n\f\r]*"
-    r"(?:url[ \t\n\f\r]*=[ \t\n\f\r]*)?['\"]?([^'\"]*)",
+    r"(?:url[ \t\n\f\r]*=[ \t\n\f\r]*)?(?:'([^']*)|\"([^\"]*)|([\s\S]*))",
     re.IGNORECASE,
 )
 # The authority of an http(s) or network-path URL, after any userinfo.
@@ -725,15 +726,19 @@ class _HtmlUrls(HTMLParser):
         self.closing = False  # the current start tag closes itself with "/>"
         self.base: str | None = None
         self.inert: list[str] = []  # open elements whose content is never rendered
-        self.inert_tags: Counter[str] = Counter()
         self.open: list[tuple[str, str, str]] = []  # open elements: tag, namespace, namespace of children
         self.open_tags: Counter[str] = Counter()  # how many of each tag are open, so end tags never scan the stack
         self.namespace = "html"  # of the current element: "html", "svg" or "math"
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self.inert:
-            if tag in _INERT_TAGS:
-                self._open_inert(tag)
+            # Template content is parsed as markup, so templates and raw-text elements open inside it;
+            # textarea and title content is raw text, where no tag opens.
+            if self.inert[-1] == "template":
+                if tag in _INERT_TAGS:
+                    self._open_inert(tag)
+                elif tag in ("svg", "math"):
+                    self.uncheckable = True  # template content keeps namespaces this parser does not track
             return
         values: dict[str, str] = {}
         for name, value in attrs:
@@ -824,8 +829,9 @@ class _HtmlUrls(HTMLParser):
             self.base = values["href"]  # the first base with an href sets the base URL, even an empty one
         if tag == "meta" and values.get("http-equiv", "").lower() == "refresh":
             refresh = _REFRESH_URL_RE.match(values.get("content", ""))
-            if refresh and refresh.group(1):  # a delay alone reloads the document, not its base
-                self.urls.append((refresh.group(1), True))
+            destination = next((group for group in refresh.groups() if group is not None), "") if refresh else ""
+            if destination:  # a delay alone reloads the document, not its base
+                self.urls.append((destination, True))
         if tag == "link" and _relations(values) & _CONNECTION_HINT_RELATIONS and values.get("href"):
             self.hosts.append(values["href"])
         if tag == "iframe" and values.get("srcdoc"):
@@ -853,17 +859,18 @@ class _HtmlUrls(HTMLParser):
     def unknown_decl(self, data: str) -> None:
         # A CDATA section is text in SVG and MathML, but in HTML a browser reads "<![" as a comment
         # ending at the first ">", while this parser skips to "]]>"; what follows cannot be checked.
-        if not self.inert and (self.open[-1][2] if self.open else "html") == "html":
+        if self.inert or (self.open[-1][2] if self.open else "html") == "html":
             self.uncheckable = True
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("p", "br") and not self.inert:
             # These end tags leave foreign content even with nothing to close (HTML §13.2.6.5).
             self._leave_foreign_content()
-        if self.inert_tags[tag]:  # closes the innermost matching element; a stray end tag is ignored
-            while (closed := self.inert.pop()) != tag:
-                self.inert_tags[closed] -= 1
-            self.inert_tags[tag] -= 1
+        if self.inert:
+            # Open inert elements are templates with at most one raw-text element on top, so a matching end tag
+            # always closes the top one; any other end tag is text or stray, and ignored.
+            if tag == self.inert[-1]:
+                self.inert.pop()
         elif not self.inert and self.open_tags[tag]:
             closed = [self._pop()]
             while closed[-1][0] != tag:
@@ -875,7 +882,21 @@ class _HtmlUrls(HTMLParser):
 
     def _open_inert(self, tag: str) -> None:
         self.inert.append(tag)
-        self.inert_tags[tag] += 1
+        if tag != "template":
+            self.set_cdata_mode(tag)  # textarea and title content is text up to the matching end tag
+
+    def handle_data(self, data: str) -> None:
+        self._check_raw_text(data)
+
+    def close(self) -> None:
+        super().close()
+        self._check_raw_text(self.rawdata)  # some Python versions keep unparsed raw text here instead
+
+    def _check_raw_text(self, data: str) -> None:
+        # Raw text holding an end tag a browser accepts (such as "</script/>") that this parser did not close on:
+        # what follows is markup to a browser and text here, so it cannot be checked.
+        if self.cdata_elem and re.search(rf"(?i)</{self.cdata_elem}[{_HTML_SPACE}/>]", data):
+            self.uncheckable = True
 
     def _pop(self) -> tuple[str, str, str]:
         element = self.open.pop()

