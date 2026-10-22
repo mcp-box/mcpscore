@@ -584,7 +584,7 @@ _SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
     tag: frozenset({"href", "xlink:href"}) for tag in ("image", "feimage", "use", "script")
 }
 # Inside <svg>, only an anchor follows a link.
-_SVG_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {"a": frozenset({"href", "xlink:href"})}
+_SVG_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {"a": frozenset({"href", "xlink:href", "ping"})}
 # HTML parsing in foreign content (HTML §13.2.6.5): children of these SVG and MathML integration points
 # are HTML again, and these HTML start tags inside SVG or MathML end the foreign content.
 _SVG_INTEGRATION_POINTS = frozenset({"foreignobject", "desc", "title"})
@@ -639,8 +639,8 @@ _FOREIGN_BREAKOUT_TAGS = frozenset(
 )
 # HTML elements without an end tag, never left open.
 _VOID_TAGS = frozenset(
-    {"area", "base", "br", "col", "embed", "hr", "image", "img", "input", "link", "meta", "param", "source"}
-    | {"track", "wbr"}
+    {"area", "base", "br", "col", "embed", "frame", "hr", "image", "img", "input", "link", "meta", "param"}
+    | {"source", "track", "wbr"}
 )
 # The pairs that act on a click or a form submission, judged like a link.
 _ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {
@@ -752,7 +752,8 @@ class _HtmlUrls(HTMLParser):
             if "href" in values:
                 values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
             loading = _SVG_LOADING_ATTRIBUTES.get(tag, frozenset())
-            acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset())
+            linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
+            acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset()) if linked else frozenset()
         else:
             self._html_document_effects(tag, values)
             loading = self._loading_attributes(tag, values)
@@ -825,7 +826,7 @@ class _HtmlUrls(HTMLParser):
         if tag == "input" and values.get("type", "").lower() == "image":
             return frozenset({"src"})
         if tag == "link":
-            relations = set(values.get("rel", "").lower().split())
+            relations = set(re.split(f"[{_HTML_SPACE}]+", values.get("rel", "").lower()))
             loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
             if "preload" in relations and values.get("as", "").lower() == "image":
                 loading |= {"imagesrcset"}
@@ -846,6 +847,10 @@ class _HtmlUrls(HTMLParser):
             self.uncheckable = True
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in ("p", "br") and not self.inert:
+            # These end tags leave foreign content even with nothing to close (HTML §13.2.6.5).
+            while self.open and self.open[-1][1] != "html":
+                self.open.pop()
         if tag in self.inert:  # closes the innermost matching element; a stray end tag is ignored
             del self.inert[len(self.inert) - 1 - self.inert[::-1].index(tag) :]
         elif not self.inert and any(name == tag for name, _ in self.open):
