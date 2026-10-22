@@ -312,6 +312,8 @@ class TestErrorDataLeakRule:
             "panic: runtime error: index out of range\n\ngoroutine 1 [running]:\nmain.main()",
             "app/server.rb:12:in `parse': unexpected token (JSON::ParserError)",
             "at Acme.Mcp.Handler.Parse(String body) in C:\\src\\Handler.cs:line 31",
+            "at Acme.Mcp.Handler.Parse[T](String body) in C:\\src\\Handler.cs:line 31",
+            "at Acme.Mcp.Cache`2.Get[TKey,TValue](TKey key) in /src/Cache.cs:line 8",
             "thread 'tokio-runtime-worker' panicked at src/main.rs:10:5",
             "PHP Fatal error:  Uncaught JsonException: Syntax error",
             "Fatal error: Uncaught TypeError: json_decode()",

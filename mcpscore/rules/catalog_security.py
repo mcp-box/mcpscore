@@ -695,6 +695,8 @@ _PORT_RE = re.compile(r":(?:\d*|\{\{?[^{}:]*\}\}?|\$\{[^{}:]*\}|<[^<>:]*>|\$[A-Z
 # A CSS escape's hex digits, and the whitespace CSS tokenizing knows after newlines are normalized.
 _CSS_HEX_RE = re.compile(r"[0-9a-fA-F]{1,6}")
 _CSS_SPACE = " \t\n"
+# CSS functions that take a string as an image URL.
+_CSS_IMAGE_FUNCTIONS = frozenset({"image-set", "-webkit-image-set"})
 # Content of these elements is never rendered as markup (script and style are raw text to HTMLParser).
 _INERT_TAGS = frozenset({"template", "textarea", "title"})
 # HTML elements whose content a browser with scripting reads as raw text up to their own end tag, whatever
@@ -734,39 +736,74 @@ def _srcset_urls(value: str) -> Iterator[str]:
 
 
 def _css_urls(css: str, *, strings: bool = True) -> list[str]:
-    """Return what a stylesheet may load: every url() token and, unless *strings* is false, every string.
+    """Return what a stylesheet may load: url() tokens and, unless *strings* is false, resource strings.
 
-    Strings count because image-set() and @import take them.
-
+    The resource strings are those @import and image-set() take.
     Tokenizes as CSS Syntax §4 does, so comments, strings and url() boundaries are found before escapes are
-    decoded inside each token.
+    decoded inside each token. A string anywhere else, such as a ``content`` value, is only displayed.
     """
-    css = re.sub(r"\r\n?|\f", "\n", css).replace("\0", "\ufffd")
-    urls: list[str] = []
-    position, size = 0, len(css)
-    while position < size:
-        char = css[position]
-        if css.startswith("/*", position):
-            end = css.find("*/", position + 2)
-            position = size if end < 0 else end + 2
-        elif char in "\"'":
-            value, position = _css_string(css, position + 1, char)
-            if strings:
-                urls.append(value)
-        elif _css_name_char(char) or _css_valid_escape(css, position):
-            name, position = _css_name(css, position)
-            if name.lower() == "url" and css.startswith("(", position):
-                start = position + 1
-                while start < size and css[start] in _CSS_SPACE:
-                    start += 1
-                if css.startswith(('"', "'"), start):  # url("...") is a function taking a string
-                    value, position = _css_string(css, start + 1, css[start])
-                else:
-                    value, position = _css_url(css, start)
-                urls.append(value)
+    scanner = _CssScanner(re.sub(r"\r\n?|\f", "\n", css).replace("\0", "\ufffd"), strings)
+    scanner.scan()
+    return [url for url in dict.fromkeys(scanner.urls) if url]
+
+
+class _CssScanner:
+    """One pass over a stylesheet, tracking the open functions and whether an @import prelude is open."""
+
+    def __init__(self, css: str, strings: bool) -> None:
+        super().__init__()
+        self.css, self.strings = css, strings
+        self.urls: list[str] = []
+        self.functions: list[str] = []  # open functions and parentheses, innermost last
+        self.loading_functions = 0  # how many open functions take a string as an image
+        self.importing = False
+        self.position = 0
+
+    def scan(self) -> None:
+        css = self.css
+        while self.position < len(css):
+            char = css[self.position]
+            if css.startswith("/*", self.position):
+                end = css.find("*/", self.position + 2)
+                self.position = len(css) if end < 0 else end + 2
+            elif char in "\"'":
+                value, self.position = _css_string(css, self.position + 1, char)
+                if self.strings and (self.importing or self.loading_functions):
+                    self.urls.append(value)
+            elif _css_name_char(char) or _css_valid_escape(css, self.position):
+                name, self.position = _css_name(css, self.position)
+                if css.startswith("(", self.position):
+                    self._function(name.lower())
+            else:
+                self._delimiter(char)
+
+    def _function(self, name: str) -> None:
+        start = self.position + 1
+        while start < len(self.css) and self.css[start] in _CSS_SPACE:
+            start += 1
+        if name == "url" and not self.css.startswith(('"', "'"), start):
+            value, self.position = _css_url(self.css, start)
+            self.urls.append(value)
+            return
+        if name == "url":  # url("...") is a function taking a string, read like any other
+            value, self.position = _css_string(self.css, start + 1, self.css[start])
+            self.urls.append(value)
         else:
-            position += 1
-    return [url for url in dict.fromkeys(urls) if url]
+            self.position += 1
+        self.functions.append(name)
+        self.loading_functions += name in _CSS_IMAGE_FUNCTIONS
+
+    def _delimiter(self, char: str) -> None:
+        self.position += 1
+        if char == "@":
+            name, self.position = _css_name(self.css, self.position)
+            self.importing = name.lower() == "import"
+        elif char in ";{}":
+            self.importing = False
+        elif char == "(":
+            self.functions.append("")
+        elif char == ")" and self.functions:
+            self.loading_functions -= self.functions.pop() in _CSS_IMAGE_FUNCTIONS
 
 
 def _css_name_char(char: str) -> bool:
@@ -1136,15 +1173,17 @@ def _resolve(base: str, url: str) -> str:
 
 
 def _document_base(inherited: str, declared: str | None) -> str:
-    """Return a document's base URL; a malformed, javascript: or data: base is rejected for the inherited one."""
+    """Return a document's base URL; a malformed, hostless, javascript: or data: base yields the inherited one."""
     if not declared:
         return inherited
     candidate = _resolve(inherited, declared)
     try:
-        scheme = urlsplit(_web_url(candidate)).scheme.lower()
+        parts = urlsplit(_web_url(candidate))
     except ValueError:
         return inherited
-    return inherited if scheme in ("javascript", "data") else candidate
+    scheme = parts.scheme.lower()
+    hostless = scheme in ("http", "https") and not parts.hostname  # a browser rejects http:// with no host
+    return inherited if scheme in ("javascript", "data") or hostless else candidate
 
 
 def _document_urls(

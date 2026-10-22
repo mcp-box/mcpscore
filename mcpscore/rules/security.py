@@ -295,7 +295,7 @@ class ErrorDataLeakRule(BaseRule):
         (r'\bException in thread "[^"\n]{1,100}"', "stack trace"),  # JVM uncaught exception
         (r"\bgoroutine\s+\d+\s+\[", "stack trace"),  # Go panic goroutine dump
         (r"(?<![\w./-])[\w./-]{1,200}\.rb:\d+:in\s+['`]", "stack trace"),  # Ruby frame
-        (r"\bat\s+[\w.<>+`$]{1,300}\([^)\n]{0,300}\)\s+in\s+[^\r\n]{1,300}?:line\s+\d+", "stack trace"),  # .NET frame
+        (r"\bat\s+[\w.<>+`$\[\],]{1,300}\([^)\n]{0,300}\)\s+in\s+[^\r\n]{1,300}?:line\s+\d+", "stack trace"),  # .NET
         (r"\bthread\s+'[^'\n]{1,100}'\s+panicked\s+at\b", "stack trace"),  # Rust panic
         (  # PHP fatal banner or frame
             r"\bPHP\s+(?:Fatal|Parse)\s+error:|\bFatal error:\s+Uncaught\b|#\d+\s+\S{1,300}\.php\(\d+\):",
