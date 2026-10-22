@@ -639,7 +639,8 @@ _FOREIGN_BREAKOUT_TAGS = frozenset(
 )
 # HTML elements without an end tag, never left open.
 _VOID_TAGS = frozenset(
-    ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]
+    {"area", "base", "br", "col", "embed", "hr", "image", "img", "input", "link", "meta", "param", "source"}
+    | {"track", "wbr"}
 )
 # The pairs that act on a click or a form submission, judged like a link.
 _ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {
@@ -742,7 +743,7 @@ class _HtmlUrls(HTMLParser):
             html_annotation = (
                 self.namespace == "math"
                 and tag == "annotation-xml"
-                and values.get("encoding", "").strip().lower() in ("text/html", "application/xhtml+xml")
+                and values.get("encoding", "").lower() in ("text/html", "application/xhtml+xml")
             )
             self.open.append((tag, "html" if tag in integration or html_annotation else self.namespace))
         if self.namespace == "math":
@@ -800,8 +801,10 @@ class _HtmlUrls(HTMLParser):
 
     @staticmethod
     def _can_act(tag: str, values: dict[str, str]) -> bool:
-        """Whether a form control can submit: an input of type submit or image, a button not of type button or reset."""
-        kind = values.get("type", "").strip().lower()
+        """Whether the element acts: a hyperlink with href, or a control that submits its form."""
+        kind = values.get("type", "").lower()  # HTML keywords match case-insensitively, never trimmed
+        if tag in ("a", "area"):
+            return "href" in values  # without href it is no hyperlink, so its ping is never sent
         if tag == "input":
             return kind in ("submit", "image")
         if tag == "button":
@@ -812,19 +815,19 @@ class _HtmlUrls(HTMLParser):
         """Record what an HTML element does to the whole document: its base URL, a refresh, a srcdoc."""
         if tag == "base" and self.base is None and "href" in values:
             self.base = values["href"]  # the first base with an href sets the base URL, even an empty one
-        if tag == "meta" and values.get("http-equiv", "").strip().lower() == "refresh":
+        if tag == "meta" and values.get("http-equiv", "").lower() == "refresh":
             self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
         if tag == "iframe" and values.get("srcdoc"):
             self.srcdocs.append(values["srcdoc"])
 
     def _loading_attributes(self, tag: str, values: dict[str, str]) -> frozenset[str]:
         """Return the attributes this HTML element fetches on render, given its type and relation."""
-        if tag == "input" and values.get("type", "").strip().lower() == "image":
+        if tag == "input" and values.get("type", "").lower() == "image":
             return frozenset({"src"})
         if tag == "link":
             relations = set(values.get("rel", "").lower().split())
             loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
-            if "preload" in relations and values.get("as", "").strip().lower() == "image":
+            if "preload" in relations and values.get("as", "").lower() == "image":
                 loading |= {"imagesrcset"}
             return loading
         if tag == "iframe" and "srcdoc" in values:
