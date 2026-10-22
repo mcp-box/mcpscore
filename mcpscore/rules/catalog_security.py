@@ -665,24 +665,18 @@ _FETCHING_LINK_RELATIONS = frozenset(
     }
 )
 _LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
-# <link> relations that fetch their href on render; any other relation is metadata.
-_FETCHING_LINK_RELATIONS = frozenset(
-    {
-        "stylesheet",
-        "icon",
-        "apple-touch-icon",
-        "mask-icon",
-        "manifest",
-        "preload",
-        "prefetch",
-        "modulepreload",
-        "prerender",
-    }
-)
+# <link> relations that resolve their href's hostname on render, sending only the hostname.
+_CONNECTION_HINT_RELATIONS = frozenset({"dns-prefetch", "preconnect"})
 _HTML_SPACE = " \t\n\f\r"
 """ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
-# <meta http-equiv="refresh" content="0; url=..."> navigates on render.
-_REFRESH_URL_RE = re.compile(r"^[\s\d.]*[;,]?\s*(?:url\s*=\s*)?['\"]?([^'\"]*)", re.IGNORECASE)
+# <meta http-equiv="refresh" content="0; url=..."> navigates on render; without a leading delay it is ignored.
+_REFRESH_URL_RE = re.compile(
+    r"[ \t\n\f\r]*[\d.]+(?=$|[;, \t\n\f\r])[ \t\n\f\r]*[;,]?[ \t\n\f\r]*"
+    r"(?:url[ \t\n\f\r]*=[ \t\n\f\r]*)?['\"]?([^'\"]*)",
+    re.IGNORECASE,
+)
+# The authority of an http(s) or network-path URL, after any userinfo.
+_AUTHORITY_RE = re.compile(r"(?i)^(?:https?:)?//(?:[^/?#]*@)?([^/?#]*)")
 # Content of these elements is never rendered as markup (script and style are raw text to HTMLParser).
 _INERT_TAGS = frozenset({"template", "textarea", "title"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
@@ -712,6 +706,11 @@ def _srcset_urls(value: str) -> Iterator[str]:
             yield url
 
 
+def _relations(values: dict[str, str]) -> set[str]:
+    """Return a link's relations: its rel keywords, split on ASCII whitespace and matched case-insensitively."""
+    return set(re.split(f"[{_HTML_SPACE}]+", values.get("rel", "").lower()))
+
+
 class _HtmlUrls(HTMLParser):
     """Collect, for one HTML document, the URLs a browser fetches on render or follows on a click."""
 
@@ -719,6 +718,7 @@ class _HtmlUrls(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.urls: list[tuple[str, bool]] = []
         self.srcdocs: list[str] = []
+        self.hosts: list[str] = []  # hrefs whose hostname alone is resolved
         self.uncheckable = False  # markup this parser reads differently from a browser
         self.closing = False  # the current start tag closes itself with "/>"
         self.base: str | None = None
@@ -817,7 +817,11 @@ class _HtmlUrls(HTMLParser):
         if tag == "base" and self.base is None and "href" in values:
             self.base = values["href"]  # the first base with an href sets the base URL, even an empty one
         if tag == "meta" and values.get("http-equiv", "").lower() == "refresh":
-            self.urls.append((_REFRESH_URL_RE.sub(r"\1", values.get("content", ""), count=1), True))
+            refresh = _REFRESH_URL_RE.match(values.get("content", ""))
+            if refresh:
+                self.urls.append((refresh.group(1), True))
+        if tag == "link" and _relations(values) & _CONNECTION_HINT_RELATIONS and values.get("href"):
+            self.hosts.append(values["href"])
         if tag == "iframe" and values.get("srcdoc"):
             self.srcdocs.append(values["srcdoc"])
 
@@ -826,7 +830,7 @@ class _HtmlUrls(HTMLParser):
         if tag == "input" and values.get("type", "").lower() == "image":
             return frozenset({"src"})
         if tag == "link":
-            relations = set(re.split(f"[{_HTML_SPACE}]+", values.get("rel", "").lower()))
+            relations = _relations(values)
             loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
             if "preload" in relations and values.get("as", "").lower() == "image":
                 loading |= {"imagesrcset"}
@@ -913,6 +917,10 @@ def _document_urls(html: str, inherited_base: str, depth: int) -> tuple[list[tup
     parser.close()
     base = _document_base(inherited_base, parser.base)
     urls = [(_resolve(base, url), loads) for url, loads in parser.urls]
+    for href in parser.hosts:  # a connection hint sends the hostname alone, so only it is checked
+        authority = _AUTHORITY_RE.match(_web_url(_resolve(base, href)))
+        if authority and authority.group(1):
+            urls.append((f"//{authority.group(1)}", True))
     too_deep = parser.uncheckable
     for srcdoc in parser.srcdocs:
         if depth >= MAX_SRCDOC_DEPTH:

@@ -142,7 +142,8 @@ replay an injected instruction.
     preload `<link href>`, SVG
     `<image href>`, a refresh `<meta>`) or follows on a click (`<a href>`,
     `<form action>`); the same attribute on an element that ignores it is
-    inert. It
+    inert. A `dns-prefetch` or `preconnect` `<link>` sends only its
+    hostname, so only the hostname is checked. It
     flags `javascript:` and `vbscript:` links, `data:` links other than a
     raster image, and a link or image URL with a slot for the model to fill,
     such as `{conversation}`, `{{secret}}`, `${TOKEN}` or `<data>`. An image
