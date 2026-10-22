@@ -140,7 +140,8 @@ replay an injected instruction.
     it reads the attributes a browser fetches on render (`<img src>`,
     `srcset`, `<video poster>`, `<object data>`, a stylesheet, icon or
     preload `<link href>`, SVG
-    `<image href>`, a refresh `<meta>`, `url()` and the strings `@import`,
+    `<image href>`, a refresh `<meta>`, a `<script src>` that runs (a data
+    block such as JSON-LD does not), `url()` and the strings `@import`,
     `image-set()` and custom properties take, in a `style` attribute on any element or in a
     `<style>` block, `url()` in an SVG
     presentation attribute such as `fill` or `cursor`, and the values an SVG
@@ -164,7 +165,7 @@ replay an injected instruction.
     `<base href>`, would repeat a destination past four times that size, iframe `srcdoc` documents nested more than
     three deep, and constructs that browsers and parsers read differently: a
     CDATA section in HTML, a comment closed early by `<!-->` or `--!>`, a
-    `<frameset>`, a raw-text tag inside a `<select>`, raw-text content such as `<script>` or `<xmp>`
+    `<frameset>`, a raw-text tag or SVG/MathML inside a `<select>`, raw-text content such as `<script>` or `<xmp>`
     inside SVG or MathML, SVG or MathML
     inside a `<template>`, an end tag that closes unclosed elements across
     the edge of SVG or MathML content or out of a `<video>`, `<audio>` or

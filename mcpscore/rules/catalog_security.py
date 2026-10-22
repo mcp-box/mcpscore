@@ -680,6 +680,13 @@ _LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
 # <link> relations that resolve their href's hostname on render, sending only the hostname.
 _CONNECTION_HINT_RELATIONS = frozenset({"dns-prefetch", "preconnect"})
 _HTML_SPACE = " \t\n\f\r"
+# The JavaScript MIME type essences (MIME Sniffing §4.6), which make a script element a classic script.
+_JAVASCRIPT_TYPES = frozenset(
+    {"application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript"}
+    | {"text/ecmascript", "text/javascript", "text/jscript", "text/livescript", "text/x-ecmascript"}
+    | {"text/x-javascript"}
+    | {f"text/javascript1.{minor}" for minor in range(6)}
+)
 """ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
 # <meta http-equiv="refresh" content="0; url=..."> navigates on render; without a leading delay it is ignored.
 # A quoted destination ends at the matching quote, an unquoted one at the end of the content.
@@ -703,7 +710,7 @@ _INERT_TAGS = frozenset({"template", "textarea", "title"})
 # the Python version's tokenizer does; plaintext content runs to the end of the document.
 _RAW_TEXT_TAGS = frozenset({"iframe", "noembed", "noframes", "noscript", "script", "style", "xmp"})
 # Raw-text and inert start tags that HTML's "in select" insertion mode ignores (script is still processed).
-_SELECT_IGNORED_TAGS = (_RAW_TEXT_TAGS - {"script"}) | {"plaintext", "title"}
+_SELECT_IGNORED_TAGS = (_RAW_TEXT_TAGS - {"script"}) | {"math", "plaintext", "svg", "title"}
 # Elements whose child list (picture, audio, video) decides what a <source> loads.
 _SOURCE_PARENTS = frozenset({"picture", "audio", "video"})
 MAX_LINK_MARKDOWN_BYTES = 64 * 1024
@@ -869,6 +876,16 @@ def _css_url(css: str, position: int) -> tuple[str, int]:
     return "".join(value), position + 1
 
 
+def _runs_as_script(values: dict[str, str]) -> bool:
+    """Whether a script element runs, and so fetches its src: a classic or module script, not a data block."""
+    kind = values.get("type")
+    if not kind:
+        language = values.get("language", "")
+        kind = f"text/{language}" if language else ""
+    kind = kind.strip(_HTML_SPACE).lower()
+    return kind in ("", "module") or kind.split(";", 1)[0].strip(_HTML_SPACE) in _JAVASCRIPT_TYPES
+
+
 def _relations(values: dict[str, str]) -> set[str]:
     """Return a link's relations: its rel keywords, split on ASCII whitespace and matched case-insensitively."""
     return set(re.split(f"[{_HTML_SPACE}]+", values.get("rel", "").lower()))
@@ -898,11 +915,12 @@ class _HtmlUrls(HTMLParser):
         values: dict[str, str] = {}
         for name, value in attrs:
             values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
+        in_html = (self.open[-1][2] if self.open else "html") == "html"
+        if in_html and self.open_tags["select"] and tag in _SELECT_IGNORED_TAGS:
+            self.uncheckable = True  # inside a select a browser ignores this start tag; the parser does not
         self._enter(tag, values)
         if "style" in values:  # inline CSS loads its images on render, in every namespace and on inert elements
             self.urls.extend((url, True) for url in _css_urls(values["style"]))
-        if self.namespace == "html" and self.open_tags["select"] and tag in _SELECT_IGNORED_TAGS:
-            self.uncheckable = True  # inside a select a browser ignores this start tag; the parser does not
         if tag == "frameset" and self.namespace == "html":
             self.uncheckable = True  # frameset parsing ignores most tags, which this parser does not model
         shadow_root = tag == "template" and values.get("shadowrootmode", "").lower() in ("open", "closed")
@@ -947,24 +965,30 @@ class _HtmlUrls(HTMLParser):
         """Collect url() in SVG presentation attributes; return the element's loading and acting attributes."""
         for name in values.keys() & _SVG_URL_PROPERTIES:
             self.urls.extend((url, True) for url in _css_urls(values[name], strings=False))
-        target = values.get("attributename", "").strip().lower()
-        if tag in _SVG_ANIMATIONS and (target in ("href", "xlink:href") or target in _SVG_URL_PROPERTIES):
-            # An animation can set a resource URL that no attribute of the target holds.
-            # Without its own href an animation targets its parent; on an SVG anchor an href is followed on a
-            # click, not loaded. A target named by href is not resolved and counts as a load.
-            on_anchor = (
-                "href" not in values and "xlink:href" not in values and self.open[-2:-1] == [("a", "svg", "svg")]
-            )
-            loads = not (on_anchor and target.endswith("href"))
-            animated = [values.get(name, "") for name in ("from", "to", "by")] + values.get("values", "").split(";")
-            for value in animated:  # only values is a semicolon-separated list
-                urls = [value.strip()] if target.endswith("href") else _css_urls(value, strings=False)
-                self.urls.extend((url, loads) for url in urls if url)
+        self._svg_animation(tag, values)
         if "href" in values:
             values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
         linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
         acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset()) if linked else frozenset()
         return _SVG_LOADING_ATTRIBUTES.get(tag, frozenset()), acting
+
+    def _svg_animation(self, tag: str, values: dict[str, str]) -> None:
+        """Collect the URLs an SVG animation sets: on an href, or on a presentation attribute that takes url()."""
+        target = values.get("attributename", "").strip().lower()
+        if tag not in _SVG_ANIMATIONS or not (target in ("href", "xlink:href") or target in _SVG_URL_PROPERTIES):
+            return
+        # Without its own href an animation targets its parent: an anchor's href is followed on a click, not
+        # loaded, and a parent with no URL-taking href ignores the value. A target named by href is not resolved
+        # and counts as a load.
+        parent = self.open[-2][0] if len(self.open) > 1 and self.open[-2][1] == "svg" else ""
+        on_parent = "href" not in values and "xlink:href" not in values
+        if on_parent and target.endswith("href") and parent not in _SVG_LOADING_ATTRIBUTES and parent != "a":
+            return
+        loads = not (on_parent and parent == "a" and target.endswith("href"))
+        animated = [values.get(name, "") for name in ("from", "to", "by")] + values.get("values", "").split(";")
+        for value in animated:  # only values is a semicolon-separated list
+            urls = [value.strip()] if target.endswith("href") else _css_urls(value, strings=False)
+            self.urls.extend((url, loads) for url in urls if url)
 
     def _enter(self, tag: str, values: dict[str, str]) -> None:
         """Set the namespace of the element starting now, leaving foreign content where HTML says it ends."""
@@ -1036,6 +1060,8 @@ class _HtmlUrls(HTMLParser):
         """Return the attributes this HTML element fetches on render, given its type and relation."""
         if tag == "input" and values.get("type", "").lower() == "image":
             return frozenset({"src"})
+        if tag == "script" and not _runs_as_script(values):
+            return frozenset()  # a data block, such as JSON-LD, never fetches its src
         if tag == "link":
             relations = _relations(values)
             loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
@@ -1172,9 +1198,23 @@ def _resolve(base: str, url: str) -> str:
         if not re.match(r"(?i)[a-z][a-z0-9+.-]*:", url):
             # Against an http(s) base, backslashes are slashes and a run of slashes starts a host.
             url = re.sub(r"^/{3,}", "//", url.replace("\\", "/"))
+        elif _starts_host(url, base):
+            url = _web_url(url)
         return urljoin(base, url)
     except ValueError:
         return url
+
+
+def _starts_host(url: str, base: str) -> bool:
+    """Whether an explicit http(s) URL names a host rather than a path relative to *base*.
+
+    "https:x" and "https:/x" are relative to a base of the same scheme; two or more slashes, or a different
+    scheme, start a host.
+    """
+    explicit = re.match(r"(?i)(https?):([/\\]*)", _visible(url))
+    if explicit is None:
+        return False
+    return explicit.group(1).lower() != base.split(":", 1)[0].lower() or len(explicit.group(2)) >= 2
 
 
 def _document_base(inherited: str, declared: str | None) -> str:
