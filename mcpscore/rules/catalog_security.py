@@ -1492,9 +1492,9 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 
 
 # Tool shadowing: a sentence that directs the model, about a tool the server does not list.
-# Sentences end at punctuation, with any closing quotes or brackets after it, or at a blank line; a single line
-# break only wraps the sentence.
-_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])[\x22'\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
+# Sentences end at punctuation, with any closing quotes, backticks or brackets after it, or at a blank line;
+# a single line break only wraps the sentence.
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
     r"\b(?:must|do\s+not|don['\u2019]t|should|make\s+sure|ensure|be\s+sure)\b"
     # "always"/"never" direct only opening a clause ("Never use …", "…, then always call …"); after a subject
