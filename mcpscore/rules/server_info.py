@@ -444,7 +444,7 @@ _CONNECTION_PROBES = {
     "resources": PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
     "prompts": PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
 }
-"""Probes that list a catalog on two fresh connections; their item counts show what the server serves."""
+"""Probes that list each capability's catalog on two fresh connections; their item counts show what it serves."""
 
 
 @dataclass
@@ -528,7 +528,13 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         attempted = listing in audit_data.listings_attempted and not (listing == "tools" and tools_refused)
         session_declares = getattr(audit_data.capabilities, capability, None) is not None
-        modern_declares = discover_unseen or discovered.get(capability) is not None
+        # A connection probe that ran (neither connection declaring is not applicable) saw at least one declare it.
+        connection_probe = probes.get(_CONNECTION_PROBES[capability])
+        connection_declares = connection_probe is not None and connection_probe.outcome in (
+            ProbeOutcome.SUPPORTED,
+            ProbeOutcome.UNSUPPORTED,
+        )
+        modern_declares = discover_unseen or connection_declares or discovered.get(capability) is not None
         catalog = catalogs[listing] = _Catalog(
             legacy_needed=has_session and (session_declares or attempted),
             modern_needed=modern_declares or (not has_session and (session_declares or attempted)),

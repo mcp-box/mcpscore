@@ -641,3 +641,22 @@ def test_null_discover_capabilities_declare_nothing() -> None:
         PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, refusal),
     }
     assert judge(AuditData(capabilities=ServerCapabilities(), probes=probes)) is False
+
+
+@pytest.mark.parametrize(
+    ("probe_id", "listing"),
+    [
+        (PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT, "prompts"),
+        (PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT, "resource_templates"),
+    ],
+    ids=["prompts", "resources"],
+)
+def test_capability_declared_on_one_connection_leaves_its_catalog_unsettled(probe_id: str, listing: str) -> None:
+    details = {"first_declares_capability": True, "second_declares_capability": False}
+    probes = {
+        **_probes(discover={"capabilities": {}}),
+        probe_id: ProbeResult(probe_id, ProbeOutcome.UNSUPPORTED, details),
+    }
+    data = AuditData(capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=probes)
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+    assert listing in ServerExposesPrimitiveRule().check(data).details["checked"]
