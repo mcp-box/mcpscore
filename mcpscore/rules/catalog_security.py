@@ -1510,6 +1510,7 @@ _DIRECTIVE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _WHETHER_RE = re.compile(r"\bwhether\b", re.IGNORECASE)
+_CLAUSE_BREAK_RE = re.compile(r"[,;:]")
 _ANY_TOOL_RE = re.compile(
     r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
     r"(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\b"
@@ -1678,6 +1679,35 @@ def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
     return name is not None and not _is_listed(name, listed)
 
 
+@dataclass(frozen=True)
+class _IndirectClauses:
+    """Where a sentence asks indirectly: "Returns whether the tool should retry" describes, it does not direct.
+
+    A modal is in such a clause when an unquoted "whether" precedes it with no comma, semicolon or colon between.
+    """
+
+    whethers: list[int]
+    breaks: list[int]
+
+    @classmethod
+    def of(cls, sentence: str, offset: int, quoted: "_QuotedSpans", code: "_QuotedSpans") -> "_IndirectClauses":
+        """Find the unquoted "whether"s and the clause breaks of *sentence*."""
+        whethers = [
+            match.start()
+            for match in _WHETHER_RE.finditer(sentence)
+            if not quoted.contains(offset + match.start(), offset + match.end())
+            and not code.contains(offset + match.start(), offset + match.end())
+        ]
+        return cls(whethers, [match.start() for match in _CLAUSE_BREAK_RE.finditer(sentence)])
+
+    def covers(self, position: int) -> bool:
+        """Whether *position* lies in a clause that an earlier "whether" opened."""
+        index = bisect_left(self.whethers, position) - 1
+        if index < 0:
+            return False
+        return bisect_left(self.breaks, position) == bisect_left(self.breaks, self.whethers[index])
+
+
 def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[str]:
     """Return the cross-tool directive classes in *text*.
 
@@ -1692,12 +1722,11 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     for offset, sentence in _sentences(text, quoted):
         # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
         # with punctuation.
-        # "Returns whether the tool should retry" asks indirectly: a modal after "whether" describes.
-        whether = _WHETHER_RE.search(sentence)
+        indirect = _IndirectClauses.of(sentence, offset, quoted, code)
         if not any(
             not quoted.contains(offset + cue.end() - 1, offset + cue.end() - 1)
             and not code.contains(offset + cue.end() - 1, offset + cue.end() - 1)
-            and not (cue["modal"] and whether is not None and whether.start() < cue.start())
+            and not (cue["modal"] and indirect.covers(cue.start()))
             for cue in _DIRECTIVE_RE.finditer(sentence)
         ):
             continue
