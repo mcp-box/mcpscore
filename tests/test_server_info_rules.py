@@ -418,11 +418,11 @@ def test_dual_era_empty_session_needs_a_whole_stateless_listing(probes: dict, ex
     ("session_capabilities", "expected"),
     [
         (ServerCapabilities(), SKIP_REASON_INSUFFICIENT_DATA),
-        (ServerCapabilities(resources=ResourcesCapability()), False),
+        (ServerCapabilities(resources=ResourcesCapability()), SKIP_REASON_INSUFFICIENT_DATA),
     ],
-    ids=["discover-only-resources", "session-declares-resources"],
+    ids=["discover-only-resources", "both-declare-resources"],
 )
-def test_resource_templates_declared_only_in_discover_stay_unproven(
+def test_resource_templates_declared_in_discover_stay_unproven(
     session_capabilities: ServerCapabilities, expected: bool | str
 ) -> None:
     resources_probe = ProbeResult(
@@ -443,3 +443,14 @@ def test_resource_templates_declared_only_in_discover_stay_unproven(
         },
     )
     assert judge(data) == expected
+
+
+def test_legacy_only_server_with_empty_resource_catalogs_fails() -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(resources=ResourcesCapability()),
+        session_protocol_version=SESSION,
+        resources=[],
+        resource_templates=[],
+        listings_attempted=frozenset({"resources", "resource_templates"}),
+    )
+    assert judge(data) is False
