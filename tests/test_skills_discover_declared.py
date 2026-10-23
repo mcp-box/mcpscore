@@ -280,3 +280,35 @@ async def test_nonempty_session_catalog_is_kept_when_both_lifecycles_declare_ski
     evidence = auditor.audit_data.skills
     assert evidence is not None
     assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
+
+
+async def test_discover_only_skills_are_judged_on_the_stateless_lifecycle(discover, monkeypatch) -> None:
+    directory_skills = {"io.modelcontextprotocol/skills": {"directoryRead": True}}
+    discover({"resources": {}, "extensions": directory_skills})
+    stateless = FakeSession([_page(entry("pdf"))], _files("pdf"))
+    _stateless(monkeypatch, stateless)
+    session = FakeSession([_page(entry("pdf"))], _files("pdf"))
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(session))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert evidence.settings == {"directoryRead": True}
+    assert session.calls == []
+    assert "resources/directory/read" in {method for method, _ in stateless.calls}
+
+
+async def test_declared_session_listing_failure_is_not_hidden_by_the_stateless_catalog(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([_page(entry("pdf"))], _files("pdf")))
+    refusing = FakeSession([], errors={"skills/list:": MCPError(-32601, "Method not found")})
+    auditor = MCPAuditor()
+
+    await auditor.audit(BothDeclareClient(refusing))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert evidence.entries is None
+    assert evidence.list_error is not None
+    assert not {result.rule_id: result for result in auditor.results}["skills_list_supported"].passed

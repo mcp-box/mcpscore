@@ -86,6 +86,11 @@ def _discover_server_info_candidates(payload: dict) -> tuple[object, ...]:
     return tuple(candidates)
 
 
+def _listed_whole(evidence: SkillsEvidence | None) -> bool:
+    """Whether a skills listing was collected complete, every page read."""
+    return evidence is not None and evidence.entries is not None and not evidence.list_incomplete
+
+
 class MCPAuditor:
     """Orchestrates the MCP server audit process.
 
@@ -1029,35 +1034,50 @@ class MCPAuditor:
     async def _collect_discover_declared_skills(self) -> None:
         """Reconcile a dual-era server's skills with the stateless lifecycle when ``server/discover`` declares them.
 
-        The 2025-11-25 ``initialize`` result has no ``extensions`` field, so a session may never declare the
-        extension; its skills are then listed on the session here. When the session refused ``skills/list`` or
-        listed nothing, the stateless lifecycle is listed too: the lifecycles may serve different catalogs. An
-        empty listing is whole only when both lifecycles listed the catalog whole.
+        Skills are judged on the lifecycle that declared them. The 2025-11-25 ``initialize`` result has no
+        ``extensions`` field, so a session may never declare the extension: its skills are then listed on the
+        stateless lifecycle, with the session as fallback when that lifecycle fails or lists nothing. A session
+        that declared the extension keeps its own evidence, failures included; the stateless catalog fills in
+        only when the session listed nothing. An empty listing is whole only when both lifecycles listed it whole.
         """
         if self.era is not Era.DUAL or self.mcp_client is None:
             return
         settings = self._discover_skills_settings()
         if settings is None:
             return
-        session_declared = self.audit_data.skills is not None
-        evidence = self.audit_data.skills or await collect_skills(self.mcp_client, settings)
         url = self.audit_data.url
         target = url if url and url.startswith(("http://", "https://")) else self.mcp_client.stdio_params
-        if not evidence.entries and target is not None:
-            stateless: SkillsEvidence | None = None
-            try:
-                async with stateless_session(target, self.headers) as session:
-                    stateless = await collect_skills(session, settings, stateless=True)
-            except Exception as exc:  # noqa: BLE001 — the session's evidence stands
-                logger.warning("Could not collect skills on the stateless lifecycle (%s)", type(exc).__name__)
-            session_whole = evidence.entries is not None and not evidence.list_incomplete
-            stateless_whole = stateless is not None and stateless.entries is not None and not stateless.list_incomplete
-            if stateless is not None and (evidence.entries is None or stateless.entries):
-                evidence = stateless
-            if evidence.entries == [] and not (session_whole and stateless_whole):
-                evidence.list_incomplete = True
-        evidence.declared_in_discover = not session_declared
+        session_evidence = self.audit_data.skills
+        if session_evidence is not None:
+            if session_evidence.entries == [] and target is not None:
+                stateless = await self._collect_skills_on(target, settings)
+                if stateless is not None and stateless.entries:
+                    self.audit_data.skills = stateless
+                elif not (_listed_whole(session_evidence) and _listed_whole(stateless)):
+                    session_evidence.list_incomplete = True
+            return
+        stateless = await self._collect_skills_on(target, settings) if target is not None else None
+        evidence = stateless
+        if stateless is None or not stateless.entries:
+            session_evidence = await collect_skills(self.mcp_client, settings)
+            if stateless is None or stateless.entries is None or session_evidence.entries:
+                evidence = session_evidence
+        assert evidence is not None  # noqa: S101 — the session fallback always runs when the stateless listing is empty
+        if evidence.entries == [] and not (_listed_whole(stateless) and _listed_whole(session_evidence)):
+            evidence.list_incomplete = True
+        evidence.declared_in_discover = True
         self.audit_data.skills = evidence
+
+    async def _collect_skills_on(
+        self, target: str | StdioServerParameters, settings: dict[str, Any]
+    ) -> SkillsEvidence | None:
+        """Collect skills on the stateless lifecycle, or return None when it could not be reached."""
+        try:
+            async with stateless_session(target, self.headers) as session:
+                return await collect_skills(session, settings, stateless=True)
+        except Exception as exc:  # noqa: BLE001 — the other lifecycle's evidence stands
+            logger.warning("Could not collect skills on the stateless lifecycle (%s)", type(exc).__name__)
+            return None
 
     def _discover_skills_settings(self) -> dict[str, Any] | None:
         """Return the Skills extension settings ``server/discover`` declared, or None when it did not declare it."""
