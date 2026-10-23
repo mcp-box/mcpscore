@@ -174,8 +174,9 @@ replay an injected instruction.
     child, or a raw-text end tag such as
     `</script/>` that a browser accepts and the parser reads as text.
   - `catalog_cross_tool_directives` reads each sentence that directs the
-    model: one with `always`, `must`, `never`, `do not`, `should`, `first`,
-    `instead`, `make sure` or `ensure`, or one that opens with `when`,
+    model: one with `always`, `must`, `never`, `do not`, `should`,
+    `make sure` or `ensure`, `first` or `instead` before a verb such as
+    `call`, or one that opens with `when`,
     `before`, `after`, `if` or a verb such as `call` or `use`. In such a
     sentence it flags a reference to any or other tools or servers ("with any
     tool", "before any other tool") as `any_tool_directive`, and a tool name
@@ -183,8 +184,9 @@ replay an injected instruction.
     code-shaped: in backticks, joined with `_`, `.` or `-`, or camelCase,
     after `call` or `invoke` or before the word `tool`. Names of the
     server's own tools, prompts and resources pass, also behind a client
-    prefix such as `mcp__notes__search`, and so do plain-word mentions such as
-    "pairs well with the GitHub server". Unlisted names are judged only when
+    namespace such as `mcp__notes__search` or `notes.search`, and so do
+    plain-word mentions such as "pairs well with the GitHub server" and
+    phrases in double quotes or named as attempts ("attempts to call …"). Unlisted names are judged only when
     the tool listing came back whole.
   - All five skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.

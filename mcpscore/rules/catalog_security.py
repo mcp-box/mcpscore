@@ -155,7 +155,7 @@ def _publishable_path(path: str) -> tuple[str, bool]:
             or secret_classes(text)
             or injection_classes(text)
             or exfiltration_link_classes(text)
-            or cross_tool_classes(text)
+            or cross_tool_classes(text, frozenset())
         ):
             return "/".join(segments[:position]), True
     return path, False
@@ -1492,7 +1492,8 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 # Tool shadowing: a sentence that directs the model, about a tool the server does not list.
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _DIRECTIVE_RE = re.compile(
-    r"\b(?:always|must|never|do\s+not|don['\u2019]t|should|first|instead|make\s+sure|ensure|be\s+sure)\b"
+    r"\b(?:always|must|never|do\s+not|don['\u2019]t|should|make\s+sure|ensure|be\s+sure)\b"
+    r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
     r"|^\W*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer)\b",
     re.IGNORECASE,
 )
@@ -1511,7 +1512,15 @@ _TOOL_REFERENCES = (
     re.compile(rf"(?<![\w`])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
 )
 _SEPARATORS_RE = re.compile(r"[-._]+")
+# Namespaces a client puts in front of a tool name: mcp__notes__search, notes.search, notes/search.
+_NAMESPACE_RE = re.compile(r"__|[./]")
 _QUOTED_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+
+
+def _directs(sentence: str, match: re.Match[str]) -> bool:
+    """Whether *match* is used, not quoted or named as an example (``Block phrases like "always call x"``)."""
+    start, end = match.start(), match.end()
+    return not (_is_mention(sentence, start, end) or _quoted(sentence, start, end))
 
 
 def _quoted(sentence: str, start: int, end: int) -> bool:
@@ -1525,9 +1534,9 @@ def _name_key(name: str) -> str:
 
 
 def _is_listed(name: str, listed: frozenset[str]) -> bool:
-    """Whether *name* is a listed name, alone or behind a client's prefix (``mcp__server__search``)."""
-    key = _name_key(name)
-    return key in listed or any(key.endswith(f"_{own}") for own in listed)
+    """Whether *name* is a listed name, alone or behind a client's namespace (``mcp__server__search``)."""
+    parts = _NAMESPACE_RE.split(name)
+    return any(_name_key("_".join(parts[start:])) in listed for start in range(len(parts)))
 
 
 def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[str]:
@@ -1541,17 +1550,14 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     for sentence in _SENTENCE_BREAK_RE.split(text):
         if not _DIRECTIVE_RE.search(sentence):
             continue
-        if any(
-            not (_is_mention(sentence, m.start(), m.end()) or _quoted(sentence, m.start(), m.end()))
-            for m in _ANY_TOOL_RE.finditer(sentence)
-        ):
+        if any(_directs(sentence, match) for match in _ANY_TOOL_RE.finditer(sentence)):
             found.append("any_tool_directive")
         if listed is not None:
             found.extend(
                 "unlisted_tool_directive"
                 for pattern in _TOOL_REFERENCES
                 for match in pattern.finditer(sentence)
-                if not _is_listed(match["ticked"] or match["bare"], listed)
+                if _directs(sentence, match) and not _is_listed(match["ticked"] or match["bare"], listed)
             )
     return found
 
