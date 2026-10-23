@@ -575,3 +575,14 @@ def test_dual_era_stateless_tools_error_is_a_gap_unless_method_not_found(error_c
         probes={**_probes(discover={"capabilities": {}}), PROBE_STATELESS_LIST: probe},
     )
     assert judge(data) == expected
+
+
+@pytest.mark.parametrize("session", [SESSION, None], ids=["dual-era", "modern-only"])
+def test_timed_out_stateless_tools_listing_is_a_gap(session: str | None) -> None:
+    probe = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.ERROR, {"exception": "TimeoutError"})
+    data = AuditData(
+        capabilities=ServerCapabilities(),
+        session_protocol_version=session,
+        probes={**_probes(discover={"capabilities": {}}), PROBE_STATELESS_LIST: probe},
+    )
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
