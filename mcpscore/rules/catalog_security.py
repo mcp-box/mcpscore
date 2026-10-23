@@ -1515,10 +1515,43 @@ _TOOL_REFERENCES = (
     re.compile(rf"(?<![\w`./-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
 )
 _NAME_JOINERS_RE = re.compile(r"[_./]+")
-# MCP method names (resources/read, server/discover) are protocol, not tools a catalog would list.
-_PROTOCOL_METHOD_RE = re.compile(
-    r"(?:tools|resources|prompts|completion|logging|sampling|roots|elicitation|server|skills|tasks|notifications)"
-    r"/[a-z][A-Za-z/_]*"
+# MCP methods (2025-11-25 and 2026-07-28, with the Skills and Tasks extensions) are protocol, not tools.
+_PROTOCOL_METHODS = frozenset(
+    {
+        "initialize",
+        "ping",
+        "server/discover",
+        "tools/list",
+        "tools/call",
+        "resources/list",
+        "resources/read",
+        "resources/templates/list",
+        "resources/subscribe",
+        "resources/unsubscribe",
+        "prompts/list",
+        "prompts/get",
+        "completion/complete",
+        "logging/setLevel",
+        "sampling/createMessage",
+        "roots/list",
+        "elicitation/create",
+        "skills/list",
+        "tasks/get",
+        "tasks/list",
+        "tasks/result",
+        "tasks/cancel",
+        "notifications/initialized",
+        "notifications/cancelled",
+        "notifications/progress",
+        "notifications/message",
+        "notifications/resources/updated",
+        "notifications/resources/list_changed",
+        "notifications/tools/list_changed",
+        "notifications/prompts/list_changed",
+        "notifications/roots/list_changed",
+        "notifications/elicitation/complete",
+        "notifications/tasks/status",
+    }
 )
 _CAMEL_RE = re.compile(r"[a-z]+(?:[A-Z][a-z0-9]*)+")
 _SEPARATORS_RE = re.compile(r"[-._/]+")
@@ -1621,7 +1654,7 @@ def _is_listed(name: str, listed: frozenset[str]) -> bool:
 def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
     """Whether *match* names a tool, in backticks or code-shaped, that is not among the *listed* names."""
     raw = match["ticked"] or match["bare"].rstrip(".")
-    if _PROTOCOL_METHOD_RE.fullmatch(raw):
+    if raw in _PROTOCOL_METHODS:
         return False
     if match["ticked"]:
         return not _is_listed(match["ticked"], listed)
@@ -1689,15 +1722,19 @@ def _listed_names(audit_data: AuditData) -> frozenset[str] | None:
     """Return the names the server lists, folded by :func:`_name_key`, or None when they were not all seen.
 
     Every listing must have come back whole: a declared catalog that was never listed, or one that pagination
-    left incomplete, may hold the very name a description points at. Tools taken from the stateless lifecycle
-    (no session, or recovered after the session listing failed) come from one page, which must say it is whole.
+    left incomplete, may hold the very name a description points at. Without a session the tools come from one
+    stateless page, which must say it is whole; tools recovered after the session listing failed leave the
+    session's names unknown.
     """
     if audit_data.tools is None or any(listing in audit_data.incomplete_listings for listing in _LISTINGS):
         return None
     if any(getattr(audit_data, listing) is None and _declares(audit_data, cap) for listing, cap in _DECLARED_LISTINGS):
         return None
-    from_stateless = audit_data.session_protocol_version is None or "tools" in audit_data.catalog_versions
-    if from_stateless and not _stateless_page_whole(audit_data):
+    # Tools recovered from the stateless lifecycle replaced a failed session listing: the session's own text may
+    # name the tools it served, which are no longer known.
+    if "tools" in audit_data.catalog_versions:
+        return None
+    if audit_data.session_protocol_version is None and not _stateless_page_whole(audit_data):
         return None
     items = [*audit_data.tools, *(audit_data.prompts or []), *(audit_data.resources or [])]
     items += audit_data.resource_templates or []

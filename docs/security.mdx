@@ -189,10 +189,10 @@ replay an injected instruction.
     namespace such as `mcp__notes__search` or `notes.search`, and so do
     plain-word mentions such as "pairs well with the GitHub server" and
     phrases in double quotes or named as attempts ("attempts to call …"). Unlisted names are judged only when
-    every catalog the server declares was listed whole (tools taken from the
-    stateless lifecycle must come from a page that says
-    `resultType: "complete"`). MCP method names such as `resources/read` are
-    protocol, not tools, and pass.
+    every catalog the server declares was listed whole, from the same
+    lifecycle as the text (without a session, the stateless tools page must
+    say `resultType: "complete"`). MCP method names such as `resources/read`
+    and `ping` are protocol, not tools, and pass.
   - All five skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.
   - `skills_hidden_unicode`, `skills_no_embedded_secrets` and

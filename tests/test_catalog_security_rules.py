@@ -1455,6 +1455,8 @@ LISTED = frozenset({"search", "fetch_page", "summarize", "ads_campaign_refresh",
         ("Always use the 2.0 tool.", []),
         ("Call resources/read to fetch the README, then call `prompts/get`.", []),
         ("Always call `server/discover` and tools/list first.", []),
+        ("Always call `ping`, then call `initialize`.", []),
+        ("Always call tools/send_email first.", ["unlisted_tool_directive"]),
         ('The send_email tool returns the label "always".', []),
         ("The send_email tool always returns a message ID.", []),
         ("The send_email tool never failed in tests.", []),
@@ -1679,7 +1681,7 @@ def test_names_are_judged_only_when_every_declared_catalog_was_listed(data: Audi
     assert CatalogCrossToolDirectivesRule().check(data).passed is passed
 
 
-def test_a_recovered_stateless_catalog_must_be_whole() -> None:
+def test_a_recovered_stateless_catalog_leaves_names_unjudged() -> None:
     def data(page: dict[str, Any]) -> AuditData:
         stateless = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {}, payload=page)
         return AuditData(
@@ -1690,4 +1692,4 @@ def test_a_recovered_stateless_catalog_must_be_whole() -> None:
         )
 
     assert CatalogCrossToolDirectivesRule().check(data({"tools": [], "nextCursor": "2"})).passed
-    assert not CatalogCrossToolDirectivesRule().check(data(WHOLE_PAGE)).passed
+    assert CatalogCrossToolDirectivesRule().check(data(WHOLE_PAGE)).passed
