@@ -1031,8 +1031,8 @@ class MCPAuditor:
 
         The 2025-11-25 ``initialize`` result has no ``extensions`` field, so such a server's session never
         declares it. ``skills/list`` is tried on the session first, then on the stateless lifecycle when the
-        session refused it or listed nothing: the lifecycles may serve different catalogs. An empty session
-        listing stands only when the stateless one, on the lifecycle that declared the extension, is whole too.
+        session refused it or listed nothing: the lifecycles may serve different catalogs. An empty listing is
+        whole only when both lifecycles listed the catalog whole.
         """
         if self.audit_data.skills is not None or self.era is not Era.DUAL or self.mcp_client is None:
             return
@@ -1049,11 +1049,11 @@ class MCPAuditor:
                     stateless = await collect_skills(session, settings, stateless=True)
             except Exception as exc:  # noqa: BLE001 — the session's evidence stands
                 logger.warning("Could not collect skills on the stateless lifecycle (%s)", type(exc).__name__)
+            session_whole = evidence.entries is not None and not evidence.list_incomplete
+            stateless_whole = stateless is not None and stateless.entries is not None and not stateless.list_incomplete
             if stateless is not None and (evidence.entries is None or stateless.entries):
                 evidence = stateless
-            elif evidence.entries is not None and (
-                stateless is None or stateless.entries is None or stateless.list_incomplete
-            ):
+            if evidence.entries == [] and not (session_whole and stateless_whole):
                 evidence.list_incomplete = True
         evidence.declared_in_discover = True
         self.audit_data.skills = evidence

@@ -223,3 +223,18 @@ async def test_empty_session_listing_needs_a_whole_stateless_listing(discover, m
     assert evidence.entries == []
     assert evidence.list_incomplete
     assert "server_exposes_primitive" in {rule.rule_id for rule in auditor.skipped_rules}
+
+
+async def test_failed_session_listing_keeps_an_empty_stateless_listing_unproven(discover, monkeypatch) -> None:
+    discover({"extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([_page()]))
+    refusing = FakeSession([], errors={"skills/list:": MCPError(-32001, "Request timed out")})
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(refusing))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert evidence.entries == []
+    assert evidence.list_incomplete
+    assert "server_exposes_primitive" in {rule.rule_id for rule in auditor.skipped_rules}

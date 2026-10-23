@@ -371,3 +371,33 @@ def test_errored_catalog_connection_probe_counts_nothing() -> None:
     probe = ProbeResult(probe_id, ProbeOutcome.ERROR, {"first_count": 3})
     data = AuditData(capabilities=ALL_CAPABILITIES, **EMPTY_LISTINGS, skills=skills([]), probes={probe_id: probe})
     assert judge(data) is False
+
+
+@pytest.mark.parametrize(
+    ("probes", "expected"),
+    [
+        (_probes(discover={"capabilities": {"tools": {}}}, stateless={"tools": [], "nextCursor": "more"}), "skip"),
+        (
+            {
+                **_probes(discover={"capabilities": {"tools": {}}}, stateless={"tools": [], "nextCursor": "more"}),
+                PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT: ProbeResult(
+                    PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+                    ProbeOutcome.SUPPORTED,
+                    {"first_count": 0, "second_count": 0},
+                ),
+            },
+            False,
+        ),
+        (_probes(discover={"capabilities": {"tools": {}}}, stateless={"tools": [], "resultType": "complete"}), False),
+    ],
+    ids=["stateless-unfinished", "connection-probe-whole", "stateless-whole"],
+)
+def test_dual_era_empty_session_needs_a_whole_stateless_listing(probes: dict, expected: bool | str) -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(tools=ToolsCapability()),
+        tools=[],
+        session_protocol_version=SESSION,
+        listings_attempted=frozenset({"tools"}),
+        probes=probes,
+    )
+    assert judge(data) == (SKIP_REASON_INSUFFICIENT_DATA if expected == "skip" else expected)

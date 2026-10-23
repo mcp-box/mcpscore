@@ -441,20 +441,31 @@ _CONNECTION_PROBES = {
 
 @dataclass
 class _Catalog:
-    """What every source observed about one primitive catalog."""
+    """What each lifecycle showed about one primitive catalog."""
 
     items: int | None = None
     """The most items any source observed; None when no source returned a listing."""
-    proven_empty: bool = False
-    """A whole listing (complete, every page read) came back empty."""
-    broken: bool = False
-    """The session's listing failed or broke off, so its catalog is unknown whatever else was observed."""
-    declared: bool = False
-    """Either lifecycle declared the catalog, or the audit tried to list it."""
+    legacy_needed: bool = False
+    """The legacy session declared the catalog or tried to list it."""
+    legacy_empty: bool = False
+    """The session's listing was whole (complete, every page read) and empty."""
+    modern_needed: bool = False
+    """The stateless lifecycle declared the catalog."""
+    modern_empty: bool = False
+    """A whole stateless listing came back empty."""
 
-    def observe(self, count: int, *, whole: bool) -> None:
+    @property
+    def declared(self) -> bool:
+        return self.legacy_needed or self.modern_needed
+
+    @property
+    def proven_empty(self) -> bool:
+        """Every lifecycle that declared the catalog listed it whole and empty."""
+        legacy = self.legacy_empty or not self.legacy_needed
+        return self.declared and legacy and (self.modern_empty or not self.modern_needed)
+
+    def observe(self, count: int) -> None:
         self.items = max(self.items or 0, count)
-        self.proven_empty = self.proven_empty or (whole and count == 0)
 
 
 def _stateless_tools_page(audit_data: AuditData) -> dict[str, Any] | None:
@@ -467,42 +478,54 @@ def _stateless_tools_page(audit_data: AuditData) -> dict[str, Any] | None:
 def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     """Reconcile the session listings, the stateless lifecycle and the catalog probes into one view per catalog.
 
-    An empty listing proves an empty catalog only on a legacy session. A modern-only audit's catalog, or one
-    recovered from the stateless lifecycle, is the stateless page, which proves it only with
-    ``resultType: "complete"`` (SEP-2322) and no next cursor.
+    A catalog is empty only when each lifecycle that declared it listed it whole and empty. On the legacy
+    session that is a complete listing; on the stateless lifecycle, a ``tools/list`` page with
+    ``resultType: "complete"`` (SEP-2322) and no next cursor, or a catalog probe that read every page on two
+    connections and found nothing. Resource templates have no stateless listing, so a dual-era server's are
+    judged on its session.
     """
     discovered = discover_capabilities(audit_data)
     probes = audit_data.probes or {}
+    has_session = audit_data.session_protocol_version is not None
+    page = _stateless_tools_page(audit_data)
     catalogs: dict[str, _Catalog] = {}
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         attempted = listing in audit_data.listings_attempted
-        declared = getattr(audit_data.capabilities, capability, None) is not None or capability in discovered
-        catalog = catalogs[listing] = _Catalog(declared=declared or attempted)
-        has_session = audit_data.session_protocol_version is not None
-        # A catalog recovered from the stateless lifecycle replaced a session listing that failed or broke off.
-        recovered = listing in audit_data.catalog_versions
+        session_declares = getattr(audit_data.capabilities, capability, None) is not None
+        modern_declares = capability in discovered and (listing != "resource_templates" or not has_session)
+        catalog = catalogs[listing] = _Catalog(
+            legacy_needed=has_session and (session_declares or attempted),
+            modern_needed=modern_declares or (not has_session and (session_declares or attempted)),
+        )
         collected = getattr(audit_data, listing)
-        incomplete = listing in audit_data.incomplete_listings
         if collected is not None:
-            # Collected items exist whatever their source; only a session listing proves an empty catalog.
-            catalog.observe(len(collected), whole=has_session and not recovered and not incomplete)
-        failed = recovered or collected is None or incomplete or listing in audit_data.listing_errors
-        if has_session and attempted and failed:
-            catalog.broken = True
+            catalog.observe(len(collected))
+        # A catalog recovered from the stateless lifecycle replaced a session listing that failed or broke off.
+        failed = (
+            listing in audit_data.catalog_versions
+            or listing in audit_data.incomplete_listings
+            or listing in audit_data.listing_errors
+        )
+        catalog.legacy_empty = has_session and collected == [] and not failed
         probe = probes.get(_CONNECTION_PROBES.get(listing, ""))
         if probe is not None and probe.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
             counts = [probe.details.get(key) for key in ("first_count", "second_count")]
-            catalog.observe(max((c for c in counts if isinstance(c, int)), default=0), whole=False)
-    page = _stateless_tools_page(audit_data)
-    if page is not None:
-        whole = page.get("resultType") == "complete" and page.get("nextCursor") is None
-        catalogs["tools"].observe(len(page["tools"]), whole=whole)
+            counts = [count for count in counts if isinstance(count, int)]
+            catalog.observe(max(counts, default=0))
+            # SUPPORTED: both connections read every page and found the same catalog.
+            catalog.modern_empty = probe.outcome is ProbeOutcome.SUPPORTED and counts == [0, 0]
+        if listing == "tools" and page is not None:
+            catalog.observe(len(page["tools"]))
+            whole = page.get("resultType") == "complete" and page.get("nextCursor") is None
+            catalog.modern_empty = catalog.modern_empty or (whole and not page["tools"])
     skills = audit_data.skills
     extensions = discovered.get("extensions")
     declares = declares_skills(audit_data) or (isinstance(extensions, dict) and SKILLS_EXTENSION in extensions)
-    catalog = catalogs["skills"] = _Catalog(declared=declares)
+    # The auditor reconciles both lifecycles into one skills listing.
+    catalog = catalogs["skills"] = _Catalog(legacy_needed=declares)
     if skills is not None and skills.entries is not None:
-        catalog.observe(len(skills.entries), whole=not skills.list_incomplete)
+        catalog.observe(len(skills.entries))
+        catalog.legacy_empty = not skills.entries and not skills.list_incomplete
     return catalogs
 
 
@@ -541,7 +564,7 @@ class ServerExposesPrimitiveRule(BaseRule):
         catalogs = _catalogs(audit_data).values()
         if any(catalog.items for catalog in catalogs):
             return None
-        settled = all(catalog.proven_empty and not catalog.broken for catalog in catalogs if catalog.declared)
+        settled = all(catalog.proven_empty for catalog in catalogs if catalog.declared)
         return None if settled else SKIP_REASON_INSUFFICIENT_DATA
 
     def check(self, audit_data: AuditData) -> RuleResult:
