@@ -652,3 +652,29 @@ class TestObservedAuthStatus:
     def test_no_probes_is_no_evidence(self):
         assert observed_auth_status(None) is None
         assert observed_auth_status({}) is None
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected"),
+    [(-32601, None), (-32603, "insufficient-data")],
+    ids=["method-not-found", "internal-error"],
+)
+async def test_refused_tools_listing_of_a_server_declaring_nothing(
+    stub_probes, monkeypatch: pytest.MonkeyPatch, error_code: int, expected: str | None
+):
+    results = _modern_probe_results({**DISCOVER_PAYLOAD, "capabilities": {}})
+    results[PROBE_STATELESS_LIST] = ProbeResult(
+        PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, {"http_status": 200, "error_code": error_code}
+    )
+    stub_probes(results)
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+    assert "tools" in auditor.audit_data.listings_attempted
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    results_by_id = {result.rule_id: result for result in auditor.results}
+    if expected is None:
+        assert results_by_id["server_exposes_primitive"].passed is False
+    else:
+        assert skipped["server_exposes_primitive"] == expected

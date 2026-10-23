@@ -546,3 +546,17 @@ def test_modern_tools_result_without_a_tools_array_is_a_gap(
     }
     data = AuditData(capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=probes)
     assert judge(data) == expected
+
+
+@pytest.mark.parametrize(
+    ("listings", "expected"),
+    [
+        ({"tools": [Tool(name="", input_schema={"type": "object"})]}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"prompts": [Prompt(name="")]}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"tools": [Tool(name="", input_schema={"type": "object"}), TOOL]}, True),
+    ],
+    ids=["unnamed-tool", "unnamed-prompt", "one-named-tool"],
+)
+def test_parsed_catalog_items_count_only_with_an_identity(listings: dict[str, Any], expected: bool | str) -> None:
+    data = AuditData(capabilities=ALL_CAPABILITIES, **{**EMPTY_LISTINGS, "skills": skills([]), **listings})
+    assert judge(data) == expected

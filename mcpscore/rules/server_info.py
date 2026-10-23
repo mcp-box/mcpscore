@@ -6,6 +6,7 @@ from mcp_types import Implementation
 
 from mcpscore.diagnostics import quoted_preview
 from mcpscore.probes import (
+    ERROR_METHOD_NOT_FOUND,
     PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_STATELESS_LIST,
@@ -432,6 +433,9 @@ _PRIMITIVE_LISTINGS = {
 }
 """Each primitive listing the auditor collects, and the capability that declares it."""
 
+_IDENTITY_FIELDS = {"tools": "name", "resources": "uri", "resource_templates": "uri_template", "prompts": "name"}
+"""The field that identifies an item of each catalog."""
+
 _CONNECTION_PROBES = {
     "tools": PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     "resources": PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
@@ -505,8 +509,10 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
         stateless_probe is not None and isinstance(stateless_probe.payload, dict) and has_modern_support(probes)
     )
     catalogs: dict[str, _Catalog] = {}
+    # An explicit Method not found for tools/list says the server serves no tools catalog at all.
+    tools_refused = stateless_probe is not None and stateless_probe.details.get("error_code") == ERROR_METHOD_NOT_FOUND
     for listing, capability in _PRIMITIVE_LISTINGS.items():
-        attempted = listing in audit_data.listings_attempted
+        attempted = listing in audit_data.listings_attempted and not (listing == "tools" and tools_refused)
         session_declares = getattr(audit_data.capabilities, capability, None) is not None
         modern_declares = capability in discovered
         catalog = catalogs[listing] = _Catalog(
@@ -515,7 +521,10 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
         )
         collected = getattr(audit_data, listing)
         if collected is not None:
-            catalog.observe(len(collected))
+            # Items without an identity show nothing, and do not prove the catalog empty either.
+            named = sum(1 for item in collected if str(getattr(item, _IDENTITY_FIELDS[listing], None) or ""))
+            if named or not collected:
+                catalog.observe(named)
         # A catalog recovered from the stateless lifecycle replaced a session listing that failed or broke off.
         failed = (
             listing in audit_data.catalog_versions
