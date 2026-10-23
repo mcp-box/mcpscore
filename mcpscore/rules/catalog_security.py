@@ -1501,7 +1501,7 @@ _DIRECTIVE_RE = re.compile(
     # or auxiliary ("the tool always returns", "has never been") they describe.
     r"|(?:^|[,;:(\u2014\u201d\x22]|\b(?:and|or|then|but|so|please))[^\w\n]{0,4}(?:always|never)\b"
     r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
-    r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer)\b",
+    r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer|always|never)\b",
     re.IGNORECASE | re.MULTILINE,
 )
 _ANY_TOOL_RE = re.compile(
