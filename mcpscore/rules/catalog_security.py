@@ -1514,7 +1514,7 @@ _DIRECTIVE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 # "whether", or an "if" inside a clause ("Reports if the tool should …"); an opening "If …," is a condition.
-_WHETHER_RE = re.compile(r"\bwhether\b|(?<=[A-Za-z] )if\b", re.IGNORECASE)
+_WHETHER_RE = re.compile(r"\bwhether\b|[A-Za-z]\s+(?P<inner_if>if)\b", re.IGNORECASE)
 _CLAUSE_BREAK_RE = re.compile(r"[,;:]")
 _ANY_TOOL_RE = re.compile(
     r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
@@ -1722,12 +1722,13 @@ class _IndirectClauses:
     @classmethod
     def of(cls, sentence: str, offset: int, quoted: "_QuotedSpans", code: "_QuotedSpans") -> "_IndirectClauses":
         """Find the "whether"s and clause breaks of *sentence* outside quotes and inline code."""
-        whethers = [
-            match.start()
-            for match in _WHETHER_RE.finditer(sentence)
-            if not quoted.contains(offset + match.start(), offset + match.end())
-            and not code.contains(offset + match.start(), offset + match.end())
-        ]
+        whethers = []
+        for match in _WHETHER_RE.finditer(sentence):
+            start = match.start("inner_if") if match["inner_if"] else match.start()
+            if not quoted.contains(offset + start, offset + match.end()) and not code.contains(
+                offset + start, offset + match.end()
+            ):
+                whethers.append(start)
         breaks = [
             match.start()
             for match in _CLAUSE_BREAK_RE.finditer(sentence)
