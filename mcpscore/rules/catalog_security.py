@@ -1505,16 +1505,28 @@ _ANY_TOOL_RE = re.compile(
 # A tool name is code-shaped: in backticks, joined with _ or ., or camelCase. Plain and hyphenated words
 # ("read-only tool") are left alone.
 _TOOL_NAME = (
-    r"`(?P<ticked>[^`\s]{1,128})`|(?P<bare>[A-Za-z][A-Za-z0-9-]*(?:[_.]+[A-Za-z0-9-]+)+|[a-z]+(?:[A-Z][a-z0-9]*)+)"
+    r"`(?P<ticked>[^`\s]{1,128})`"
+    r"|(?P<bare>[A-Za-z][A-Za-z0-9-]*(?:[_./]+[A-Za-z0-9-]+)+|(?:[A-Za-z0-9]+-)*[a-z]+(?:[A-Z][a-z0-9]*)+(?:-[A-Za-z0-9]+)*)"
 )
 _TOOL_REFERENCES = (
-    re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})(?![\w`])"),
-    re.compile(rf"(?<![\w`])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
+    re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})(?![\w`/-])"),
+    re.compile(rf"(?<![\w`/-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
 )
 _SEPARATORS_RE = re.compile(r"[-._]+")
 # Namespaces a client puts in front of a tool name: mcp__notes__search, notes.search, notes/search.
 _NAMESPACE_RE = re.compile(r"__|[./]")
 _QUOTED_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+
+
+def _sentences(text: str) -> Iterator[str]:
+    """Split *text* into sentences, keeping a double-quoted span whole so a quoted example stays recognizable."""
+    spans = [(span.start(), span.end()) for span in _QUOTED_RE.finditer(text)]
+    start = 0
+    for brk in _SENTENCE_BREAK_RE.finditer(text):
+        if not any(open_ < brk.start() < close for open_, close in spans):
+            yield text[start : brk.start()]
+            start = brk.end()
+    yield text[start:]
 
 
 def _directs(sentence: str, match: re.Match[str]) -> bool:
@@ -1547,7 +1559,7 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     the catalog is unknown and only the first class is judged. *listed* holds :func:`_name_key` forms.
     """
     found: list[str] = []
-    for sentence in _SENTENCE_BREAK_RE.split(text):
+    for sentence in _sentences(text):
         if not _DIRECTIVE_RE.search(sentence):
             continue
         if any(_directs(sentence, match) for match in _ANY_TOOL_RE.finditer(sentence)):
