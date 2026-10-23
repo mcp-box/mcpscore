@@ -1632,7 +1632,12 @@ async def _probe_catalog_connection_independence(
             return ProbeResult(
                 probe_id,
                 ProbeOutcome.ERROR,
-                {"exception": type(exc).__name__, "reason": str(exc)},
+                {
+                    "exception": type(exc).__name__,
+                    "reason": str(exc),
+                    "first_declares_capability": True,
+                    "second_declares_capability": True,
+                },
             )
 
         only_first = sorted(first_ids - second_ids)

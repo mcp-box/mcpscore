@@ -13,6 +13,7 @@ from mcpscore.probes import (
     PROBE_STATELESS_LIST,
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     ProbeOutcome,
+    ProbeResult,
     detect_era,
     has_modern_support,
 )
@@ -483,6 +484,19 @@ def _stateless_tools_page(audit_data: AuditData) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) and isinstance(payload.get("tools"), list) else None
 
 
+def _connection_declares(probe: ProbeResult | None) -> bool:
+    """Whether a catalog-connection probe saw either connection declare its capability.
+
+    A probe that compared listings ran only because a connection declared it; one that stopped at a disagreement
+    or failed while listing records the declarations it saw.
+    """
+    if probe is None:
+        return False
+    if probe.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
+        return True
+    return any(probe.details.get(key) is True for key in ("first_declares_capability", "second_declares_capability"))
+
+
 def _discover_observed(audit_data: AuditData) -> bool:
     """Whether a ``server/discover`` result with a capabilities object was observed."""
     discover = (audit_data.probes or {}).get(PROBE_DISCOVER)
@@ -528,12 +542,7 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         attempted = listing in audit_data.listings_attempted and not (listing == "tools" and tools_refused)
         session_declares = getattr(audit_data.capabilities, capability, None) is not None
-        # A connection probe that ran (neither connection declaring is not applicable) saw at least one declare it.
-        connection_probe = probes.get(_CONNECTION_PROBES[capability])
-        connection_declares = connection_probe is not None and connection_probe.outcome in (
-            ProbeOutcome.SUPPORTED,
-            ProbeOutcome.UNSUPPORTED,
-        )
+        connection_declares = _connection_declares(probes.get(_CONNECTION_PROBES[capability]))
         modern_declares = discover_unseen or connection_declares or discovered.get(capability) is not None
         catalog = catalogs[listing] = _Catalog(
             legacy_needed=has_session and (session_declares or attempted),

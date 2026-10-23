@@ -2154,6 +2154,18 @@ async def test_catalog_connection_probe_records_whether_every_page_was_complete(
 
 
 @pytest.mark.asyncio
+async def test_catalog_connection_probe_error_after_discovery_keeps_the_declarations():
+    catalogs: dict[str, list[dict]] = {"tools": [], "resources": [], "prompts": []}
+    handler = _catalog_handler(catalogs, malformed="prompts", capabilities={"prompts": {}})
+    async with _client(handler) as first, _client(handler) as second:
+        results = await _probe_catalog_connection_independence(_HttpTarget(first, URL), _HttpTarget(second, URL))
+
+    prompts = results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT]
+    assert prompts.outcome is ProbeOutcome.ERROR
+    assert prompts.details["first_declares_capability"] is prompts.details["second_declares_capability"] is True
+
+
+@pytest.mark.asyncio
 async def test_catalog_connection_probe_compares_identity_sets_without_order():
     first_catalogs = {
         "tools": [{"name": "search"}, {"name": "read"}],

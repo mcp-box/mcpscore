@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 from typing import Any
 
 import httpx2
@@ -25,6 +26,7 @@ from mcpscore.probes import (
     ProbeOutcome,
     ProbeResult,
     _HttpTarget,
+    _probe_catalog_connection_independence,
     _probe_stateless_list,
 )
 from mcpscore.rules import (
@@ -660,3 +662,23 @@ def test_capability_declared_on_one_connection_leaves_its_catalog_unsettled(prob
     data = AuditData(capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=probes)
     assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
     assert listing in ServerExposesPrimitiveRule().check(data).details["checked"]
+
+
+async def test_failed_connection_listing_keeps_its_catalog_unsettled() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if body["method"] == "server/discover":
+            return httpx2.Response(
+                200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"capabilities": {"prompts": {}}}}
+            )
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {}})
+
+    url = "https://server.example/mcp"
+    transport = httpx2.MockTransport(handler)
+    async with httpx2.AsyncClient(transport=transport) as first, httpx2.AsyncClient(transport=transport) as second:
+        results = await _probe_catalog_connection_independence(_HttpTarget(first, url), _HttpTarget(second, url))
+    assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.ERROR
+    refusal = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, {"error_code": -32601})
+    probes = {**results, **_probes(discover={"capabilities": {}}), PROBE_STATELESS_LIST: refusal}
+    data = AuditData(capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=probes)
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
