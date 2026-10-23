@@ -1496,7 +1496,7 @@ _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
     r"\b(?:always|must|never|do\s+not|don['\u2019]t|should|make\s+sure|ensure|be\s+sure)\b"
     r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
-    r"|^\W*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer)\b",
+    r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer)\b",
     re.IGNORECASE | re.MULTILINE,
 )
 _ANY_TOOL_RE = re.compile(
@@ -1519,7 +1519,23 @@ _SEPARATORS_RE = re.compile(r"[-._/]+")
 # Namespaces a client puts in front of a tool name: mcp__notes__search, notes.search, notes/search.
 _NAMESPACE_RE = re.compile(r"__|[./]")
 _MAX_NAMESPACES = 3
-_QUOTED_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+_QUOTE_PAIRS_DOUBLE = (('"', '"'), ("\u201c", "\u201d"))
+
+
+class _ForwardFind:
+    """Finds a character at or after ever-growing positions, scanning each part of the text once."""
+
+    def __init__(self, text: str, char: str) -> None:
+        super().__init__()
+        self._text = text
+        self._char = char
+        self._found = -2  # position of the last hit; -1 once there is none left
+
+    def at_or_after(self, position: int) -> int:
+        """Return the first index of the character at or after *position*, or -1."""
+        if self._found != -1 and self._found < position:
+            self._found = self._text.find(self._char, position)
+        return self._found
 
 
 @dataclass(frozen=True)
@@ -1531,9 +1547,25 @@ class _QuotedSpans:
 
     @classmethod
     def of(cls, text: str) -> "_QuotedSpans":
-        """Find the quoted spans of *text*."""
-        spans = [(span.start(), span.end()) for span in _QUOTED_RE.finditer(text)]
-        return cls([start for start, _ in spans], [end for _, end in spans])
+        """Find the quoted spans of *text*, leftmost first, in one forward pass."""
+        finders = [_ForwardFind(text, opener) for opener, _ in _QUOTE_PAIRS_DOUBLE]
+        closers = [_ForwardFind(text, closer) for _, closer in _QUOTE_PAIRS_DOUBLE]
+        starts: list[int] = []
+        ends: list[int] = []
+        position = 0
+        while True:
+            spans = []
+            for finder, closer in zip(finders, closers, strict=True):
+                start = finder.at_or_after(position)
+                end = closer.at_or_after(start + 1) if start >= 0 else -1
+                if end >= 0:
+                    spans.append((start, end + 1))
+            if not spans:
+                return cls(starts, ends)
+            start, end = min(spans)
+            starts.append(start)
+            ends.append(end)
+            position = end
 
     def contains(self, start: int, end: int) -> bool:
         """Whether *start*..*end* lies strictly inside one quoted span (spans never overlap)."""
