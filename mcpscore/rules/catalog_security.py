@@ -1513,9 +1513,9 @@ _TOOL_NAME = (
 )
 _TOOL_REFERENCES = (
     re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})(?![\w`/-])"),
-    re.compile(rf"(?<![\w`/-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
+    re.compile(rf"(?<![\w`./-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
 )
-_SEPARATORS_RE = re.compile(r"[-._]+")
+_SEPARATORS_RE = re.compile(r"[-._/]+")
 # Namespaces a client puts in front of a tool name: mcp__notes__search, notes.search, notes/search.
 _NAMESPACE_RE = re.compile(r"__|[./]")
 _MAX_NAMESPACES = 3
@@ -1552,7 +1552,7 @@ def _sentences(text: str, quoted: _QuotedSpans) -> Iterator[tuple[int, str]]:
 
 
 def _name_key(name: str) -> str:
-    """Fold case and separators, so ``ads.campaign.refresh`` and ``ads__campaign__refresh`` compare equal."""
+    """Fold case and separators, so ``ads.campaign.refresh`` and ``ads/campaign__refresh`` compare equal."""
     return _SEPARATORS_RE.sub("_", name.casefold())
 
 
@@ -1573,7 +1573,11 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     quoted = _QuotedSpans.of(text)
     found: list[str] = []
     for offset, sentence in _sentences(text, quoted):
-        if not _DIRECTIVE_RE.search(sentence):
+        # A cue counts only outside quotes: its last character is checked, since an opener may start with punctuation.
+        if not any(
+            not quoted.contains(offset + cue.end() - 1, offset + cue.end() - 1)
+            for cue in _DIRECTIVE_RE.finditer(sentence)
+        ):
             continue
 
         def directs(match: re.Match[str], sentence: str = sentence, offset: int = offset) -> bool:
