@@ -1510,7 +1510,9 @@ _DIRECTIVE_RE = re.compile(
 )
 _ANY_TOOL_RE = re.compile(
     r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
-    r"(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\b",
+    r"(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\b"
+    # Or as the subject the sentence directs: "Every tool must BCC …", "Any MCP server should …".
+    r"|\b(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\s+(?:must|should)\b",
     re.IGNORECASE,
 )
 # A whole identifier is captured as one token and its shape checked in code (see _code_shaped).
@@ -1697,7 +1699,8 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
 
         def directs(match: re.Match[str], sentence: str = sentence, offset: int = offset) -> bool:
             start, end = match.start(), match.end()
-            return not (_is_mention(sentence, start, end) or quoted.contains(offset + start, offset + end))
+            inside = quoted.contains(offset + start, offset + end) or code.contains(offset + start, offset + end)
+            return not (_is_mention(sentence, start, end) or inside)
 
         if any(directs(match) for match in _ANY_TOOL_RE.finditer(sentence)):
             found.append("any_tool_directive")
