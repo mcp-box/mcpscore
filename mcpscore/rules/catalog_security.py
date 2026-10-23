@@ -12,6 +12,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from html.parser import HTMLParser
+import ipaddress
 import re
 from typing import Any, ClassVar
 from urllib.parse import unquote, urljoin, urlsplit
@@ -704,8 +705,12 @@ _LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
 _CONNECTION_HINT_RELATIONS = frozenset({"dns-prefetch", "preconnect"})
 _HTML_SPACE = " \t\n\f\r"
 _URL_TRIMMED = "".join(map(chr, range(0x21)))  # C0 controls and space
-# Forbidden domain code points (URL Standard §3.2), which make a browser reject a host, percent-decoded or not.
-_FORBIDDEN_DOMAIN_RE = re.compile(r"[\x00-\x20#%/:<>?@\[\\\]^|\x7f]")
+# A host this rule reads the way a browser does: ASCII domain labels, or a dotted-decimal IPv4 address.
+_PLAIN_HOST_RE = re.compile(r"(?:[a-z0-9_-]+\.)*[a-z0-9_-]+\.?")
+_NUMERIC_LABEL_RE = re.compile(r"[0-9]+|0x[0-9a-f]*")
+_DOTTED_DECIMAL_RE = re.compile(
+    r"(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.?"
+)
 # The JavaScript MIME type essences (MIME Sniffing §4.6), which make a script element a classic script.
 _JAVASCRIPT_TYPES = frozenset(
     {"application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript"}
@@ -1290,56 +1295,46 @@ def _starts_host(url: str, base: str) -> bool:
     return explicit.group(1).lower() != base.split(":", 1)[0].lower() or len(explicit.group(2)) >= 2
 
 
-def _ipv4_number(part: str) -> int | None:
-    """Parse one IPv4 address part as a browser does: decimal, 0x hexadecimal or leading-zero octal."""
-    if re.fullmatch(r"0[xX][0-9A-Fa-f]*", part):
-        digits, radix = part[2:], 16
-    elif re.fullmatch(r"0[0-9]+", part):
-        if not re.fullmatch(r"[0-7]+", part):
-            return None
-        digits, radix = part, 8
-    elif re.fullmatch(r"[0-9]+", part):
-        digits, radix = part, 10
-    else:
-        return None
-    digits = digits.lstrip("0") or "0"
-    return 2**64 if len(digits) > 24 else int(digits, radix)  # past any address, below Python's digit limit
+def _plain_host(netloc: str) -> bool:
+    """Whether an http(s) host is one this rule parses as a browser does: an ASCII domain, IPv4 or IPv6 address.
+
+    A slot for the model to fill counts as a label. Other forms (percent-encoded or non-ASCII names, IPv4 in hex
+    or octal, IPvFuture, scoped IPv6) go through browser host parsing this rule does not reproduce.
+    """
+    host_port = netloc.rpartition("@")[2]
+    if host_port.startswith("["):
+        literal = host_port[1:].partition("]")[0]
+        try:
+            ipaddress.IPv6Address(literal)
+        except ValueError:
+            return False
+        return "%" not in literal
+    host = _PLACEHOLDER_URL_RE.sub("x", host_port.rpartition(":")[0] if ":" in host_port else host_port).lower()
+    if not _PLAIN_HOST_RE.fullmatch(host):
+        return False
+    last = host.rstrip(".").rpartition(".")[2]
+    return not _NUMERIC_LABEL_RE.fullmatch(last) or bool(_DOTTED_DECIMAL_RE.fullmatch(host))
 
 
-def _invalid_ipv4(host: str) -> bool:
-    """Whether a host ends in a number but is no valid IPv4 address, which a browser rejects (URL Standard §3.5)."""
-    parts = host.split(".")
-    if len(parts) > 1 and not parts[-1]:
-        parts.pop()  # one trailing dot is allowed
-    if not re.fullmatch(r"[0-9]+", parts[-1]) and _ipv4_number(parts[-1]) is None:
-        return False  # a domain, not an IPv4 address
-    numbers = [_ipv4_number(part) for part in parts]
-    if len(numbers) > 4 or any(number is None for number in numbers):
-        return True
-    values = [number for number in numbers if number is not None]
-    return any(value > 255 for value in values[:-1]) or values[-1] >= 256 ** (5 - len(values))
+def _document_base(inherited: str, declared: str | None) -> tuple[str, bool]:
+    """Return a document's base URL, and whether it cannot be checked.
 
-
-def _document_base(inherited: str, declared: str | None) -> str:
-    """Return a document's base URL; a malformed, hostless, javascript: or data: base yields the inherited one."""
+    A malformed, hostless, javascript: or data: base is rejected for the inherited one, as a browser does; an
+    http(s) base with a host other than a plain one cannot be checked.
+    """
     if not declared:
-        return inherited
+        return inherited, False
     candidate = _resolve(inherited, declared)
     try:
         parts = urlsplit(_web_url(candidate))
         _ = parts.port  # an out-of-range or non-numeric port raises only when read
     except ValueError:
-        return inherited
+        return inherited, False
     scheme = parts.scheme.lower()
     web = scheme in ("http", "https")
-    hostless = web and not parts.hostname  # a browser rejects http:// with no host
-    host = unquote(parts.hostname or "")
-    invalid_host = (
-        web
-        and not parts.netloc.rpartition("@")[2].startswith("[")
-        and bool(_FORBIDDEN_DOMAIN_RE.search(host) or _invalid_ipv4(host))
-    )
-    return inherited if scheme in ("javascript", "data") or hostless or invalid_host else candidate
+    if scheme in ("javascript", "data") or (web and not parts.hostname):  # a browser rejects http:// with no host
+        return inherited, False
+    return candidate, web and not _plain_host(parts.netloc)
 
 
 def _document_urls(
@@ -1359,7 +1354,7 @@ def _document_urls(
         parser.close()
     except ValueError:  # malformed markup the standard parser rejects
         return [], True
-    base = _document_base(inherited_base, parser.base)
+    base, odd_base = _document_base(inherited_base, parser.base)
     urls: list[tuple[str, bool]] = []
     for url, loads in [*parser.urls, *((href, None) for href in parser.hosts)]:
         budget[0] -= len(base) + len(url)  # a resolved URL is never longer than its base and itself
@@ -1374,7 +1369,7 @@ def _document_urls(
         host = _PORT_RE.sub("", authority.group(1)) if authority else ""
         if host:
             urls.append((f"//{host}", True))
-    too_deep = parser.uncheckable
+    too_deep = parser.uncheckable or odd_base
     for srcdoc, srcdoc_scripting in parser.srcdocs:
         if depth >= MAX_SRCDOC_DEPTH:
             too_deep = True
