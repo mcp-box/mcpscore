@@ -1276,6 +1276,8 @@ def _resolve(base: str, url: str) -> str:
         if not re.match(r"(?i)[a-z][a-z0-9+.-]*:", url):
             # Against an http(s) base, backslashes are slashes and a run of slashes starts a host.
             url = re.sub(r"^/{3,}", "//", url.replace("\\", "/"))
+            if url.partition("#")[0] == "?":  # an explicit empty query replaces the base's; urljoin keeps it
+                return base.partition("#")[0].partition("?")[0] + url
         elif _starts_host(url, base):
             url = _web_url(url)
         return urljoin(base, url)
@@ -1331,7 +1333,7 @@ def _document_base(inherited: str, declared: str | None) -> tuple[str, bool]:
     except ValueError:
         return inherited, False
     scheme = parts.scheme.lower()
-    web = scheme in ("http", "https")
+    web = scheme in ("http", "https") or (not scheme and _web_url(candidate).startswith("//"))  # or a network path
     if scheme in ("javascript", "data") or (web and not parts.hostname):  # a browser rejects http:// with no host
         return inherited, False
     return candidate, web and not _plain_host(parts.netloc)

