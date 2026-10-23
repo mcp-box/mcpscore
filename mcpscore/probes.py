@@ -1468,8 +1468,12 @@ async def _collect_catalog_identities(
     method: str,
     item_key: str,
     request_id_base: int,
+    unfinished_pages: list[int] | None = None,
 ) -> frozenset[str]:
-    """Collect one complete catalog as an order-independent identity set."""
+    """Collect one complete catalog as an order-independent identity set.
+
+    Pages without ``resultType: "complete"`` (SEP-2322) are appended to *unfinished_pages* when it is given.
+    """
     identities: set[str] = set()
     seen_cursors: set[str] = set()
     cursor: str | None = None
@@ -1497,6 +1501,8 @@ async def _collect_catalog_identities(
         if result is None:
             msg = f"{method} did not return a result object"
             raise TypeError(msg)
+        if unfinished_pages is not None and result.get("resultType") != "complete":
+            unfinished_pages.append(page_number)
         items = result.get(item_key)
         if not isinstance(items, list):
             msg = f"{method} did not return a {item_key} list"
@@ -1600,6 +1606,7 @@ async def _probe_catalog_connection_independence(
                     "reason": f"{capability} capability varies across client connections",
                 },
             )
+        unfinished_pages: list[int] = []
         try:
             first_ids, second_ids = await gather_pair(
                 _collect_catalog_identities(
@@ -1608,6 +1615,7 @@ async def _probe_catalog_connection_independence(
                     method=method,
                     item_key=item_key,
                     request_id_base=2200 + surface_index * 300,
+                    unfinished_pages=unfinished_pages,
                 ),
                 _collect_catalog_identities(
                     second,
@@ -1615,6 +1623,7 @@ async def _probe_catalog_connection_independence(
                     method=method,
                     item_key=item_key,
                     request_id_base=2300 + surface_index * 300,
+                    unfinished_pages=unfinished_pages,
                 ),
             )
         except Exception as exc:  # noqa: BLE001 — incomplete evidence must skip, never fail
@@ -1635,6 +1644,7 @@ async def _probe_catalog_connection_independence(
             {
                 "first_count": len(first_ids),
                 "second_count": len(second_ids),
+                "results_complete": not unfinished_pages,
                 "only_first": only_first[:10],
                 "only_second": only_second[:10],
                 "differences_truncated": len(only_first) > 10 or len(only_second) > 10,

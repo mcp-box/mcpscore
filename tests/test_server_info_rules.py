@@ -383,14 +383,25 @@ def test_errored_catalog_connection_probe_counts_nothing() -> None:
                 PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT: ProbeResult(
                     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
                     ProbeOutcome.SUPPORTED,
-                    {"first_count": 0, "second_count": 0},
+                    {"first_count": 0, "second_count": 0, "results_complete": True},
                 ),
             },
             False,
         ),
+        (
+            {
+                **_probes(discover={"capabilities": {"tools": {}}}, stateless={"tools": [], "nextCursor": "more"}),
+                PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT: ProbeResult(
+                    PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+                    ProbeOutcome.SUPPORTED,
+                    {"first_count": 0, "second_count": 0, "results_complete": False},
+                ),
+            },
+            "skip",
+        ),
         (_probes(discover={"capabilities": {"tools": {}}}, stateless={"tools": [], "resultType": "complete"}), False),
     ],
-    ids=["stateless-unfinished", "connection-probe-whole", "stateless-whole"],
+    ids=["stateless-unfinished", "connection-probe-whole", "connection-probe-unfinished", "stateless-whole"],
 )
 def test_dual_era_empty_session_needs_a_whole_stateless_listing(probes: dict, expected: bool | str) -> None:
     data = AuditData(
@@ -401,3 +412,34 @@ def test_dual_era_empty_session_needs_a_whole_stateless_listing(probes: dict, ex
         probes=probes,
     )
     assert judge(data) == (SKIP_REASON_INSUFFICIENT_DATA if expected == "skip" else expected)
+
+
+@pytest.mark.parametrize(
+    ("session_capabilities", "expected"),
+    [
+        (ServerCapabilities(), SKIP_REASON_INSUFFICIENT_DATA),
+        (ServerCapabilities(resources=ResourcesCapability()), False),
+    ],
+    ids=["discover-only-resources", "session-declares-resources"],
+)
+def test_resource_templates_declared_only_in_discover_stay_unproven(
+    session_capabilities: ServerCapabilities, expected: bool | str
+) -> None:
+    resources_probe = ProbeResult(
+        PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+        ProbeOutcome.SUPPORTED,
+        {"first_count": 0, "second_count": 0, "results_complete": True},
+    )
+    session_lists = session_capabilities.resources is not None
+    data = AuditData(
+        capabilities=session_capabilities,
+        session_protocol_version=SESSION,
+        resources=[] if session_lists else None,
+        resource_templates=[] if session_lists else None,
+        listings_attempted=frozenset({"resources", "resource_templates"}) if session_lists else frozenset(),
+        probes={
+            **_probes(discover={"capabilities": {"resources": {}}}),
+            PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT: resources_probe,
+        },
+    )
+    assert judge(data) == expected

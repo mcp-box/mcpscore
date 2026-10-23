@@ -481,8 +481,9 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     A catalog is empty only when each lifecycle that declared it listed it whole and empty. On the legacy
     session that is a complete listing; on the stateless lifecycle, a ``tools/list`` page with
     ``resultType: "complete"`` (SEP-2322) and no next cursor, or a catalog probe that read every page on two
-    connections and found nothing. Resource templates have no stateless listing, so a dual-era server's are
-    judged on its session.
+    connections, each page with ``resultType: "complete"``, and found nothing. Resource templates have no
+    stateless listing: a session that declares resources settles them, and templates declared only in
+    ``server/discover`` stay unproven.
     """
     discovered = discover_capabilities(audit_data)
     probes = audit_data.probes or {}
@@ -492,7 +493,10 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         attempted = listing in audit_data.listings_attempted
         session_declares = getattr(audit_data.capabilities, capability, None) is not None
-        modern_declares = capability in discovered and (listing != "resource_templates" or not has_session)
+        # A session that declares resources settles both resource catalogs; templates have no stateless listing.
+        modern_declares = capability in discovered and (
+            listing != "resource_templates" or not (has_session and session_declares)
+        )
         catalog = catalogs[listing] = _Catalog(
             legacy_needed=has_session and (session_declares or attempted),
             modern_needed=modern_declares or (not has_session and (session_declares or attempted)),
@@ -513,7 +517,8 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
             counts = [count for count in counts if isinstance(count, int)]
             catalog.observe(max(counts, default=0))
             # SUPPORTED: both connections read every page and found the same catalog.
-            catalog.modern_empty = probe.outcome is ProbeOutcome.SUPPORTED and counts == [0, 0]
+            whole = probe.outcome is ProbeOutcome.SUPPORTED and probe.details.get("results_complete") is True
+            catalog.modern_empty = whole and counts == [0, 0]
         if listing == "tools" and page is not None:
             catalog.observe(len(page["tools"]))
             whole = page.get("resultType") == "complete" and page.get("nextCursor") is None

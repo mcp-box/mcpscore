@@ -2101,6 +2101,7 @@ def _catalog_handler(
     *,
     malformed: str | None = None,
     capabilities: dict | None = None,
+    result_type: str | None = None,
 ):
     """Build a modern catalog handler for one independent client."""
 
@@ -2125,9 +2126,31 @@ def _catalog_handler(
         item_key = result_keys[method]
         if malformed == item_key:
             return _rpc_result(request_id, {})
-        return _rpc_result(request_id, {item_key: catalogs[item_key]})
+        result: dict = {item_key: catalogs[item_key]}
+        if result_type is not None:
+            result["resultType"] = result_type
+        return _rpc_result(request_id, result)
 
     return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_type", "second_type", "complete"),
+    [("complete", "complete", True), ("complete", None, False), ("incomplete", "incomplete", False)],
+)
+async def test_catalog_connection_probe_records_whether_every_page_was_complete(first_type, second_type, complete):
+    catalogs: dict[str, list[dict]] = {"tools": [], "resources": [], "prompts": []}
+    async with (
+        _client(_catalog_handler(catalogs, result_type=first_type)) as first,
+        _client(_catalog_handler(catalogs, result_type=second_type)) as second,
+    ):
+        results = await _probe_catalog_connection_independence(_HttpTarget(first, URL), _HttpTarget(second, URL))
+
+    for result in results.values():
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["first_count"] == result.details["second_count"] == 0
+        assert result.details["results_complete"] is complete
 
 
 @pytest.mark.asyncio
