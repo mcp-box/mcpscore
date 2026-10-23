@@ -674,6 +674,8 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence, *, stateless: 
     entries: list[Any] = []
     cursor: str | None = None
     seen: set[str] = set()
+    # A stateless result without resultType "complete" (SEP-2322) is not a whole answer.
+    unfinished = False
     for page in range(MAX_LIST_PAGES):
         try:
             result = await session.request_raw("skills/list", {"cursor": cursor} if cursor is not None else {})
@@ -694,13 +696,14 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence, *, stateless: 
             evidence.entries = entries if page else None
             return
         entries.extend(skills)
+        unfinished = unfinished or (stateless and result.get("resultType") != "complete")
         # Visible after every page, so a collection deadline keeps the pages already received.
         evidence.entries, evidence.list_incomplete = entries, True
         next_cursor = result.get("nextCursor")
         if not isinstance(next_cursor, str) or next_cursor in seen:
             evidence.entries = entries
             # A repeated cursor, or one that is not a string, leaves pages unread.
-            evidence.list_incomplete = next_cursor is not None
+            evidence.list_incomplete = next_cursor is not None or unfinished
             return
         seen.add(next_cursor)
         cursor = next_cursor

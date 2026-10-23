@@ -13,6 +13,7 @@ from mcp_types import (
 )
 import pytest
 
+from mcpscore.probes import PROBE_DISCOVER, PROBE_STATELESS_LIST, ProbeOutcome, ProbeResult
 from mcpscore.rules import (
     AuditData,
     RuleSeverity,
@@ -230,3 +231,34 @@ def test_skills_declared_only_in_discover_count_as_declared() -> None:
     assert judge(AuditData(capabilities=capabilities, tools=[], skills=failed)) == SKIP_REASON_INSUFFICIENT_DATA
     served = SkillsEvidence(entries=[{"name": "pdf"}], declared_in_discover=True)
     assert judge(AuditData(capabilities=capabilities, tools=[], skills=served)) is True
+
+
+def _probes(**payloads: dict[str, Any]) -> dict[str, ProbeResult]:
+    names = {"discover": PROBE_DISCOVER, "stateless": PROBE_STATELESS_LIST}
+    return {
+        names[key]: ProbeResult(names[key], ProbeOutcome.SUPPORTED, {}, payload=payload)
+        for key, payload in payloads.items()
+    }
+
+
+def test_tools_served_only_on_the_stateless_lifecycle_count() -> None:
+    probes = _probes(stateless={"tools": [{"name": "search", "inputSchema": {"type": "object"}}]})
+    data = AuditData(capabilities=ServerCapabilities(), probes=probes)
+    result = ServerExposesPrimitiveRule().check(data)
+    assert judge(data) is True
+    assert result.details["exposed"]["tools"] == 1
+
+
+def test_unsupported_stateless_probe_does_not_count() -> None:
+    probes = {PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, {}, payload=None)}
+    assert judge(AuditData(capabilities=ServerCapabilities(), probes=probes)) is False
+
+
+@pytest.mark.parametrize(
+    "discovered",
+    [{"resources": {}}, {"prompts": {}}, {"tools": {}}, {"extensions": SKILLS}],
+    ids=["resources", "prompts", "tools", "skills"],
+)
+def test_catalog_declared_only_in_discover_and_never_collected_skips(discovered: dict[str, Any]) -> None:
+    data = AuditData(capabilities=ServerCapabilities(), probes=_probes(discover={"capabilities": discovered}))
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA

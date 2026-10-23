@@ -1030,7 +1030,8 @@ class MCPAuditor:
         """Collect the skills of a dual-era server that declares the extension only in ``server/discover``.
 
         The 2025-11-25 ``initialize`` result has no ``extensions`` field, so such a server's session never
-        declares it. ``skills/list`` is tried on the session first, then on the stateless lifecycle.
+        declares it. ``skills/list`` is tried on the session first, then on the stateless lifecycle when the
+        session refused it or listed nothing: the lifecycles may serve different catalogs.
         """
         if self.audit_data.skills is not None or self.era is not Era.DUAL or self.mcp_client is None:
             return
@@ -1040,10 +1041,12 @@ class MCPAuditor:
         evidence = await collect_skills(self.mcp_client, settings)
         url = self.audit_data.url
         target = url if url and url.startswith(("http://", "https://")) else self.mcp_client.stdio_params
-        if evidence.entries is None and target is not None:
+        if not evidence.entries and target is not None:
             try:
                 async with stateless_session(target, self.headers) as session:
-                    evidence = await collect_skills(session, settings, stateless=True)
+                    stateless = await collect_skills(session, settings, stateless=True)
+                if evidence.entries is None or stateless.entries:
+                    evidence = stateless
             except Exception as exc:  # noqa: BLE001 — the session's evidence stands
                 logger.warning("Could not collect skills on the stateless lifecycle (%s)", type(exc).__name__)
         evidence.declared_in_discover = True

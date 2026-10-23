@@ -69,6 +69,10 @@ def discover(monkeypatch: pytest.MonkeyPatch):
 
         monkeypatch.setattr(mcp_auditor, "run_all_probes", run_all_probes)
 
+    async def tls_version(url: str) -> str:
+        return "TLSv1.3"
+
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(tls_version))
     return install
 
 
@@ -147,3 +151,52 @@ async def test_no_declaration_anywhere_collects_nothing(discover, monkeypatch) -
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
     assert skipped["skills_list_supported"] == SKIP_REASON_NOT_APPLICABLE
     assert not {result.rule_id: result for result in auditor.results}["server_exposes_primitive"].passed
+
+
+async def test_empty_session_catalog_falls_back_to_the_stateless_catalog(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([_page(entry("pdf"))], _files("pdf")))
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(FakeSession([_page()])))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
+    results = {result.rule_id: result for result in auditor.results}
+    assert results["server_exposes_primitive"].passed
+    assert "skills_digest_integrity" in results
+
+
+async def test_both_catalogs_empty_keeps_the_session_listing(discover, monkeypatch) -> None:
+    discover({"extensions": SKILLS})
+    stateless = FakeSession([_page()])
+    _stateless(monkeypatch, stateless)
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(FakeSession([_page()])))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert evidence.entries == []
+    assert not evidence.list_incomplete
+    assert not {result.rule_id: result for result in auditor.results}["server_exposes_primitive"].passed
+
+
+@pytest.mark.parametrize(
+    ("discovered", "passed"),
+    [({"resources": {}, "extensions": SKILLS}, True), ({"extensions": SKILLS}, False)],
+    ids=["discover-declares-resources", "discover-omits-resources"],
+)
+async def test_resources_capability_is_judged_on_the_declaring_lifecycle(
+    discover, monkeypatch, discovered: dict[str, Any], passed: bool
+) -> None:
+    discover(discovered)
+    _stateless(monkeypatch, FakeSession([_page()]))
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(FakeSession([_page(entry("pdf"))], _files("pdf"))))
+
+    assert auditor.audit_data.capabilities is not None
+    assert auditor.audit_data.capabilities.resources is None
+    assert {result.rule_id: result for result in auditor.results}["skills_resources_capability"].passed is passed

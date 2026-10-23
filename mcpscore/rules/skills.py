@@ -10,7 +10,7 @@ from bisect import bisect_left
 from collections.abc import Iterator
 from typing import Any, ClassVar
 
-from ..probes import ERROR_INVALID_PARAMS
+from ..probes import ERROR_INVALID_PARAMS, PROBE_DISCOVER
 from ..report_evidence import report_evidence
 from ..skills import (
     DIGEST_RE,
@@ -51,6 +51,14 @@ from .registry import register_rule
 
 SEP = "MCP Skills Extension (SEP-2640, Final)"
 AGENT_SKILLS = "Agent Skills specification (agentskills.io/specification, read 2026-10-18)"
+
+
+def discover_capabilities(audit_data: AuditData) -> dict[str, Any]:
+    """Return the raw capabilities ``server/discover`` declared, or an empty dict when it was not observed."""
+    discover = (audit_data.probes or {}).get(PROBE_DISCOVER)
+    payload = discover.payload if discover is not None and isinstance(discover.payload, dict) else {}
+    capabilities = payload.get("capabilities")
+    return capabilities if isinstance(capabilities, dict) else {}
 
 
 def declares_skills(audit_data: AuditData) -> bool:
@@ -529,7 +537,12 @@ class SkillsResourcesCapabilityRule(SkillsBaseRule):
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Medium check: skill files are served as resources, so the ``resources`` capability must be declared."""
-        passed = getattr(audit_data.capabilities, "resources", None) is not None
+        evidence = audit_data.skills
+        if evidence is not None and evidence.declared_in_discover:
+            # Judged on the lifecycle that declared the extension.
+            passed = discover_capabilities(audit_data).get("resources") is not None
+        else:
+            passed = getattr(audit_data.capabilities, "resources", None) is not None
         return self._result(
             passed=passed,
             message=(

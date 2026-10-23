@@ -43,7 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listing no tools. The new rule fails only a server that exposes nothing: no
   tool, resource, resource template, prompt or skill. A failed or incomplete
   listing is never read as empty, so the rule then skips as insufficient
-  data, as does a partial audit. A configuration file that names the old ID
+  data, as does a partial audit. Tools served only on the stateless
+  lifecycle count, and a catalog declared only in `server/discover` that
+  was never listed is a gap, not an empty catalog. A configuration file that names the old ID
   gets a warning and the ID is ignored. Scores move on most audits, not only
   on tool-free servers: the new rule weighs 2 where the old one weighed 5, so
   every full audit loses 3 points of maximum score, and 3 points of score
@@ -62,8 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `server/discover`.** A 2025-11-25 `initialize` result has no
   `extensions` field, so such a server's session never declared the Skills
   extension, and every skills rule skipped as not applicable. The skills are
-  now listed on the session and, if the session refuses `skills/list`, on
-  the stateless lifecycle.
+  now listed on the session and, if the session refuses `skills/list` or
+  lists nothing, on the stateless lifecycle. `skills_resources_capability`
+  then reads the `resources` capability from `server/discover` too.
+- **A stateless `skills/list` result without `resultType: "complete"` counts
+  as an incomplete listing.** An empty one no longer reads as an empty
+  catalog.
 - **A skill file with a very long numeric character reference no longer
   aborts the audit.** Raw HTML in a `SKILL.md` holding a reference such as
   `&#` followed by thousands of digits raised an error in the skills rules.

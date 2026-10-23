@@ -4,6 +4,8 @@ from typing import Any
 from mcp_types import Implementation
 
 from mcpscore.diagnostics import quoted_preview
+from mcpscore.probes import PROBE_STATELESS_LIST, ProbeOutcome
+from mcpscore.skills import SKILLS_EXTENSION
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -16,7 +18,7 @@ from .base import (
 )
 from .catalog_diagnostics import catalog_result, field_issue
 from .registry import register_rule
-from .skills import declares_skills
+from .skills import declares_skills, discover_capabilities
 
 
 class ServerInfoBaseRule(BaseRule):
@@ -423,29 +425,49 @@ _PRIMITIVE_LISTINGS = {
 """Each primitive listing the auditor collects, and the capability that declares it."""
 
 
+def _stateless_tools(audit_data: AuditData) -> int | None:
+    """Count the tools the stateless ``tools/list`` probe received; None when it received no tools array."""
+    probe = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
+    if probe is None or probe.outcome is not ProbeOutcome.SUPPORTED or not isinstance(probe.payload, dict):
+        return None
+    tools = probe.payload.get("tools")
+    return len(tools) if isinstance(tools, list) else None
+
+
 def _exposed_counts(audit_data: AuditData) -> dict[str, int | None]:
-    """Count what each primitive listing collected; None when the listing has no result."""
+    """Count what each primitive listing collected; None when the listing has no result.
+
+    Tools the stateless lifecycle served count when the session catalog has none: either lifecycle exposes them.
+    """
     counts: dict[str, int | None] = {
         listing: None if getattr(audit_data, listing) is None else len(getattr(audit_data, listing))
         for listing in _PRIMITIVE_LISTINGS
     }
+    if not counts["tools"]:
+        counts["tools"] = _stateless_tools(audit_data) or counts["tools"]
     skills = audit_data.skills
     counts["skills"] = None if skills is None or skills.entries is None else len(skills.entries)
     return counts
 
 
 def _unproven_listings(audit_data: AuditData) -> list[str]:
-    """Return the listings that cannot show the server serves nothing: declared or attempted but not collected whole."""
+    """Return the listings that cannot show the server serves nothing: declared or attempted but not collected whole.
+
+    A declaration counts from either lifecycle: the session's capabilities or ``server/discover``.
+    """
+    discovered = discover_capabilities(audit_data)
     unproven = []
     for listing, capability in _PRIMITIVE_LISTINGS.items():
-        declared = getattr(audit_data.capabilities, capability, None) is not None
+        declared = getattr(audit_data.capabilities, capability, None) is not None or capability in discovered
         collected = getattr(audit_data, listing)
         missing = collected is None and (declared or listing in audit_data.listings_attempted)
         if missing or (not collected and listing in audit_data.incomplete_listings):
             unproven.append(listing)
+    extensions = discovered.get("extensions")
+    discover_skills = isinstance(extensions, dict) and SKILLS_EXTENSION in extensions
     skills = audit_data.skills
     listed = skills is not None and skills.entries is not None and (skills.entries or not skills.list_incomplete)
-    if declares_skills(audit_data) and not listed:
+    if (declares_skills(audit_data) or discover_skills) and not listed:
         unproven.append("skills")
     return unproven
 

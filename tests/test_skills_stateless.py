@@ -150,6 +150,22 @@ class TestCollectorHints:
         session_evidence = await collect_skills(FakeSession([page]), {})
         assert session_evidence.stateless_list is None
 
+    @pytest.mark.parametrize(
+        ("result_type", "incomplete"),
+        [("complete", False), ("incomplete", True), (None, True)],
+    )
+    async def test_stateless_listing_without_complete_result_type_is_incomplete(self, result_type, incomplete):
+        page: dict[str, Any] = {"skills": []}
+        if result_type is not None:
+            page["resultType"] = result_type
+        evidence = await collect_skills(FakeSession([page]), {}, stateless=True)
+        assert evidence.entries == []
+        assert evidence.list_incomplete is incomplete
+
+    async def test_session_listing_needs_no_result_type(self):
+        evidence = await collect_skills(FakeSession([{"skills": []}]), {})
+        assert evidence.list_incomplete is False
+
     async def test_stateless_listing_failure_is_recorded(self):
         session = FakeSession([], errors={"skills/list:": MCPError(-32601, "no")})
         evidence = await collect_skills(session, {}, stateless=True)
