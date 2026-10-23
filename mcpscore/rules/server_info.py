@@ -11,6 +11,7 @@ from mcpscore.probes import (
     PROBE_STATELESS_LIST,
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     ProbeOutcome,
+    has_modern_support,
 )
 from mcpscore.skills import declared_settings
 
@@ -516,6 +517,8 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
             whole = probe.outcome is ProbeOutcome.SUPPORTED and probe.details.get("results_complete") is True
             catalog.modern_empty = whole and counts == [0, 0]
         if listing == "tools" and page is not None:
+            # A modern server's answered tools/list must settle the catalog, declared or not.
+            catalog.modern_needed = catalog.modern_needed or has_modern_support(audit_data.probes)
             catalog.observe(len(page["tools"]))
             whole = page.get("resultType") == "complete" and page.get("nextCursor") is None
             catalog.modern_empty = catalog.modern_empty or (whole and not page["tools"])

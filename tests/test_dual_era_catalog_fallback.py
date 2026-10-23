@@ -107,6 +107,10 @@ def stateless_probes(monkeypatch: pytest.MonkeyPatch):
 
         monkeypatch.setattr(mcp_auditor, "run_all_probes", run_all_probes)
 
+    async def tls_version(url: str) -> str:
+        return "TLSv1.3"
+
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(tls_version))
     return install
 
 

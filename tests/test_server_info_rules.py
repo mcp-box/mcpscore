@@ -458,3 +458,29 @@ def test_legacy_only_server_with_empty_resource_catalogs_fails() -> None:
         listings_attempted=frozenset({"resources", "resource_templates"}),
     )
     assert judge(data) is False
+
+
+@pytest.mark.parametrize(
+    ("page", "expected"),
+    [
+        ({"tools": [], "resultType": "incomplete"}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"tools": [], "resultType": "complete", "nextCursor": "2"}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"tools": []}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"tools": [], "resultType": "complete"}, False),
+    ],
+    ids=["incomplete", "more-pages", "no-result-type", "whole"],
+)
+def test_undeclared_tools_page_of_a_modern_server_must_be_whole(page: dict[str, Any], expected: bool | str) -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(),
+        session_protocol_version=SESSION,
+        probes=_probes(discover={"capabilities": {}}, stateless=page),
+    )
+    assert judge(data) == expected
+
+
+def test_undeclared_plain_tools_page_of_a_legacy_server_is_ignored() -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=_probes(stateless={"tools": []})
+    )
+    assert judge(data) is False
