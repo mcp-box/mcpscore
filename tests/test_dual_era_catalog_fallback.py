@@ -404,3 +404,20 @@ def test_applicability_follows_the_catalog_revision():
     assert auditor._applicability_version(_FullDataRule()) == "2025-11-25"
     auditor.audit_data.catalog_versions.clear()
     assert auditor._applicability_version(_ToolsRule()) == "2025-11-25"
+
+
+@pytest.mark.parametrize(
+    "client",
+    [LegacyListingFailsClient(), LegacyListingFailsClient([SESSION_TOOL], partial=True)],
+    ids=["session-failed", "session-partial"],
+)
+async def test_empty_recovered_catalog_does_not_prove_the_server_empty(stateless_probes, client):
+    stateless_probes({"resultType": "complete", "tools": []})
+    auditor = MCPAuditor()
+
+    await auditor.audit(client)
+
+    assert auditor.audit_data.tools == []
+    assert auditor.audit_data.catalog_versions == {"tools": "2026-07-28"}
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    assert skipped["server_exposes_primitive"] == SKIP_REASON_INSUFFICIENT_DATA

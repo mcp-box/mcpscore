@@ -478,13 +478,16 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
         attempted = listing in audit_data.listings_attempted
         declared = getattr(audit_data.capabilities, capability, None) is not None or capability in discovered
         catalog = catalogs[listing] = _Catalog(declared=declared or attempted)
-        session = audit_data.session_protocol_version is not None and listing not in audit_data.catalog_versions
+        has_session = audit_data.session_protocol_version is not None
+        # A catalog recovered from the stateless lifecycle replaced a session listing that failed or broke off.
+        recovered = listing in audit_data.catalog_versions
         collected = getattr(audit_data, listing)
         incomplete = listing in audit_data.incomplete_listings
         if collected is not None:
             # Collected items exist whatever their source; only a session listing proves an empty catalog.
-            catalog.observe(len(collected), whole=session and not incomplete)
-        if session and attempted and (collected is None or incomplete or listing in audit_data.listing_errors):
+            catalog.observe(len(collected), whole=has_session and not recovered and not incomplete)
+        failed = recovered or collected is None or incomplete or listing in audit_data.listing_errors
+        if has_session and attempted and failed:
             catalog.broken = True
         probe = probes.get(_CONNECTION_PROBES.get(listing, ""))
         if probe is not None and probe.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
