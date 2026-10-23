@@ -637,7 +637,7 @@ class ServerExposesPrimitiveRule(BaseRule):
             details=details,
             suggested_fix=(
                 "Expose at least one tool, resource, prompt or skill, declare its capability in the initialize "
-                "result, and check that its list method returns it."
+                "result (server/discover on the stateless lifecycle), and check that its list method returns it."
             ),
             issues=[field_issue("catalog", None, "", "empty_catalog", "at least one tool, resource, prompt or skill")],
         )

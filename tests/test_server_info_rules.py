@@ -173,6 +173,7 @@ def test_every_listing_empty_fails_and_names_what_was_checked() -> None:
     assert "every listing it serves came back empty" in result.message
     assert result.details["issues"][0]["reason"] == "empty_catalog"
     assert "tool, resource, prompt or skill" in result.suggested_fix
+    assert "server/discover" in result.suggested_fix
 
 
 def test_server_that_declares_nothing_fails() -> None:
