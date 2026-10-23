@@ -1593,7 +1593,7 @@ def _code_shaped(token: str) -> str | None:
     if not any(char.isascii() and char.isalpha() for char in name):
         return None
     if _NAME_JOINERS_RE.search(name):
-        parts = _NAME_JOINERS_RE.split(name.lstrip("_"))
+        parts = _NAME_JOINERS_RE.split(name.strip("_"))
         return name if all(part and part[0].isalnum() and part.isascii() for part in parts) else None
     words = name.split("-")
     if all(word.isascii() and word.isalnum() for word in words) and any(_CAMEL_RE.fullmatch(w) for w in words):
@@ -1657,8 +1657,12 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
 
 
 def _listed_names(audit_data: AuditData) -> frozenset[str] | None:
-    """Return the names the server lists, folded by :func:`_name_key`, or None when its tools were not seen whole."""
-    if audit_data.tools is None or "tools" in audit_data.incomplete_listings:
+    """Return the names the server lists, folded by :func:`_name_key`, or None when they were not all seen.
+
+    A listing that pagination left incomplete may hold the very name a description points at, so any incomplete
+    listing makes the server's names unknown.
+    """
+    if audit_data.tools is None or any(listing in audit_data.incomplete_listings for listing in _LISTINGS):
         return None
     items = [*audit_data.tools, *(audit_data.prompts or []), *(audit_data.resources or [])]
     items += audit_data.resource_templates or []
