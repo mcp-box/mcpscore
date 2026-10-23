@@ -1496,8 +1496,8 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 # a single line break only wraps the sentence.
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
-    # "must-have" is an adjective; "whether … should …" is handled where cues are read.
-    r"\b(?P<modal>must|should)\b(?!-)|\b(?:make\s+sure|ensure|be\s+sure)\b(?!-)"
+    # "must-have" is an adjective; cues in a "whether …" clause are handled where cues are read.
+    r"\b(?:must|should|make\s+sure|ensure|be\s+sure)\b(?!-)"
     # "always", "never", "do not" direct only opening a clause ("Never use …", "…, then always call …",
     # "you do not need …"); after a subject or auxiliary ("the tool always returns", "messages that do not
     # require …") they describe.
@@ -1693,7 +1693,10 @@ def _is_listed(name: str, listed: frozenset[str]) -> bool:
 def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
     """Whether *match* names a tool, in backticks or code-shaped, that is not among the *listed* names."""
     if match["ticked"] is not None:
-        ticked = match["ticked"].removesuffix("()")
+        if _is_listed(match["ticked"], listed):
+            return False
+        # The callee of a call expression: `fetch_page(url)` names fetch_page.
+        ticked = match["ticked"].split("(", 1)[0] if match["ticked"].endswith(")") else match["ticked"]
         # A backticked name still needs a letter: `()` or `--` is punctuation, not a tool.
         if not any(char.isalpha() for char in ticked) or ticked in _PROTOCOL_METHODS:
             return False
@@ -1710,7 +1713,7 @@ def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
 class _IndirectClauses:
     """Where a sentence asks indirectly: "Returns whether the tool should retry" describes, it does not direct.
 
-    A modal is in such a clause when an unquoted "whether" precedes it with no comma, semicolon or colon between.
+    A cue is in such a clause when an unquoted "whether" precedes it with no comma, semicolon or colon between.
     """
 
     whethers: list[int]
@@ -1759,7 +1762,7 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
         if not any(
             not quoted.contains(offset + cue.end() - 1, offset + cue.end() - 1)
             and not code.contains(offset + cue.end() - 1, offset + cue.end() - 1)
-            and not (cue["modal"] and indirect.covers(cue.start()))
+            and not indirect.covers(cue.start())
             for cue in _DIRECTIVE_RE.finditer(sentence)
         ):
             continue
