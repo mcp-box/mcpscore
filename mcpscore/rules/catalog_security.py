@@ -1496,7 +1496,8 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 # a single line break only wraps the sentence.
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
-    r"\b(?:must|do\s+not|don['\u2019]t|should|make\s+sure|ensure|be\s+sure)\b"
+    # "must-have" is an adjective; "whether … should …" is handled where cues are read.
+    r"\b(?P<modal>must|should)\b(?!-)|\b(?:do\s+not|don['\u2019]t|make\s+sure|ensure|be\s+sure)\b(?!-)"
     # "always"/"never" direct only opening a clause ("Never use …", "…, then always call …"); after a subject
     # or auxiliary ("the tool always returns", "has never been") they describe.
     r"|(?:^|[,;:(\u2014\u201d\x22]|\b(?:and|or|then|but|so|please))[^\w\n]{0,4}(?:always|never)\b"
@@ -1508,6 +1509,7 @@ _DIRECTIVE_RE = re.compile(
     r"(?!(?:the|a|an|it|its|this|that|these|those|they|their|we|our|you|your|there|he|she|i)\b)\w",
     re.IGNORECASE | re.MULTILINE,
 )
+_WHETHER_RE = re.compile(r"\bwhether\b", re.IGNORECASE)
 _ANY_TOOL_RE = re.compile(
     r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
     r"(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\b"
@@ -1690,9 +1692,12 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     for offset, sentence in _sentences(text, quoted):
         # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
         # with punctuation.
+        # "Returns whether the tool should retry" asks indirectly: a modal after "whether" describes.
+        whether = _WHETHER_RE.search(sentence)
         if not any(
             not quoted.contains(offset + cue.end() - 1, offset + cue.end() - 1)
             and not code.contains(offset + cue.end() - 1, offset + cue.end() - 1)
+            and not (cue["modal"] and whether is not None and whether.start() < cue.start())
             for cue in _DIRECTIVE_RE.finditer(sentence)
         ):
             continue
