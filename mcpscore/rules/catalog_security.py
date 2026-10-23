@@ -23,7 +23,7 @@ from markdown_it.token import Token
 from mcp_types import Icon
 
 from mcpscore.html_text import bound_charrefs
-from mcpscore.probes import PROBE_DISCOVER, PROBE_STATELESS_LIST
+from mcpscore.probes import PROBE_STATELESS_LIST
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
 from .catalog_diagnostics import catalog_result, field_issue, pointer_token
@@ -1704,13 +1704,8 @@ _DECLARED_LISTINGS = (("prompts", "prompts"), ("resources", "resources"), ("reso
 
 
 def _declares(audit_data: AuditData, capability: str) -> bool:
-    """Whether the session's capabilities or ``server/discover`` declare *capability*."""
-    if getattr(audit_data.capabilities, capability, None) is not None:
-        return True
-    discover = (audit_data.probes or {}).get(PROBE_DISCOVER)
-    payload = discover.payload if discover is not None and isinstance(discover.payload, dict) else {}
-    capabilities = payload.get("capabilities")
-    return isinstance(capabilities, dict) and capabilities.get(capability) is not None
+    """Whether the audited lifecycle declares *capability*: the session's, or ``server/discover``'s without one."""
+    return getattr(audit_data.capabilities, capability, None) is not None
 
 
 def _stateless_page_whole(audit_data: AuditData) -> bool:
