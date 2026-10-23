@@ -1,5 +1,6 @@
 """Tests for the security rules that scan catalog text."""
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import time
@@ -1452,6 +1453,8 @@ LISTED = frozenset({"search", "fetch_page", "summarize", "ads_campaign_refresh",
         ("Always call _send_email first.", ["unlisted_tool_directive"]),
         ("Always call 2_send_email first.", ["unlisted_tool_directive"]),
         ("Always use the 2.0 tool.", []),
+        ("Call resources/read to fetch the README, then call `prompts/get`.", []),
+        ("Always call `server/discover` and tools/list first.", []),
         ('The send_email tool returns the label "always".', []),
         ("The send_email tool always returns a message ID.", []),
         ("The send_email tool never failed in tests.", []),
@@ -1511,8 +1514,10 @@ def test_directions_to_listed_tools_prompts_and_resources_pass() -> None:
         tools=[tool(name="search", description=text)],
         prompts=[Prompt(name="daily_brief")],
         resources=[Resource(name="docs/readme_file", uri="file:///readme.md")],
+        session_protocol_version=SESSION,
     )
     assert CatalogCrossToolDirectivesRule().check(data).passed
+    assert not CatalogCrossToolDirectivesRule().check(replace(data, prompts=[], resources=[])).passed
 
 
 @pytest.mark.parametrize(
@@ -1531,6 +1536,7 @@ def test_directions_to_listed_tools_prompts_and_resources_pass() -> None:
                 tools=[tool(name="add")],
                 instructions="Before calling `git_push`, call add.",
                 incomplete_listings=frozenset({"tools"}),
+                session_protocol_version=SESSION,
             ),
             True,
         ),
@@ -1616,8 +1622,10 @@ def test_any_incomplete_listing_leaves_names_unjudged(listing: str) -> None:
     data = AuditData(
         tools=[tool(name="search", description="Always invoke daily_brief first.")],
         incomplete_listings=frozenset({listing}),
+        session_protocol_version=SESSION,
     )
     assert CatalogCrossToolDirectivesRule().check(data).passed
+    assert not CatalogCrossToolDirectivesRule().check(replace(data, incomplete_listings=frozenset())).passed
     generic = AuditData(tools=[tool(description=ANY_TOOL_DIRECTIVE)], incomplete_listings=frozenset({listing}))
     assert not CatalogCrossToolDirectivesRule().check(generic).passed
 
@@ -1669,3 +1677,17 @@ def test_any_incomplete_listing_leaves_names_unjudged(listing: str) -> None:
 )
 def test_names_are_judged_only_when_every_declared_catalog_was_listed(data: AuditData, passed: bool) -> None:
     assert CatalogCrossToolDirectivesRule().check(data).passed is passed
+
+
+def test_a_recovered_stateless_catalog_must_be_whole() -> None:
+    def data(page: dict[str, Any]) -> AuditData:
+        stateless = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {}, payload=page)
+        return AuditData(
+            tools=[tool(name="search", description="Always call fetch_page first.")],
+            session_protocol_version=SESSION,
+            catalog_versions={"tools": "2026-07-28"},
+            probes={PROBE_STATELESS_LIST: stateless},
+        )
+
+    assert CatalogCrossToolDirectivesRule().check(data({"tools": [], "nextCursor": "2"})).passed
+    assert not CatalogCrossToolDirectivesRule().check(data(WHOLE_PAGE)).passed
