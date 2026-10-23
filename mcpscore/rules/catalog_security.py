@@ -1497,12 +1497,16 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
     # "must-have" is an adjective; "whether … should …" is handled where cues are read.
-    r"\b(?P<modal>must|should)\b(?!-)|\b(?:do\s+not|don['\u2019]t|make\s+sure|ensure|be\s+sure)\b(?!-)"
-    # "always"/"never" direct only opening a clause ("Never use …", "…, then always call …"); after a subject
-    # or auxiliary ("the tool always returns", "has never been") they describe.
-    r"|(?:^|[,;:(\u2014\u201d\x22]|\b(?:and|or|then|but|so|please))[^\w\n]{0,4}(?:always|never)\b"
+    r"\b(?P<modal>must|should)\b(?!-)|\b(?:make\s+sure|ensure|be\s+sure)\b(?!-)"
+    # "always", "never", "do not" direct only opening a clause ("Never use …", "…, then always call …",
+    # "you do not need …"); after a subject or auxiliary ("the tool always returns", "messages that do not
+    # require …") they describe.
+    r"|(?:^|[,;:(\u2014\u201d\x22]|\b(?:and|or|then|but|so|please|you))[^\w\n]{0,4}"
+    r"(?:always|never|do\s+not|don['\u2019]t)\b(?!-)"
     r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
-    r"|^[^\w\n]*(?:call|use|invoke|send|prefer|always|never)\b"
+    # An opening verb, also after a polite or sequential word: "Call …", "Please call …", "Next, use …".
+    r"|^[^\w\n]*(?:(?:please|then|now|next|also|finally),?\s+)?"
+    r"(?:call|use|invoke|send|prefer|always|never|do\s+not|don['\u2019]t)\b(?!-)"
     # A condition directs when its main clause does not open with a subject: "When asked, call x" or "If so, BCC y",
     # not "When available, the tool returns …".
     r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if)\b[^,]{0,200},\s*"
@@ -1691,14 +1695,20 @@ class _IndirectClauses:
 
     @classmethod
     def of(cls, sentence: str, offset: int, quoted: "_QuotedSpans", code: "_QuotedSpans") -> "_IndirectClauses":
-        """Find the unquoted "whether"s and the clause breaks of *sentence*."""
+        """Find the "whether"s and clause breaks of *sentence* outside quotes and inline code."""
         whethers = [
             match.start()
             for match in _WHETHER_RE.finditer(sentence)
             if not quoted.contains(offset + match.start(), offset + match.end())
             and not code.contains(offset + match.start(), offset + match.end())
         ]
-        return cls(whethers, [match.start() for match in _CLAUSE_BREAK_RE.finditer(sentence)])
+        breaks = [
+            match.start()
+            for match in _CLAUSE_BREAK_RE.finditer(sentence)
+            if not quoted.contains(offset + match.start(), offset + match.start())
+            and not code.contains(offset + match.start(), offset + match.start())
+        ]
+        return cls(whethers, breaks)
 
     def covers(self, position: int) -> bool:
         """Whether *position* lies in a clause that an earlier "whether" opened."""

@@ -174,10 +174,11 @@ replay an injected instruction.
     child, or a raw-text end tag such as
     `</script/>` that a browser accepts and the parser reads as text.
   - `catalog_cross_tool_directives` reads each sentence that directs the
-    model: one with `must`, `do not`, `should`, `make sure` or `ensure`;
-    `always` or `never` opening a clause ("Never use …", "…, then always
+    model: one with `must`, `should`, `make sure` or `ensure`; `always`,
+    `never` or `do not` opening a clause ("Never use …", "…, then always
     call …", not "the tool always returns"); `first` or `instead` before a
-    verb such as `call`; one that opens with a verb such as `call` or `use`;
+    verb such as `call`; one that opens with a verb such as `call` or `use`,
+    also after `please`, `then` or `next`;
     or one that opens with `when`, `before`, `after` or `if` and whose main
     clause does not start with a subject ("When asked, call …", not "When
     available, the tool returns …"). Cues inside quotes or inline code do not
