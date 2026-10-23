@@ -32,7 +32,7 @@ mcpscore https://mcp.deepwiki.com/mcp
 ✅ Catalog text contains no credential-shaped strings.
 ✅ Catalog text contains no prompt-injection phrasing.
 ...
-Audit finished. Final score: 92/109
+Audit finished. Final score: 95/112
 ```
 
 Every rule line above is a Security & Auth rule. The `auth_*` rules skip because
@@ -50,10 +50,10 @@ code, configuration or the client can show.
 |---|---|---|---|
 | MCP01:2025 Token Mismanagement & Secret Exposure | Credentials in a provider's format anywhere in the catalog. Credentials, file paths and stack traces in error responses. Sensitive tool parameters mirrored into HTTP headers. | `catalog_no_embedded_secrets`, `skills_no_embedded_secrets`, `security_error_data_leak`, `tools_mcp_headers_not_sensitive` (Primitives) | Partial |
 | MCP02:2025 Privilege Escalation via Scope Creep | Whether a server behind a login advertises its OAuth scopes | `auth_scopes_advertised` | Minimal |
-| MCP03:2025 Tool Poisoning | Hidden characters and prompt-injection phrasing in every string the server publishes, skill files included | `catalog_hidden_unicode`, `catalog_prompt_injection_phrasing`, `skills_hidden_unicode`, `skills_prompt_injection_phrasing` | Partial |
+| MCP03:2025 Tool Poisoning | Hidden characters, prompt-injection phrasing and links that run script or carry data out, in every string the server publishes; skill files are checked for the first two | `catalog_hidden_unicode`, `catalog_prompt_injection_phrasing`, `catalog_exfiltration_links`, `skills_hidden_unicode`, `skills_prompt_injection_phrasing` | Partial |
 | MCP04:2025 Software Supply Chain Attacks & Dependency Tampering | For a [package audit](/package-audits): the package resolves, the version is published and not withdrawn, the source repository and license are declared | six `package_*` rules (package audit, scored on its own) | Metadata only |
 | MCP05:2025 Command Injection & Execution | Nothing | None | Not covered |
-| MCP06:2025 Prompt Injection via Contextual Payloads (its detail page: Intent Flow Subversion) | The catalog-text checks from MCP03, for text that reaches the model before any tool runs | `catalog_prompt_injection_phrasing`, `catalog_hidden_unicode`, `skills_prompt_injection_phrasing`, `skills_hidden_unicode` | Partial |
+| MCP06:2025 Prompt Injection via Contextual Payloads (its detail page: Intent Flow Subversion) | The catalog-text checks from MCP03, for text that reaches the model before any tool runs | `catalog_prompt_injection_phrasing`, `catalog_hidden_unicode`, `catalog_exfiltration_links`, `skills_prompt_injection_phrasing`, `skills_hidden_unicode` | Partial |
 | MCP07:2025 Insufficient Authentication & Authorization | HTTPS with a verified certificate. `Origin` validation against DNS rebinding. On a server behind a login: the `WWW-Authenticate` challenge, resource metadata, authorization-server metadata, HTTPS throughout, PKCE `S256`, a registration path for new clients, and a made-up bearer token refused | `security_tls_enabled`, `security_origin_validation`, ten `auth_*` rules | Partial |
 | MCP08:2025 Lack of Audit and Telemetry | Nothing | None | Not covered |
 | MCP09:2025 Shadow MCP Servers | Nothing | None | Not covered |
@@ -111,7 +111,7 @@ covers which kind of tool answers which question.
 
 ## How the catalog-text rules decide
 
-The three catalog rules read every string a server publishes: instructions,
+The four catalog rules read every string a server publishes: instructions,
 server info, names, titles, descriptions, schema strings, URIs, MIME types,
 `_meta` and icon URLs. A finding names where the string is and what class
 matched. It never repeats the string, so a report cannot leak a credential or
@@ -135,7 +135,45 @@ replay an injected instruction.
     tokens. A phrase in matched quotes, listed with a slash, or introduced as
     an attempt ("attempts to override the system prompt") names an attack
     rather than performing it, and passes. No model judges the text.
-  - All three skip a partial audit as `insufficient-data`, because a server
+  - `catalog_exfiltration_links` reads each string as Markdown, the way a
+    client renders it, including reference-style links and raw HTML. In HTML
+    it reads the attributes a browser fetches on render (`<img src>`,
+    `srcset`, `<video poster>`, `<object data>`, a stylesheet, icon or
+    preload `<link href>`, SVG
+    `<image href>`, a refresh `<meta>`, a `<script src>` that runs (a data
+    block such as JSON-LD does not), `url()` and the strings `@import`,
+    `image-set()` and custom properties take, in a `style` attribute on any element or in a
+    `<style>` block, `url()` in an SVG
+    presentation attribute such as `fill` or `cursor`, and the values an SVG
+    `<set>` or `<animate>` gives an `href` or such an attribute) or follows on a click (`<a href>`,
+    `<form action>`); the same attribute on an element that ignores it is
+    inert. A `dns-prefetch` or `preconnect` `<link>` sends only its
+    hostname, so only the hostname is checked. It
+    flags `javascript:` and `vbscript:` links, `data:` links other than a
+    raster image, and a link or image URL with a slot for the model to fill,
+    such as `{conversation}`, `{{secret}}`, `${TOKEN}` or `<data>`. An image
+    loads without a click, so a slot anywhere in its URL counts; a link counts
+    only with the slot in its query, because a path such as `/users/{id}` is
+    usually an API route. A form action's query counts whatever the
+    form's method.
+    Code spans and image alt text are text, not links,
+    and pass, and so does the content of a `<template>` (unless it declares a shadow root), `<script>` and
+    `<textarea>`, and of a `<noscript>` except in an iframe `srcdoc` sandboxed without `allow-scripts`, where
+    it renders. A relative URL is resolved against the document's
+    `<base href>`. Markup that cannot be checked fails as
+    `uncheckable_markup`: a string with markup over 64 KiB (real catalog
+    strings stay far below), Markdown whose reference links, or a long
+    `<base href>`, would repeat a destination past four times that size, iframe `srcdoc` documents nested more than
+    three deep, and constructs that browsers and parsers read differently: a
+    `<base href>` whose host is not a plain ASCII domain, IPv4 or IPv6 address, a CDATA section in HTML, a comment closed early by `<!-->` or `--!>`, a
+    `<frameset>`, a raw-text tag, `<base>` or SVG/MathML inside a `<select>`, an end tag that would close a `<select>`, raw-text content such as `<script>` or `<xmp>`
+    inside SVG or MathML, SVG or MathML
+    inside a `<template>`, `</form>`, `</body>` or `</html>` with elements still open inside, an end tag that
+    closes unclosed elements across the edge of SVG or MathML content, out of a shadow-root `<template>`, past an open block such as `<div>` for a custom element, or out of a `<video>`, `<audio>` or
+    `<picture>`, a `<source>` inside a media element but not its direct
+    child, or a raw-text end tag such as
+    `</script/>` that a browser accepts and the parser reads as text.
+  - All four skip a partial audit as `insufficient-data`, because a server
     behind a login shows no catalog without credentials.
   - `skills_hidden_unicode`, `skills_no_embedded_secrets` and
     `skills_prompt_injection_phrasing` run the same checks on a server's
@@ -164,7 +202,7 @@ mcpscore https://mcp.deepwiki.com/mcp --json --sarif mcpscore.sarif
 
 ```text
 ...
-Audit finished. Final score: 92/109
+Audit finished. Final score: 95/112
 SARIF written to mcpscore.sarif (13 findings)
 ```
 

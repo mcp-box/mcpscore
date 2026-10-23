@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Any, ClassVar
 
@@ -208,6 +209,26 @@ class MalformedRequestHandlingRule(BaseRule):
         )
 
 
+def _json_strings(body: str) -> list[str]:
+    """Return every string key and value of a JSON body, or nothing when the body is not JSON."""
+    try:
+        document = json.loads(body)
+    except (ValueError, RecursionError):
+        return []
+    strings: list[str] = []
+    pending = [document]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            strings.append(value)
+        elif isinstance(value, dict):
+            strings.extend(str(key) for key in value)
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return strings
+
+
 @register_rule
 class ErrorDataLeakRule(BaseRule):
     """Check if error responses leak sensitive data.
@@ -260,6 +281,28 @@ class ErrorDataLeakRule(BaseRule):
         (r"C:\\Users\\", "file path"),
         (r"Traceback \(most recent call last\)", "stack trace"),
         (r"at \w+\.\w+ \([^)]+:\d+:\d+\)", "stack trace"),  # JavaScript stack trace
+        # Frames and crash banners of other runtimes. Each needs a source location or a
+        # runtime-specific banner, so prose cannot match; quantifiers are bounded to stay linear.
+        (r'File "[^"\n]{1,300}", line \d+', "stack trace"),  # Python frame or syntax-error location
+        (  # Node frame with an absolute path
+            (
+                r"(?m)^[ \t]*at[ \t]+(?:[^\n]{0,300}[ \t])?"
+                r"\(?(?:/|[A-Z]:[\\/]|node:|file://)[^\r\n]{0,300}:\d+:\d+\)?[ \t]*\r?$"
+            ),
+            "stack trace",
+        ),
+        (r"\bat\s+[\w.$/@<>-]{1,300}\([\w$]{1,100}\.(?:java|kt|scala):\d+\)", "stack trace"),  # JVM frame
+        (r'\bException in thread "[^"\n]{1,100}"', "stack trace"),  # JVM uncaught exception
+        (r"\bgoroutine\s+\d+\s+\[", "stack trace"),  # Go panic goroutine dump
+        (r"(?<![\w./-])[\w./-]{1,200}\.rb:\d+:in\s+['`]", "stack trace"),  # Ruby frame
+        (r"\bat\s+[\w.<>+`$\[\],]{1,300}\([^)\n]{0,300}\)\s+in\s+[^\r\n]{1,300}?:line\s+\d+", "stack trace"),  # .NET
+        (r"\bthread\s+'[^'\n]{1,100}'(?:\s+\(\d{1,20}\))?\s+panicked\s+at\b", "stack trace"),  # Rust panic
+        (  # PHP fatal banner or frame
+            r"\bPHP\s+(?:Fatal|Parse)\s+error:|\bFatal error:\s+Uncaught\b|#\d+\s+\S{1,300}\.php\(\d+\):",
+            "stack trace",
+        ),
+        (r"\bterminate called after throwing an instance of\b", "stack trace"),  # C++ uncaught exception
+        (r"\*\*\s+\((?:RuntimeError|ArgumentError|ErlangError|exit|throw)\)", "stack trace"),  # Elixir crash
     ]
 
     # The realistic alphabet of a leaked credential value. Covers RFC 6750
@@ -360,10 +403,17 @@ class ErrorDataLeakRule(BaseRule):
         # echoing the server's leaked secret back into our own output would
         # re-leak it. The count lets the server owner gauge severity.
         leaks_found = []
+        # A JSON body escapes newlines and quotes inside strings, which hides line-anchored frames; each decoded
+        # string value is scanned on its own (joined, separate fields could form a frame), and the larger total
+        # of the raw and decoded counts is reported.
+        decoded = _json_strings(error_response)
         for pattern, leak_type in self.STRUCTURAL_PATTERNS:
-            matches = re.findall(pattern, error_response, re.IGNORECASE)
-            if matches:
-                leaks_found.append({"type": leak_type, "count": len(matches)})
+            count = max(
+                len(re.findall(pattern, error_response, re.IGNORECASE)),
+                sum(len(re.findall(pattern, value, re.IGNORECASE)) for value in decoded),
+            )
+            if count:
+                leaks_found.append({"type": leak_type, "count": count})
         for pattern, leak_type in self.CREDENTIAL_PATTERNS:
             # A credential keyword is a leak only if its value is a real secret,
             # not a placeholder ("Bearer token required", "password=redacted").

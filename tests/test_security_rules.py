@@ -1,6 +1,8 @@
 """Unit tests for security audit rules."""
 
+import json
 import re
+import time
 
 import pytest
 
@@ -287,6 +289,111 @@ class TestErrorDataLeakRule:
 
         assert result.passed is False
         assert "stack trace" in result.message.lower()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '  File "/srv/app/handlers.py", line 88, in dispatch\n    payload = json.loads(raw)',
+            '  File "/srv/app/handlers.py", line 88\n    def broken(:\n                ^\nSyntaxError: invalid syntax',
+            "SyntaxError: Unexpected token\n    at parse (/srv/app/node_modules/body/index.js:14:21)",
+            "Error\n    at C:\\srv\\app\\server.js:12:5",
+            "Error\r\n    at C:\\srv\\app\\server.js:12:5\r\n",
+            "java.lang.IllegalStateException: bad\n\tat com.acme.mcp.Handler.parse(Handler.java:42)",
+            "at com.acme.mcp.Router.route(Router.kt:17)",
+            "\tat java.base/java.lang.Thread.run(Thread.java:1583)",
+            "\tat com.acme.Handler.<init>(Handler.java:42)",
+            "\tat com.acme.Config.<clinit>(Config.java:7)",
+            "at Program.<Main>$(String[] args) in C:\\src\\Program.cs:line 5",
+            "at Acme.Mcp.Handler.Parse(String body) in C:\\src\\My App\\Handler.cs:line 31",
+            "Error\n    at C:\\Program Files\\Acme\\server.js:12:5",
+            "Error\n    at C:\\Program Files (x86)\\Acme\\server.js:12:5",
+            "Error\n    at handle (C:\\Program Files (x86)\\Acme\\server.js:12:5)",
+            "thread 'main' (1234) panicked at src/main.rs:10:5",
+            "\tat app//com.acme.Main.main(Main.java:9)",
+            "\tat com.acme.core@2.1.0/com.acme.Server.start(Server.java:44)",
+            'Exception in thread "main" java.lang.NullPointerException',
+            "panic: runtime error: index out of range\n\ngoroutine 1 [running]:\nmain.main()",
+            "app/server.rb:12:in `parse': unexpected token (JSON::ParserError)",
+            "at Acme.Mcp.Handler.Parse(String body) in C:\\src\\Handler.cs:line 31",
+            "at Acme.Mcp.Handler.Parse[T](String body) in C:\\src\\Handler.cs:line 31",
+            "at Acme.Mcp.Cache`2.Get[TKey,TValue](TKey key) in /src/Cache.cs:line 8",
+            "thread 'tokio-runtime-worker' panicked at src/main.rs:10:5",
+            "PHP Fatal error:  Uncaught JsonException: Syntax error",
+            "Fatal error: Uncaught TypeError: json_decode()",
+            "#0 /var/www/app/src/Server.php(42): App\\Server->parse()",
+            "terminate called after throwing an instance of 'nlohmann::json::parse_error'",
+            "** (ArgumentError) argument error\n    (stdlib) :erlang.binary_to_term",
+        ],
+    )
+    def test_stack_traces_of_other_runtimes_fail(self, rule, body):
+        """Frames and crash banners from each common server runtime count as a stack trace."""
+        result = rule.check(_leak_audit(body))
+
+        assert result.passed is False, body
+        assert "stack trace" in result.message.lower()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '{"error": {"code": -32700, "message": "Parse error at line 1, column 5"}}',
+            "Meet at 10:30:45 in the lobby",
+            "The thread panicked earlier; retry the request",
+            "Invalid request: the field 'at' must be a string",
+            "See README.md for the request format",
+            "Fatal error: request body is not JSON",
+        ],
+    )
+    def test_prose_near_trace_vocabulary_passes(self, rule, body):
+        """Error prose that shares words with traces carries no source location and passes."""
+        assert rule.check(_leak_audit(body)).passed is True, body
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"stack": "Error: bad\n    at /srv/app/server.js:12:5"},
+            '  File "/srv/app/handlers.py", line 88, in dispatch',
+            ["ok", {"trace": "thread 'main' panicked at src/main.rs:10:5"}],
+        ],
+    )
+    def test_traces_inside_a_json_error_body_fail(self, rule, data):
+        """A JSON body escapes newlines and quotes, so its decoded strings are scanned as well."""
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error", "data": data}}
+        )
+        result = rule.check(_leak_audit(body))
+
+        assert result.passed is False
+        assert result.details["leaks"] == [{"type": "stack trace", "count": 1}]
+
+    @pytest.mark.parametrize("data", [["[", "1", "goroutine"], ["goroutine", "1", "["]])
+    def test_separate_json_fields_never_join_into_a_trace(self, rule, data):
+        """Each decoded string is scanned on its own, so fields that form a frame only when joined pass."""
+        body = json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "x", "data": data}})
+
+        assert rule.check(_leak_audit(body)).passed is True
+
+    @pytest.mark.parametrize(
+        "body",
+        ["{not json", "[" * 100_000 + "]" * 100_000, '{"error": "Parse error"}'],
+        ids=["not-json", "too-deep", "clean-json"],
+    )
+    def test_unparsable_or_clean_bodies_pass(self, rule, body):
+        """A body that is not JSON, or nests too deep to decode, is scanned raw and does not crash the rule."""
+        assert rule.check(_leak_audit(body)).passed is True
+
+    def test_newline_only_body_scans_in_linear_time(self, rule):
+        """A body of blank lines must not make the line-anchored Node pattern retry from every line."""
+        started = time.perf_counter()
+        assert rule.check(_leak_audit("\n" * 65_536)).passed is True
+        assert time.perf_counter() - started < 2
+
+    def test_trace_patterns_stay_fast_on_adversarial_bodies(self, rule):
+        """The added patterns are bounded, so a large hostile body is scanned quickly."""
+        bodies = ["at " + "a" * 200_000, " at x (" + "/a" * 100_000, 'File "' + "x" * 200_000, "#1 " + "a" * 200_000]
+        started = time.perf_counter()
+        for body in bodies:
+            rule.check(_leak_audit(body))
+        assert time.perf_counter() - started < 20
 
     def test_absent_probe_is_insufficient_data(self, rule):
         """No malformed probe at all — nothing to scan."""

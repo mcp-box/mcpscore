@@ -11,10 +11,17 @@ from abc import abstractmethod
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
+from html.parser import HTMLParser
+import ipaddress
 import re
 from typing import Any, ClassVar
+from urllib.parse import unquote, urljoin, urlsplit
 
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from mcp_types import Icon
+
+from mcpscore.html_text import bound_charrefs
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
 from .catalog_diagnostics import catalog_result, field_issue, pointer_token
@@ -143,7 +150,12 @@ def _publishable_path(path: str) -> tuple[str, bool]:
     segments = path.split("/")
     for position, segment in enumerate(segments[1:], start=1):
         text = segment.replace("~1", "/").replace("~0", "~")
-        if hidden_unicode_classes(text) or secret_classes(text) or injection_classes(text):
+        if (
+            hidden_unicode_classes(text)
+            or secret_classes(text)
+            or injection_classes(text)
+            or exfiltration_link_classes(text)
+        ):
             return "/".join(segments[:position]), True
     return path, False
 
@@ -527,3 +539,945 @@ class CatalogPromptInjectionPhrasingRule(CatalogSecurityRule):
     def matches(self, text: str) -> list[str]:
         """Return the injection-phrasing classes found in *text*."""
         return injection_classes(text)
+
+
+class _AllLinksMarkdown(MarkdownIt):
+    """CommonMark parser that keeps every link.
+
+    The default validator drops javascript:, vbscript:, file: and most data:
+    links before they become tokens; this rule needs to see exactly those.
+    """
+
+    def validateLink(self, url: str) -> bool:  # noqa: N802 - overrides markdown-it's method name
+        """Accept every destination so the rule can classify it."""
+        return True
+
+    def normalizeLink(self, url: str) -> str:  # noqa: N802 - overrides markdown-it's method name
+        """Keep the destination as written: percent-encoding a tab or space would hide a scheme a client keeps."""
+        return url
+
+
+_LINK_MARKDOWN = _AllLinksMarkdown("commonmark")
+# Only text that can hold a Markdown link, image, autolink or HTML tag is parsed.
+_LINK_HINTS = ("](", "]:", "<")
+_SCRIPT_SCHEMES = frozenset({"javascript", "vbscript"})
+# The open-element count key for declarative shadow roots, the only HTML templates kept on the open stack.
+_SHADOW_ROOT = "#shadow-root"
+# Raster images that cannot carry script; SVG can, so it is not here.
+_SAFE_DATA_IMAGE_RE = re.compile(
+    r"^data:image/(?:a?png|jpe?g|gif|webp|bmp|avif|x-icon|vnd\.microsoft\.icon)[;,]", re.IGNORECASE
+)
+# A slot the model is asked to fill: {x}, {{x}}, ${x}, <x>, $NAME.
+_PLACEHOLDER_URL_RE = re.compile(
+    r"\{\{?\s*[A-Za-z_][\w.\- ]{0,63}\}\}?|\$\{[^{}]{1,64}\}|<[A-Za-z_][\w.\- ]{0,63}>|\$[A-Z_][A-Z0-9_]{0,63}\b"
+)
+# The element and attribute pairs a browser fetches on render (HTML and SVG); an attribute on any
+# other element is inert. srcset-style lists are split into candidates.
+_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
+    "img": frozenset({"src", "srcset"}),
+    "video": frozenset({"src", "poster"}),
+    "audio": frozenset({"src"}),
+    "track": frozenset({"src"}),
+    "iframe": frozenset({"src"}),
+    "frame": frozenset({"src"}),
+    "embed": frozenset({"src"}),
+    "script": frozenset({"src"}),
+    "object": frozenset({"data"}),
+    "body": frozenset({"background"}),
+    "table": frozenset({"background"}),
+    "td": frozenset({"background"}),
+    "th": frozenset({"background"}),
+    "image": frozenset({"src", "srcset"}),  # legacy HTML <image>, which browsers parse as <img>
+}
+# Inside <svg>, these elements load from href or xlink:href instead.
+_SVG_LOADING_ATTRIBUTES: dict[str, frozenset[str]] = {
+    tag: frozenset({"href", "xlink:href"}) for tag in ("image", "feimage", "use", "script")
+}
+# SVG presentation attributes whose value can name a resource with url().
+_SVG_URL_PROPERTIES = frozenset(
+    {"clip-path", "cursor", "fill", "filter", "marker-end", "marker-mid", "marker-start", "mask", "stroke"}
+)
+# SVG animation elements, which set an attribute to their from, to, by and values over time.
+_SVG_ANIMATIONS = frozenset({"animate", "set"})
+# HTML's special elements (HTML §13.2.4.2): an end tag the body insertion mode does not list, such as a
+# custom element's, is ignored when one of them is open above its match.
+_SPECIAL_TAG_NAMES = (
+    "address applet area article aside base basefont bgsound blockquote body br button caption center col colgroup"
+    " dd details dir div dl dt embed fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head"
+    " header hgroup hr html iframe img input keygen li link listing main marquee menu meta nav noembed noframes"
+    " noscript object ol p param plaintext pre script search section select source style summary table tbody td"
+    " template textarea tfoot th thead title tr track ul wbr xmp"
+)
+_SPECIAL_TAGS = frozenset(_SPECIAL_TAG_NAMES.split())
+# End tags the body insertion mode handles by name; every other end tag takes the "any other end tag" steps.
+_LISTED_END_TAG_NAMES = (
+    "a address applet article aside b big blockquote body br button center code dd details dialog dir div dl dt"
+    " em fieldset figcaption figure font footer form h1 h2 h3 h4 h5 h6 header hgroup html i li listing main"
+    " marquee menu nav nobr object ol p pre s search section small strike strong summary template tt u ul"
+)
+_LISTED_END_TAGS = frozenset(_LISTED_END_TAG_NAMES.split())
+# Elements that bound an end tag's scope (HTML §13.2.4.2): a browser ignores an end tag for an element
+# outside them.
+_SCOPE_BOUNDARIES = frozenset({"applet", "caption", "html", "marquee", "object", "table", "td", "template", "th"})
+# Inside <svg>, only an anchor follows a link.
+_SVG_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {"a": frozenset({"href", "xlink:href", "ping"})}
+# HTML parsing in foreign content (HTML §13.2.6.5): children of these SVG and MathML integration points
+# are HTML again, and these HTML start tags inside SVG or MathML end the foreign content.
+_SVG_INTEGRATION_POINTS = frozenset({"foreignobject", "desc", "title"})
+_MATHML_INTEGRATION_POINTS = frozenset({"mi", "mo", "mn", "ms", "mtext"})
+_FOREIGN_BREAKOUT_TAGS = frozenset(
+    [
+        "b",
+        "big",
+        "blockquote",
+        "body",
+        "br",
+        "center",
+        "code",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "embed",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "listing",
+        "menu",
+        "meta",
+        "nobr",
+        "ol",
+        "p",
+        "pre",
+        "ruby",
+        "s",
+        "small",
+        "span",
+        "strong",
+        "strike",
+        "sub",
+        "sup",
+        "table",
+        "tt",
+        "u",
+        "ul",
+        "var",
+    ]
+)
+# HTML elements without an end tag, never left open.
+_VOID_TAGS = frozenset(
+    {"area", "base", "br", "col", "embed", "frame", "hr", "image", "img", "input", "link", "meta", "param"}
+    | {"source", "track", "wbr"}
+)
+# The pairs that act on a click or a form submission, judged like a link.
+_ACTION_ATTRIBUTES: dict[str, frozenset[str]] = {
+    "a": frozenset({"href", "ping"}),
+    "area": frozenset({"href", "ping"}),
+    "form": frozenset({"action"}),
+    "button": frozenset({"formaction"}),
+    "input": frozenset({"formaction"}),
+}
+# <link> relations that fetch their href on render; any other relation is metadata.
+_FETCHING_LINK_RELATIONS = frozenset(
+    {
+        "stylesheet",
+        "icon",
+        "apple-touch-icon",
+        "mask-icon",
+        "manifest",
+        "preload",
+        "prefetch",
+        "modulepreload",
+        "prerender",
+    }
+)
+_LIST_ATTRIBUTES = frozenset({"srcset", "imagesrcset", "ping"})
+# <link> relations that resolve their href's hostname on render, sending only the hostname.
+_CONNECTION_HINT_RELATIONS = frozenset({"dns-prefetch", "preconnect"})
+_HTML_SPACE = " \t\n\f\r"
+_URL_TRIMMED = "".join(map(chr, range(0x21)))  # C0 controls and space
+# A host this rule reads the way a browser does: ASCII domain labels, or a dotted-decimal IPv4 address.
+_PLAIN_HOST_RE = re.compile(r"(?:[a-z0-9_-]+\.)*[a-z0-9_-]+\.?")
+_NUMERIC_LABEL_RE = re.compile(r"[0-9]+|0x[0-9a-f]*")
+_DOTTED_DECIMAL_RE = re.compile(
+    r"(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.?"
+)
+# The JavaScript MIME type essences (MIME Sniffing §4.6), which make a script element a classic script.
+_JAVASCRIPT_TYPES = frozenset(
+    {"application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript"}
+    | {"text/ecmascript", "text/javascript", "text/jscript", "text/livescript", "text/x-ecmascript"}
+    | {"text/x-javascript"}
+    | {f"text/javascript1.{minor}" for minor in range(6)}
+)
+"""ASCII whitespace, the only whitespace HTML attribute microsyntaxes split on."""
+# <meta http-equiv="refresh" content="0; url=..."> navigates on render; without a leading delay it is ignored.
+# A quoted destination ends at the matching quote, an unquoted one at the end of the content.
+_REFRESH_URL_RE = re.compile(
+    r"[ \t\n\f\r]*[\d.]+(?![^;, \t\n\f\r])[ \t\n\f\r]*[;,]?[ \t\n\f\r]*"
+    r"(?:url[ \t\n\f\r]*=[ \t\n\f\r]*)?(?:'([^']*)|\"([^\"]*)|([\s\S]*))",
+    re.IGNORECASE,
+)
+# The authority of an http(s) or network-path URL, after any userinfo.
+_AUTHORITY_RE = re.compile(r"(?i)^(?:https?:)?//(?:[^/?#]*@)?([^/?#]*)")
+# A port after the hostname: digits, or one slot standing for them.
+_PORT_RE = re.compile(r":(?:\d*|\{\{?[^{}:]*\}\}?|\$\{[^{}:]*\}|<[^<>:]*>|\$[A-Z_][A-Z0-9_]*)$")
+# A CSS escape's hex digits, and the whitespace CSS tokenizing knows after newlines are normalized.
+_CSS_HEX_RE = re.compile(r"[0-9a-fA-F]{1,6}")
+_CSS_SPACE = " \t\n"
+# CSS functions that take a string as an image URL.
+_CSS_IMAGE_FUNCTIONS = frozenset({"image-set", "-webkit-image-set"})
+# Content of these elements is never rendered as markup (script and style are raw text to HTMLParser).
+_INERT_TAGS = frozenset({"template", "textarea", "title"})
+# HTML elements whose content a browser with scripting reads as raw text up to their own end tag, whatever
+# the Python version's tokenizer does; plaintext content runs to the end of the document.
+_RAW_TEXT_TAGS = frozenset({"iframe", "noembed", "noframes", "noscript", "script", "style", "xmp"})
+# Raw-text and inert start tags that HTML's "in select" insertion mode ignores (script is still processed).
+_SELECT_IGNORED_TAGS = (_RAW_TEXT_TAGS - {"script"}) | {"base", "math", "plaintext", "svg", "title"}
+# Elements whose child list (picture, audio, video) decides what a <source> loads.
+_SOURCE_PARENTS = frozenset({"picture", "audio", "video"})
+MAX_LINK_MARKDOWN_BYTES = 64 * 1024
+"""Longer strings holding markup are not parsed and fail as uncheckable; real catalog strings stay far below."""
+MAX_SRCDOC_DEPTH = 3
+"""Iframe srcdoc documents nested deeper are not followed and fail as uncheckable."""
+MAX_RENDERED_CHARS = 4 * MAX_LINK_MARKDOWN_BYTES
+"""Markdown rendering to more text and URLs than this (reference links repeat a destination) is uncheckable."""
+
+
+def _srcset_urls(value: str) -> Iterator[str]:
+    """Yield each candidate URL of a ``srcset``; commas inside a URL belong to it (HTML §srcset parsing)."""
+    position, size = 0, len(value)
+    while position < size:
+        while position < size and (value[position] in _HTML_SPACE or value[position] == ","):
+            position += 1
+        start = position
+        while position < size and value[position] not in _HTML_SPACE:
+            position += 1
+        url = value[start:position]
+        if url.endswith(","):
+            url = url.rstrip(",")
+        else:
+            depth = 0
+            while position < size and (value[position] != "," or depth):
+                depth += {"(": 1, ")": -1 if depth else 0}.get(value[position], 0)
+                position += 1
+        if url:
+            yield url
+
+
+def _css_urls(css: str, *, strings: bool = True) -> list[str]:
+    """Return what a stylesheet may load: url() tokens and, unless *strings* is false, resource strings.
+
+    The resource strings are those @import and image-set() take.
+    Tokenizes as CSS Syntax §4 does, so comments, strings and url() boundaries are found before escapes are
+    decoded inside each token. A string anywhere else, such as a ``content`` value, is only displayed.
+    """
+    scanner = _CssScanner(re.sub(r"\r\n?|\f", "\n", css).replace("\0", "\ufffd"), strings)
+    scanner.scan()
+    return [url for url in dict.fromkeys(scanner.urls) if url]
+
+
+class _CssScanner:
+    """One pass over a stylesheet, tracking the open functions and whether an @import prelude is open."""
+
+    def __init__(self, css: str, strings: bool) -> None:
+        super().__init__()
+        self.css, self.strings = css, strings
+        self.urls: list[str] = []
+        self.functions: list[str] = []  # open functions and parentheses, innermost last
+        self.loading_functions = 0  # how many open functions take a string as an image
+        self.importing = False
+        self.custom = False  # inside a custom property's value, which var() can carry into image-set()
+        self.position = 0
+
+    def scan(self) -> None:
+        css = self.css
+        while self.position < len(css):
+            char = css[self.position]
+            if css.startswith("/*", self.position):
+                end = css.find("*/", self.position + 2)
+                self.position = len(css) if end < 0 else end + 2
+            elif char in "\"'":
+                value, self.position = _css_string(css, self.position + 1, char)
+                if self.strings and (self.importing or self.loading_functions or self.custom):
+                    self.urls.append(value)
+            elif _css_name_char(char) or _css_valid_escape(css, self.position):
+                name, self.position = _css_name(css, self.position)
+                if css.startswith("(", self.position):
+                    self._function(name.lower())
+                elif name.startswith("--") and css.startswith(":", _css_skip_blank(css, self.position)):
+                    self.custom = True
+            else:
+                self._delimiter(char)
+
+    def _function(self, name: str) -> None:
+        start = self.position + 1
+        while start < len(self.css) and self.css[start] in _CSS_SPACE:
+            start += 1
+        if name == "url" and not self.css.startswith(('"', "'"), start):
+            value, self.position = _css_url(self.css, start)
+            self.urls.append(value)
+            return
+        if name == "url":  # url("...") is a function taking a string, read like any other
+            value, self.position = _css_string(self.css, start + 1, self.css[start])
+            self.urls.append(value)
+        else:
+            self.position += 1
+        self.functions.append(name)
+        self.loading_functions += name in _CSS_IMAGE_FUNCTIONS
+
+    def _delimiter(self, char: str) -> None:
+        self.position += 1
+        if char == "@":
+            name, self.position = _css_name(self.css, self.position)
+            self.importing = name.lower() == "import"
+        elif char in ";{}":
+            self.importing = self.custom = False
+        elif char == "(":
+            self.functions.append("")
+        elif char == ")" and self.functions:
+            self.loading_functions -= self.functions.pop() in _CSS_IMAGE_FUNCTIONS
+
+
+def _css_name_char(char: str) -> bool:
+    return (char.isascii() and (char.isalnum() or char in "-_")) or not char.isascii()
+
+
+def _css_valid_escape(css: str, position: int) -> bool:
+    return css.startswith("\\", position) and position + 1 < len(css) and css[position + 1] != "\n"
+
+
+def _css_escape(css: str, position: int) -> tuple[str, int]:
+    """Decode the escape whose backslash is at *position*; return the character and the position after it."""
+    digits = _CSS_HEX_RE.match(css, position + 1)
+    if digits is None:
+        return css[position + 1], position + 2
+    end = digits.end() + (digits.end() < len(css) and css[digits.end()] in _CSS_SPACE)
+    code = int(digits.group(), 16)
+    return (chr(code) if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF else "\ufffd"), end
+
+
+def _css_name(css: str, position: int) -> tuple[str, int]:
+    name: list[str] = []
+    while position < len(css):
+        if _css_name_char(css[position]):
+            name.append(css[position])
+            position += 1
+        elif _css_valid_escape(css, position):
+            char, position = _css_escape(css, position)
+            name.append(char)
+        else:
+            break
+    return "".join(name), position
+
+
+def _css_string(css: str, position: int, quote: str) -> tuple[str, int]:
+    value: list[str] = []
+    while position < len(css) and css[position] not in (quote, "\n"):
+        if css[position] != "\\":
+            value.append(css[position])
+            position += 1
+        elif position + 1 >= len(css) or css[position + 1] == "\n":
+            position += 2  # an escaped newline continues the string
+        else:
+            char, position = _css_escape(css, position)
+            value.append(char)
+    return "".join(value), position + 1
+
+
+def _css_skip_blank(css: str, position: int) -> int:
+    """Return the position past any whitespace and comments, which CSS allows between a property name and colon."""
+    while position < len(css):
+        if css[position] in _CSS_SPACE:
+            position += 1
+        elif css.startswith("/*", position):
+            end = css.find("*/", position + 2)
+            position = len(css) if end < 0 else end + 2
+        else:
+            break
+    return position
+
+
+def _css_url(css: str, position: int) -> tuple[str, int]:
+    """Read an unquoted url() token's value up to ")"; a malformed one is read on, the stricter side."""
+    value: list[str] = []
+    while position < len(css) and css[position] != ")":
+        if _css_valid_escape(css, position):
+            char, position = _css_escape(css, position)
+            value.append(char)
+        else:
+            if css[position] not in _CSS_SPACE:
+                value.append(css[position])
+            position += 1
+    return "".join(value), position + 1
+
+
+def _runs_as_script(values: dict[str, str], *, html: bool = True) -> bool:
+    """Whether a script element runs, and so fetches its source: a classic or module script, not a data block.
+
+    Only an HTML script has a language attribute.
+    """
+    kind = values.get("type")
+    if kind is None:  # language is consulted only when type is absent; an empty type is JavaScript
+        language = values.get("language", "") if html else ""
+        kind = f"text/{language}" if language else ""
+    kind = kind.strip(_HTML_SPACE).lower()
+    return kind in ("", "module") or kind in _JAVASCRIPT_TYPES  # an exact essence match: parameters make a data block
+
+
+def _tokens(value: str) -> set[str]:
+    """Return an attribute's keywords, split on ASCII whitespace and matched case-insensitively."""
+    return set(re.split(f"[{_HTML_SPACE}]+", value.lower()))
+
+
+def _relations(values: dict[str, str]) -> set[str]:
+    """Return a link's relations, its rel keywords."""
+    return _tokens(values.get("rel", ""))
+
+
+class _HtmlUrls(HTMLParser):
+    """Collect, for one HTML document, the URLs a browser fetches on render or follows on a click."""
+
+    def __init__(self, *, scripting: bool = True) -> None:
+        super().__init__(convert_charrefs=True)
+        self.scripting = scripting
+        # With scripting disabled, as in a sandboxed frame without allow-scripts, noscript content is markup.
+        self.raw_text_tags = _RAW_TEXT_TAGS if scripting else _RAW_TEXT_TAGS - {"noscript"}
+        self.urls: list[tuple[str, bool]] = []
+        self.srcdocs: list[tuple[str, bool]] = []  # each srcdoc and whether scripting is enabled in it
+        self.hosts: list[str] = []  # hrefs whose hostname alone is resolved
+        self.stylesheet: list[str] = []  # the text of the open HTML style block
+        self.uncheckable = False  # markup this parser reads differently from a browser
+        self.closing = False  # the current start tag closes itself with "/>"
+        self.base: str | None = None
+        self.inert: list[str] = []  # open elements whose content is never rendered
+        self.open: list[tuple[str, str, str]] = []  # open elements: tag, namespace, namespace of children
+        self.open_tags: Counter[str] = Counter()  # how many of each tag are open, so end tags never scan the stack
+        self.namespace = "html"  # of the current element: "html", "svg" or "math"
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.inert:
+            self._start_in_inert(tag)
+            return
+        values: dict[str, str] = {}
+        for name, value in attrs:
+            values.setdefault(name, value or "")  # a browser keeps the first of duplicate attributes, even empty
+        in_html = (self.open[-1][2] if self.open else "html") == "html"
+        if in_html and self.open_tags["select"] and tag in _SELECT_IGNORED_TAGS:
+            self.uncheckable = True  # inside a select a browser ignores this start tag; the parser does not
+        self._enter(tag, values)
+        if "style" in values:  # inline CSS loads its images on render, in every namespace and on inert elements
+            self.urls.extend((url, True) for url in _css_urls(values["style"]))
+        if tag == "frameset" and self.namespace == "html":
+            self.uncheckable = True  # frameset parsing ignores most tags, which this parser does not model
+        shadow_root = tag == "template" and values.get("shadowrootmode", "").lower() in ("open", "closed")
+        if (tag in _INERT_TAGS or tag == "plaintext") and self.namespace == "html" and not shadow_root:
+            self._open_inert(tag)  # a declarative shadow root renders its content, so it is read as markup
+            return
+        if not (tag in _VOID_TAGS and self.namespace == "html"):
+            integration = _SVG_INTEGRATION_POINTS if self.namespace == "svg" else _MATHML_INTEGRATION_POINTS
+            html_annotation = (
+                self.namespace == "math"
+                and tag == "annotation-xml"
+                and values.get("encoding", "").lower() in ("text/html", "application/xhtml+xml")
+            )
+            children = "html" if tag in integration or html_annotation else self.namespace
+            self.open.append((tag, self.namespace, children))
+            self.open_tags[tag] += 1
+            self.open_tags[_SHADOW_ROOT] += (tag, self.namespace) == ("template", "html")
+        if self.namespace == "math":
+            return  # MathML elements fetch and follow nothing
+        if self.namespace == "svg":
+            loading, acting = self._svg_attributes(tag, values)
+        else:
+            self._html_document_effects(tag, values)
+            loading = self._loading_attributes(tag, values)
+            acting = _ACTION_ATTRIBUTES.get(tag, frozenset()) if self._can_act(tag, values) else frozenset()
+        self._collect(values, loading, acting)
+        if self.namespace == "html" and tag in self.raw_text_tags:
+            self.set_cdata_mode(tag)  # after the element's own attributes, such as an iframe's src
+
+    def _start_in_inert(self, tag: str) -> None:
+        """Handle a start tag in inert content: only template content is markup, where some elements still open."""
+        if self.inert[-1] != "template":
+            return  # textarea and title content is raw text, where no tag opens
+        if tag in _INERT_TAGS or tag == "plaintext":
+            self._open_inert(tag)
+        elif tag in self.raw_text_tags:
+            self.set_cdata_mode(tag)
+        elif tag in ("svg", "math", "select"):
+            # Template content keeps namespaces and insertion modes this parser does not track.
+            self.uncheckable = True
+
+    def _svg_attributes(self, tag: str, values: dict[str, str]) -> tuple[frozenset[str], frozenset[str]]:
+        """Collect url() in SVG presentation attributes; return the element's loading and acting attributes."""
+        for name in values.keys() & _SVG_URL_PROPERTIES:
+            self.urls.extend((url, True) for url in _css_urls(values[name], strings=False))
+        self._svg_animation(tag, values)
+        if "href" in values:
+            values.pop("xlink:href", None)  # SVG href overrides xlink:href, even when empty
+        linked = "href" in values or "xlink:href" in values  # ping needs a hyperlink destination
+        acting = _SVG_ACTION_ATTRIBUTES.get(tag, frozenset()) if linked else frozenset()
+        runs = tag != "script" or (self.scripting and _runs_as_script(values, html=False))
+        loading = _SVG_LOADING_ATTRIBUTES.get(tag, frozenset()) if runs else frozenset()
+        return loading, acting
+
+    def _svg_animation(self, tag: str, values: dict[str, str]) -> None:
+        """Collect the URLs an SVG animation sets: on an href, or on a presentation attribute that takes url()."""
+        target = values.get("attributename", "").strip().lower()
+        if tag not in _SVG_ANIMATIONS or not (target in ("href", "xlink:href") or target in _SVG_URL_PROPERTIES):
+            return
+        # Without its own href an animation targets its parent: an anchor's href is followed on a click, not
+        # loaded, and a parent with no URL-taking href ignores the value. A target named by href is not resolved
+        # and counts as a load.
+        parent = self.open[-2][0] if len(self.open) > 1 and self.open[-2][1] == "svg" else ""
+        on_parent = "href" not in values and "xlink:href" not in values
+        if on_parent and target.endswith("href") and parent not in _SVG_LOADING_ATTRIBUTES and parent != "a":
+            return
+        loads = not (on_parent and parent == "a" and target.endswith("href"))
+        animated = [values.get(name, "") for name in ("from", "to", "by")] + values.get("values", "").split(";")
+        for value in animated:  # only values is a semicolon-separated list
+            urls = [value.strip()] if target.endswith("href") else _css_urls(value, strings=False)
+            self.urls.extend((url, loads) for url in urls if url)
+
+    def _enter(self, tag: str, values: dict[str, str]) -> None:
+        """Set the namespace of the element starting now, leaving foreign content where HTML says it ends."""
+        parent = self.open[-1][2] if self.open else "html"
+        breakout = tag in _FOREIGN_BREAKOUT_TAGS or (tag == "font" and values.keys() & {"color", "face", "size"})
+        if parent != "html" and breakout:
+            self._leave_foreign_content()
+            parent = "html"
+        if parent == "html" and tag in ("svg", "math"):
+            self.namespace = tag
+        elif parent == "math" and tag == "svg" and self.open[-1][0] == "annotation-xml":
+            self.namespace = "svg"  # SVG may start directly inside annotation-xml, whatever its encoding
+        elif (
+            parent == "html"
+            and tag in ("mglyph", "malignmark")
+            and self.open[-1:]
+            and self.open[-1][0] in _MATHML_INTEGRATION_POINTS
+            and self.open[-1][1] == "math"
+        ):
+            self.namespace = "math"  # the two MathML children a text integration point keeps in MathML
+        else:
+            self.namespace = parent
+        if tag in ("script", "style") and self.namespace != "html" and not self.closing:
+            # The parser reads their content as raw text in any namespace; a browser parses it as markup
+            # in SVG and MathML, so the content cannot be checked.
+            self.uncheckable = True
+
+    def _collect(self, values: dict[str, str], loading: frozenset[str], acting: frozenset[str]) -> None:
+        """Record the URLs in the element's loading and acting attributes."""
+        for name, value in values.items():
+            # An empty link destination still navigates, to the document's base URL; an empty source loads nothing.
+            if not (name in loading or name in acting) or not (value or (name == "href" and name not in loading)):
+                continue
+            if name == "ping":  # URLs separated by whitespace, each requested when the link is followed
+                urls = [url for url in re.split(f"[{_HTML_SPACE}]+", value) if url]
+            elif name in _LIST_ATTRIBUTES:
+                urls = list(_srcset_urls(value))
+            else:
+                urls = [value]
+            # A ping is a background request, not the page the user sees, so it is checked like a load.
+            self.urls.extend((url, name in loading or name == "ping") for url in urls)
+
+    @staticmethod
+    def _can_act(tag: str, values: dict[str, str]) -> bool:
+        """Whether the element acts: a hyperlink with href, or a control that submits its form."""
+        kind = values.get("type", "").lower()  # HTML keywords match case-insensitively, never trimmed
+        if tag in ("a", "area"):
+            return "href" in values  # without href it is no hyperlink, so its ping is never sent
+        if tag == "input":
+            return kind in ("submit", "image")
+        if tag == "button":
+            return kind not in ("button", "reset")
+        return True
+
+    def _html_document_effects(self, tag: str, values: dict[str, str]) -> None:
+        """Record what an HTML element does to the whole document: its base URL, a refresh, a srcdoc."""
+        if tag == "base" and self.base is None and "href" in values and not self.open_tags[_SHADOW_ROOT]:
+            # The first base with an href sets the base URL, even an empty one; one in a shadow tree is not
+            # in the document tree and sets nothing.
+            self.base = values["href"]
+        if tag == "meta" and values.get("http-equiv", "").lower() == "refresh":
+            refresh = _REFRESH_URL_RE.match(values.get("content", ""))
+            destination = next((group for group in refresh.groups() if group is not None), "") if refresh else ""
+            if destination:  # a delay alone reloads the document, not its base
+                self.urls.append((destination, True))
+        if tag == "link" and _relations(values) & _CONNECTION_HINT_RELATIONS and values.get("href"):
+            self.hosts.append(values["href"])
+        if tag == "iframe" and values.get("srcdoc"):
+            sandboxed = "sandbox" in values and "allow-scripts" not in _tokens(values["sandbox"])
+            self.srcdocs.append((values["srcdoc"], self.scripting and not sandboxed))  # sandboxing is inherited
+
+    def _loading_attributes(self, tag: str, values: dict[str, str]) -> frozenset[str]:
+        """Return the attributes this HTML element fetches on render, given its type and relation."""
+        if tag == "input" and values.get("type", "").lower() == "image":
+            return frozenset({"src"})
+        if tag == "script" and not (self.scripting and _runs_as_script(values)):
+            return frozenset()  # a data block, such as JSON-LD, or any script with scripting disabled fetches nothing
+        if tag == "link":
+            relations = _relations(values)
+            loading = frozenset({"href"}) if relations & _FETCHING_LINK_RELATIONS else frozenset()
+            if "preload" in relations and values.get("as", "").lower() == "image":
+                loading |= {"imagesrcset"}
+            return loading
+        if tag == "iframe" and "srcdoc" in values:
+            return frozenset()  # srcdoc replaces src, even when empty
+        if tag == "source":  # srcset in a picture, src in audio or video; elsewhere nothing
+            parent = self.open[-1][0] if self.open else ""
+            if parent not in _SOURCE_PARENTS and any(self.open_tags[media] for media in _SOURCE_PARENTS):
+                # Implied end tags and table parsing can make it a media element's child in the browser's tree.
+                self.uncheckable |= bool(values.keys() & {"src", "srcset"})
+            return {"picture": frozenset({"srcset"}), "audio": frozenset({"src"}), "video": frozenset({"src"})}.get(
+                parent, frozenset()
+            )
+        return _LOADING_ATTRIBUTES.get(tag, frozenset())
+
+    def unknown_decl(self, data: str) -> None:
+        # A CDATA section is text in SVG and MathML, but in HTML a browser reads "<![" as a comment
+        # ending at the first ">", while this parser skips to "]]>"; what follows cannot be checked.
+        if self.inert or (self.open[-1][2] if self.open else "html") == "html":
+            self.uncheckable = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("p", "br") and not self.inert:
+            # These end tags leave foreign content even with nothing to close (HTML §13.2.6.5).
+            self._leave_foreign_content()
+        if self.inert:
+            # Open inert elements are templates with at most one raw-text element on top, so a matching end tag
+            # always closes the top one; any other end tag is text or stray, and ignored.
+            if tag == self.inert[-1] and tag != "plaintext":  # nothing ends plaintext
+                self.inert.pop()
+        elif not self.inert and self.open_tags[tag]:
+            if tag == "style":
+                self._flush_stylesheet()
+            closed = [self._pop()]
+            while closed[-1][0] != tag:
+                closed.append(self._pop())
+            # Closing several elements across a namespace boundary follows HTML scope rules this parser
+            # does not model (a browser may ignore the end tag), so the rest cannot be checked.
+            if len(closed) > 1 and len({closed[-1][1]} | {children for _, _, children in closed}) > 1:
+                self.uncheckable = True
+            # Likewise a media element's end tag with elements still open inside it, which a browser may ignore,
+            # leaving later <source> elements as its children.
+            if len(closed) > 1 and tag in _SOURCE_PARENTS:
+                self.uncheckable = True
+            # And an ancestor's end tag that closes a media element or a shadow-root template across a scope
+            # boundary, which a browser ignores.
+            inside = {name for name, _, _ in closed[:-1]}
+            if inside & _SOURCE_PARENTS and inside & _SCOPE_BOUNDARIES:
+                self.uncheckable = True
+            if any(element[:2] == ("template", "html") for element in closed[:-1]):
+                self.uncheckable = True
+            # </form> removes only the form and </body> or </html> nothing, keeping the elements inside open.
+            if len(closed) > 1 and tag in ("body", "form", "html") and closed[-1][1] == "html":
+                self.uncheckable = True
+            # And an unlisted end tag above an open special element, which a browser ignores.
+            if tag not in _LISTED_END_TAGS and any(
+                name in _SPECIAL_TAGS and namespace == "html" for name, namespace, _ in closed[:-1]
+            ):
+                self.uncheckable = True
+            # A browser in select insertion mode ignores an ancestor's end tag, so the select stays open.
+            if "select" in inside:
+                self.uncheckable = True
+
+    def _open_inert(self, tag: str) -> None:
+        self.inert.append(tag)
+        if tag in ("textarea", "title"):
+            self.set_cdata_mode(tag)  # textarea and title content is text up to the matching end tag
+
+    def handle_comment(self, data: str) -> None:
+        # A browser ends "<!-->" and "<!--->" at once and a comment at "--!>"; older Python tokenizers read on
+        # to "-->", so what they took as comment may be markup.
+        if data.startswith((">", "->")) or "--!>" in data:
+            self.uncheckable = True
+
+    def handle_data(self, data: str) -> None:
+        self._check_raw_text(data)
+        if self.cdata_elem == "style" and self.open and self.open[-1][:2] == ("style", "html"):
+            self.stylesheet.append(data)  # a style block may arrive in several pieces
+
+    def close(self) -> None:
+        super().close()
+        self._check_raw_text(self.rawdata)  # some Python versions keep unparsed raw text here instead
+        if self.cdata_elem == "style" and self.open and self.open[-1][:2] == ("style", "html"):
+            self.stylesheet.append(self.rawdata)
+        self._flush_stylesheet()
+
+    def _flush_stylesheet(self) -> None:
+        self.urls.extend((url, True) for url in _css_urls("".join(self.stylesheet)))
+        self.stylesheet.clear()
+
+    def _check_raw_text(self, data: str) -> None:
+        if not self.cdata_elem:
+            return
+        # Raw text holding an end tag a browser accepts (such as "</script/>") that this parser did not close on:
+        # what follows is markup to a browser and text here, so it cannot be checked.
+        if self.cdata_elem != "plaintext" and re.search(rf"(?i)</{self.cdata_elem}[{_HTML_SPACE}/>]", data):
+            self.uncheckable = True
+        # Some Python tokenizers read these elements as raw text in SVG and MathML too, where a browser parses
+        # their content as markup.
+        foreign = bool(self.open) and self.open[-1][0] == self.cdata_elem and self.open[-1][1] != "html"
+        if foreign and "<" in data:
+            self.uncheckable = True
+        # "<!--" then "<script" in script text enters the double-escaped state, where a browser reads past the
+        # next "</script>"; the parser does not.
+        opener = data.find("<!--") if self.cdata_elem == "script" else -1
+        if opener >= 0 and re.search(r"(?i)<script[\s/>]", data[opener:]):
+            self.uncheckable = True
+
+    def _pop(self) -> tuple[str, str, str]:
+        element = self.open.pop()
+        self.open_tags[element[0]] -= 1
+        self.open_tags[_SHADOW_ROOT] -= element[:2] == ("template", "html")
+        return element
+
+    def _leave_foreign_content(self) -> None:
+        while self.open and self.open[-1][2] != "html":
+            self._pop()
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.closing = True
+        self.handle_starttag(tag, attrs)
+        self.closing = False
+        # HTML ignores "/>" on non-void elements, so <template/> stays open; SVG and MathML honor it.
+        if self.namespace != "html" and not self.inert:
+            self.handle_endtag(tag)
+
+
+def _web_url(url: str) -> str:
+    """Read backslashes as slashes in an http(s) or network-path URL, as a browser does."""
+    visible = _visible(url)
+    if re.match(r"(?i)(?:https?:|[/\\]{2})", visible):
+        # Any run of slashes after the scheme, or none, leads to the host, as a browser parses it.
+        slashed = visible.replace("\\", "/")
+        return re.sub(r"(?i)^(https?:)?/*", lambda match: (match.group(1) or "") + "//", slashed, count=1)
+    return url
+
+
+def _resolve(base: str, url: str) -> str:
+    """Resolve *url* against a document base, leaving it as written when it cannot be resolved."""
+    url = _visible(url)  # a browser trims the URL before reading its scheme or host
+    if not base:
+        return url
+    base = _web_url(base)
+    if not re.match(r"(?i)https?:|//", base):
+        return url
+    try:
+        if not re.match(r"(?i)[a-z][a-z0-9+.-]*:", url):
+            # Against an http(s) base, backslashes are slashes and a run of slashes starts a host.
+            url = re.sub(r"^/{3,}", "//", url.replace("\\", "/"))
+            if url.partition("#")[0] == "?":  # an explicit empty query replaces the base's; urljoin keeps it
+                return base.partition("#")[0].partition("?")[0] + url
+        elif _starts_host(url, base):
+            url = _web_url(url)
+        return urljoin(base, url)
+    except ValueError:
+        return url
+
+
+def _starts_host(url: str, base: str) -> bool:
+    """Whether an explicit http(s) URL names a host rather than a path relative to *base*.
+
+    "https:x" and "https:/x" are relative to a base of the same scheme; two or more slashes, or a different
+    scheme, start a host.
+    """
+    explicit = re.match(r"(?i)(https?):([/\\]*)", _visible(url))
+    if explicit is None:
+        return False
+    return explicit.group(1).lower() != base.split(":", 1)[0].lower() or len(explicit.group(2)) >= 2
+
+
+def _plain_host(netloc: str) -> bool:
+    """Whether an http(s) host is one this rule parses as a browser does: an ASCII domain, IPv4 or IPv6 address.
+
+    A slot for the model to fill counts as a label. Other forms (percent-encoded or non-ASCII names, IPv4 in hex
+    or octal, IPvFuture, scoped IPv6) go through browser host parsing this rule does not reproduce.
+    """
+    host_port = netloc.rpartition("@")[2]
+    if host_port.startswith("["):
+        literal = host_port[1:].partition("]")[0]
+        try:
+            ipaddress.IPv6Address(literal)
+        except ValueError:
+            return False
+        return "%" not in literal
+    host = _PLACEHOLDER_URL_RE.sub("x", host_port.rpartition(":")[0] if ":" in host_port else host_port).lower()
+    if not _PLAIN_HOST_RE.fullmatch(host):
+        return False
+    last = host.rstrip(".").rpartition(".")[2]
+    return not _NUMERIC_LABEL_RE.fullmatch(last) or bool(_DOTTED_DECIMAL_RE.fullmatch(host))
+
+
+def _document_base(inherited: str, declared: str | None) -> tuple[str, bool]:
+    """Return a document's base URL, and whether it cannot be checked.
+
+    A malformed, hostless, javascript: or data: base is rejected for the inherited one, as a browser does; an
+    http(s) base with a host other than a plain one cannot be checked.
+    """
+    if not declared:
+        return inherited, False
+    candidate = _resolve(inherited, declared)
+    try:
+        parts = urlsplit(_web_url(candidate))
+        _ = parts.port  # an out-of-range or non-numeric port raises only when read
+    except ValueError:
+        return inherited, False
+    scheme = parts.scheme.lower()
+    web = scheme in ("http", "https") or (not scheme and _web_url(candidate).startswith("//"))  # or a network path
+    if scheme in ("javascript", "data") or (web and not parts.hostname):  # a browser rejects http:// with no host
+        return inherited, False
+    return candidate, web and not _plain_host(parts.netloc)
+
+
+def _document_urls(
+    html: str, inherited_base: str, depth: int, budget: list[int] | None = None, *, scripting: bool = True
+) -> tuple[list[tuple[str, bool]], bool]:
+    """Return a document's URLs resolved against its base, and whether some markup cannot be checked.
+
+    A srcdoc document inherits its parent's base unless it sets its own. Each level's srcdoc text is
+    part of its parent, so parsing is bounded by the input size times ``MAX_SRCDOC_DEPTH``. A long base
+    repeats in every relative URL, so the resolved URLs share a budget of ``MAX_RENDERED_CHARS``, spent
+    before each URL is built; past it the markup cannot be checked.
+    """
+    budget = [MAX_RENDERED_CHARS] if budget is None else budget
+    parser = _HtmlUrls(scripting=scripting)
+    try:
+        parser.feed(bound_charrefs(html))
+        parser.close()
+    except ValueError:  # malformed markup the standard parser rejects
+        return [], True
+    base, odd_base = _document_base(inherited_base, parser.base)
+    urls: list[tuple[str, bool]] = []
+    for url, loads in [*parser.urls, *((href, None) for href in parser.hosts)]:
+        budget[0] -= len(base) + len(url)  # a resolved URL is never longer than its base and itself
+        if budget[0] < 0:
+            return urls, True
+        resolved = _resolve(base, url)
+        if loads is not None:
+            urls.append((resolved, loads))
+            continue
+        # A connection hint sends the hostname alone, so only it is checked.
+        authority = _AUTHORITY_RE.match(_web_url(resolved))
+        host = _PORT_RE.sub("", authority.group(1)) if authority else ""
+        if host:
+            urls.append((f"//{host}", True))
+    too_deep = parser.uncheckable or odd_base
+    for srcdoc, srcdoc_scripting in parser.srcdocs:
+        if depth >= MAX_SRCDOC_DEPTH:
+            too_deep = True
+            break
+        nested, nested_too_deep = _document_urls(srcdoc, base, depth + 1, budget, scripting=srcdoc_scripting)
+        urls += nested
+        too_deep |= nested_too_deep
+    return urls, too_deep
+
+
+def _rendered_chars(tokens: list[Token]) -> int:
+    """Count the characters of text and attribute values the tokens render to, before HTML escaping."""
+    total = 0
+    for token in tokens:
+        total += len(token.content) + sum(len(str(value)) for value in token.attrs.values())
+        if token.children:
+            total += _rendered_chars(token.children)
+    return total
+
+
+def _oversized(text: str) -> bool:
+    # surrogatepass: a lone surrogate from a server's JSON must be measured, not raise.
+    return len(text.encode("utf-8", "surrogatepass")) > MAX_LINK_MARKDOWN_BYTES
+
+
+def _visible(url: str) -> str:
+    """Remove what a browser's URL parser drops: every ASCII tab or newline, and leading or trailing C0 or space."""
+    return re.sub("[\t\n\r]", "", url).strip(_URL_TRIMMED)
+
+
+def _query(url: str) -> str:
+    """Return the query the way a browser splits it: after the first ``?``, before the first ``#``."""
+    return url.split("#", 1)[0].partition("?")[2]
+
+
+def exfiltration_link_classes(text: str) -> list[str]:
+    """Classify Markdown and HTML links that run script or carry data out of the conversation."""
+    if not any(hint in text for hint in _LINK_HINTS):
+        return []
+    if _oversized(text):
+        return ["uncheckable_markup"]
+    # Render as a Markdown client would, then read the resulting HTML document. Reference links repeat
+    # their destination at every use, so the rendered size is bounded before rendering.
+    env: dict[str, Any] = {}
+    tokens = _LINK_MARKDOWN.parse(text, env)
+    if _rendered_chars(tokens) > MAX_RENDERED_CHARS:
+        return ["uncheckable_markup"]
+    urls, too_deep = _document_urls(_LINK_MARKDOWN.renderer.render(tokens, _LINK_MARKDOWN.options, env), "", 0)
+    found: list[str] = []
+    for raw, loads in urls:
+        # A browser reads the scheme and authority before any percent-decoding, so "javascript%3A" is a path.
+        url = _visible(raw)
+        scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+        network_path = url.replace("\\", "/").startswith("//")
+        if scheme in _SCRIPT_SCHEMES:
+            found.append("script_uri")
+        elif scheme == "data":
+            if not _SAFE_DATA_IMAGE_RE.match(url):  # a raster image runs no script, loaded or followed
+                found.append("data_uri")
+        elif scheme in ("http", "https") or network_path:
+            # An image loads with no click, so a slot anywhere in it sends data;
+            # a link sends only what its query carries, as path slots are usually API routes.
+            # A browser never sends the fragment, so a slot after a literal "#" carries nothing.
+            exposed = _visible(unquote(url.split("#", 1)[0])) if loads else unquote(_query(url))
+            if _PLACEHOLDER_URL_RE.search(exposed):
+                found.append("exfiltration_query")
+    if too_deep:
+        found.append("uncheckable_markup")
+    return found
+
+
+@register_rule
+class CatalogExfiltrationLinksRule(CatalogSecurityRule):
+    """High check: catalog text has no links that run script or carry data out.
+
+    A client that renders Markdown fetches an image without a click. When a
+    description asks the model to fill a slot in that image's URL, the
+    conversation leaves with the request. ``javascript:`` and ``data:`` links
+    run or display content the reviewer never sees.
+
+    Scoring: 3 points (HIGH)
+    """
+
+    rule_id = "catalog_exfiltration_links"
+    basis = (
+        "OWASP MCP Top 10 (beta) MCP03:2025 Tool Poisoning and MCP06:2025 Prompt Injection via Contextual "
+        "Payloads; MCP 2025-11-25 §Security and Trust & Safety (Tool Safety: tool descriptions are untrusted)"
+    )
+    rule_order = 23
+    issue_reason = "exfiltration_link"
+    expected = "links to fixed http(s) addresses, with no script or data URIs and no slots for the model to fill"
+    passed_message = "Catalog text contains no script links or data-carrying URLs"
+    failure_label = "catalog strings with script links or data-carrying URLs"
+    fix = (
+        "Remove javascript: and data: links and URL placeholders from the listed fields. Link to fixed pages and "
+        "return data in tool results, never through a URL the model fills in. Keep markup short and flat."
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return "No Exfiltration Links in Catalog Text"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def matches(self, text: str) -> list[str]:
+        """Return the exfiltration-link classes found in *text*."""
+        return exfiltration_link_classes(text)
