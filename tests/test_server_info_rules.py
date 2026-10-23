@@ -262,3 +262,25 @@ def test_unsupported_stateless_probe_does_not_count() -> None:
 def test_catalog_declared_only_in_discover_and_never_collected_skips(discovered: dict[str, Any]) -> None:
     data = AuditData(capabilities=ServerCapabilities(), probes=_probes(discover={"capabilities": discovered}))
     assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+@pytest.mark.parametrize(
+    ("page", "expected"),
+    [
+        ({"tools": []}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"tools": [], "resultType": "incomplete"}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"tools": [], "resultType": "complete", "nextCursor": "2"}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"tools": [], "resultType": "complete"}, False),
+        ({"tools": [{"name": "search", "inputSchema": {"type": "object"}}]}, True),
+    ],
+    ids=["no-result-type", "incomplete", "more-pages", "complete", "nonempty"],
+)
+def test_modern_only_tools_page_must_be_whole_to_prove_emptiness(page: dict[str, Any], expected: bool | str) -> None:
+    tools = [] if not page["tools"] else None
+    data = AuditData(
+        capabilities=ServerCapabilities(tools=ToolsCapability()),
+        tools=tools,
+        listings_attempted=frozenset({"tools"}),
+        probes=_probes(stateless=page),
+    )
+    assert judge(data) == expected

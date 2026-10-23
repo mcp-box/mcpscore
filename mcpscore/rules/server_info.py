@@ -434,6 +434,19 @@ def _stateless_tools(audit_data: AuditData) -> int | None:
     return len(tools) if isinstance(tools, list) else None
 
 
+def _stateless_tools_unfinished(audit_data: AuditData) -> bool:
+    """Whether the stateless ``tools/list`` probe received an empty page that is not the whole catalog.
+
+    Without ``resultType: "complete"`` (SEP-2322), or with a next cursor, an empty page proves nothing.
+    """
+    probe = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
+    if probe is None or probe.outcome is not ProbeOutcome.SUPPORTED or not isinstance(probe.payload, dict):
+        return False
+    payload = probe.payload
+    unfinished = payload.get("resultType") != "complete" or payload.get("nextCursor") is not None
+    return payload.get("tools") == [] and unfinished
+
+
 def _exposed_counts(audit_data: AuditData) -> dict[str, int | None]:
     """Count what each primitive listing collected; None when the listing has no result.
 
@@ -461,7 +474,10 @@ def _unproven_listings(audit_data: AuditData) -> list[str]:
         declared = getattr(audit_data.capabilities, capability, None) is not None or capability in discovered
         collected = getattr(audit_data, listing)
         missing = collected is None and (declared or listing in audit_data.listings_attempted)
-        if missing or (not collected and listing in audit_data.incomplete_listings):
+        unfinished = listing in audit_data.incomplete_listings or (
+            listing == "tools" and _stateless_tools_unfinished(audit_data)
+        )
+        if missing or (not collected and unfinished):
             unproven.append(listing)
     extensions = discovered.get("extensions")
     discover_skills = isinstance(extensions, dict) and SKILLS_EXTENSION in extensions
