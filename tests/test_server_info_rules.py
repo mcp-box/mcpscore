@@ -560,3 +560,18 @@ def test_modern_tools_result_without_a_tools_array_is_a_gap(
 def test_parsed_catalog_items_count_only_with_an_identity(listings: dict[str, Any], expected: bool | str) -> None:
     data = AuditData(capabilities=ALL_CAPABILITIES, **{**EMPTY_LISTINGS, "skills": skills([]), **listings})
     assert judge(data) == expected
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected"),
+    [(-32603, SKIP_REASON_INSUFFICIENT_DATA), (-32601, False)],
+    ids=["internal-error", "method-not-found"],
+)
+def test_dual_era_stateless_tools_error_is_a_gap_unless_method_not_found(error_code: int, expected: bool | str) -> None:
+    probe = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, {"error_code": error_code})
+    data = AuditData(
+        capabilities=ServerCapabilities(),
+        session_protocol_version=SESSION,
+        probes={**_probes(discover={"capabilities": {}}), PROBE_STATELESS_LIST: probe},
+    )
+    assert judge(data) == expected

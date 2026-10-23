@@ -504,13 +504,13 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     has_session = audit_data.session_protocol_version is not None
     page = _stateless_tools_page(audit_data)
     stateless_probe = probes.get(PROBE_STATELESS_LIST)
-    # A modern server's tools/list result, malformed or not, must settle the tools catalog; a refusal does not.
-    tools_answered = (
-        stateless_probe is not None and isinstance(stateless_probe.payload, dict) and has_modern_support(probes)
-    )
-    catalogs: dict[str, _Catalog] = {}
+    error_code = stateless_probe.details.get("error_code") if stateless_probe is not None else None
     # An explicit Method not found for tools/list says the server serves no tools catalog at all.
-    tools_refused = stateless_probe is not None and stateless_probe.details.get("error_code") == ERROR_METHOD_NOT_FOUND
+    tools_refused = error_code == ERROR_METHOD_NOT_FOUND
+    # Any other answer from a modern server, a malformed result or an error, leaves its tools catalog to settle.
+    answered = stateless_probe is not None and (isinstance(stateless_probe.payload, dict) or error_code is not None)
+    tools_answered = answered and not tools_refused and has_modern_support(probes)
+    catalogs: dict[str, _Catalog] = {}
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         attempted = listing in audit_data.listings_attempted and not (listing == "tools" and tools_refused)
         session_declares = getattr(audit_data.capabilities, capability, None) is not None
