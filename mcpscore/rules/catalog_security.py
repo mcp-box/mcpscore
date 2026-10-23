@@ -1513,7 +1513,8 @@ _DIRECTIVE_RE = re.compile(
     r"(?!(?:the|a|an|it|its|this|that|these|those|they|their|we|our|you|your|there|he|she|i)\b)\w",
     re.IGNORECASE | re.MULTILINE,
 )
-_WHETHER_RE = re.compile(r"\bwhether\b", re.IGNORECASE)
+# "whether", or an "if" inside a clause ("Reports if the tool should …"); an opening "If …," is a condition.
+_WHETHER_RE = re.compile(r"\bwhether\b|(?<=[A-Za-z] )if\b", re.IGNORECASE)
 _CLAUSE_BREAK_RE = re.compile(r"[,;:]")
 _ANY_TOOL_RE = re.compile(
     r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
@@ -1602,18 +1603,33 @@ class _QuotedSpans:
     ends: list[int]
 
     @classmethod
-    def of(cls, text: str, pairs: tuple[tuple[str, str], ...] = _QUOTE_PAIRS_DOUBLE) -> "_QuotedSpans":
-        """Find the spans of *text* between each opener and closer in *pairs*, leftmost first, in one pass."""
+    def of(
+        cls,
+        text: str,
+        pairs: tuple[tuple[str, str], ...] = _QUOTE_PAIRS_DOUBLE,
+        skip: "_QuotedSpans | None" = None,
+    ) -> "_QuotedSpans":
+        """Find the spans of *text* between each opener and closer in *pairs*, leftmost first, in one pass.
+
+        Characters inside a *skip* span (inline code) neither open nor close a span.
+        """
         finders = [_ForwardFind(text, opener) for opener, _ in pairs]
         closers = [_ForwardFind(text, closer) for _, closer in pairs]
         starts: list[int] = []
         ends: list[int] = []
         position = 0
+
+        def next_outside(finder: _ForwardFind, at: int) -> int:
+            found = finder.at_or_after(at)
+            while found >= 0 and skip is not None and skip.contains(found, found):
+                found = finder.at_or_after(skip.end_of(found))
+            return found
+
         while True:
             spans = []
             for finder, closer in zip(finders, closers, strict=True):
-                start = finder.at_or_after(position)
-                end = closer.at_or_after(start + 1) if start >= 0 else -1
+                start = next_outside(finder, position)
+                end = next_outside(closer, start + 1) if start >= 0 else -1
                 if end >= 0:
                     spans.append((start, end + 1))
             if not spans:
@@ -1622,6 +1638,10 @@ class _QuotedSpans:
             starts.append(start)
             ends.append(end)
             position = end
+
+    def end_of(self, position: int) -> int:
+        """Return the end of the span that contains *position* (only when :meth:`contains` says so)."""
+        return self.ends[bisect_left(self.starts, position) - 1]
 
     def contains(self, start: int, end: int) -> bool:
         """Whether *start*..*end* lies strictly inside one quoted span (spans never overlap)."""
@@ -1672,11 +1692,12 @@ def _is_listed(name: str, listed: frozenset[str]) -> bool:
 
 def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
     """Whether *match* names a tool, in backticks or code-shaped, that is not among the *listed* names."""
-    raw = match["ticked"] or match["bare"].rstrip(".")
+    ticked = match["ticked"].removesuffix("()") if match["ticked"] else None
+    raw = ticked or match["bare"].rstrip(".")
     if raw in _PROTOCOL_METHODS:
         return False
-    if match["ticked"]:
-        return not _is_listed(match["ticked"], listed)
+    if ticked:
+        return not _is_listed(ticked, listed)
     if _is_listed(match["bare"], listed):
         return False
     name = _code_shaped(match["bare"])
@@ -1726,8 +1747,8 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     the catalog is unknown and only the first class is judged. *listed* holds :func:`_name_key` forms.
     A phrase in double quotes or named as an attempt (``attempts to call x``) is a mention, not a directive.
     """
-    quoted = _QuotedSpans.of(text)
     code = _QuotedSpans.of(text, _CODE_PAIRS)
+    quoted = _QuotedSpans.of(text, skip=code)
     found: list[str] = []
     for offset, sentence in _sentences(text, quoted):
         # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
