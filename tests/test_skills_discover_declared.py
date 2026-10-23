@@ -1,4 +1,4 @@
-"""A dual-era server that declares the Skills extension only in server/discover still has its skills audited."""
+"""Skills of a dual-era server are judged on the lifecycle that declared the extension."""
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -6,14 +6,14 @@ import logging
 from typing import Any
 
 from mcp.shared.exceptions import MCPError
-from mcp_types import InitializeResult
+from mcp_types import InitializeResult, Resource, ResourceTemplate
 import pytest
 
 from mcpscore import mcp_auditor
 from mcpscore.mcp_auditor import MCPAuditor
 from mcpscore.mcp_client import MCPClient
 from mcpscore.probes import PROBE_DISCOVER, ProbeOutcome, ProbeResult, not_applicable_results
-from mcpscore.rules.base import SKIP_REASON_NOT_APPLICABLE
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from mcpscore.spec import Era
 
 from .test_skills import FakeSession, entry
@@ -86,158 +86,11 @@ def _stateless(monkeypatch: pytest.MonkeyPatch, session: Any) -> None:
     monkeypatch.setattr(mcp_auditor, "stateless_session", opener)
 
 
-async def test_skills_declared_only_in_discover_are_collected_and_judged(discover, monkeypatch) -> None:
-    discover({"extensions": SKILLS})
-    _stateless(monkeypatch, FakeSession([_page()]))
-    auditor = MCPAuditor()
-
-    await auditor.audit(SessionClient(FakeSession([_page(entry("pdf"))], _files("pdf"))))
-
-    assert auditor.era is Era.DUAL
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert evidence.declared_in_discover
-    assert evidence.settings == SKILLS["io.modelcontextprotocol/skills"]
-    assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
-    results = {result.rule_id: result for result in auditor.results}
-    assert results["skills_list_supported"].passed
-    assert results["skills_digest_integrity"].passed
-    assert results["server_exposes_primitive"].passed
-
-
-async def test_session_refusal_falls_back_to_the_stateless_lifecycle(discover, monkeypatch) -> None:
-    discover({"extensions": SKILLS})
-    stateless = FakeSession([_page(entry("pdf"))], _files("pdf"))
-    _stateless(monkeypatch, stateless)
-    refusing = FakeSession([], errors={"skills/list:": MCPError(-32601, "Method not found")})
-    auditor = MCPAuditor()
-
-    await auditor.audit(SessionClient(refusing))
-
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
-    assert ("skills/list", {}) in stateless.calls
-    assert {result.rule_id: result for result in auditor.results}["server_exposes_primitive"].passed
-
-
-async def test_lost_stateless_connection_keeps_the_session_evidence(discover, monkeypatch, caplog) -> None:
-    discover({"extensions": SKILLS})
-    _stateless(monkeypatch, OSError("refused"))
-    refusing = FakeSession([], errors={"skills/list:": MCPError(-32601, "Method not found")})
-    auditor = MCPAuditor()
-
-    with caplog.at_level(logging.WARNING):
-        await auditor.audit(SessionClient(refusing))
-
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert evidence.entries is None
-    assert evidence.list_error is not None
-    assert "Could not collect skills on the stateless lifecycle (OSError)" in caplog.text
-    assert "server_exposes_primitive" in {rule.rule_id for rule in auditor.skipped_rules}
-
-
-async def test_no_declaration_anywhere_collects_nothing(discover, monkeypatch) -> None:
-    discover({})
-    monkeypatch.setattr(mcp_auditor, "stateless_session", None)
-    session = FakeSession([_page(entry("pdf"))])
-    auditor = MCPAuditor()
-
-    await auditor.audit(SessionClient(session))
-
-    assert auditor.audit_data.skills is None
-    assert session.calls == []
-    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
-    assert skipped["skills_list_supported"] == SKIP_REASON_NOT_APPLICABLE
-    assert not {result.rule_id: result for result in auditor.results}["server_exposes_primitive"].passed
-
-
-async def test_empty_session_catalog_falls_back_to_the_stateless_catalog(discover, monkeypatch) -> None:
-    discover({"resources": {}, "extensions": SKILLS})
-    _stateless(monkeypatch, FakeSession([_page(entry("pdf"))], _files("pdf")))
-    auditor = MCPAuditor()
-
-    await auditor.audit(SessionClient(FakeSession([_page()])))
-
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
-    results = {result.rule_id: result for result in auditor.results}
-    assert results["server_exposes_primitive"].passed
-    assert "skills_digest_integrity" in results
-
-
-async def test_both_catalogs_empty_keeps_the_session_listing(discover, monkeypatch) -> None:
-    discover({"extensions": SKILLS})
-    stateless = FakeSession([_page()])
-    _stateless(monkeypatch, stateless)
-    auditor = MCPAuditor()
-
-    await auditor.audit(SessionClient(FakeSession([_page()])))
-
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert evidence.entries == []
-    assert not evidence.list_incomplete
-    assert not {result.rule_id: result for result in auditor.results}["server_exposes_primitive"].passed
-
-
-@pytest.mark.parametrize(
-    ("discovered", "passed"),
-    [({"resources": {}, "extensions": SKILLS}, True), ({"extensions": SKILLS}, False)],
-    ids=["discover-declares-resources", "discover-omits-resources"],
-)
-async def test_resources_capability_is_judged_on_the_declaring_lifecycle(
-    discover, monkeypatch, discovered: dict[str, Any], passed: bool
-) -> None:
-    discover(discovered)
-    _stateless(monkeypatch, FakeSession([_page()]))
-    auditor = MCPAuditor()
-
-    await auditor.audit(SessionClient(FakeSession([_page(entry("pdf"))], _files("pdf"))))
-
-    assert auditor.audit_data.capabilities is not None
-    assert auditor.audit_data.capabilities.resources is None
-    assert {result.rule_id: result for result in auditor.results}["skills_resources_capability"].passed is passed
-
-
-@pytest.mark.parametrize(
-    "stateless",
-    [
-        FakeSession([{"skills": [], "resultType": "incomplete"}]),
-        FakeSession([], errors={"skills/list:": MCPError(-32601, "Method not found")}),
-        OSError("refused"),
-    ],
-    ids=["stateless-incomplete", "stateless-refused", "stateless-unreachable"],
-)
-async def test_empty_session_listing_needs_a_whole_stateless_listing(discover, monkeypatch, stateless: Any) -> None:
-    discover({"extensions": SKILLS})
-    _stateless(monkeypatch, stateless)
-    auditor = MCPAuditor()
-
-    await auditor.audit(SessionClient(FakeSession([_page()])))
-
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert evidence.entries == []
-    assert evidence.list_incomplete
-    assert "server_exposes_primitive" in {rule.rule_id for rule in auditor.skipped_rules}
-
-
-async def test_failed_session_listing_keeps_an_empty_stateless_listing_unproven(discover, monkeypatch) -> None:
-    discover({"extensions": SKILLS})
-    _stateless(monkeypatch, FakeSession([_page()]))
-    refusing = FakeSession([], errors={"skills/list:": MCPError(-32001, "Request timed out")})
-    auditor = MCPAuditor()
-
-    await auditor.audit(SessionClient(refusing))
-
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert evidence.entries == []
-    assert evidence.list_incomplete
-    assert "server_exposes_primitive" in {rule.rule_id for rule in auditor.skipped_rules}
+def _outcomes(auditor: MCPAuditor) -> dict[str, bool | str]:
+    """Map each rule to whether it passed, or to its skip reason."""
+    outcomes: dict[str, bool | str] = {result.rule_id: result.passed for result in auditor.results}
+    outcomes.update({rule.rule_id: rule.reason for rule in auditor.skipped_rules})
+    return outcomes
 
 
 class BothDeclareClient(SessionClient):
@@ -252,39 +105,37 @@ class BothDeclareClient(SessionClient):
             }
         )
 
+    async def list_resources(self) -> list[Resource]:
+        return []
 
-async def test_empty_session_catalog_is_reconciled_when_both_lifecycles_declare_skills(discover, monkeypatch) -> None:
+    async def list_resource_templates(self) -> list[ResourceTemplate]:
+        return []
+
+
+async def test_discover_only_skills_are_collected_and_judged_on_the_stateless_lifecycle(discover, monkeypatch) -> None:
     discover({"resources": {}, "extensions": SKILLS})
     _stateless(monkeypatch, FakeSession([_page(entry("pdf"))], _files("pdf")))
+    session = FakeSession([_page(entry("other"))])
     auditor = MCPAuditor()
 
-    await auditor.audit(BothDeclareClient(FakeSession([_page()])))
+    await auditor.audit(SessionClient(session))
 
+    assert auditor.era is Era.DUAL
     evidence = auditor.audit_data.skills
     assert evidence is not None
-    assert not evidence.declared_in_discover
+    assert evidence.stateless
+    assert evidence.settings == SKILLS["io.modelcontextprotocol/skills"]
     assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
-    results = {result.rule_id: result for result in auditor.results}
-    assert results["server_exposes_primitive"].passed
-    assert results["skills_digest_integrity"].passed
+    assert session.calls == []
+    outcomes = _outcomes(auditor)
+    assert outcomes["skills_list_supported"] is True
+    assert outcomes["skills_digest_integrity"] is True
+    assert outcomes["skills_resources_capability"] is True
+    assert outcomes["server_exposes_primitive"] is True
 
 
-async def test_nonempty_session_catalog_is_kept_when_both_lifecycles_declare_skills(discover, monkeypatch) -> None:
-    discover({"resources": {}, "extensions": SKILLS})
-    stateless = FakeSession([_page(entry("other"))])
-    _stateless(monkeypatch, stateless)
-    auditor = MCPAuditor()
-
-    await auditor.audit(BothDeclareClient(FakeSession([_page(entry("pdf"))], _files("pdf"))))
-
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
-
-
-async def test_discover_only_skills_are_judged_on_the_stateless_lifecycle(discover, monkeypatch) -> None:
-    directory_skills = {"io.modelcontextprotocol/skills": {"directoryRead": True}}
-    discover({"resources": {}, "extensions": directory_skills})
+async def test_directory_reads_are_checked_where_they_were_advertised(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": {"io.modelcontextprotocol/skills": {"directoryRead": True}}})
     stateless = FakeSession([_page(entry("pdf"))], _files("pdf"))
     _stateless(monkeypatch, stateless)
     session = FakeSession([_page(entry("pdf"))], _files("pdf"))
@@ -292,14 +143,144 @@ async def test_discover_only_skills_are_judged_on_the_stateless_lifecycle(discov
 
     await auditor.audit(SessionClient(session))
 
-    evidence = auditor.audit_data.skills
-    assert evidence is not None
-    assert evidence.settings == {"directoryRead": True}
+    assert auditor.audit_data.skills is not None
+    assert auditor.audit_data.skills.settings == {"directoryRead": True}
     assert session.calls == []
     assert "resources/directory/read" in {method for method, _ in stateless.calls}
 
 
-async def test_declared_session_listing_failure_is_not_hidden_by_the_stateless_catalog(discover, monkeypatch) -> None:
+async def test_stateless_refusal_fails_the_listing_rule_whatever_the_session_serves(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([], errors={"skills/list:": MCPError(-32601, "Method not found")}))
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(FakeSession([_page(entry("pdf"))], _files("pdf"))))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert evidence.entries is None
+    outcomes = _outcomes(auditor)
+    assert outcomes["skills_list_supported"] is False
+    assert outcomes["server_exposes_primitive"] == SKIP_REASON_INSUFFICIENT_DATA
+
+
+async def test_unreachable_stateless_lifecycle_leaves_the_skills_unjudged(discover, monkeypatch, caplog) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    _stateless(monkeypatch, OSError("refused"))
+    auditor = MCPAuditor()
+
+    with caplog.at_level(logging.WARNING):
+        await auditor.audit(SessionClient(FakeSession([_page(entry("pdf"))])))
+
+    assert auditor.audit_data.skills is None
+    assert "Could not collect skills on the stateless lifecycle (OSError)" in caplog.text
+    outcomes = _outcomes(auditor)
+    assert outcomes["skills_list_supported"] == SKIP_REASON_INSUFFICIENT_DATA
+    assert outcomes["server_exposes_primitive"] == SKIP_REASON_INSUFFICIENT_DATA
+
+
+async def test_no_declaration_anywhere_collects_nothing(discover, monkeypatch) -> None:
+    discover({})
+    monkeypatch.setattr(mcp_auditor, "stateless_session", None)
+    session = FakeSession([_page(entry("pdf"))])
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(session))
+
+    assert auditor.audit_data.skills is None
+    assert session.calls == []
+    outcomes = _outcomes(auditor)
+    assert outcomes["skills_list_supported"] == SKIP_REASON_NOT_APPLICABLE
+    assert outcomes["server_exposes_primitive"] is False
+
+
+@pytest.mark.parametrize(
+    ("page", "expected"),
+    [
+        (_page(), False),
+        ({"skills": [], "resultType": "incomplete"}, SKIP_REASON_INSUFFICIENT_DATA),
+    ],
+    ids=["whole-empty", "unfinished"],
+)
+async def test_empty_stateless_catalog_proves_emptiness_only_when_whole(
+    discover, monkeypatch, page: dict[str, Any], expected: bool | str
+) -> None:
+    discover({"extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([page]))
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(FakeSession([])))
+
+    assert _outcomes(auditor)["server_exposes_primitive"] == expected
+
+
+@pytest.mark.parametrize(
+    ("discovered", "passed"),
+    [({"resources": {}, "extensions": SKILLS}, True), ({"extensions": SKILLS}, False)],
+    ids=["discover-declares-resources", "discover-omits-resources"],
+)
+async def test_resources_capability_is_judged_on_the_declaring_lifecycle(
+    discover, monkeypatch, discovered: dict[str, Any], passed: bool
+) -> None:
+    discover(discovered)
+    _stateless(monkeypatch, FakeSession([_page(entry("pdf"))], _files("pdf")))
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(FakeSession([])))
+
+    assert auditor.audit_data.capabilities is not None
+    assert auditor.audit_data.capabilities.resources is None
+    assert _outcomes(auditor)["skills_resources_capability"] is passed
+
+
+class ListingResourcesClient(SessionClient):
+    """A session that declares resources and lists the skill file with its own description."""
+
+    async def initialize(self) -> InitializeResult:
+        return InitializeResult.model_validate(
+            {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"resources": {}},
+                "serverInfo": {"name": "skills-demo", "version": "1.0"},
+            }
+        )
+
+    async def list_resources(self) -> list[Resource]:
+        return [Resource(name="pdf", uri="skill://pdf/SKILL.md", description="Another lifecycle's text")]
+
+    async def list_resource_templates(self) -> list[ResourceTemplate]:
+        return []
+
+
+async def test_stateless_skills_are_not_compared_with_the_session_resource_catalog(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([_page(entry("pdf"))], _files("pdf")))
+    auditor = MCPAuditor()
+
+    await auditor.audit(ListingResourcesClient(FakeSession([])))
+
+    assert auditor.audit_data.resources
+    assert _outcomes(auditor)["skills_skill_file_metadata"] is True
+
+
+async def test_both_declared_session_evidence_stands_and_stateless_skills_count(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([_page(entry("pdf"))]))
+    auditor = MCPAuditor()
+
+    await auditor.audit(BothDeclareClient(FakeSession([_page()])))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert not evidence.stateless
+    assert evidence.entries == []
+    assert evidence.stateless_count == 1
+    outcomes = _outcomes(auditor)
+    assert outcomes["skills_list_supported"] is True
+    assert outcomes["server_exposes_primitive"] is True
+
+
+async def test_both_declared_session_failure_is_not_hidden(discover, monkeypatch) -> None:
     discover({"resources": {}, "extensions": SKILLS})
     _stateless(monkeypatch, FakeSession([_page(entry("pdf"))], _files("pdf")))
     refusing = FakeSession([], errors={"skills/list:": MCPError(-32601, "Method not found")})
@@ -309,6 +290,45 @@ async def test_declared_session_listing_failure_is_not_hidden_by_the_stateless_c
 
     evidence = auditor.audit_data.skills
     assert evidence is not None
-    assert evidence.entries is None
     assert evidence.list_error is not None
-    assert not {result.rule_id: result for result in auditor.results}["skills_list_supported"].passed
+    outcomes = _outcomes(auditor)
+    assert outcomes["skills_list_supported"] is False
+    assert outcomes["server_exposes_primitive"] is True
+
+
+@pytest.mark.parametrize(
+    ("page", "expected"),
+    [
+        (_page(), False),
+        ({"skills": [], "resultType": "complete", "nextCursor": "2"}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"skills": []}, SKIP_REASON_INSUFFICIENT_DATA),
+    ],
+    ids=["stateless-whole-empty", "stateless-more-pages", "stateless-no-result-type"],
+)
+async def test_both_declared_empty_catalog_needs_both_lifecycles_whole(
+    discover, monkeypatch, page: dict[str, Any], expected: bool | str
+) -> None:
+    # Discover leaves resources out: a resources catalog it declared would stay unproven on its own.
+    discover({"extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([page]))
+    auditor = MCPAuditor()
+
+    await auditor.audit(BothDeclareClient(FakeSession([_page()])))
+
+    assert _outcomes(auditor)["server_exposes_primitive"] == expected
+
+
+async def test_malformed_session_listing_never_proves_emptiness(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([_page()]))
+    pages = [{"skills": [], "nextCursor": "1", "resultType": "complete"}, {"resultType": "complete"}]
+    auditor = MCPAuditor()
+
+    await auditor.audit(BothDeclareClient(FakeSession(pages)))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert evidence.list_malformed
+    outcomes = _outcomes(auditor)
+    assert outcomes["skills_list_supported"] is False
+    assert outcomes["server_exposes_primitive"] == SKIP_REASON_INSUFFICIENT_DATA

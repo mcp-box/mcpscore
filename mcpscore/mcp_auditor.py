@@ -38,7 +38,7 @@ from .report_evidence import report_evidence
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
 from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, rule_sort_key
 from .rules.packaging import PACKAGING_GROUP
-from .skills import SkillsEvidence, collect_skills, declared_settings, skills_report, stateless_list_hints
+from .skills import SkillsEvidence, collect_skills, declared_settings, skills_report, stateless_first_page
 from .spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
@@ -84,11 +84,6 @@ def _discover_server_info_candidates(payload: dict) -> tuple[object, ...]:
     if legacy is not None:
         candidates.append(legacy)
     return tuple(candidates)
-
-
-def _listed_whole(evidence: SkillsEvidence | None) -> bool:
-    """Whether a skills listing was collected complete, every page read."""
-    return evidence is not None and evidence.entries is not None and not evidence.list_incomplete
 
 
 class MCPAuditor:
@@ -1020,53 +1015,35 @@ class MCPAuditor:
         """
         evidence = self.audit_data.skills
         url = self.audit_data.url
-        if evidence is None or self.era is not Era.DUAL or not url or not url.startswith(("http://", "https://")):
+        if evidence is None or evidence.stateless or self.era is not Era.DUAL:
+            return
+        if not url or not url.startswith(("http://", "https://")):
             return
         if self._discover_skills_settings() is None:
             # The lifecycles may expose different capabilities: a stateless refusal is legitimate without it.
             return
         try:
             async with stateless_session(url, self.headers) as session:
-                evidence.stateless_list = await stateless_list_hints(session)
+                hints, evidence.stateless_count, evidence.stateless_whole = await stateless_first_page(session)
+                evidence.stateless_list = hints
         except Exception as exc:  # noqa: BLE001 — the readiness check then has nothing to judge
             logger.warning("Could not list skills on the stateless lifecycle (%s)", type(exc).__name__)
 
     async def _collect_discover_declared_skills(self) -> None:
-        """Reconcile a dual-era server's skills with the stateless lifecycle when ``server/discover`` declares them.
+        """Collect the skills of a dual-era server that declares the extension only in ``server/discover``.
 
-        Skills are judged on the lifecycle that declared them. The 2025-11-25 ``initialize`` result has no
-        ``extensions`` field, so a session may never declare the extension: its skills are then listed on the
-        stateless lifecycle, with the session as fallback when that lifecycle fails or lists nothing. A session
-        that declared the extension keeps its own evidence, failures included; the stateless catalog fills in
-        only when the session listed nothing. An empty listing is whole only when both lifecycles listed it whole.
+        The 2025-11-25 ``initialize`` result has no ``extensions`` field, so such a server's session never
+        declares it. Its skills are collected and judged on the stateless lifecycle that declared them; a session
+        that declared the extension keeps its own evidence.
         """
-        if self.era is not Era.DUAL or self.mcp_client is None:
+        if self.audit_data.skills is not None or self.era is not Era.DUAL or self.mcp_client is None:
             return
         settings = self._discover_skills_settings()
-        if settings is None:
-            return
         url = self.audit_data.url
         target = url if url and url.startswith(("http://", "https://")) else self.mcp_client.stdio_params
-        session_evidence = self.audit_data.skills
-        if session_evidence is not None:
-            if session_evidence.entries == [] and target is not None:
-                stateless = await self._collect_skills_on(target, settings)
-                if stateless is not None and stateless.entries:
-                    self.audit_data.skills = stateless
-                elif not (_listed_whole(session_evidence) and _listed_whole(stateless)):
-                    session_evidence.list_incomplete = True
+        if settings is None or target is None:
             return
-        stateless = await self._collect_skills_on(target, settings) if target is not None else None
-        evidence = stateless
-        if stateless is None or not stateless.entries:
-            session_evidence = await collect_skills(self.mcp_client, settings)
-            if stateless is None or stateless.entries is None or session_evidence.entries:
-                evidence = session_evidence
-        assert evidence is not None  # noqa: S101 — the session fallback always runs when the stateless listing is empty
-        if evidence.entries == [] and not (_listed_whole(stateless) and _listed_whole(session_evidence)):
-            evidence.list_incomplete = True
-        evidence.declared_in_discover = True
-        self.audit_data.skills = evidence
+        self.audit_data.skills = await self._collect_skills_on(target, settings)
 
     async def _collect_skills_on(
         self, target: str | StdioServerParameters, settings: dict[str, Any]

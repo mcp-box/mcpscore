@@ -128,8 +128,8 @@ class SkillsEvidence:
 
     settings: dict[str, Any] = field(default_factory=dict)
     """The server's extension settings, e.g. ``{"directoryRead": true}``."""
-    declared_in_discover: bool = False
-    """The extension was declared in ``server/discover`` only, not in the session's capabilities."""
+    stateless: bool = False
+    """Collected on the stateless lifecycle; otherwise on the legacy session."""
     entries: list[Any] | None = None
     """Raw ``skills/list`` entries in listing order; None when the method failed."""
     list_error: dict[str, Any] | None = None
@@ -145,6 +145,10 @@ class SkillsEvidence:
     stateless_list: dict[str, Any] | None = None
     """``resultType``, ``ttlMs`` and ``cacheScope`` of a first ``skills/list`` page on the stateless lifecycle
     (or the call's ``error``); None when no stateless listing was made."""
+    stateless_count: int | None = None
+    """Skills on that first stateless page; None when it carried no ``skills`` array or was not made."""
+    stateless_whole: bool = False
+    """That first stateless page was the whole catalog: ``resultType: "complete"`` and no next cursor."""
     files: dict[str, SkillFile] = field(default_factory=dict)
     budget_exhausted: bool = False
 
@@ -662,12 +666,26 @@ def _list_hints(result: Any) -> dict[str, Any]:
     }
 
 
+async def stateless_first_page(session: SkillsSession) -> tuple[dict[str, Any], int | None, bool]:
+    """Read a first ``skills/list`` page on a stateless session.
+
+    Returns its caching attributes (or the call's error), its skill count, and whether it was the whole catalog.
+    """
+    try:
+        result = await session.request_raw("skills/list", {})
+    except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
+        return {"error": _rpc_error(exc)}, None, False
+    skills = result.get("skills") if isinstance(result, dict) else None
+    if not isinstance(skills, list):
+        return _list_hints(result), None, False
+    whole = result.get("resultType") == "complete" and result.get("nextCursor") is None
+    return _list_hints(result), len(skills), whole
+
+
 async def stateless_list_hints(session: SkillsSession) -> dict[str, Any]:
     """Return the caching attributes of a first ``skills/list`` page on a stateless session, or the call's error."""
-    try:
-        return _list_hints(await session.request_raw("skills/list", {}))
-    except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
-        return {"error": _rpc_error(exc)}
+    hints, _, _ = await stateless_first_page(session)
+    return hints
 
 
 async def _list(session: SkillsSession, evidence: SkillsEvidence, *, stateless: bool = False) -> None:
@@ -897,7 +915,7 @@ async def collect_skills(
     session: SkillsSession, settings: dict[str, Any], *, stateless: bool = False
 ) -> SkillsEvidence:
     """List the server's skills, call ``skills/get`` for each, probe directory reads, and read a sample of files."""
-    evidence = SkillsEvidence(settings=settings)
+    evidence = SkillsEvidence(settings=settings, stateless=stateless)
     phase = "list"
     try:
         async with asyncio.timeout(COLLECTION_TIMEOUT_S):

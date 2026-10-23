@@ -12,7 +12,7 @@ from mcpscore.probes import (
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     ProbeOutcome,
 )
-from mcpscore.skills import SKILLS_EXTENSION
+from mcpscore.skills import declared_settings
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -25,7 +25,7 @@ from .base import (
 )
 from .catalog_diagnostics import catalog_result, field_issue
 from .registry import register_rule
-from .skills import declares_skills, discover_capabilities
+from .skills import discover_capabilities, discover_declares_skills
 
 
 class ServerInfoBaseRule(BaseRule):
@@ -520,13 +520,25 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
             whole = page.get("resultType") == "complete" and page.get("nextCursor") is None
             catalog.modern_empty = catalog.modern_empty or (whole and not page["tools"])
     skills = audit_data.skills
-    extensions = discovered.get("extensions")
-    declares = declares_skills(audit_data) or (isinstance(extensions, dict) and SKILLS_EXTENSION in extensions)
-    # The auditor reconciles both lifecycles into one skills listing.
-    catalog = catalogs["skills"] = _Catalog(legacy_needed=declares)
-    if skills is not None and skills.entries is not None:
-        catalog.observe(len(skills.entries))
-        catalog.legacy_empty = not skills.entries and not skills.list_incomplete
+    session_skills = declared_settings(audit_data.capabilities) is not None
+    catalog = catalogs["skills"] = _Catalog(
+        legacy_needed=has_session and session_skills,
+        modern_needed=discover_declares_skills(audit_data) or (not has_session and session_skills),
+    )
+    if skills is not None:
+        listed_whole = (
+            skills.entries == [] and not skills.list_incomplete and not skills.list_malformed and not skills.list_error
+        )
+        if skills.entries is not None:
+            catalog.observe(len(skills.entries))
+        if skills.stateless:
+            catalog.modern_empty = listed_whole
+        else:
+            catalog.legacy_empty = listed_whole
+            # The first stateless page the readiness check reads covers the other lifecycle.
+            if skills.stateless_count is not None:
+                catalog.observe(skills.stateless_count)
+            catalog.modern_empty = skills.stateless_count == 0 and skills.stateless_whole
     return catalogs
 
 

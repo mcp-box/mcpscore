@@ -32,7 +32,7 @@ from mcpscore.rules.base import (
     AuditData,
 )
 from mcpscore.rules.readiness import SkillsListCacheHintsReadinessRule
-from mcpscore.skills import SkillsEvidence, collect_skills, stateless_list_hints
+from mcpscore.skills import SkillsEvidence, collect_skills, stateless_first_page, stateless_list_hints
 from mcpscore.spec import Era
 
 from .test_modern_only_audit import DISCOVER_PAYLOAD, URL, _fake_tls, _modern_probe_results
@@ -165,6 +165,19 @@ class TestCollectorHints:
     async def test_session_listing_needs_no_result_type(self):
         evidence = await collect_skills(FakeSession([{"skills": []}]), {})
         assert evidence.list_incomplete is False
+
+    @pytest.mark.parametrize(
+        ("page", "count", "whole"),
+        [
+            ({"skills": [entry("a")], "resultType": "complete"}, 1, True),
+            ({"skills": [], "resultType": "complete", "nextCursor": "2"}, 0, False),
+            ({"skills": []}, 0, False),
+            ({"resultType": "complete"}, None, False),
+        ],
+    )
+    async def test_first_stateless_page_reports_its_count_and_wholeness(self, page, count, whole):
+        _, observed_count, observed_whole = await stateless_first_page(FakeSession([page]))
+        assert (observed_count, observed_whole) == (count, whole)
 
     async def test_stateless_listing_failure_is_recorded(self):
         session = FakeSession([], errors={"skills/list:": MCPError(-32601, "no")})

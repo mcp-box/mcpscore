@@ -242,12 +242,16 @@ def test_audit_without_session_data_skips(data: AuditData) -> None:
     assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
-def test_skills_declared_only_in_discover_count_as_declared() -> None:
+def test_skills_declared_only_in_discover_are_judged_on_the_stateless_lifecycle() -> None:
     capabilities = ServerCapabilities(tools=ToolsCapability())
-    failed = SkillsEvidence(entries=None, declared_in_discover=True)
-    assert judge(AuditData(capabilities=capabilities, tools=[], skills=failed)) == SKIP_REASON_INSUFFICIENT_DATA
-    served = SkillsEvidence(entries=[{"name": "pdf"}], declared_in_discover=True)
-    assert judge(AuditData(capabilities=capabilities, tools=[], skills=served)) is True
+    probes = _probes(discover={"capabilities": {"extensions": SKILLS}})
+    common: dict[str, Any] = {"capabilities": capabilities, "tools": [], "session_protocol_version": SESSION}
+    failed = SkillsEvidence(entries=None, stateless=True)
+    assert judge(AuditData(**common, skills=failed, probes=probes)) == SKIP_REASON_INSUFFICIENT_DATA
+    served = SkillsEvidence(entries=[{"name": "pdf"}], stateless=True)
+    assert judge(AuditData(**common, skills=served, probes=probes)) is True
+    empty = SkillsEvidence(entries=[], stateless=True)
+    assert judge(AuditData(**common, skills=empty, probes=probes)) is False
 
 
 def _probes(**payloads: dict[str, Any]) -> dict[str, ProbeResult]:

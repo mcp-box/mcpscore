@@ -65,12 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Skills are audited on a dual-era server that declares the extension only
   in `server/discover`.** A 2025-11-25 `initialize` result has no
   `extensions` field, so such a server's session never declared the Skills
-  extension, and every skills rule skipped as not applicable. The skills are
-  now listed on the stateless lifecycle that declared them, with the session
-  as fallback, and `skills_resources_capability` reads the `resources`
-  capability from `server/discover`. When both lifecycles declare skills and
-  the session lists none, the stateless catalog fills in; a failed session
-  listing still counts against the session.
+  extension, and every skills rule skipped as not applicable. Skills are now
+  judged on the lifecycle that declared them: such a server's skills are
+  collected on the stateless lifecycle, and `skills_resources_capability`
+  reads the `resources` capability from `server/discover`. A session that
+  declares the extension is judged on its own listing, as before.
 - **A stateless `skills/list` result without `resultType: "complete"` counts
   as an incomplete listing.** An empty one no longer reads as an empty
   catalog.

@@ -16,6 +16,7 @@ from ..skills import (
     DIGEST_RE,
     DIRECTORY_READ_KINDS,
     SKILL_FILE,
+    SKILLS_EXTENSION,
     UNOBSERVED_OUTCOMES,
     DirectoryRead,
     SkillFile,
@@ -63,10 +64,13 @@ def discover_capabilities(audit_data: AuditData) -> dict[str, Any]:
 
 def declares_skills(audit_data: AuditData) -> bool:
     """Whether the server declared the Skills extension, in its session capabilities or in ``server/discover``."""
-    evidence = audit_data.skills
-    return declared_settings(audit_data.capabilities) is not None or (
-        evidence is not None and evidence.declared_in_discover
-    )
+    return declared_settings(audit_data.capabilities) is not None or discover_declares_skills(audit_data)
+
+
+def discover_declares_skills(audit_data: AuditData) -> bool:
+    """Whether ``server/discover`` declared the Skills extension."""
+    extensions = discover_capabilities(audit_data).get("extensions")
+    return isinstance(extensions, dict) and SKILLS_EXTENSION in extensions
 
 
 def _entries(evidence: SkillsEvidence) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -537,8 +541,7 @@ class SkillsResourcesCapabilityRule(SkillsBaseRule):
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Medium check: skill files are served as resources, so the ``resources`` capability must be declared."""
-        evidence = audit_data.skills
-        if evidence is not None and evidence.declared_in_discover:
+        if declared_settings(audit_data.capabilities) is None:
             # Judged on the lifecycle that declared the extension.
             passed = discover_capabilities(audit_data).get("resources") is not None
         else:
@@ -1192,7 +1195,9 @@ class SkillsSkillFileMetadataRule(SkillsBaseRule):
     def _observations(self, audit_data: AuditData) -> Iterator[tuple[int, dict[str, Any], Any, Any]]:
         """Yield ``(index, entry, read, listed)`` for each skill whose ``SKILL.md`` was read or listed."""
         evidence = self._evidence(audit_data)
-        listed = {normalize_uri(str(r.uri)): r for r in audit_data.resources or []}
+        # The resource catalog is the session's: it describes skills collected on the same lifecycle only.
+        resources = audit_data.resources or [] if not evidence.stateless else []
+        listed = {normalize_uri(str(r.uri)): r for r in resources}
         for index, entry in _entries(evidence):
             uri = entry.get("uri")
             if not isinstance(uri, str):
