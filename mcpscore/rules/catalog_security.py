@@ -8,6 +8,7 @@ never repeats a secret or an injected instruction.
 """
 
 from abc import abstractmethod
+from bisect import bisect_left
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -1490,23 +1491,25 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 
 
 # Tool shadowing: a sentence that directs the model, about a tool the server does not list.
-_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])\s+|\n+")
+# Sentences end at punctuation or a blank line; a single line break only wraps the sentence.
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
     r"\b(?:always|must|never|do\s+not|don['\u2019]t|should|make\s+sure|ensure|be\s+sure)\b"
     r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
     r"|^\W*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer)\b",
-    re.IGNORECASE,
+    re.IGNORECASE | re.MULTILINE,
 )
 _ANY_TOOL_RE = re.compile(
     r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
     r"(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\b",
     re.IGNORECASE,
 )
-# A tool name is code-shaped: in backticks, joined with _ or ., or camelCase. Plain and hyphenated words
-# ("read-only tool") are left alone.
+# A tool name is code-shaped: in backticks, joined with _ . or /, or camelCase, with at least one letter.
+# Plain and hyphenated words ("read-only tool") are left alone.
 _TOOL_NAME = (
     r"`(?P<ticked>[^`\s]{1,128})`"
-    r"|(?P<bare>[A-Za-z][A-Za-z0-9-]*(?:[_./]+[A-Za-z0-9-]+)+|(?:[A-Za-z0-9]+-)*[a-z]+(?:[A-Z][a-z0-9]*)+(?:-[A-Za-z0-9]+)*)"
+    r"|(?P<bare>(?=[\w./-]*[A-Za-z])_*[A-Za-z0-9][A-Za-z0-9-]*(?:[_./]+[A-Za-z0-9-]+)+"
+    r"|(?:[A-Za-z0-9]+-)*[a-z]+(?:[A-Z][a-z0-9]*)+(?:-[A-Za-z0-9]+)*)"
 )
 _TOOL_REFERENCES = (
     re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})(?![\w`/-])"),
@@ -1515,29 +1518,37 @@ _TOOL_REFERENCES = (
 _SEPARATORS_RE = re.compile(r"[-._]+")
 # Namespaces a client puts in front of a tool name: mcp__notes__search, notes.search, notes/search.
 _NAMESPACE_RE = re.compile(r"__|[./]")
+_MAX_NAMESPACES = 3
 _QUOTED_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
 
 
-def _sentences(text: str) -> Iterator[str]:
-    """Split *text* into sentences, keeping a double-quoted span whole so a quoted example stays recognizable."""
-    spans = [(span.start(), span.end()) for span in _QUOTED_RE.finditer(text)]
+@dataclass(frozen=True)
+class _QuotedSpans:
+    """The double-quoted spans of one string, found once and looked up by position."""
+
+    starts: list[int]
+    ends: list[int]
+
+    @classmethod
+    def of(cls, text: str) -> "_QuotedSpans":
+        """Find the quoted spans of *text*."""
+        spans = [(span.start(), span.end()) for span in _QUOTED_RE.finditer(text)]
+        return cls([start for start, _ in spans], [end for _, end in spans])
+
+    def contains(self, start: int, end: int) -> bool:
+        """Whether *start*..*end* lies strictly inside one quoted span (spans never overlap)."""
+        index = bisect_left(self.starts, start) - 1
+        return index >= 0 and end < self.ends[index]
+
+
+def _sentences(text: str, quoted: _QuotedSpans) -> Iterator[tuple[int, str]]:
+    """Yield each sentence of *text* with its offset, keeping a quoted span whole so a quoted example stays one."""
     start = 0
     for brk in _SENTENCE_BREAK_RE.finditer(text):
-        if not any(open_ < brk.start() < close for open_, close in spans):
-            yield text[start : brk.start()]
+        if not quoted.contains(brk.start(), brk.start()):
+            yield start, text[start : brk.start()]
             start = brk.end()
-    yield text[start:]
-
-
-def _directs(sentence: str, match: re.Match[str]) -> bool:
-    """Whether *match* is used, not quoted or named as an example (``Block phrases like "always call x"``)."""
-    start, end = match.start(), match.end()
-    return not (_is_mention(sentence, start, end) or _quoted(sentence, start, end))
-
-
-def _quoted(sentence: str, start: int, end: int) -> bool:
-    """Whether *start*..*end* lies inside a double-quoted span, which quotes a phrase rather than directing."""
-    return any(span.start() < start and end < span.end() for span in _QUOTED_RE.finditer(sentence))
+    yield start, text[start:]
 
 
 def _name_key(name: str) -> str:
@@ -1546,9 +1557,9 @@ def _name_key(name: str) -> str:
 
 
 def _is_listed(name: str, listed: frozenset[str]) -> bool:
-    """Whether *name* is a listed name, alone or behind a client's namespace (``mcp__server__search``)."""
+    """Whether *name* is a listed name, alone or behind up to three client namespaces (``mcp__server__search``)."""
     parts = _NAMESPACE_RE.split(name)
-    return any(_name_key("_".join(parts[start:])) in listed for start in range(len(parts)))
+    return any(_name_key("_".join(parts[start:])) in listed for start in range(min(len(parts), _MAX_NAMESPACES + 1)))
 
 
 def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[str]:
@@ -1557,19 +1568,26 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     ``any_tool_directive``: a directive about any or other tools or servers. ``unlisted_tool_directive``: a
     directive naming a tool that is not in *listed* (the names the server lists); with *listed* None
     the catalog is unknown and only the first class is judged. *listed* holds :func:`_name_key` forms.
+    A phrase in double quotes or named as an attempt (``attempts to call x``) is a mention, not a directive.
     """
+    quoted = _QuotedSpans.of(text)
     found: list[str] = []
-    for sentence in _sentences(text):
+    for offset, sentence in _sentences(text, quoted):
         if not _DIRECTIVE_RE.search(sentence):
             continue
-        if any(_directs(sentence, match) for match in _ANY_TOOL_RE.finditer(sentence)):
+
+        def directs(match: re.Match[str], sentence: str = sentence, offset: int = offset) -> bool:
+            start, end = match.start(), match.end()
+            return not (_is_mention(sentence, start, end) or quoted.contains(offset + start, offset + end))
+
+        if any(directs(match) for match in _ANY_TOOL_RE.finditer(sentence)):
             found.append("any_tool_directive")
         if listed is not None:
             found.extend(
                 "unlisted_tool_directive"
                 for pattern in _TOOL_REFERENCES
                 for match in pattern.finditer(sentence)
-                if _directs(sentence, match) and not _is_listed(match["ticked"] or match["bare"], listed)
+                if directs(match) and not _is_listed(match["ticked"] or match["bare"], listed)
             )
     return found
 
