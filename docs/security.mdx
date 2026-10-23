@@ -175,8 +175,9 @@ replay an injected instruction.
     `</script/>` that a browser accepts and the parser reads as text.
   - `catalog_cross_tool_directives` reads each sentence that directs the
     model: one with `must`, `do not`, `should`, `make sure` or `ensure`;
-    `always` or `never` before a verb in its base form ("always call", not
-    "always returns"); `first` or `instead` before a verb such as `call`; or
+    `always` or `never` opening a clause ("Never use …", "…, then always
+    call …", not "the tool always returns"); `first` or `instead` before a
+    verb such as `call`; or
     one that opens with `when`,
     `before`, `after`, `if` or a verb such as `call` or `use`. In such a
     sentence it flags a reference to any or other tools or servers ("with any

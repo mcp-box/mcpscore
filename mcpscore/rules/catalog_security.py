@@ -1495,8 +1495,9 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
     r"\b(?:must|do\s+not|don['\u2019]t|should|make\s+sure|ensure|be\s+sure)\b"
-    # "always"/"never" direct only before a base-form verb: "always call", not "always returns" or "never failed".
-    r"|\b(?:always|never)\s+(?!(?:\w*[^s\W]s|\w+ed|is|are|was|were|has|have|had|does|did|can|will|would|may)\b)\w"
+    # "always"/"never" direct only opening a clause ("Never use …", "…, then always call …"); after a subject
+    # or auxiliary ("the tool always returns", "has never been") they describe.
+    r"|(?:^|[,;:(\u2014\u201d\x22]|\b(?:and|or|then|but|so|please))[^\w\n]{0,4}(?:always|never)\b"
     r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
     r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer)\b",
     re.IGNORECASE | re.MULTILINE,
@@ -1613,7 +1614,11 @@ def _is_listed(name: str, listed: frozenset[str]) -> bool:
 
 def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
     """Whether *match* names a tool, in backticks or code-shaped, that is not among the *listed* names."""
-    name = match["ticked"] or _code_shaped(match["bare"])
+    if match["ticked"]:
+        return not _is_listed(match["ticked"], listed)
+    if _is_listed(match["bare"], listed):
+        return False
+    name = _code_shaped(match["bare"])
     return name is not None and not _is_listed(name, listed)
 
 
