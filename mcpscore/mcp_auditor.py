@@ -38,7 +38,7 @@ from .report_evidence import report_evidence
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
 from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, rule_sort_key
 from .rules.packaging import PACKAGING_GROUP
-from .skills import collect_skills, declared_settings, skills_report, stateless_list_hints
+from .skills import SkillsEvidence, collect_skills, declared_settings, skills_report, stateless_list_hints
 from .spec import DRAFT, LATEST, Era
 
 logger = logging.getLogger(__name__)
@@ -1031,7 +1031,8 @@ class MCPAuditor:
 
         The 2025-11-25 ``initialize`` result has no ``extensions`` field, so such a server's session never
         declares it. ``skills/list`` is tried on the session first, then on the stateless lifecycle when the
-        session refused it or listed nothing: the lifecycles may serve different catalogs.
+        session refused it or listed nothing: the lifecycles may serve different catalogs. An empty session
+        listing stands only when the stateless one, on the lifecycle that declared the extension, is whole too.
         """
         if self.audit_data.skills is not None or self.era is not Era.DUAL or self.mcp_client is None:
             return
@@ -1042,13 +1043,18 @@ class MCPAuditor:
         url = self.audit_data.url
         target = url if url and url.startswith(("http://", "https://")) else self.mcp_client.stdio_params
         if not evidence.entries and target is not None:
+            stateless: SkillsEvidence | None = None
             try:
                 async with stateless_session(target, self.headers) as session:
                     stateless = await collect_skills(session, settings, stateless=True)
-                if evidence.entries is None or stateless.entries:
-                    evidence = stateless
             except Exception as exc:  # noqa: BLE001 — the session's evidence stands
                 logger.warning("Could not collect skills on the stateless lifecycle (%s)", type(exc).__name__)
+            if stateless is not None and (evidence.entries is None or stateless.entries):
+                evidence = stateless
+            elif evidence.entries is not None and (
+                stateless is None or stateless.entries is None or stateless.list_incomplete
+            ):
+                evidence.list_incomplete = True
         evidence.declared_in_discover = True
         self.audit_data.skills = evidence
 

@@ -200,3 +200,26 @@ async def test_resources_capability_is_judged_on_the_declaring_lifecycle(
     assert auditor.audit_data.capabilities is not None
     assert auditor.audit_data.capabilities.resources is None
     assert {result.rule_id: result for result in auditor.results}["skills_resources_capability"].passed is passed
+
+
+@pytest.mark.parametrize(
+    "stateless",
+    [
+        FakeSession([{"skills": [], "resultType": "incomplete"}]),
+        FakeSession([], errors={"skills/list:": MCPError(-32601, "Method not found")}),
+        OSError("refused"),
+    ],
+    ids=["stateless-incomplete", "stateless-refused", "stateless-unreachable"],
+)
+async def test_empty_session_listing_needs_a_whole_stateless_listing(discover, monkeypatch, stateless: Any) -> None:
+    discover({"extensions": SKILLS})
+    _stateless(monkeypatch, stateless)
+    auditor = MCPAuditor()
+
+    await auditor.audit(SessionClient(FakeSession([_page()])))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert evidence.entries == []
+    assert evidence.list_incomplete
+    assert "server_exposes_primitive" in {rule.rule_id for rule in auditor.skipped_rules}
