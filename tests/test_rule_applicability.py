@@ -189,9 +189,8 @@ class TestAuditorSkipsNonApplicableRules:
 
         auditor._run_all_rules()
 
-        assert [result.rule_id for result in auditor.results] == ["tools_at_least_one"]
-        assert auditor.results[0].passed is False
+        assert auditor.results == []
         assert auditor.score == 0
-        assert auditor.max_score == RuleSeverity.CRITICAL
-        assert len(auditor.skipped_rules) == len(auditor.rules) - 1
+        assert auditor.max_score == 0
+        assert len(auditor.skipped_rules) == len(auditor.rules)
         assert {rule.reason for rule in auditor.skipped_rules} == {SKIP_REASON_NOT_APPLICABLE}

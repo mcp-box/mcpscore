@@ -316,6 +316,8 @@ async def test_invalid_tool_entries_degrade_to_none(stub_probes, monkeypatch: py
     auditor = MCPAuditor()
     assert await auditor.audit_modern_only(URL) is True
     assert auditor.audit_data.tools is None
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    assert skipped["server_exposes_primitive"] == "insufficient-data"
 
 
 async def test_stateless_probe_without_payload_leaves_tools_none(stub_probes, monkeypatch: pytest.MonkeyPatch):
@@ -493,7 +495,7 @@ async def test_audit_partial_scores_auth_and_skips_session(stub_probes, monkeypa
     assert "security_tls_enabled" in scored
     # Session-dependent rules skip as insufficient-data, never fail.
     skipped = {s["rule_id"]: s["reason"] for s in report["skipped_rules"]}
-    assert skipped.get("tools_at_least_one") == "insufficient-data"
+    assert skipped.get("server_exposes_primitive") == "insufficient-data"
     assert skipped.get("server_name_present") == "insufficient-data"
     assert skipped.get("capability_tools_present") == "insufficient-data"
     # No tools were collected, so no tools rule may call itself not applicable.
@@ -650,3 +652,29 @@ class TestObservedAuthStatus:
     def test_no_probes_is_no_evidence(self):
         assert observed_auth_status(None) is None
         assert observed_auth_status({}) is None
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected"),
+    [(-32601, None), (-32603, "insufficient-data")],
+    ids=["method-not-found", "internal-error"],
+)
+async def test_refused_tools_listing_of_a_server_declaring_nothing(
+    stub_probes, monkeypatch: pytest.MonkeyPatch, error_code: int, expected: str | None
+):
+    results = _modern_probe_results({**DISCOVER_PAYLOAD, "capabilities": {}})
+    results[PROBE_STATELESS_LIST] = ProbeResult(
+        PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, {"http_status": 200, "error_code": error_code}
+    )
+    stub_probes(results)
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+    assert "tools" in auditor.audit_data.listings_attempted
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    results_by_id = {result.rule_id: result for result in auditor.results}
+    if expected is None:
+        assert results_by_id["server_exposes_primitive"].passed is False
+    else:
+        assert skipped["server_exposes_primitive"] == expected

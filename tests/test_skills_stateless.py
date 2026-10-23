@@ -32,7 +32,7 @@ from mcpscore.rules.base import (
     AuditData,
 )
 from mcpscore.rules.readiness import SkillsListCacheHintsReadinessRule
-from mcpscore.skills import SkillsEvidence, collect_skills, stateless_list_hints
+from mcpscore.skills import SkillsEvidence, collect_skills, stateless_first_page, stateless_list_hints
 from mcpscore.spec import Era
 
 from .test_modern_only_audit import DISCOVER_PAYLOAD, URL, _fake_tls, _modern_probe_results
@@ -149,6 +149,36 @@ class TestCollectorHints:
         assert evidence.stateless_list == {"result_type": "complete", "ttl_ms": 0, "cache_scope": "private"}
         session_evidence = await collect_skills(FakeSession([page]), {})
         assert session_evidence.stateless_list is None
+
+    @pytest.mark.parametrize(
+        ("result_type", "incomplete"),
+        [("complete", False), ("incomplete", True), (None, True)],
+    )
+    async def test_stateless_listing_without_complete_result_type_is_incomplete(self, result_type, incomplete):
+        page: dict[str, Any] = {"skills": []}
+        if result_type is not None:
+            page["resultType"] = result_type
+        evidence = await collect_skills(FakeSession([page]), {}, stateless=True)
+        assert evidence.entries == []
+        assert evidence.list_incomplete is incomplete
+
+    async def test_session_listing_needs_no_result_type(self):
+        evidence = await collect_skills(FakeSession([{"skills": []}]), {})
+        assert evidence.list_incomplete is False
+
+    @pytest.mark.parametrize(
+        ("page", "count", "whole"),
+        [
+            ({"skills": [entry("a")], "resultType": "complete"}, 1, True),
+            ({"skills": [], "resultType": "complete", "nextCursor": "2"}, 0, False),
+            ({"skills": []}, 0, False),
+            ({"resultType": "complete"}, None, False),
+            ({"skills": [None, {"name": "a"}], "resultType": "complete"}, None, True),
+        ],
+    )
+    async def test_first_stateless_page_reports_its_count_and_wholeness(self, page, count, whole):
+        _, observed_count, observed_whole = await stateless_first_page(FakeSession([page]))
+        assert (observed_count, observed_whole) == (count, whole)
 
     async def test_stateless_listing_failure_is_recorded(self):
         session = FakeSession([], errors={"skills/list:": MCPError(-32601, "no")})

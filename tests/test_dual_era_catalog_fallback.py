@@ -107,6 +107,10 @@ def stateless_probes(monkeypatch: pytest.MonkeyPatch):
 
         monkeypatch.setattr(mcp_auditor, "run_all_probes", run_all_probes)
 
+    async def tls_version(url: str) -> str:
+        return "TLSv1.3"
+
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(tls_version))
     return install
 
 
@@ -126,7 +130,7 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
 
     results = {result.rule_id: result for result in auditor.results}
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
-    assert results["tools_at_least_one"].passed
+    assert results["server_exposes_primitive"].passed
     assert "tools_names_unique" in results
     # Nothing ties the session error to the schema: the catalog is judged on the revision it was served on.
     assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
@@ -317,7 +321,7 @@ async def test_no_recovery_when_the_stateless_listing_is_unsupported(stateless_p
     assert auditor.audit_data.tools is None
     assert auditor.audit_data.catalog_versions == {}
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
-    assert skipped["tools_at_least_one"] == SKIP_REASON_INSUFFICIENT_DATA
+    assert skipped["server_exposes_primitive"] == SKIP_REASON_INSUFFICIENT_DATA
 
 
 async def test_malformed_stateless_catalog_keeps_the_legacy_error(stateless_probes, caplog):
@@ -404,3 +408,20 @@ def test_applicability_follows_the_catalog_revision():
     assert auditor._applicability_version(_FullDataRule()) == "2025-11-25"
     auditor.audit_data.catalog_versions.clear()
     assert auditor._applicability_version(_ToolsRule()) == "2025-11-25"
+
+
+@pytest.mark.parametrize(
+    "client",
+    [LegacyListingFailsClient(), LegacyListingFailsClient([SESSION_TOOL], partial=True)],
+    ids=["session-failed", "session-partial"],
+)
+async def test_empty_recovered_catalog_does_not_prove_the_server_empty(stateless_probes, client):
+    stateless_probes({"resultType": "complete", "tools": []})
+    auditor = MCPAuditor()
+
+    await auditor.audit(client)
+
+    assert auditor.audit_data.tools == []
+    assert auditor.audit_data.catalog_versions == {"tools": "2026-07-28"}
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    assert skipped["server_exposes_primitive"] == SKIP_REASON_INSUFFICIENT_DATA

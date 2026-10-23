@@ -38,7 +38,6 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
     """Supply independently chosen failures and a concrete repair action per rule."""
     cases: list[tuple[str, AuditData, str, str]] = []
     tool_cases = [
-        ("at_least_one", [], "/tools", "Resources-only"),
         ("name_present_in_all", [tool(name="")], "/name", "non-empty"),
         ("names_unique", [tool(), tool()], "/name", "distinct name"),
         ("names_valid_format", [tool(name="search customers")], "/name", "1-128"),
@@ -207,6 +206,9 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
     ]:
         cases.append((f"server_{suffix}", AuditData(server_info=info), path, action))
     cases.append(("server_instructions_present", AuditData(instructions=None), "/instructions", "limitations"))
+    cases.append(
+        ("server_exposes_primitive", AuditData(capabilities=ServerCapabilities(), tools=[]), "", "list method")
+    )
     cases += [
         ("catalog_hidden_unicode", AuditData(tools=[tool(description="Find\u202eslaer")]), "/description", "retype"),
         (
@@ -410,7 +412,7 @@ def test_duplicate_tool_names_do_not_change_existing_header_uniqueness_verdict()
         ("resource_templates_names_present", "Resource template index 0"),
         ("prompts_arguments_documented", "Prompt index 0"),
         ("server_name_present", "Server"),
-        ("tools_at_least_one", "Catalog"),
+        ("server_exposes_primitive", "Catalog"),
     ],
 )
 def test_cli_labels_the_actual_entity_kind(rule_id: str, label: str, caplog: pytest.LogCaptureFixture) -> None:
@@ -479,14 +481,10 @@ def test_list_changed_judges_only_its_own_feature(feature: str, enabled: bool) -
         assert result.details["issues"][0]["reason"] == "list_changed_not_declared"
 
 
-def test_empty_tools_does_not_call_critical_finding_optional() -> None:
-    from mcpscore.rules.base import RuleSeverity
-
-    result = RULES["tools_at_least_one"].check(AuditData(tools=[]))
+def test_empty_server_finding_is_not_called_optional() -> None:
+    result = RULES["server_exposes_primitive"].check(AuditData(capabilities=ServerCapabilities()))
     assert not result.passed
-    assert result.severity == RuleSeverity.CRITICAL
     assert "optional quality recommendation" not in result.message
-    assert "review whether" in result.suggested_fix
 
 
 @pytest.mark.parametrize(

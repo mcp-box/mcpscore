@@ -10,12 +10,13 @@ from bisect import bisect_left
 from collections.abc import Iterator
 from typing import Any, ClassVar
 
-from ..probes import ERROR_INVALID_PARAMS
+from ..probes import ERROR_INVALID_PARAMS, PROBE_DISCOVER
 from ..report_evidence import report_evidence
 from ..skills import (
     DIGEST_RE,
     DIRECTORY_READ_KINDS,
     SKILL_FILE,
+    SKILLS_EXTENSION,
     UNOBSERVED_OUTCOMES,
     DirectoryRead,
     SkillFile,
@@ -53,6 +54,25 @@ SEP = "MCP Skills Extension (SEP-2640, Final)"
 AGENT_SKILLS = "Agent Skills specification (agentskills.io/specification, read 2026-10-18)"
 
 
+def discover_capabilities(audit_data: AuditData) -> dict[str, Any]:
+    """Return the raw capabilities ``server/discover`` declared, or an empty dict when it was not observed."""
+    discover = (audit_data.probes or {}).get(PROBE_DISCOVER)
+    payload = discover.payload if discover is not None and isinstance(discover.payload, dict) else {}
+    capabilities = payload.get("capabilities")
+    return capabilities if isinstance(capabilities, dict) else {}
+
+
+def declares_skills(audit_data: AuditData) -> bool:
+    """Whether the server declared the Skills extension, in its session capabilities or in ``server/discover``."""
+    return declared_settings(audit_data.capabilities) is not None or discover_declares_skills(audit_data)
+
+
+def discover_declares_skills(audit_data: AuditData) -> bool:
+    """Whether ``server/discover`` declared the Skills extension."""
+    extensions = discover_capabilities(audit_data).get("extensions")
+    return isinstance(extensions, dict) and SKILLS_EXTENSION in extensions
+
+
 def _entries(evidence: SkillsEvidence) -> Iterator[tuple[int, dict[str, Any]]]:
     """Yield the listing entries that are objects, with their listing index."""
     for index, entry in enumerate(evidence.entries or []):
@@ -87,7 +107,7 @@ class SkillsBaseRule(BaseRule):
         """Skip unless the server declared the extension and its skills evidence was collected."""
         if audit_data.capabilities is None:
             return SKIP_REASON_INSUFFICIENT_DATA
-        if declared_settings(audit_data.capabilities) is None:
+        if not declares_skills(audit_data):
             return SKIP_REASON_NOT_APPLICABLE
         evidence = audit_data.skills
         if evidence is None:
@@ -521,7 +541,11 @@ class SkillsResourcesCapabilityRule(SkillsBaseRule):
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Medium check: skill files are served as resources, so the ``resources`` capability must be declared."""
-        passed = getattr(audit_data.capabilities, "resources", None) is not None
+        if declared_settings(audit_data.capabilities) is None:
+            # Judged on the lifecycle that declared the extension.
+            passed = discover_capabilities(audit_data).get("resources") is not None
+        else:
+            passed = getattr(audit_data.capabilities, "resources", None) is not None
         return self._result(
             passed=passed,
             message=(
@@ -1171,7 +1195,9 @@ class SkillsSkillFileMetadataRule(SkillsBaseRule):
     def _observations(self, audit_data: AuditData) -> Iterator[tuple[int, dict[str, Any], Any, Any]]:
         """Yield ``(index, entry, read, listed)`` for each skill whose ``SKILL.md`` was read or listed."""
         evidence = self._evidence(audit_data)
-        listed = {normalize_uri(str(r.uri)): r for r in audit_data.resources or []}
+        # The resource catalog is the session's: it describes skills collected on the same lifecycle only.
+        resources = audit_data.resources or [] if not evidence.stateless else []
+        listed = {normalize_uri(str(r.uri)): r for r in resources}
         for index, entry in _entries(evidence):
             uri = entry.get("uri")
             if not isinstance(uri, str):
@@ -1438,7 +1464,7 @@ class SkillsSecurityRule(SkillsBaseRule):
         the same way.
         """
         reason = super().skip_reason(audit_data)
-        if audit_data.capabilities is None or declared_settings(audit_data.capabilities) is None:
+        if audit_data.capabilities is None or not declares_skills(audit_data):
             # The extension's own scope comes first: observed text never makes an undeclared server applicable.
             return reason
         evidence = audit_data.skills

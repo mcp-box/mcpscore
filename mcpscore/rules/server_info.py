@@ -1,12 +1,37 @@
 from abc import abstractmethod
+from dataclasses import dataclass
+from typing import Any
 
 from mcp_types import Implementation
 
 from mcpscore.diagnostics import quoted_preview
+from mcpscore.probes import (
+    ERROR_METHOD_NOT_FOUND,
+    PROBE_DISCOVER,
+    PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_STATELESS_LIST,
+    PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+    ProbeOutcome,
+    ProbeResult,
+    detect_era,
+    has_modern_support,
+)
+from mcpscore.skills import declared_settings
+from mcpscore.spec import Era
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_fields, requires_server_info
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+    requires_server_info,
+)
 from .catalog_diagnostics import catalog_result, field_issue
 from .registry import register_rule
+from .skills import discover_capabilities, discover_declares_skills
 
 
 class ServerInfoBaseRule(BaseRule):
@@ -401,4 +426,242 @@ class ServerIconsPresentRule(ServerInfoBaseRule):
                     if not (isinstance(icon.src, str) and icon.src.startswith(("https://", "data:")))
                 ]
             ),
+        )
+
+
+_PRIMITIVE_LISTINGS = {
+    "tools": "tools",
+    "resources": "resources",
+    "resource_templates": "resources",
+    "prompts": "prompts",
+}
+"""Each primitive listing the auditor collects, and the capability that declares it."""
+
+_IDENTITY_FIELDS = {"tools": "name", "resources": "uri", "resource_templates": "uri_template", "prompts": "name"}
+"""The field that identifies an item of each catalog."""
+
+_CONNECTION_PROBES = {
+    "tools": PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+    "resources": PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+    "prompts": PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+}
+"""Probes that list each capability's catalog on two fresh connections; their item counts show what it serves."""
+
+
+@dataclass
+class _Catalog:
+    """What each lifecycle showed about one primitive catalog."""
+
+    items: int | None = None
+    """The most items any source observed; None when no source returned a listing."""
+    legacy_needed: bool = False
+    """The legacy session declared the catalog or tried to list it."""
+    legacy_empty: bool = False
+    """The session's listing was whole (complete, every page read) and empty."""
+    modern_needed: bool = False
+    """The stateless lifecycle declared the catalog."""
+    modern_empty: bool = False
+    """A whole stateless listing came back empty."""
+
+    @property
+    def declared(self) -> bool:
+        return self.legacy_needed or self.modern_needed
+
+    @property
+    def proven_empty(self) -> bool:
+        """Every lifecycle that declared the catalog listed it whole and empty."""
+        legacy = self.legacy_empty or not self.legacy_needed
+        return self.declared and legacy and (self.modern_empty or not self.modern_needed)
+
+    def observe(self, count: int) -> None:
+        self.items = max(self.items or 0, count)
+
+
+def _stateless_tools_page(audit_data: AuditData) -> dict[str, Any] | None:
+    """Return the stateless ``tools/list`` result the probe received, or None."""
+    probe = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
+    payload = probe.payload if probe is not None else None
+    return payload if isinstance(payload, dict) and isinstance(payload.get("tools"), list) else None
+
+
+def _connection_declares(probe: ProbeResult | None) -> bool:
+    """Whether a catalog-connection probe saw either connection declare its capability.
+
+    A probe that compared listings ran only because a connection declared it; one that stopped at a disagreement
+    or failed while listing records the declarations it saw.
+    """
+    if probe is None:
+        return False
+    if probe.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
+        return True
+    return any(probe.details.get(key) is True for key in ("first_declares_capability", "second_declares_capability"))
+
+
+def _discover_observed(audit_data: AuditData) -> bool:
+    """Whether a ``server/discover`` result with a capabilities object was observed."""
+    discover = (audit_data.probes or {}).get(PROBE_DISCOVER)
+    payload = discover.payload if discover is not None else None
+    return isinstance(payload, dict) and isinstance(payload.get("capabilities"), dict)
+
+
+def _identified(entries: list[Any], key: str) -> int | None:
+    """Count the entries that carry an identity (a non-empty string *key*), as the catalog probes do.
+
+    Returns None for a non-empty list with no identified entry: it shows no item, and does not prove the
+    catalog empty. Whether an identified entry is otherwise valid is for the validity rules to judge.
+    """
+    count = sum(1 for entry in entries if isinstance(entry, dict) and isinstance(entry.get(key), str) and entry[key])
+    return count if count or not entries else None
+
+
+def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
+    """Reconcile the session listings, the stateless lifecycle and the catalog probes into one view per catalog.
+
+    A catalog is empty only when each lifecycle that declared it listed it whole and empty. On the legacy
+    session that is a complete listing; on the stateless lifecycle, a ``tools/list`` page with
+    ``resultType: "complete"`` (SEP-2322) and no next cursor, or a catalog probe that read every page on two
+    connections, each page with ``resultType: "complete"``, and found nothing. No probe lists resource
+    templates on the stateless lifecycle, so templates that ``server/discover`` declares stay unproven.
+    """
+    discovered = discover_capabilities(audit_data)
+    probes = audit_data.probes or {}
+    has_session = audit_data.session_protocol_version is not None
+    # A server known to speak the modern lifecycle whose server/discover result never arrived may declare anything.
+    discover_unseen = not _discover_observed(audit_data) and detect_era(
+        audit_data.session_protocol_version, probes
+    ) in (Era.MODERN, Era.DUAL)
+    page = _stateless_tools_page(audit_data)
+    stateless_probe = probes.get(PROBE_STATELESS_LIST)
+    error_code = stateless_probe.details.get("error_code") if stateless_probe is not None else None
+    # An explicit Method not found for tools/list says the server serves no tools catalog at all.
+    tools_refused = error_code == ERROR_METHOD_NOT_FOUND
+    # Any other outcome on a modern server leaves its tools catalog to settle: only a whole page proves it empty.
+    probed = stateless_probe is not None and stateless_probe.outcome is not ProbeOutcome.NOT_APPLICABLE
+    tools_answered = probed and not tools_refused and has_modern_support(probes)
+    catalogs: dict[str, _Catalog] = {}
+    for listing, capability in _PRIMITIVE_LISTINGS.items():
+        attempted = listing in audit_data.listings_attempted and not (listing == "tools" and tools_refused)
+        session_declares = getattr(audit_data.capabilities, capability, None) is not None
+        connection_declares = _connection_declares(probes.get(_CONNECTION_PROBES[capability]))
+        modern_declares = discover_unseen or connection_declares or discovered.get(capability) is not None
+        catalog = catalogs[listing] = _Catalog(
+            legacy_needed=has_session and (session_declares or attempted),
+            modern_needed=modern_declares or (not has_session and (session_declares or attempted)),
+        )
+        collected = getattr(audit_data, listing)
+        if collected is not None:
+            # Items without an identity show nothing, and do not prove the catalog empty either.
+            named = sum(1 for item in collected if str(getattr(item, _IDENTITY_FIELDS[listing], None) or ""))
+            if named or not collected:
+                catalog.observe(named)
+        # A catalog recovered from the stateless lifecycle replaced a session listing that failed or broke off.
+        failed = (
+            listing in audit_data.catalog_versions
+            or listing in audit_data.incomplete_listings
+            or listing in audit_data.listing_errors
+        )
+        catalog.legacy_empty = has_session and collected == [] and not failed
+        probe = probes.get(_CONNECTION_PROBES.get(listing, ""))
+        if probe is not None and probe.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
+            counts = [probe.details.get(key) for key in ("first_count", "second_count")]
+            counts = [count for count in counts if isinstance(count, int)]
+            catalog.observe(max(counts, default=0))
+            # SUPPORTED: both connections read every page and found the same catalog.
+            whole = probe.outcome is ProbeOutcome.SUPPORTED and probe.details.get("results_complete") is True
+            catalog.modern_empty = whole and counts == [0, 0]
+        if listing == "tools":
+            catalog.modern_needed = catalog.modern_needed or tools_answered
+        if listing == "tools" and page is not None:
+            named = _identified(page["tools"], "name")
+            if named is not None:
+                catalog.observe(named)
+            whole = page.get("resultType") == "complete" and page.get("nextCursor") is None
+            catalog.modern_empty = catalog.modern_empty or (whole and not page["tools"])
+    skills = audit_data.skills
+    session_skills = declared_settings(audit_data.capabilities) is not None
+    catalog = catalogs["skills"] = _Catalog(
+        legacy_needed=has_session and session_skills,
+        modern_needed=discover_unseen or discover_declares_skills(audit_data) or (not has_session and session_skills),
+    )
+    if skills is not None:
+        listed_whole = (
+            skills.entries == [] and not skills.list_incomplete and not skills.list_malformed and not skills.list_error
+        )
+        listed = None if skills.entries is None else _identified(skills.entries, "uri")
+        if listed is not None:
+            catalog.observe(listed)
+        if skills.stateless:
+            catalog.modern_empty = listed_whole
+        else:
+            catalog.legacy_empty = listed_whole
+            # The first stateless page the readiness check reads covers the other lifecycle.
+            if skills.stateless_count is not None:
+                catalog.observe(skills.stateless_count)
+            catalog.modern_empty = skills.stateless_count == 0 and skills.stateless_whole
+    return catalogs
+
+
+@register_rule
+class ServerExposesPrimitiveRule(BaseRule):
+    """Medium check: the server exposes at least one tool, resource, resource template, prompt or skill.
+
+    Every server primitive is optional, so no single one is required; a server that serves none of them gives a
+    client nothing to use.
+    """
+
+    group_name = "server_info"
+    group_order = 2
+    rule_id = "server_exposes_primitive"
+    basis = (
+        "MCP 2025-11-25 Server Features §Overview (tools, resources and prompts are each optional); "
+        "SEP-2640 Skills extension (skills/list)"
+    )
+    rule_order = 7
+
+    @property
+    def rule_name(self) -> str:
+        return "Server Info - Exposes at least one tool, resource, prompt or skill"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless some source observed a primitive, or every declared catalog was listed whole and empty.
+
+        A failed or incomplete listing is never read as empty, and a partial audit has no session to list with.
+        """
+        if audit_data.partial or audit_data.capabilities is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        catalogs = _catalogs(audit_data).values()
+        if any(catalog.items for catalog in catalogs):
+            return None
+        settled = all(catalog.proven_empty for catalog in catalogs if catalog.declared)
+        return None if settled else SKIP_REASON_INSUFFICIENT_DATA
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Pass when any source observed at least one tool, resource, resource template, prompt or skill."""
+        catalogs = _catalogs(audit_data)
+        counts = {name: catalog.items for name, catalog in catalogs.items()}
+        passed = any(counts.values())
+        checked = [name for name, catalog in catalogs.items() if catalog.declared]
+        if passed:
+            exposed = ", ".join(f"{name}: {count}" for name, count in counts.items() if count)
+            message = f"✅ Server exposes at least one primitive ({exposed})"
+        elif checked:
+            message = f"❌ Server exposes nothing: every listing it serves came back empty ({', '.join(checked)})"
+        else:
+            message = "❌ Server exposes nothing: it declares no tools, resources, prompts or skills"
+        details: dict[str, Any] = {"exposed": counts, "checked": checked}
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details=details,
+            suggested_fix=(
+                "Expose at least one tool, resource, prompt or skill, declare its capability in the initialize "
+                "result (server/discover on the stateless lifecycle), and check that its list method returns it."
+            ),
+            issues=[field_issue("catalog", None, "", "empty_catalog", "at least one tool, resource, prompt or skill")],
         )

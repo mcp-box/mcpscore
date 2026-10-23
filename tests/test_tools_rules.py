@@ -2,7 +2,6 @@
 
 This module tests all tool-related audit rules including:
 - ToolsBaseRule
-- ToolsAtLeastOneRule
 - ToolsNamePresentRule
 - ToolsNamesUniqueRule
 - ToolsNamesValidFormatRule
@@ -25,7 +24,6 @@ from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_A
 from mcpscore.rules.registry import create_all_rules
 from mcpscore.rules.tools import (
     ToolsAnnotationsPresentRule,
-    ToolsAtLeastOneRule,
     ToolsBaseRule,
     ToolsDescriptionPresentRule,
     ToolsDescriptionsUniqueRule,
@@ -421,82 +419,12 @@ class TestToolsBaseRule:
         assert rules
         assert {rule.skip_reason(data) for rule in rules} == {SKIP_REASON_INSUFFICIENT_DATA}
 
-    def test_absent_optional_tools_catalog_does_not_claim_collection_failed(self, capabilities_missing) -> None:
-        """No declaration is distinct from a declared catalog that failed to load."""
-        data = AuditData(tools=None, capabilities=capabilities_missing)
-        assert ToolsAtLeastOneRule().skip_reason(data) is None
-
     def test_empty_complete_catalog_skips_every_quality_rule(self) -> None:
         data = AuditData(tools=[])
-        quality_rules = [
-            rule
-            for rule in create_all_rules()
-            if isinstance(rule, ToolsBaseRule) and not isinstance(rule, ToolsAtLeastOneRule)
-        ]
+        quality_rules = [rule for rule in create_all_rules() if isinstance(rule, ToolsBaseRule)]
 
         assert quality_rules
         assert {rule.skip_reason(data) for rule in quality_rules} == {SKIP_REASON_NOT_APPLICABLE}
-
-
-# ============================================================================
-# ToolsAtLeastOneRule Tests
-# ============================================================================
-
-
-class TestToolsAtLeastOneRule:
-    """Test ToolsAtLeastOneRule."""
-
-    def test_rule_properties(self) -> None:
-        """Test rule metadata properties."""
-        rule = ToolsAtLeastOneRule()
-        assert rule.rule_id == "tools_at_least_one"
-        assert rule.rule_order == 1
-        assert rule.severity == RuleSeverity.CRITICAL
-
-    def test_empty_incomplete_listing_skips(self) -> None:
-        """An empty partial listing cannot prove the server has no tools."""
-        rule = ToolsAtLeastOneRule()
-        data = AuditData(tools=[], incomplete_listings=frozenset({"tools"}))
-        assert rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
-
-    def test_nonempty_incomplete_listing_still_judges(self, valid_tool: Tool) -> None:
-        """A non-empty partial listing proves presence — judge it, don't skip."""
-        rule = ToolsAtLeastOneRule()
-        data = AuditData(tools=[valid_tool], incomplete_listings=frozenset({"tools"}))
-        assert rule.skip_reason(data) is None
-        assert rule.check(data).passed is True
-
-    def test_empty_complete_listing_still_fails(self) -> None:
-        """A complete empty listing is a genuine failure, not insufficient data."""
-        rule = ToolsAtLeastOneRule()
-        data = AuditData(tools=[])
-        assert rule.skip_reason(data) is None
-        assert rule.check(data).passed is False
-        assert "at least one tool" in rule.rule_name.lower()
-
-    def test_with_one_tool(self, valid_tool: Tool) -> None:
-        """Pass: Server provides at least one tool."""
-        rule = ToolsAtLeastOneRule()
-        result = rule.check(AuditData(tools=[valid_tool]))
-        assert result.passed is True
-        assert result.details is not None
-        assert result.details["tools_count"] == 1
-
-    def test_with_multiple_tools(self, valid_tool: Tool) -> None:
-        """Pass: Server provides multiple tools."""
-        rule = ToolsAtLeastOneRule()
-        result = rule.check(AuditData(tools=[valid_tool, valid_tool]))
-        assert result.passed is True
-        assert result.details is not None
-        assert result.details["tools_count"] == 2
-
-    def test_with_empty_list(self) -> None:
-        """Fail: Server provides no tools."""
-        rule = ToolsAtLeastOneRule()
-        result = rule.check(AuditData(tools=[]))
-        assert result.passed is False
-        assert result.details is not None
-        assert result.details["tools_count"] == 0
 
 
 # ============================================================================

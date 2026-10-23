@@ -130,6 +130,7 @@ from .security import (
     TLSEnabledRule,
 )
 from .server_info import (
+    ServerExposesPrimitiveRule,
     ServerIconsPresentRule,
     ServerInstructionsPresentRule,
     ServerNamePresentRule,
@@ -154,7 +155,6 @@ from .skills import (
 )
 from .tools import (
     ToolsAnnotationsPresentRule,
-    ToolsAtLeastOneRule,
     ToolsDescriptionPresentRule,
     ToolsExecutionConsistentRule,
     ToolsIconsValidRule,
@@ -267,6 +267,7 @@ __all__ = (
     "RuleResult",
     "RuleSeverity",
     "ServerDiscoverReadinessRule",
+    "ServerExposesPrimitiveRule",
     "ServerIconsPresentRule",
     "ServerInstructionsPresentRule",
     "ServerNamePresentRule",
@@ -294,7 +295,6 @@ __all__ = (
     "TLSEnabledRule",
     "ToolSchemaDialectReadinessRule",
     "ToolsAnnotationsPresentRule",
-    "ToolsAtLeastOneRule",
     "ToolsCatalogConnectionIndependentRule",
     "ToolsDescriptionPresentRule",
     "ToolsExecutionConsistentRule",
