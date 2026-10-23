@@ -1494,7 +1494,9 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 # Sentences end at punctuation or a blank line; a single line break only wraps the sentence.
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
-    r"\b(?:always|must|never|do\s+not|don['\u2019]t|should|make\s+sure|ensure|be\s+sure)\b"
+    r"\b(?:must|do\s+not|don['\u2019]t|should|make\s+sure|ensure|be\s+sure)\b"
+    # "always"/"never" direct only before a base-form verb: "always call", not "always returns" or "never failed".
+    r"|\b(?:always|never)\s+(?!(?:\w*[^s\W]s|\w+ed|is|are|was|were|has|have|had|does|did|can|will|would|may)\b)\w"
     r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
     r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer)\b",
     re.IGNORECASE | re.MULTILINE,
@@ -1504,17 +1506,14 @@ _ANY_TOOL_RE = re.compile(
     r"(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\b",
     re.IGNORECASE,
 )
-# A tool name is code-shaped: in backticks, joined with _ . or /, or camelCase, with at least one letter.
-# Plain and hyphenated words ("read-only tool") are left alone.
-_TOOL_NAME = (
-    r"`(?P<ticked>[^`\s]{1,128})`"
-    r"|(?P<bare>(?=[\w./-]*[A-Za-z])_*[A-Za-z0-9][A-Za-z0-9-]*(?:[_./]+[A-Za-z0-9-]+)+"
-    r"|(?:[A-Za-z0-9]+-)*[a-z]+(?:[A-Z][a-z0-9]*)+(?:-[A-Za-z0-9]+)*)"
-)
+# A whole identifier is captured as one token and its shape checked in code (see _code_shaped).
+_TOOL_NAME = r"`(?P<ticked>[^`\s]{1,128})`|(?P<bare>[\w./-]+)"
 _TOOL_REFERENCES = (
-    re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})(?![\w`/-])"),
+    re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})"),
     re.compile(rf"(?<![\w`./-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
 )
+_NAME_JOINERS_RE = re.compile(r"[_./]+")
+_CAMEL_RE = re.compile(r"[a-z]+(?:[A-Z][a-z0-9]*)+")
 _SEPARATORS_RE = re.compile(r"[-._/]+")
 # Namespaces a client puts in front of a tool name: mcp__notes__search, notes.search, notes/search.
 _NAMESPACE_RE = re.compile(r"__|[./]")
@@ -1583,6 +1582,24 @@ def _sentences(text: str, quoted: _QuotedSpans) -> Iterator[tuple[int, str]]:
     yield start, text[start:]
 
 
+def _code_shaped(token: str) -> str | None:
+    """Return *token* as a tool name when it is code-shaped, else None.
+
+    Code-shaped: joined with ``_``, ``.`` or ``/`` (``send_email``, ``mail/send``), or camelCase (``getWeather``),
+    with at least one letter. Plain words, hyphen-only words ("read-only") and numbers ("2.0") are prose.
+    """
+    name = token.rstrip("./-")
+    if not any(char.isascii() and char.isalpha() for char in name):
+        return None
+    if _NAME_JOINERS_RE.search(name):
+        parts = _NAME_JOINERS_RE.split(name.lstrip("_"))
+        return name if all(part and part[0].isalnum() and part.isascii() for part in parts) else None
+    words = name.split("-")
+    if all(word.isascii() and word.isalnum() for word in words) and any(_CAMEL_RE.fullmatch(w) for w in words):
+        return name
+    return None
+
+
 def _name_key(name: str) -> str:
     """Fold case and separators, so ``ads.campaign.refresh`` and ``ads/campaign__refresh`` compare equal."""
     return _SEPARATORS_RE.sub("_", name.casefold())
@@ -1592,6 +1609,12 @@ def _is_listed(name: str, listed: frozenset[str]) -> bool:
     """Whether *name* is a listed name, alone or behind up to three client namespaces (``mcp__server__search``)."""
     parts = _NAMESPACE_RE.split(name)
     return any(_name_key("_".join(parts[start:])) in listed for start in range(min(len(parts), _MAX_NAMESPACES + 1)))
+
+
+def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
+    """Whether *match* names a tool, in backticks or code-shaped, that is not among the *listed* names."""
+    name = match["ticked"] or _code_shaped(match["bare"])
+    return name is not None and not _is_listed(name, listed)
 
 
 def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[str]:
@@ -1623,7 +1646,7 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
                 "unlisted_tool_directive"
                 for pattern in _TOOL_REFERENCES
                 for match in pattern.finditer(sentence)
-                if directs(match) and not _is_listed(match["ticked"] or match["bare"], listed)
+                if directs(match) and _unlisted(match, listed)
             )
     return found
 
