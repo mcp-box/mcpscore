@@ -1649,13 +1649,13 @@ class _QuotedSpans:
         return index >= 0 and end < self.ends[index]
 
 
-def _sentences(text: str, quoted: _QuotedSpans) -> Iterator[tuple[int, str]]:
+def _sentences(text: str, quoted: _QuotedSpans, code: _QuotedSpans) -> Iterator[tuple[int, str]]:
     """Yield each sentence of *text* with its offset, keeping a quoted span whole so a quoted example stays one."""
     start = 0
     for brk in _SENTENCE_BREAK_RE.finditer(text):
         # Judged at the whitespace: 'say "OK." Then' ends a sentence, '"call x. Never y"' stays one example.
         space = brk.end() - 1
-        if not quoted.contains(space, space):
+        if not quoted.contains(space, space) and not code.contains(space, space):
             yield start, text[start : brk.start()]
             start = brk.end()
     yield start, text[start:]
@@ -1756,14 +1756,14 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     code = _QuotedSpans.of(text, _CODE_PAIRS)
     quoted = _QuotedSpans.of(text, skip=code)
     found: list[str] = []
-    for offset, sentence in _sentences(text, quoted):
+    for offset, sentence in _sentences(text, quoted, code):
         # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
         # with punctuation.
         indirect = _IndirectClauses.of(sentence, offset, quoted, code)
         if not any(
             not quoted.contains(offset + cue.end() - 1, offset + cue.end() - 1)
             and not code.contains(offset + cue.end() - 1, offset + cue.end() - 1)
-            and not indirect.covers(cue.start())
+            and not indirect.covers(cue.end() - 1)
             for cue in _DIRECTIVE_RE.finditer(sentence)
         ):
             continue
