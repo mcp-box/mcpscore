@@ -1027,19 +1027,20 @@ class MCPAuditor:
             logger.warning("Could not list skills on the stateless lifecycle (%s)", type(exc).__name__)
 
     async def _collect_discover_declared_skills(self) -> None:
-        """Collect the skills of a dual-era server that declares the extension only in ``server/discover``.
+        """Reconcile a dual-era server's skills with the stateless lifecycle when ``server/discover`` declares them.
 
-        The 2025-11-25 ``initialize`` result has no ``extensions`` field, so such a server's session never
-        declares it. ``skills/list`` is tried on the session first, then on the stateless lifecycle when the
-        session refused it or listed nothing: the lifecycles may serve different catalogs. An empty listing is
-        whole only when both lifecycles listed the catalog whole.
+        The 2025-11-25 ``initialize`` result has no ``extensions`` field, so a session may never declare the
+        extension; its skills are then listed on the session here. When the session refused ``skills/list`` or
+        listed nothing, the stateless lifecycle is listed too: the lifecycles may serve different catalogs. An
+        empty listing is whole only when both lifecycles listed the catalog whole.
         """
-        if self.audit_data.skills is not None or self.era is not Era.DUAL or self.mcp_client is None:
+        if self.era is not Era.DUAL or self.mcp_client is None:
             return
         settings = self._discover_skills_settings()
         if settings is None:
             return
-        evidence = await collect_skills(self.mcp_client, settings)
+        session_declared = self.audit_data.skills is not None
+        evidence = self.audit_data.skills or await collect_skills(self.mcp_client, settings)
         url = self.audit_data.url
         target = url if url and url.startswith(("http://", "https://")) else self.mcp_client.stdio_params
         if not evidence.entries and target is not None:
@@ -1055,7 +1056,7 @@ class MCPAuditor:
                 evidence = stateless
             if evidence.entries == [] and not (session_whole and stateless_whole):
                 evidence.list_incomplete = True
-        evidence.declared_in_discover = True
+        evidence.declared_in_discover = not session_declared
         self.audit_data.skills = evidence
 
     def _discover_skills_settings(self) -> dict[str, Any] | None:

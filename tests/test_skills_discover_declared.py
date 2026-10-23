@@ -238,3 +238,45 @@ async def test_failed_session_listing_keeps_an_empty_stateless_listing_unproven(
     assert evidence.entries == []
     assert evidence.list_incomplete
     assert "server_exposes_primitive" in {rule.rule_id for rule in auditor.skipped_rules}
+
+
+class BothDeclareClient(SessionClient):
+    """A session whose initialize result declares the Skills extension too."""
+
+    async def initialize(self) -> InitializeResult:
+        return InitializeResult.model_validate(
+            {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"resources": {}, "extensions": SKILLS},
+                "serverInfo": {"name": "skills-demo", "version": "1.0"},
+            }
+        )
+
+
+async def test_empty_session_catalog_is_reconciled_when_both_lifecycles_declare_skills(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    _stateless(monkeypatch, FakeSession([_page(entry("pdf"))], _files("pdf")))
+    auditor = MCPAuditor()
+
+    await auditor.audit(BothDeclareClient(FakeSession([_page()])))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert not evidence.declared_in_discover
+    assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
+    results = {result.rule_id: result for result in auditor.results}
+    assert results["server_exposes_primitive"].passed
+    assert results["skills_digest_integrity"].passed
+
+
+async def test_nonempty_session_catalog_is_kept_when_both_lifecycles_declare_skills(discover, monkeypatch) -> None:
+    discover({"resources": {}, "extensions": SKILLS})
+    stateless = FakeSession([_page(entry("other"))])
+    _stateless(monkeypatch, stateless)
+    auditor = MCPAuditor()
+
+    await auditor.audit(BothDeclareClient(FakeSession([_page(entry("pdf"))], _files("pdf"))))
+
+    evidence = auditor.audit_data.skills
+    assert evidence is not None
+    assert [item["uri"] for item in evidence.entries or []] == ["skill://pdf/SKILL.md"]
