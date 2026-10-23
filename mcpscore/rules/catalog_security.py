@@ -1692,12 +1692,14 @@ def _is_listed(name: str, listed: frozenset[str]) -> bool:
 
 def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
     """Whether *match* names a tool, in backticks or code-shaped, that is not among the *listed* names."""
-    ticked = match["ticked"].removesuffix("()") if match["ticked"] else None
-    raw = ticked or match["bare"].rstrip(".")
-    if raw in _PROTOCOL_METHODS:
-        return False
-    if ticked:
+    if match["ticked"] is not None:
+        ticked = match["ticked"].removesuffix("()")
+        # A backticked name still needs a letter: `()` or `--` is punctuation, not a tool.
+        if not any(char.isalpha() for char in ticked) or ticked in _PROTOCOL_METHODS:
+            return False
         return not _is_listed(ticked, listed)
+    if match["bare"].rstrip(".") in _PROTOCOL_METHODS:
+        return False
     if _is_listed(match["bare"], listed):
         return False
     name = _code_shaped(match["bare"])
