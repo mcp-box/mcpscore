@@ -1536,6 +1536,8 @@ _PROTOCOL_METHODS = frozenset(
         "roots/list",
         "elicitation/create",
         "skills/list",
+        "skills/get",
+        "resources/directory/read",
         "tasks/get",
         "tasks/list",
         "tasks/result",
