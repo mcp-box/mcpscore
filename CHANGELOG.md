@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `call` or `invoke` or before the word `tool`, that the server does not
   list. The server's own tools, prompts and resources pass, also behind a
   client prefix or with other separators. Unlisted names are judged only when
-  the tool listing came back whole. Evidence names the location and class,
+  every listing came back whole. Evidence names the location and class,
   never the text. Every full audit gains 3 points of maximum score, and gains
   them in its score unless its catalog directs other tools: DeepWiki moves
   from 92/109 to 95/112.
