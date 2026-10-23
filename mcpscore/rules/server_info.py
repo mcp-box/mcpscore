@@ -473,6 +473,10 @@ def _unproven_listings(audit_data: AuditData) -> list[str]:
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         declared = getattr(audit_data.capabilities, capability, None) is not None or capability in discovered
         collected = getattr(audit_data, listing)
+        if collected is None and listing == "tools" and listing not in audit_data.listings_attempted:
+            # The session never listed tools: a whole stateless page is the evidence.
+            whole_empty = _stateless_tools(audit_data) == 0 and not _stateless_tools_unfinished(audit_data)
+            collected = [] if whole_empty else None
         missing = collected is None and (declared or listing in audit_data.listings_attempted)
         unfinished = listing in audit_data.incomplete_listings or (
             listing == "tools" and _stateless_tools_unfinished(audit_data)

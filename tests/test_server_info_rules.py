@@ -284,3 +284,23 @@ def test_modern_only_tools_page_must_be_whole_to_prove_emptiness(page: dict[str,
         probes=_probes(stateless=page),
     )
     assert judge(data) == expected
+
+
+@pytest.mark.parametrize(
+    ("page", "attempted", "expected"),
+    [
+        ({"tools": [], "resultType": "complete"}, False, False),
+        ({"tools": []}, False, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"tools": [], "resultType": "complete"}, True, SKIP_REASON_INSUFFICIENT_DATA),
+    ],
+    ids=["whole-empty-page", "unfinished-page", "session-listing-failed"],
+)
+def test_discover_declared_tools_judged_on_the_stateless_page(
+    page: dict[str, Any], attempted: bool, expected: bool | str
+) -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(),
+        listings_attempted=frozenset({"tools"}) if attempted else frozenset(),
+        probes=_probes(discover={"capabilities": {"tools": {}}}, stateless=page),
+    )
+    assert judge(data) == expected
