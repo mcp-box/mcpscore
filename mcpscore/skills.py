@@ -128,6 +128,8 @@ class SkillsEvidence:
 
     settings: dict[str, Any] = field(default_factory=dict)
     """The server's extension settings, e.g. ``{"directoryRead": true}``."""
+    declared_in_discover: bool = False
+    """The extension was declared in ``server/discover`` only, not in the session's capabilities."""
     entries: list[Any] | None = None
     """Raw ``skills/list`` entries in listing order; None when the method failed."""
     list_error: dict[str, Any] | None = None

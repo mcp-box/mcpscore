@@ -126,7 +126,7 @@ async def test_legacy_failure_recovers_the_stateless_catalog(stateless_probes):
 
     results = {result.rule_id: result for result in auditor.results}
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
-    assert results["tools_at_least_one"].passed
+    assert results["server_exposes_primitive"].passed
     assert "tools_names_unique" in results
     # Nothing ties the session error to the schema: the catalog is judged on the revision it was served on.
     assert skipped["tools_output_schema_root_object"] == SKIP_REASON_NOT_APPLICABLE
@@ -317,7 +317,7 @@ async def test_no_recovery_when_the_stateless_listing_is_unsupported(stateless_p
     assert auditor.audit_data.tools is None
     assert auditor.audit_data.catalog_versions == {}
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
-    assert skipped["tools_at_least_one"] == SKIP_REASON_INSUFFICIENT_DATA
+    assert skipped["server_exposes_primitive"] == SKIP_REASON_INSUFFICIENT_DATA
 
 
 async def test_malformed_stateless_catalog_keeps_the_legacy_error(stateless_probes, caplog):

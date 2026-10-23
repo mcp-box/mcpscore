@@ -81,8 +81,9 @@ Every skip appears in the report's `skipped_rules[]` with one reason:
 An empty tools catalog that was fetched successfully gives the per-tool rules
 nothing to assess, so they skip as `not-applicable`. A declared catalog that
 could not be fetched skips as `insufficient-data` instead, because an item may
-exist unobserved. A separate presence rule, `tools_at_least_one`, still judges
-whether a complete tools catalog is empty.
+exist unobserved. A separate rule, `server_exposes_primitive`, fails a server
+whose every catalog, tools, resources, resource templates, prompts and skills,
+was fetched whole and came back empty. No single primitive is required.
 </Accordion>
 
 ## Four categories, readiness counted when it applies
@@ -96,8 +97,8 @@ revisions it applies to.
 
 | Category | Rules | What it covers |
 |---|---|---|
-| Protocol | 22 | Protocol version, server name, title and version, advertised capabilities, transport and its HTTP envelope |
-| Primitives | 71 | Tools, prompts, resources, resource templates and [skills](#skills-servers-that-publish-agent-skills): names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination, skill integrity |
+| Protocol | 23 | Protocol version, server name, title and version, whether the server exposes anything, advertised capabilities, transport and its HTTP envelope |
+| Primitives | 70 | Tools, prompts, resources, resource templates and [skills](#skills-servers-that-publish-agent-skills): names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination, skill integrity |
 | Security & Auth | 21 | The server's security posture, detailed below |
 | Readiness | 21 | How ready the server is for the 2026-07-28 revision, [scored on its own axis](#the-readiness-score-separate-informative) and in the main score for modern and dual-era full audits |
 

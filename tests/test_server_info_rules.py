@@ -1,8 +1,22 @@
 from dataclasses import replace
+from typing import Any
+
+from mcp_types import (
+    Prompt,
+    PromptsCapability,
+    Resource,
+    ResourcesCapability,
+    ResourceTemplate,
+    ServerCapabilities,
+    Tool,
+    ToolsCapability,
+)
+import pytest
 
 from mcpscore.rules import (
     AuditData,
     RuleSeverity,
+    ServerExposesPrimitiveRule,
     ServerIconsPresentRule,
     ServerInstructionsPresentRule,
     ServerNamePresentRule,
@@ -10,6 +24,8 @@ from mcpscore.rules import (
     ServerVersionPresentRule,
     ServerWebsiteUrlPresentRule,
 )
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.skills import SkillsEvidence
 
 
 def test_server_name_present_rule(implementation_full, implementation_missing):
@@ -75,3 +91,142 @@ def test_server_icons_present_rule(implementation_full, implementation_missing):
     assert not result.passed
     assert result.details is not None
     assert result.details["invalid_srcs"] == ["http://server.example/icon.png"]
+
+
+SKILLS = {"io.modelcontextprotocol/skills": {}}
+ALL_CAPABILITIES = ServerCapabilities(
+    tools=ToolsCapability(), resources=ResourcesCapability(), prompts=PromptsCapability(), extensions=SKILLS
+)
+EMPTY_LISTINGS: dict[str, Any] = {"tools": [], "resources": [], "resource_templates": [], "prompts": []}
+TOOL = Tool(name="search", input_schema={"type": "object"})
+
+
+def skills(entries: list[Any] | None, **fields: Any) -> SkillsEvidence:
+    return SkillsEvidence(entries=entries, **fields)
+
+
+def judge(data: AuditData) -> bool | str:
+    """Return the rule's skip reason, or whether it passed."""
+    rule = ServerExposesPrimitiveRule()
+    reason = rule.skip_reason(data)
+    return reason if reason is not None else rule.check(data).passed
+
+
+def test_server_exposes_primitive_metadata() -> None:
+    rule = ServerExposesPrimitiveRule()
+    assert rule.rule_id == "server_exposes_primitive"
+    assert rule.severity == RuleSeverity.MEDIUM
+    assert rule.group_name == "server_info"
+    assert "Server Features" in (rule.basis or "")
+
+
+@pytest.mark.parametrize(
+    "exposed",
+    [
+        {"tools": [TOOL]},
+        {"resources": [Resource(name="r", uri="file:///r")]},
+        {"resource_templates": [ResourceTemplate(name="r", uri_template="file:///{id}")]},
+        {"prompts": [Prompt(name="review")]},
+        {"skills": skills([{"name": "pdf", "uri": "skill://pdf/SKILL.md"}])},
+    ],
+    ids=["tools", "resources", "resource_templates", "prompts", "skills"],
+)
+def test_any_one_primitive_passes(exposed: dict[str, Any]) -> None:
+    data = AuditData(capabilities=ALL_CAPABILITIES, **{**EMPTY_LISTINGS, "skills": skills([]), **exposed})
+    assert judge(data) is True
+
+
+def test_skills_only_server_without_tools_capability_passes() -> None:
+    data = AuditData(capabilities=ServerCapabilities(extensions=SKILLS), skills=skills([{"name": "pdf"}]))
+    result = ServerExposesPrimitiveRule().check(data)
+    assert result.passed
+    assert result.details["exposed"]["skills"] == 1
+    assert result.details["exposed"]["tools"] is None
+
+
+def test_every_listing_empty_fails_and_names_what_was_checked() -> None:
+    data = AuditData(capabilities=ALL_CAPABILITIES, **EMPTY_LISTINGS, skills=skills([]))
+    rule = ServerExposesPrimitiveRule()
+    assert rule.skip_reason(data) is None
+    result = rule.check(data)
+    assert not result.passed
+    assert result.details["checked"] == ["tools", "resources", "resource_templates", "prompts", "skills"]
+    assert "every listing it serves came back empty" in result.message
+    assert result.details["issues"][0]["reason"] == "empty_catalog"
+    assert "tool, resource, prompt or skill" in result.suggested_fix
+
+
+def test_server_that_declares_nothing_fails() -> None:
+    result = ServerExposesPrimitiveRule().check(AuditData(capabilities=ServerCapabilities()))
+    assert not result.passed
+    assert "declares no tools, resources, prompts or skills" in result.message
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        {"tools": None},
+        {"resources": None},
+        {"resource_templates": None},
+        {"prompts": None},
+        {"skills": None},
+        {"skills": skills(None, list_error={"code": -32601})},
+        {"skills": skills([], list_incomplete=True)},
+        {"incomplete_listings": frozenset({"tools"})},
+        {"incomplete_listings": frozenset({"resources"})},
+    ],
+    ids=[
+        "tools-failed",
+        "resources-failed",
+        "templates-failed",
+        "prompts-failed",
+        "skills-uncollected",
+        "skills-list-failed",
+        "skills-list-incomplete",
+        "tools-incomplete",
+        "resources-incomplete",
+    ],
+)
+def test_failed_or_incomplete_listing_with_nothing_collected_skips(gap: dict[str, Any]) -> None:
+    data = AuditData(capabilities=ALL_CAPABILITIES, **{**EMPTY_LISTINGS, "skills": skills([]), **gap})
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_undeclared_listing_never_attempted_is_not_a_gap() -> None:
+    data = AuditData(capabilities=ServerCapabilities(tools=ToolsCapability()), tools=[])
+    assert judge(data) is False
+
+
+def test_attempted_listing_without_a_result_is_a_gap_even_undeclared() -> None:
+    data = AuditData(capabilities=ServerCapabilities(), listings_attempted=frozenset({"tools"}))
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_collected_primitive_passes_despite_another_failed_listing() -> None:
+    data = AuditData(capabilities=ALL_CAPABILITIES, tools=None, prompts=[Prompt(name="review")])
+    assert judge(data) is True
+
+
+def test_nonempty_incomplete_listing_proves_presence() -> None:
+    data = AuditData(capabilities=ALL_CAPABILITIES, tools=[TOOL], incomplete_listings=frozenset({"tools"}))
+    assert judge(data) is True
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        AuditData(partial=True, tools=[TOOL]),
+        AuditData(capabilities=None, tools=[]),
+    ],
+    ids=["partial-audit", "no-capabilities"],
+)
+def test_audit_without_session_data_skips(data: AuditData) -> None:
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_skills_declared_only_in_discover_count_as_declared() -> None:
+    capabilities = ServerCapabilities(tools=ToolsCapability())
+    failed = SkillsEvidence(entries=None, declared_in_discover=True)
+    assert judge(AuditData(capabilities=capabilities, tools=[], skills=failed)) == SKIP_REASON_INSUFFICIENT_DATA
+    served = SkillsEvidence(entries=[{"name": "pdf"}], declared_in_discover=True)
+    assert judge(AuditData(capabilities=capabilities, tools=[], skills=served)) is True

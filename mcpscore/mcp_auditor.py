@@ -3,7 +3,7 @@ from copy import deepcopy
 import json
 import logging
 import ssl
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -187,6 +187,7 @@ class MCPAuditor:
         await self._collect_session_cursor_probes()
         self._recover_tools_from_stateless_probe()
         self.era = detect_era(self.audit_data.protocol_version, self.audit_data.probes)
+        await self._collect_discover_declared_skills()
         await self._collect_stateless_skills_listing()
         self._run_all_rules()
 
@@ -1016,7 +1017,7 @@ class MCPAuditor:
         url = self.audit_data.url
         if evidence is None or self.era is not Era.DUAL or not url or not url.startswith(("http://", "https://")):
             return
-        if not self._discover_declares_skills():
+        if self._discover_skills_settings() is None:
             # The lifecycles may expose different capabilities: a stateless refusal is legitimate without it.
             return
         try:
@@ -1025,14 +1026,37 @@ class MCPAuditor:
         except Exception as exc:  # noqa: BLE001 — the readiness check then has nothing to judge
             logger.warning("Could not list skills on the stateless lifecycle (%s)", type(exc).__name__)
 
-    def _discover_declares_skills(self) -> bool:
-        """Whether ``server/discover`` declared the Skills extension, as the stateless lifecycle sees it."""
+    async def _collect_discover_declared_skills(self) -> None:
+        """Collect the skills of a dual-era server that declares the extension only in ``server/discover``.
+
+        The 2025-11-25 ``initialize`` result has no ``extensions`` field, so such a server's session never
+        declares it. ``skills/list`` is tried on the session first, then on the stateless lifecycle.
+        """
+        if self.audit_data.skills is not None or self.era is not Era.DUAL or self.mcp_client is None:
+            return
+        settings = self._discover_skills_settings()
+        if settings is None:
+            return
+        evidence = await collect_skills(self.mcp_client, settings)
+        url = self.audit_data.url
+        target = url if url and url.startswith(("http://", "https://")) else self.mcp_client.stdio_params
+        if evidence.entries is None and target is not None:
+            try:
+                async with stateless_session(target, self.headers) as session:
+                    evidence = await collect_skills(session, settings, stateless=True)
+            except Exception as exc:  # noqa: BLE001 — the session's evidence stands
+                logger.warning("Could not collect skills on the stateless lifecycle (%s)", type(exc).__name__)
+        evidence.declared_in_discover = True
+        self.audit_data.skills = evidence
+
+    def _discover_skills_settings(self) -> dict[str, Any] | None:
+        """Return the Skills extension settings ``server/discover`` declared, or None when it did not declare it."""
         from mcp_types import ServerCapabilities
 
         discover = (self.audit_data.probes or {}).get(PROBE_DISCOVER)
         payload = discover.payload if discover is not None and isinstance(discover.payload, dict) else {}
         capabilities = self._parse_payload_model(ServerCapabilities, payload.get("capabilities"))
-        return capabilities is not None and declared_settings(capabilities) is not None
+        return None if capabilities is None else declared_settings(capabilities)
 
     def get_audit_report(self) -> dict:
         """Generate a machine-readable report of the full audit.

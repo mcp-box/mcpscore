@@ -1,12 +1,22 @@
 from abc import abstractmethod
+from typing import Any
 
 from mcp_types import Implementation
 
 from mcpscore.diagnostics import quoted_preview
 
-from .base import BaseRule, RuleResult, RuleSeverity, requires_fields, requires_server_info
+from .base import (
+    SKIP_REASON_INSUFFICIENT_DATA,
+    AuditData,
+    BaseRule,
+    RuleResult,
+    RuleSeverity,
+    requires_fields,
+    requires_server_info,
+)
 from .catalog_diagnostics import catalog_result, field_issue
 from .registry import register_rule
+from .skills import declares_skills
 
 
 class ServerInfoBaseRule(BaseRule):
@@ -401,4 +411,103 @@ class ServerIconsPresentRule(ServerInfoBaseRule):
                     if not (isinstance(icon.src, str) and icon.src.startswith(("https://", "data:")))
                 ]
             ),
+        )
+
+
+_PRIMITIVE_LISTINGS = {
+    "tools": "tools",
+    "resources": "resources",
+    "resource_templates": "resources",
+    "prompts": "prompts",
+}
+"""Each primitive listing the auditor collects, and the capability that declares it."""
+
+
+def _exposed_counts(audit_data: AuditData) -> dict[str, int | None]:
+    """Count what each primitive listing collected; None when the listing has no result."""
+    counts: dict[str, int | None] = {
+        listing: None if getattr(audit_data, listing) is None else len(getattr(audit_data, listing))
+        for listing in _PRIMITIVE_LISTINGS
+    }
+    skills = audit_data.skills
+    counts["skills"] = None if skills is None or skills.entries is None else len(skills.entries)
+    return counts
+
+
+def _unproven_listings(audit_data: AuditData) -> list[str]:
+    """Return the listings that cannot show the server serves nothing: declared or attempted but not collected whole."""
+    unproven = []
+    for listing, capability in _PRIMITIVE_LISTINGS.items():
+        declared = getattr(audit_data.capabilities, capability, None) is not None
+        collected = getattr(audit_data, listing)
+        missing = collected is None and (declared or listing in audit_data.listings_attempted)
+        if missing or (not collected and listing in audit_data.incomplete_listings):
+            unproven.append(listing)
+    skills = audit_data.skills
+    listed = skills is not None and skills.entries is not None and (skills.entries or not skills.list_incomplete)
+    if declares_skills(audit_data) and not listed:
+        unproven.append("skills")
+    return unproven
+
+
+@register_rule
+class ServerExposesPrimitiveRule(BaseRule):
+    """Medium check: the server exposes at least one tool, resource, resource template, prompt or skill.
+
+    Every server primitive is optional, so no single one is required; a server that serves none of them gives a
+    client nothing to use.
+    """
+
+    group_name = "server_info"
+    group_order = 2
+    rule_id = "server_exposes_primitive"
+    basis = (
+        "MCP 2025-11-25 Server Features §Overview (tools, resources and prompts are each optional); "
+        "SEP-2640 Skills extension (skills/list)"
+    )
+    rule_order = 7
+
+    @property
+    def rule_name(self) -> str:
+        return "Server Info - Exposes at least one tool, resource, prompt or skill"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless the audit either collected a primitive or saw every declared listing come back whole and empty.
+
+        A failed or incomplete listing is never read as empty, and a partial audit has no session to list with.
+        """
+        if audit_data.partial or audit_data.capabilities is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if any(_exposed_counts(audit_data).values()):
+            return None
+        return SKIP_REASON_INSUFFICIENT_DATA if _unproven_listings(audit_data) else None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Pass when any primitive listing collected at least one item."""
+        counts = _exposed_counts(audit_data)
+        passed = any(counts.values())
+        checked = [name for name, count in counts.items() if count is not None]
+        if passed:
+            exposed = ", ".join(f"{name}: {count}" for name, count in counts.items() if count)
+            message = f"✅ Server exposes at least one primitive ({exposed})"
+        elif checked:
+            message = f"❌ Server exposes nothing: every listing it serves came back empty ({', '.join(checked)})"
+        else:
+            message = "❌ Server exposes nothing: it declares no tools, resources, prompts or skills"
+        details: dict[str, Any] = {"exposed": counts, "checked": checked}
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details=details,
+            suggested_fix=(
+                "Expose at least one tool, resource, prompt or skill, declare its capability in the initialize "
+                "result, and check that its list method returns it."
+            ),
+            issues=[field_issue("catalog", None, "", "empty_catalog", "at least one tool, resource, prompt or skill")],
         )

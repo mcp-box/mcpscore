@@ -89,6 +89,7 @@ Sources: [npm package metadata](https://docs.npmjs.com/cli/v11/configuring-npm/p
 | `server_instructions_present` | Server Info - Instructions Present | LOW (1) | all versions |
 | `server_websiteurl_present` | Server Info - Website URL Present | LOW (1) | 2025-11-25 and later |
 | `server_icons_present` | Server Info - Icons Present and Valid | LOW (1) | 2025-11-25 and later |
+| `server_exposes_primitive` | Server Info - Exposes at least one tool, resource, prompt or skill | MEDIUM (2) | all versions |
 
 ## Capabilities
 
@@ -134,7 +135,6 @@ rules to the OWASP risks and lists what an audit from outside cannot see.
 
 | Rule ID | Name | Severity | Applies to |
 |---|---|---|---|
-| `tools_at_least_one` | Tools - At least one tool is recommended for tool-serving designs | CRITICAL (5) | all versions |
 | `tools_name_present_in_all` | Tools - All tools must have a Name | CRITICAL (5) | all versions |
 | `tools_names_unique` | Tools - All tool names should be unique | CRITICAL (5) | all versions |
 | `tools_names_valid_format` | Tools - All tool names should follow the recommended format | HIGH (3) | all versions |
@@ -289,6 +289,7 @@ mcpscore version that produced it; the check simply no longer exists.
 
 | Rule ID | Retired in | Last severity | Why |
 |---|---|---|---|
+| `tools_at_least_one` | 1.28.0 | CRITICAL | Required tools, though 2025-11-25 Server Features makes every primitive optional, so servers that offer only resources, prompts or skills failed it. Replaced by `server_exposes_primitive`, which fails only a server that exposes nothing. |
 | `readiness_2026_origin_validation` | 1.20.0 | HIGH | Filed Origin validation as a 2026-07-28 readiness delta, but 2025-11-25 Transports §Security Warning already made it a MUST for every Streamable HTTP server, and its probe never judged legacy servers. Replaced by `security_origin_validation`, which scores every HTTP server once. |
 | `capability_resources_subscribe` | 1.1.0 | HIGH | Scored the absence of an optional capability — 2025-11-25 Resources §Capabilities calls `subscribe` optional — and 2026-07-28 removes `resources/subscribe` outright (SEP-2575). |
 | `capability_logging_present` | 1.1.0 | MEDIUM | Scored the absence of an optional capability, and contradicted `readiness_2026_deprecated_features`, which fails a server for *declaring* `logging` (deprecated by SEP-2577). No server could pass both. |

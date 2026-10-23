@@ -52,6 +52,16 @@ class RetiredRule:
 
 RETIRED_RULES: tuple[RetiredRule, ...] = (
     RetiredRule(
+        rule_id="tools_at_least_one",
+        version="1.28.0",
+        severity="CRITICAL",
+        reason=(
+            "Required tools, though 2025-11-25 Server Features makes every primitive optional, so servers that "
+            "offer only resources, prompts or skills failed it. Replaced by `server_exposes_primitive`, which "
+            "fails only a server that exposes nothing."
+        ),
+    ),
+    RetiredRule(
         rule_id="readiness_2026_origin_validation",
         version="1.20.0",
         severity="HIGH",
@@ -81,4 +91,4 @@ RETIRED_RULES: tuple[RetiredRule, ...] = (
         ),
     ),
 )
-"""Every retired rule_id, oldest first. Append only — entries are permanent."""
+"""Every retired rule_id, newest first. Entries are permanent."""

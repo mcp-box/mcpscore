@@ -1,7 +1,7 @@
 from abc import abstractmethod
 from collections import Counter
 import re
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 
 from mcp_types import Tool
 
@@ -32,8 +32,6 @@ class ToolsBaseRule(BaseRule):
 
     group_name = "tools"
     group_order = 4
-    judge_empty_catalog: ClassVar[bool] = False
-    """Whether this rule's subject is the absence of tools itself."""
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip when the tools catalog is unavailable or has no tools to judge."""
@@ -43,7 +41,7 @@ class ToolsBaseRule(BaseRule):
         empty_partial = not audit_data.tools and listing in audit_data.incomplete_listings
         if unavailable or empty_partial:
             return SKIP_REASON_INSUFFICIENT_DATA
-        if not audit_data.tools and not self.judge_empty_catalog:
+        if not audit_data.tools:
             return SKIP_REASON_NOT_APPLICABLE
         return None
 
@@ -70,7 +68,7 @@ class ToolsBaseRule(BaseRule):
                     "definitions. Retry the audit once the catalog is available."
                 ),
             )
-        assert tools or self.judge_empty_catalog  # noqa: S101 — skip_reason gates empty quality catalogs
+        assert tools  # noqa: S101 — skip_reason gates empty catalogs
         return self._check_tools(tools)
 
     @abstractmethod
@@ -89,68 +87,6 @@ class ToolsBaseRule(BaseRule):
 
         """
         ...
-
-
-@register_rule
-class ToolsAtLeastOneRule(ToolsBaseRule):
-    """Critical check: Verify the MCP server provides at least one tool."""
-
-    rule_id = "tools_at_least_one"
-    basis = "MCP 2025-11-25 Tools §Listing Tools (tools/list)"
-    rule_order = 1
-    judge_empty_catalog = True
-
-    @property
-    def rule_name(self) -> str:
-        return "Tools - At least one tool is recommended for tool-serving designs"
-
-    @property
-    def severity(self) -> RuleSeverity:
-        return RuleSeverity.CRITICAL
-
-    def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when an incomplete listing collected zero tools.
-
-        An empty partial listing cannot prove the server has no tools — the
-        tools may live on a page that was never fetched. A non-empty partial
-        listing proves presence, so the rule still judges (and passes) it.
-        """
-        listing = "tools"
-        declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
-        unavailable = audit_data.tools is None and (declares_tools or listing in audit_data.listings_attempted)
-        if unavailable or (listing in audit_data.incomplete_listings and not audit_data.tools):
-            return SKIP_REASON_INSUFFICIENT_DATA
-        return None
-
-    def _check_tools(self, tools: list[Tool]) -> RuleResult:
-        """Critical check: Verify the MCP server provides at least one tool.
-
-        Args:
-            tools: The tools to validate
-        Returns:
-            RuleResult with the check outcome
-
-        """
-        passed = len(tools) > 0
-
-        message = "✅ MCP Server provides at least one tool" if passed else "❌ MCP Server does not provide any tools"
-
-        return catalog_result(
-            rule_name=self.rule_name,
-            severity=self.severity,
-            passed=passed,
-            message=message,
-            details={"tools_count": len(tools)},
-            suggested_fix=(
-                "If this server is intended to expose tools, register them and check tools/list. "
-                "Resources-only or prompts-only designs do not need invented tools; review whether "
-                "this quality check applies."
-            ),
-            issues=[
-                field_issue("catalog", None, "/tools", "empty_catalog", "at least one tool for a tools-serving design")
-            ],
-            recommendation=False,
-        )
 
 
 @register_rule

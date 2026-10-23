@@ -53,6 +53,14 @@ SEP = "MCP Skills Extension (SEP-2640, Final)"
 AGENT_SKILLS = "Agent Skills specification (agentskills.io/specification, read 2026-10-18)"
 
 
+def declares_skills(audit_data: AuditData) -> bool:
+    """Whether the server declared the Skills extension, in its session capabilities or in ``server/discover``."""
+    evidence = audit_data.skills
+    return declared_settings(audit_data.capabilities) is not None or (
+        evidence is not None and evidence.declared_in_discover
+    )
+
+
 def _entries(evidence: SkillsEvidence) -> Iterator[tuple[int, dict[str, Any]]]:
     """Yield the listing entries that are objects, with their listing index."""
     for index, entry in enumerate(evidence.entries or []):
@@ -87,7 +95,7 @@ class SkillsBaseRule(BaseRule):
         """Skip unless the server declared the extension and its skills evidence was collected."""
         if audit_data.capabilities is None:
             return SKIP_REASON_INSUFFICIENT_DATA
-        if declared_settings(audit_data.capabilities) is None:
+        if not declares_skills(audit_data):
             return SKIP_REASON_NOT_APPLICABLE
         evidence = audit_data.skills
         if evidence is None:
@@ -1438,7 +1446,7 @@ class SkillsSecurityRule(SkillsBaseRule):
         the same way.
         """
         reason = super().skip_reason(audit_data)
-        if audit_data.capabilities is None or declared_settings(audit_data.capabilities) is None:
+        if audit_data.capabilities is None or not declares_skills(audit_data):
             # The extension's own scope comes first: observed text never makes an undeclared server applicable.
             return reason
         evidence = audit_data.skills

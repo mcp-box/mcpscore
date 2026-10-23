@@ -37,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tools_at_least_one` is retired and replaced by `server_exposes_primitive`
+  (MEDIUM).** MCP makes every server primitive optional, so a server that
+  serves only resources, prompts or skills lost 5 points at CRITICAL for
+  listing no tools. The new rule fails only a server that exposes nothing: no
+  tool, resource, resource template, prompt or skill. A failed or incomplete
+  listing is never read as empty, so the rule then skips as insufficient
+  data, as does a partial audit. A configuration file that names the old ID
+  gets a warning and the ID is ignored. Scores move on most audits, not only
+  on tool-free servers: the new rule weighs 2 where the old one weighed 5, so
+  every full audit loses 3 points of maximum score, and 3 points of score
+  where the server lists tools. A server with no tools but other primitives
+  gains 2 points. DeepWiki moves from 95/112 to 92/109.
 - **`security_error_data_leak` recognizes stack traces from more runtimes.**
   Besides Python tracebacks and JavaScript frames, the error body is checked
   for Python and Node frames with a source location, JVM (Java, Kotlin,
@@ -46,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Skills are audited on a dual-era server that declares the extension only
+  in `server/discover`.** A 2025-11-25 `initialize` result has no
+  `extensions` field, so such a server's session never declared the Skills
+  extension, and every skills rule skipped as not applicable. The skills are
+  now listed on the session and, if the session refuses `skills/list`, on
+  the stateless lifecycle.
 - **A skill file with a very long numeric character reference no longer
   aborts the audit.** Raw HTML in a `SKILL.md` holding a reference such as
   `&#` followed by thousands of digits raised an error in the skills rules.

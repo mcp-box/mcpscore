@@ -493,7 +493,7 @@ async def test_audit_partial_scores_auth_and_skips_session(stub_probes, monkeypa
     assert "security_tls_enabled" in scored
     # Session-dependent rules skip as insufficient-data, never fail.
     skipped = {s["rule_id"]: s["reason"] for s in report["skipped_rules"]}
-    assert skipped.get("tools_at_least_one") == "insufficient-data"
+    assert skipped.get("server_exposes_primitive") == "insufficient-data"
     assert skipped.get("server_name_present") == "insufficient-data"
     assert skipped.get("capability_tools_present") == "insufficient-data"
     # No tools were collected, so no tools rule may call itself not applicable.
