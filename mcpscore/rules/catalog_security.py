@@ -23,6 +23,7 @@ from markdown_it.token import Token
 from mcp_types import Icon
 
 from mcpscore.html_text import bound_charrefs
+from mcpscore.probes import PROBE_DISCOVER, PROBE_STATELESS_LIST
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
 from .catalog_diagnostics import catalog_result, field_issue, pointer_token
@@ -1656,13 +1657,38 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     return found
 
 
+_DECLARED_LISTINGS = (("prompts", "prompts"), ("resources", "resources"), ("resource_templates", "resources"))
+
+
+def _declares(audit_data: AuditData, capability: str) -> bool:
+    """Whether the session's capabilities or ``server/discover`` declare *capability*."""
+    if getattr(audit_data.capabilities, capability, None) is not None:
+        return True
+    discover = (audit_data.probes or {}).get(PROBE_DISCOVER)
+    payload = discover.payload if discover is not None and isinstance(discover.payload, dict) else {}
+    capabilities = payload.get("capabilities")
+    return isinstance(capabilities, dict) and capabilities.get(capability) is not None
+
+
+def _stateless_page_whole(audit_data: AuditData) -> bool:
+    """Whether the stateless ``tools/list`` page is the whole catalog (SEP-2322 ``resultType``, no next cursor)."""
+    probe = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
+    page = probe.payload if probe is not None and isinstance(probe.payload, dict) else {}
+    return page.get("resultType") == "complete" and page.get("nextCursor") is None
+
+
 def _listed_names(audit_data: AuditData) -> frozenset[str] | None:
     """Return the names the server lists, folded by :func:`_name_key`, or None when they were not all seen.
 
-    A listing that pagination left incomplete may hold the very name a description points at, so any incomplete
-    listing makes the server's names unknown.
+    Every listing must have come back whole: a declared catalog that was never listed, or one that pagination
+    left incomplete, may hold the very name a description points at. Without a session the tools come from one
+    stateless page, which must say it is the whole catalog.
     """
     if audit_data.tools is None or any(listing in audit_data.incomplete_listings for listing in _LISTINGS):
+        return None
+    if any(getattr(audit_data, listing) is None and _declares(audit_data, cap) for listing, cap in _DECLARED_LISTINGS):
+        return None
+    if audit_data.session_protocol_version is None and not _stateless_page_whole(audit_data):
         return None
     items = [*audit_data.tools, *(audit_data.prompts or []), *(audit_data.resources or [])]
     items += audit_data.resource_templates or []
