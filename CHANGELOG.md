@@ -43,8 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listing no tools. The new rule fails only a server that exposes nothing: no
   tool, resource, resource template, prompt or skill. A failed or incomplete
   listing is never read as empty, so the rule then skips as insufficient
-  data, as does a partial audit. Tools served only on the stateless
-  lifecycle count, and a catalog declared only in `server/discover` that
+  data, as does a partial audit. Items seen on either lifecycle count,
+  including the stateless `tools/list` page and the catalog probes. An empty
+  stateless page proves an empty catalog only with `resultType: "complete"`
+  and no next cursor, and a catalog declared only in `server/discover` that
   was never listed is a gap, not an empty catalog. A configuration file that names the old ID
   gets a warning and the ID is ignored. Scores move on most audits, not only
   on tool-free servers: the new rule weighs 2 where the old one weighed 5, so

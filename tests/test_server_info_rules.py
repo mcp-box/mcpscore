@@ -13,7 +13,15 @@ from mcp_types import (
 )
 import pytest
 
-from mcpscore.probes import PROBE_DISCOVER, PROBE_STATELESS_LIST, ProbeOutcome, ProbeResult
+from mcpscore.probes import (
+    PROBE_DISCOVER,
+    PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_STATELESS_LIST,
+    PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+    ProbeOutcome,
+    ProbeResult,
+)
 from mcpscore.rules import (
     AuditData,
     RuleSeverity,
@@ -98,7 +106,14 @@ SKILLS = {"io.modelcontextprotocol/skills": {}}
 ALL_CAPABILITIES = ServerCapabilities(
     tools=ToolsCapability(), resources=ResourcesCapability(), prompts=PromptsCapability(), extensions=SKILLS
 )
-EMPTY_LISTINGS: dict[str, Any] = {"tools": [], "resources": [], "resource_templates": [], "prompts": []}
+SESSION = "2025-11-25"
+EMPTY_LISTINGS: dict[str, Any] = {
+    "tools": [],
+    "resources": [],
+    "resource_templates": [],
+    "prompts": [],
+    "session_protocol_version": SESSION,
+}
 TOOL = Tool(name="search", input_schema={"type": "object"})
 
 
@@ -194,7 +209,9 @@ def test_failed_or_incomplete_listing_with_nothing_collected_skips(gap: dict[str
 
 
 def test_undeclared_listing_never_attempted_is_not_a_gap() -> None:
-    data = AuditData(capabilities=ServerCapabilities(tools=ToolsCapability()), tools=[])
+    data = AuditData(
+        capabilities=ServerCapabilities(tools=ToolsCapability()), tools=[], session_protocol_version=SESSION
+    )
     assert judge(data) is False
 
 
@@ -300,7 +317,57 @@ def test_discover_declared_tools_judged_on_the_stateless_page(
 ) -> None:
     data = AuditData(
         capabilities=ServerCapabilities(),
+        session_protocol_version=SESSION,
         listings_attempted=frozenset({"tools"}) if attempted else frozenset(),
         probes=_probes(discover={"capabilities": {"tools": {}}}, stateless=page),
     )
     assert judge(data) == expected
+
+
+def test_whole_empty_session_listing_fails_a_legacy_server_whose_probe_page_lacks_result_type() -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(tools=ToolsCapability()),
+        tools=[],
+        session_protocol_version=SESSION,
+        listings_attempted=frozenset({"tools"}),
+        probes=_probes(stateless={"tools": []}),
+    )
+    assert judge(data) is False
+
+
+def test_empty_listing_without_a_session_proves_nothing() -> None:
+    data = AuditData(capabilities=ServerCapabilities(tools=ToolsCapability()), tools=[])
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+def test_recovered_catalog_is_judged_as_the_stateless_page() -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(tools=ToolsCapability()),
+        tools=[],
+        session_protocol_version=SESSION,
+        catalog_versions={"tools": "2026-07-28"},
+        probes=_probes(stateless={"tools": []}),
+    )
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+@pytest.mark.parametrize(
+    ("probe_id", "outcome"),
+    [
+        (PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT, ProbeOutcome.SUPPORTED),
+        (PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT, ProbeOutcome.UNSUPPORTED),
+        (PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT, ProbeOutcome.SUPPORTED),
+    ],
+    ids=["resources", "prompts-differing", "tools"],
+)
+def test_items_seen_by_the_catalog_connection_probes_count(probe_id: str, outcome: ProbeOutcome) -> None:
+    probe = ProbeResult(probe_id, outcome, {"first_count": 0, "second_count": 2})
+    data = AuditData(capabilities=ALL_CAPABILITIES, **EMPTY_LISTINGS, skills=skills([]), probes={probe_id: probe})
+    assert judge(data) is True
+
+
+def test_errored_catalog_connection_probe_counts_nothing() -> None:
+    probe_id = PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT
+    probe = ProbeResult(probe_id, ProbeOutcome.ERROR, {"first_count": 3})
+    data = AuditData(capabilities=ALL_CAPABILITIES, **EMPTY_LISTINGS, skills=skills([]), probes={probe_id: probe})
+    assert judge(data) is False

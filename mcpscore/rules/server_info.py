@@ -1,10 +1,17 @@
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 from mcp_types import Implementation
 
 from mcpscore.diagnostics import quoted_preview
-from mcpscore.probes import PROBE_STATELESS_LIST, ProbeOutcome
+from mcpscore.probes import (
+    PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_STATELESS_LIST,
+    PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+    ProbeOutcome,
+)
 from mcpscore.skills import SKILLS_EXTENSION
 
 from .base import (
@@ -424,72 +431,76 @@ _PRIMITIVE_LISTINGS = {
 }
 """Each primitive listing the auditor collects, and the capability that declares it."""
 
+_CONNECTION_PROBES = {
+    "tools": PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+    "resources": PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
+    "prompts": PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
+}
+"""Probes that list a catalog on two fresh connections; their item counts show what the server serves."""
 
-def _stateless_tools(audit_data: AuditData) -> int | None:
-    """Count the tools the stateless ``tools/list`` probe received; None when it received no tools array."""
+
+@dataclass
+class _Catalog:
+    """What every source observed about one primitive catalog."""
+
+    items: int | None = None
+    """The most items any source observed; None when no source returned a listing."""
+    proven_empty: bool = False
+    """A whole listing (complete, every page read) came back empty."""
+    broken: bool = False
+    """The session's listing failed or broke off, so its catalog is unknown whatever else was observed."""
+    declared: bool = False
+    """Either lifecycle declared the catalog, or the audit tried to list it."""
+
+    def observe(self, count: int, *, whole: bool) -> None:
+        self.items = max(self.items or 0, count)
+        self.proven_empty = self.proven_empty or (whole and count == 0)
+
+
+def _stateless_tools_page(audit_data: AuditData) -> dict[str, Any] | None:
+    """Return the stateless ``tools/list`` result the probe received, or None."""
     probe = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
-    if probe is None or probe.outcome is not ProbeOutcome.SUPPORTED or not isinstance(probe.payload, dict):
-        return None
-    tools = probe.payload.get("tools")
-    return len(tools) if isinstance(tools, list) else None
+    payload = probe.payload if probe is not None else None
+    return payload if isinstance(payload, dict) and isinstance(payload.get("tools"), list) else None
 
 
-def _stateless_tools_unfinished(audit_data: AuditData) -> bool:
-    """Whether the stateless ``tools/list`` probe received an empty page that is not the whole catalog.
+def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
+    """Reconcile the session listings, the stateless lifecycle and the catalog probes into one view per catalog.
 
-    Without ``resultType: "complete"`` (SEP-2322), or with a next cursor, an empty page proves nothing.
-    """
-    probe = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
-    if probe is None or probe.outcome is not ProbeOutcome.SUPPORTED or not isinstance(probe.payload, dict):
-        return False
-    payload = probe.payload
-    unfinished = payload.get("resultType") != "complete" or payload.get("nextCursor") is not None
-    return payload.get("tools") == [] and unfinished
-
-
-def _exposed_counts(audit_data: AuditData) -> dict[str, int | None]:
-    """Count what each primitive listing collected; None when the listing has no result.
-
-    Tools the stateless lifecycle served count when the session catalog has none: either lifecycle exposes them.
-    """
-    counts: dict[str, int | None] = {
-        listing: None if getattr(audit_data, listing) is None else len(getattr(audit_data, listing))
-        for listing in _PRIMITIVE_LISTINGS
-    }
-    if not counts["tools"]:
-        counts["tools"] = _stateless_tools(audit_data) or counts["tools"]
-    skills = audit_data.skills
-    counts["skills"] = None if skills is None or skills.entries is None else len(skills.entries)
-    return counts
-
-
-def _unproven_listings(audit_data: AuditData) -> list[str]:
-    """Return the listings that cannot show the server serves nothing: declared or attempted but not collected whole.
-
-    A declaration counts from either lifecycle: the session's capabilities or ``server/discover``.
+    An empty listing proves an empty catalog only on a legacy session. A modern-only audit's catalog, or one
+    recovered from the stateless lifecycle, is the stateless page, which proves it only with
+    ``resultType: "complete"`` (SEP-2322) and no next cursor.
     """
     discovered = discover_capabilities(audit_data)
-    unproven = []
+    probes = audit_data.probes or {}
+    catalogs: dict[str, _Catalog] = {}
     for listing, capability in _PRIMITIVE_LISTINGS.items():
+        attempted = listing in audit_data.listings_attempted
         declared = getattr(audit_data.capabilities, capability, None) is not None or capability in discovered
+        catalog = catalogs[listing] = _Catalog(declared=declared or attempted)
+        session = audit_data.session_protocol_version is not None and listing not in audit_data.catalog_versions
         collected = getattr(audit_data, listing)
-        if collected is None and listing == "tools" and listing not in audit_data.listings_attempted:
-            # The session never listed tools: a whole stateless page is the evidence.
-            whole_empty = _stateless_tools(audit_data) == 0 and not _stateless_tools_unfinished(audit_data)
-            collected = [] if whole_empty else None
-        missing = collected is None and (declared or listing in audit_data.listings_attempted)
-        unfinished = listing in audit_data.incomplete_listings or (
-            listing == "tools" and _stateless_tools_unfinished(audit_data)
-        )
-        if missing or (not collected and unfinished):
-            unproven.append(listing)
-    extensions = discovered.get("extensions")
-    discover_skills = isinstance(extensions, dict) and SKILLS_EXTENSION in extensions
+        incomplete = listing in audit_data.incomplete_listings
+        if collected is not None:
+            # Collected items exist whatever their source; only a session listing proves an empty catalog.
+            catalog.observe(len(collected), whole=session and not incomplete)
+        if session and attempted and (collected is None or incomplete or listing in audit_data.listing_errors):
+            catalog.broken = True
+        probe = probes.get(_CONNECTION_PROBES.get(listing, ""))
+        if probe is not None and probe.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
+            counts = [probe.details.get(key) for key in ("first_count", "second_count")]
+            catalog.observe(max((c for c in counts if isinstance(c, int)), default=0), whole=False)
+    page = _stateless_tools_page(audit_data)
+    if page is not None:
+        whole = page.get("resultType") == "complete" and page.get("nextCursor") is None
+        catalogs["tools"].observe(len(page["tools"]), whole=whole)
     skills = audit_data.skills
-    listed = skills is not None and skills.entries is not None and (skills.entries or not skills.list_incomplete)
-    if (declares_skills(audit_data) or discover_skills) and not listed:
-        unproven.append("skills")
-    return unproven
+    extensions = discovered.get("extensions")
+    declares = declares_skills(audit_data) or (isinstance(extensions, dict) and SKILLS_EXTENSION in extensions)
+    catalog = catalogs["skills"] = _Catalog(declared=declares)
+    if skills is not None and skills.entries is not None:
+        catalog.observe(len(skills.entries), whole=not skills.list_incomplete)
+    return catalogs
 
 
 @register_rule
@@ -518,21 +529,24 @@ class ServerExposesPrimitiveRule(BaseRule):
         return RuleSeverity.MEDIUM
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip unless the audit either collected a primitive or saw every declared listing come back whole and empty.
+        """Skip unless some source observed a primitive, or every declared catalog was listed whole and empty.
 
         A failed or incomplete listing is never read as empty, and a partial audit has no session to list with.
         """
         if audit_data.partial or audit_data.capabilities is None:
             return SKIP_REASON_INSUFFICIENT_DATA
-        if any(_exposed_counts(audit_data).values()):
+        catalogs = _catalogs(audit_data).values()
+        if any(catalog.items for catalog in catalogs):
             return None
-        return SKIP_REASON_INSUFFICIENT_DATA if _unproven_listings(audit_data) else None
+        settled = all(catalog.proven_empty and not catalog.broken for catalog in catalogs if catalog.declared)
+        return None if settled else SKIP_REASON_INSUFFICIENT_DATA
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """Pass when any primitive listing collected at least one item."""
-        counts = _exposed_counts(audit_data)
+        """Pass when any source observed at least one tool, resource, resource template, prompt or skill."""
+        catalogs = _catalogs(audit_data)
+        counts = {name: catalog.items for name, catalog in catalogs.items()}
         passed = any(counts.values())
-        checked = [name for name, count in counts.items() if count is not None]
+        checked = [name for name, catalog in catalogs.items() if catalog.declared]
         if passed:
             exposed = ", ".join(f"{name}: {count}" for name, count in counts.items() if count)
             message = f"✅ Server exposes at least one primitive ({exposed})"
