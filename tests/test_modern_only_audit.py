@@ -316,6 +316,8 @@ async def test_invalid_tool_entries_degrade_to_none(stub_probes, monkeypatch: py
     auditor = MCPAuditor()
     assert await auditor.audit_modern_only(URL) is True
     assert auditor.audit_data.tools is None
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    assert skipped["server_exposes_primitive"] == "insufficient-data"
 
 
 async def test_stateless_probe_without_payload_leaves_tools_none(stub_probes, monkeypatch: pytest.MonkeyPatch):

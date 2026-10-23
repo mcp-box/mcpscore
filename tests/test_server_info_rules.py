@@ -484,3 +484,21 @@ def test_undeclared_plain_tools_page_of_a_legacy_server_is_ignored() -> None:
         capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=_probes(stateless={"tools": []})
     )
     assert judge(data) is False
+
+
+@pytest.mark.parametrize(
+    ("tools", "expected"),
+    [
+        ([None], SKIP_REASON_INSUFFICIENT_DATA),
+        ([{"description": "no name"}], SKIP_REASON_INSUFFICIENT_DATA),
+        ([None, {"name": "search", "inputSchema": {"type": "object"}}], True),
+    ],
+    ids=["null-entry", "invalid-entry", "one-valid"],
+)
+def test_only_valid_stateless_tools_count(tools: list[Any], expected: bool | str) -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(tools=ToolsCapability()),
+        listings_attempted=frozenset({"tools"}),
+        probes=_probes(discover={"capabilities": {"tools": {}}}, stateless={"tools": tools, "resultType": "complete"}),
+    )
+    assert judge(data) == expected

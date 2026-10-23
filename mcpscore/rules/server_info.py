@@ -2,7 +2,8 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from mcp_types import Implementation
+from mcp_types import Implementation, Tool
+from pydantic import ValidationError
 
 from mcpscore.diagnostics import quoted_preview
 from mcpscore.probes import (
@@ -476,6 +477,18 @@ def _stateless_tools_page(audit_data: AuditData) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) and isinstance(payload.get("tools"), list) else None
 
 
+def _valid_tools(raw_tools: list[Any]) -> int:
+    """Count the entries of a raw ``tools`` array that are valid tool definitions."""
+    valid = 0
+    for raw_tool in raw_tools:
+        try:
+            Tool.model_validate(raw_tool)
+        except ValidationError:
+            continue
+        valid += 1
+    return valid
+
+
 def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     """Reconcile the session listings, the stateless lifecycle and the catalog probes into one view per catalog.
 
@@ -519,7 +532,10 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
         if listing == "tools" and page is not None:
             # A modern server's answered tools/list must settle the catalog, declared or not.
             catalog.modern_needed = catalog.modern_needed or has_modern_support(audit_data.probes)
-            catalog.observe(len(page["tools"]))
+            valid = _valid_tools(page["tools"])
+            if valid or not page["tools"]:
+                # A page of only malformed entries shows no usable tool and does not prove the catalog empty.
+                catalog.observe(valid)
             whole = page.get("resultType") == "complete" and page.get("nextCursor") is None
             catalog.modern_empty = catalog.modern_empty or (whole and not page["tools"])
     skills = audit_data.skills
