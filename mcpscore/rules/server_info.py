@@ -507,14 +507,9 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     error_code = stateless_probe.details.get("error_code") if stateless_probe is not None else None
     # An explicit Method not found for tools/list says the server serves no tools catalog at all.
     tools_refused = error_code == ERROR_METHOD_NOT_FOUND
-    # Any other outcome on a modern server, a malformed result, an error or no answer at all (a timeout), leaves its
-    # tools catalog to settle.
-    answered = stateless_probe is not None and (
-        isinstance(stateless_probe.payload, dict)
-        or error_code is not None
-        or stateless_probe.outcome is ProbeOutcome.ERROR
-    )
-    tools_answered = answered and not tools_refused and has_modern_support(probes)
+    # Any other outcome on a modern server leaves its tools catalog to settle: only a whole page proves it empty.
+    probed = stateless_probe is not None and stateless_probe.outcome is not ProbeOutcome.NOT_APPLICABLE
+    tools_answered = probed and not tools_refused and has_modern_support(probes)
     catalogs: dict[str, _Catalog] = {}
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         attempted = listing in audit_data.listings_attempted and not (listing == "tools" and tools_refused)

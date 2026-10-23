@@ -1,6 +1,7 @@
 from dataclasses import replace
 from typing import Any
 
+import httpx2
 from mcp_types import (
     Prompt,
     PromptsCapability,
@@ -21,6 +22,8 @@ from mcpscore.probes import (
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     ProbeOutcome,
     ProbeResult,
+    _HttpTarget,
+    _probe_stateless_list,
 )
 from mcpscore.rules import (
     AuditData,
@@ -531,19 +534,20 @@ def test_only_skills_with_a_uri_count(skills_evidence: SkillsEvidence, expected:
 
 
 @pytest.mark.parametrize(
-    ("outcome", "payload", "expected"),
+    ("details", "payload", "expected"),
     [
-        (ProbeOutcome.UNSUPPORTED, {"resultType": "complete"}, SKIP_REASON_INSUFFICIENT_DATA),
-        (ProbeOutcome.UNSUPPORTED, None, False),
+        ({}, {"resultType": "complete"}, SKIP_REASON_INSUFFICIENT_DATA),
+        ({}, None, SKIP_REASON_INSUFFICIENT_DATA),
+        ({"error_code": -32601}, None, False),
     ],
-    ids=["malformed-result", "refusal"],
+    ids=["malformed-result", "no-result", "method-not-found"],
 )
 def test_modern_tools_result_without_a_tools_array_is_a_gap(
-    outcome: ProbeOutcome, payload: dict[str, Any] | None, expected: bool | str
+    details: dict[str, Any], payload: dict[str, Any] | None, expected: bool | str
 ) -> None:
     probes = {
         **_probes(discover={"capabilities": {}}),
-        PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, outcome, {}, payload=payload),
+        PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, details, payload=payload),
     }
     data = AuditData(capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=probes)
     assert judge(data) == expected
@@ -581,6 +585,21 @@ def test_dual_era_stateless_tools_error_is_a_gap_unless_method_not_found(error_c
 @pytest.mark.parametrize("session", [SESSION, None], ids=["dual-era", "modern-only"])
 def test_timed_out_stateless_tools_listing_is_a_gap(session: str | None) -> None:
     probe = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.ERROR, {"exception": "TimeoutError"})
+    data = AuditData(
+        capabilities=ServerCapabilities(),
+        session_protocol_version=session,
+        probes={**_probes(discover={"capabilities": {}}), PROBE_STATELESS_LIST: probe},
+    )
+    assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+@pytest.mark.parametrize("session", [SESSION, None], ids=["dual-era", "modern-only"])
+async def test_bodyless_server_error_on_stateless_tools_listing_is_a_gap(session: str | None) -> None:
+    transport = httpx2.MockTransport(lambda _request: httpx2.Response(503, text=""))
+    async with httpx2.AsyncClient(transport=transport) as client:
+        probe = await _probe_stateless_list(_HttpTarget(client, "https://server.example/mcp"))
+    assert probe.payload is None
+    assert probe.details.get("error_code") is None
     data = AuditData(
         capabilities=ServerCapabilities(),
         session_protocol_version=session,
