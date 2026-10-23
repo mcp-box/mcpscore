@@ -15,11 +15,13 @@ from mcp_types import (
 import pytest
 
 from mcpscore.probes import (
+    ERROR_UNSUPPORTED_PROTOCOL_VERSION,
     PROBE_DISCOVER,
     PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_STATELESS_LIST,
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
+    PROBE_UNKNOWN_VERSION,
     ProbeOutcome,
     ProbeResult,
     _HttpTarget,
@@ -606,3 +608,36 @@ async def test_bodyless_server_error_on_stateless_tools_listing_is_a_gap(session
         probes={**_probes(discover={"capabilities": {}}), PROBE_STATELESS_LIST: probe},
     )
     assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+@pytest.mark.parametrize(
+    ("modern_error", "tools", "expected"),
+    [
+        (True, None, SKIP_REASON_INSUFFICIENT_DATA),
+        (False, None, False),
+        (True, [TOOL], True),
+    ],
+    ids=["modern-known", "legacy-only", "tool-observed"],
+)
+def test_unavailable_discovery_of_a_modern_server_leaves_its_catalogs_unsettled(
+    modern_error: bool, tools: list[Tool] | None, expected: bool | str
+) -> None:
+    timeout = {"exception": "TimeoutError"}
+    probes = {
+        PROBE_DISCOVER: ProbeResult(PROBE_DISCOVER, ProbeOutcome.ERROR, timeout),
+        PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.ERROR, timeout),
+    }
+    if modern_error:
+        details = {"error_code": ERROR_UNSUPPORTED_PROTOCOL_VERSION}
+        probes[PROBE_UNKNOWN_VERSION] = ProbeResult(PROBE_UNKNOWN_VERSION, ProbeOutcome.UNSUPPORTED, details)
+    data = AuditData(capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=probes, tools=tools)
+    assert judge(data) == expected
+
+
+def test_null_discover_capabilities_declare_nothing() -> None:
+    refusal = {"error_code": -32601}
+    probes = {
+        **_probes(discover={"capabilities": {"resources": None, "prompts": None, "tools": None}}),
+        PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, refusal),
+    }
+    assert judge(AuditData(capabilities=ServerCapabilities(), probes=probes)) is False

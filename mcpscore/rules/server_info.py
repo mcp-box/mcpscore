@@ -7,14 +7,17 @@ from mcp_types import Implementation
 from mcpscore.diagnostics import quoted_preview
 from mcpscore.probes import (
     ERROR_METHOD_NOT_FOUND,
+    PROBE_DISCOVER,
     PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_STATELESS_LIST,
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     ProbeOutcome,
+    detect_era,
     has_modern_support,
 )
 from mcpscore.skills import declared_settings
+from mcpscore.spec import Era
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -480,6 +483,13 @@ def _stateless_tools_page(audit_data: AuditData) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) and isinstance(payload.get("tools"), list) else None
 
 
+def _discover_observed(audit_data: AuditData) -> bool:
+    """Whether a ``server/discover`` result with a capabilities object was observed."""
+    discover = (audit_data.probes or {}).get(PROBE_DISCOVER)
+    payload = discover.payload if discover is not None else None
+    return isinstance(payload, dict) and isinstance(payload.get("capabilities"), dict)
+
+
 def _identified(entries: list[Any], key: str) -> int | None:
     """Count the entries that carry an identity (a non-empty string *key*), as the catalog probes do.
 
@@ -502,6 +512,10 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     discovered = discover_capabilities(audit_data)
     probes = audit_data.probes or {}
     has_session = audit_data.session_protocol_version is not None
+    # A server known to speak the modern lifecycle whose server/discover result never arrived may declare anything.
+    discover_unseen = not _discover_observed(audit_data) and detect_era(
+        audit_data.session_protocol_version, probes
+    ) in (Era.MODERN, Era.DUAL)
     page = _stateless_tools_page(audit_data)
     stateless_probe = probes.get(PROBE_STATELESS_LIST)
     error_code = stateless_probe.details.get("error_code") if stateless_probe is not None else None
@@ -514,7 +528,7 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         attempted = listing in audit_data.listings_attempted and not (listing == "tools" and tools_refused)
         session_declares = getattr(audit_data.capabilities, capability, None) is not None
-        modern_declares = capability in discovered
+        modern_declares = discover_unseen or discovered.get(capability) is not None
         catalog = catalogs[listing] = _Catalog(
             legacy_needed=has_session and (session_declares or attempted),
             modern_needed=modern_declares or (not has_session and (session_declares or attempted)),
@@ -552,7 +566,7 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     session_skills = declared_settings(audit_data.capabilities) is not None
     catalog = catalogs["skills"] = _Catalog(
         legacy_needed=has_session and session_skills,
-        modern_needed=discover_declares_skills(audit_data) or (not has_session and session_skills),
+        modern_needed=discover_unseen or discover_declares_skills(audit_data) or (not has_session and session_skills),
     )
     if skills is not None:
         listed_whole = (
