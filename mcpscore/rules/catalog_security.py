@@ -9,7 +9,7 @@ never repeats a secret or an injected instruction.
 
 from abc import abstractmethod
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from html.parser import HTMLParser
 import ipaddress
@@ -155,6 +155,7 @@ def _publishable_path(path: str) -> tuple[str, bool]:
             or secret_classes(text)
             or injection_classes(text)
             or exfiltration_link_classes(text)
+            or cross_tool_classes(text)
         ):
             return "/".join(segments[:position]), True
     return path, False
@@ -195,12 +196,17 @@ class CatalogSecurityRule(BaseRule):
     def matches(self, text: str) -> list[str]:
         """Return the class name of each finding in *text*, in order."""
 
+    def text_matcher(self, audit_data: AuditData) -> Callable[[str], list[str]]:
+        """Return the matcher for this audit's strings; rules that judge text against the catalog override it."""
+        return self.matches
+
     def check(self, audit_data: AuditData) -> RuleResult:
         """Scan every catalog string and report locations with the matched classes."""
         issues: list[dict[str, Any]] = []
         classes: Counter[str] = Counter()
+        matches = self.text_matcher(audit_data)
         for entry in catalog_texts(audit_data):
-            found = self.matches(entry.text)
+            found = matches(entry.text)
             if found:
                 classes.update(found)
                 path, truncated = _publishable_path(entry.path)
@@ -1481,3 +1487,123 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
     def matches(self, text: str) -> list[str]:
         """Return the exfiltration-link classes found in *text*."""
         return exfiltration_link_classes(text)
+
+
+# Tool shadowing: a sentence that directs the model, about a tool the server does not list.
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])\s+|\n+")
+_DIRECTIVE_RE = re.compile(
+    r"\b(?:always|must|never|do\s+not|don['\u2019]t|should|first|instead|make\s+sure|ensure|be\s+sure)\b"
+    r"|^\W*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer)\b",
+    re.IGNORECASE,
+)
+_ANY_TOOL_RE = re.compile(
+    r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
+    r"(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\b",
+    re.IGNORECASE,
+)
+# A tool name is code-shaped: in backticks, joined with _ or ., or camelCase. Plain and hyphenated words
+# ("read-only tool") are left alone.
+_TOOL_NAME = (
+    r"`(?P<ticked>[^`\s]{1,128})`|(?P<bare>[A-Za-z][A-Za-z0-9-]*(?:[_.]+[A-Za-z0-9-]+)+|[a-z]+(?:[A-Z][a-z0-9]*)+)"
+)
+_TOOL_REFERENCES = (
+    re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})(?![\w`])"),
+    re.compile(rf"(?<![\w`])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
+)
+_SEPARATORS_RE = re.compile(r"[-._]+")
+_QUOTED_RE = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
+
+
+def _quoted(sentence: str, start: int, end: int) -> bool:
+    """Whether *start*..*end* lies inside a double-quoted span, which quotes a phrase rather than directing."""
+    return any(span.start() < start and end < span.end() for span in _QUOTED_RE.finditer(sentence))
+
+
+def _name_key(name: str) -> str:
+    """Fold case and separators, so ``ads.campaign.refresh`` and ``ads__campaign__refresh`` compare equal."""
+    return _SEPARATORS_RE.sub("_", name.casefold())
+
+
+def _is_listed(name: str, listed: frozenset[str]) -> bool:
+    """Whether *name* is a listed name, alone or behind a client's prefix (``mcp__server__search``)."""
+    key = _name_key(name)
+    return key in listed or any(key.endswith(f"_{own}") for own in listed)
+
+
+def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[str]:
+    """Return the cross-tool directive classes in *text*.
+
+    ``any_tool_directive``: a directive about any or other tools or servers. ``unlisted_tool_directive``: a
+    directive naming a tool that is not in *listed* (the names the server lists); with *listed* None
+    the catalog is unknown and only the first class is judged. *listed* holds :func:`_name_key` forms.
+    """
+    found: list[str] = []
+    for sentence in _SENTENCE_BREAK_RE.split(text):
+        if not _DIRECTIVE_RE.search(sentence):
+            continue
+        if any(
+            not (_is_mention(sentence, m.start(), m.end()) or _quoted(sentence, m.start(), m.end()))
+            for m in _ANY_TOOL_RE.finditer(sentence)
+        ):
+            found.append("any_tool_directive")
+        if listed is not None:
+            found.extend(
+                "unlisted_tool_directive"
+                for pattern in _TOOL_REFERENCES
+                for match in pattern.finditer(sentence)
+                if not _is_listed(match["ticked"] or match["bare"], listed)
+            )
+    return found
+
+
+def _listed_names(audit_data: AuditData) -> frozenset[str] | None:
+    """Return the names the server lists, folded by :func:`_name_key`, or None when its tools were not seen whole."""
+    if audit_data.tools is None or "tools" in audit_data.incomplete_listings:
+        return None
+    items = [*audit_data.tools, *(audit_data.prompts or []), *(audit_data.resources or [])]
+    items += audit_data.resource_templates or []
+    return frozenset(_name_key(item.name) for item in items if item.name)
+
+
+@register_rule
+class CatalogCrossToolDirectivesRule(CatalogSecurityRule):
+    """High check: catalog text does not direct the model's use of tools the server does not list.
+
+    Every connected server shares the model's context, so a description can steer how the agent uses
+    another server's tools without the describing tool ever running (tool shadowing). Directions about the
+    server's own tools are ordinary workflow guidance and pass; a sentence counts only when it directs.
+
+    Scoring: 3 points (HIGH)
+    """
+
+    rule_id = "catalog_cross_tool_directives"
+    basis = (
+        "OWASP MCP Top 10 (beta) MCP03:2025 Tool Poisoning; MCP Local Server Security (a poisoned tool catalog, "
+        "tool shadowing); MCP 2025-11-25 §Security and Trust & Safety (Tool Safety: tool descriptions are untrusted)"
+    )
+    rule_order = 24
+    issue_reason = "cross_tool_directive"
+    expected = "directions that name only this server's own tools"
+    passed_message = "Catalog text directs no tools outside this server"
+    failure_label = "catalog strings directing tools outside this server"
+    fix = (
+        "Rewrite the listed fields so they direct only this server's own tools. Describe how other tools are "
+        "used in your documentation, not in text the model reads."
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return "No Directions for Other Tools in Catalog Text"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def matches(self, text: str) -> list[str]:
+        """Return the cross-tool directive classes found in *text*, without knowing the server's catalog."""
+        return cross_tool_classes(text)
+
+    def text_matcher(self, audit_data: AuditData) -> Callable[[str], list[str]]:
+        """Judge each string against the names this server lists."""
+        listed = _listed_names(audit_data)
+        return lambda text: cross_tool_classes(text, listed)

@@ -50,7 +50,7 @@ mcpscore https://api.githubcopilot.com/mcp/
 ...
 ⚠️  Partial audit (Server requires authentication (HTTP 401); scored the unauthenticated surface only — pass a token to audit behind the gate.).
 Only the auth, TLS, and transport surface was scored — not comparable to a full audit.
-Audit finished. PARTIAL score: 30/32 from 12 of 114 checks — not comparable to a full audit.
+Audit finished. PARTIAL score: 30/32 from 12 of 115 checks — not comparable to a full audit.
 ```
 
 This is a partial audit. It covers TLS, the 401 challenge, the
@@ -59,7 +59,7 @@ names. Those are real findings about your auth posture: a missing PKCE
 advertisement, or no way for a new client to register, shows up here
 without any credential.
 
-The score line says `PARTIAL` and `from 12 of 114 checks` on purpose. A
+The score line says `PARTIAL` and `from 12 of 115 checks` on purpose. A
 bare `30/32` pasted into a chat reads like the score of the whole server. A
 partial score and a full score are not comparable.
 

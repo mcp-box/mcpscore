@@ -39,6 +39,7 @@ from .capabilities import (
     CapabilityToolsPresentRule,
 )
 from .catalog_security import (
+    CatalogCrossToolDirectivesRule,
     CatalogExfiltrationLinksRule,
     CatalogHiddenUnicodeRule,
     CatalogNoEmbeddedSecretsRule,
@@ -201,6 +202,7 @@ __all__ = (
     "CapabilityResourcesPresentRule",
     "CapabilityToolsListChangedRule",
     "CapabilityToolsPresentRule",
+    "CatalogCrossToolDirectivesRule",
     "CatalogExfiltrationLinksRule",
     "CatalogHiddenUnicodeRule",
     "CatalogNoEmbeddedSecretsRule",
