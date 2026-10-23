@@ -1576,7 +1576,7 @@ _SEPARATORS_RE = re.compile(r"[-._/]+")
 _NAMESPACE_RE = re.compile(r"__|[./]")
 _MAX_NAMESPACES = 3
 _QUOTE_PAIRS_DOUBLE = (('"', '"'), ("\u201c", "\u201d"))
-_CODE_PAIRS = (("`", "`"),)
+_BACKTICK_RUN_RE = re.compile(r"`+")
 
 
 class _ForwardFind:
@@ -1638,6 +1638,33 @@ class _QuotedSpans:
             starts.append(start)
             ends.append(end)
             position = end
+
+    @classmethod
+    def code_of(cls, text: str) -> "_QuotedSpans":
+        """Find the inline code spans of *text*: a run of backticks closes at the next run of the same length.
+
+        This is the CommonMark rule, so ``double ` backticks`` stay one span. Each run's next run of the same
+        length is found in one backward pass, keeping the scan linear.
+        """
+        runs = [(match.start(), match.end()) for match in _BACKTICK_RUN_RE.finditer(text)]
+        next_same: list[int | None] = [None] * len(runs)
+        seen: dict[int, int] = {}
+        for index in range(len(runs) - 1, -1, -1):
+            length = runs[index][1] - runs[index][0]
+            next_same[index] = seen.get(length)
+            seen[length] = index
+        starts: list[int] = []
+        ends: list[int] = []
+        index = 0
+        while index < len(runs):
+            closer = next_same[index]
+            if closer is None:
+                index += 1
+                continue
+            starts.append(runs[index][0])
+            ends.append(runs[closer][1])
+            index = closer + 1
+        return cls(starts, ends)
 
     def end_of(self, position: int) -> int:
         """Return the end of the span that contains *position* (only when :meth:`contains` says so)."""
@@ -1753,7 +1780,7 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     the catalog is unknown and only the first class is judged. *listed* holds :func:`_name_key` forms.
     A phrase in double quotes or named as an attempt (``attempts to call x``) is a mention, not a directive.
     """
-    code = _QuotedSpans.of(text, _CODE_PAIRS)
+    code = _QuotedSpans.code_of(text)
     quoted = _QuotedSpans.of(text, skip=code)
     found: list[str] = []
     for offset, sentence in _sentences(text, quoted, code):
