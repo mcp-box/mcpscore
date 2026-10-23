@@ -679,7 +679,9 @@ async def stateless_first_page(session: SkillsSession) -> tuple[dict[str, Any], 
     if not isinstance(skills, list):
         return _list_hints(result), None, False
     whole = result.get("resultType") == "complete" and result.get("nextCursor") is None
-    return _list_hints(result), len(skills), whole
+    # Entries without a URI show no skill; a page of only those proves nothing either way.
+    count = sum(1 for entry in skills if isinstance(entry, dict) and isinstance(entry.get("uri"), str) and entry["uri"])
+    return _list_hints(result), count if count or not skills else None, whole
 
 
 async def stateless_list_hints(session: SkillsSession) -> dict[str, Any]:

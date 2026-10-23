@@ -173,6 +173,7 @@ class TestCollectorHints:
             ({"skills": [], "resultType": "complete", "nextCursor": "2"}, 0, False),
             ({"skills": []}, 0, False),
             ({"resultType": "complete"}, None, False),
+            ({"skills": [None, {"name": "a"}], "resultType": "complete"}, None, True),
         ],
     )
     async def test_first_stateless_page_reports_its_count_and_wholeness(self, page, count, whole):

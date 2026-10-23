@@ -2,8 +2,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from mcp_types import Implementation, Tool
-from pydantic import ValidationError
+from mcp_types import Implementation
 
 from mcpscore.diagnostics import quoted_preview
 from mcpscore.probes import (
@@ -477,16 +476,14 @@ def _stateless_tools_page(audit_data: AuditData) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) and isinstance(payload.get("tools"), list) else None
 
 
-def _valid_tools(raw_tools: list[Any]) -> int:
-    """Count the entries of a raw ``tools`` array that are valid tool definitions."""
-    valid = 0
-    for raw_tool in raw_tools:
-        try:
-            Tool.model_validate(raw_tool)
-        except ValidationError:
-            continue
-        valid += 1
-    return valid
+def _identified(entries: list[Any], key: str) -> int | None:
+    """Count the entries that carry an identity (a non-empty string *key*), as the catalog probes do.
+
+    Returns None for a non-empty list with no identified entry: it shows no item, and does not prove the
+    catalog empty. Whether an identified entry is otherwise valid is for the validity rules to judge.
+    """
+    count = sum(1 for entry in entries if isinstance(entry, dict) and isinstance(entry.get(key), str) and entry[key])
+    return count if count or not entries else None
 
 
 def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
@@ -502,6 +499,11 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
     probes = audit_data.probes or {}
     has_session = audit_data.session_protocol_version is not None
     page = _stateless_tools_page(audit_data)
+    stateless_probe = probes.get(PROBE_STATELESS_LIST)
+    # A modern server's tools/list result, malformed or not, must settle the tools catalog; a refusal does not.
+    tools_answered = (
+        stateless_probe is not None and isinstance(stateless_probe.payload, dict) and has_modern_support(probes)
+    )
     catalogs: dict[str, _Catalog] = {}
     for listing, capability in _PRIMITIVE_LISTINGS.items():
         attempted = listing in audit_data.listings_attempted
@@ -529,13 +531,12 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
             # SUPPORTED: both connections read every page and found the same catalog.
             whole = probe.outcome is ProbeOutcome.SUPPORTED and probe.details.get("results_complete") is True
             catalog.modern_empty = whole and counts == [0, 0]
+        if listing == "tools":
+            catalog.modern_needed = catalog.modern_needed or tools_answered
         if listing == "tools" and page is not None:
-            # A modern server's answered tools/list must settle the catalog, declared or not.
-            catalog.modern_needed = catalog.modern_needed or has_modern_support(audit_data.probes)
-            valid = _valid_tools(page["tools"])
-            if valid or not page["tools"]:
-                # A page of only malformed entries shows no usable tool and does not prove the catalog empty.
-                catalog.observe(valid)
+            named = _identified(page["tools"], "name")
+            if named is not None:
+                catalog.observe(named)
             whole = page.get("resultType") == "complete" and page.get("nextCursor") is None
             catalog.modern_empty = catalog.modern_empty or (whole and not page["tools"])
     skills = audit_data.skills
@@ -548,8 +549,9 @@ def _catalogs(audit_data: AuditData) -> dict[str, _Catalog]:
         listed_whole = (
             skills.entries == [] and not skills.list_incomplete and not skills.list_malformed and not skills.list_error
         )
-        if skills.entries is not None:
-            catalog.observe(len(skills.entries))
+        listed = None if skills.entries is None else _identified(skills.entries, "uri")
+        if listed is not None:
+            catalog.observe(listed)
         if skills.stateless:
             catalog.modern_empty = listed_whole
         else:

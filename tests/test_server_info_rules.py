@@ -153,7 +153,10 @@ def test_any_one_primitive_passes(exposed: dict[str, Any]) -> None:
 
 
 def test_skills_only_server_without_tools_capability_passes() -> None:
-    data = AuditData(capabilities=ServerCapabilities(extensions=SKILLS), skills=skills([{"name": "pdf"}]))
+    data = AuditData(
+        capabilities=ServerCapabilities(extensions=SKILLS),
+        skills=skills([{"name": "pdf", "uri": "skill://pdf/SKILL.md"}]),
+    )
     result = ServerExposesPrimitiveRule().check(data)
     assert result.passed
     assert result.details["exposed"]["skills"] == 1
@@ -248,7 +251,7 @@ def test_skills_declared_only_in_discover_are_judged_on_the_stateless_lifecycle(
     common: dict[str, Any] = {"capabilities": capabilities, "tools": [], "session_protocol_version": SESSION}
     failed = SkillsEvidence(entries=None, stateless=True)
     assert judge(AuditData(**common, skills=failed, probes=probes)) == SKIP_REASON_INSUFFICIENT_DATA
-    served = SkillsEvidence(entries=[{"name": "pdf"}], stateless=True)
+    served = SkillsEvidence(entries=[{"name": "pdf", "uri": "skill://pdf/SKILL.md"}], stateless=True)
     assert judge(AuditData(**common, skills=served, probes=probes)) is True
     empty = SkillsEvidence(entries=[], stateless=True)
     assert judge(AuditData(**common, skills=empty, probes=probes)) is False
@@ -492,13 +495,54 @@ def test_undeclared_plain_tools_page_of_a_legacy_server_is_ignored() -> None:
         ([None], SKIP_REASON_INSUFFICIENT_DATA),
         ([{"description": "no name"}], SKIP_REASON_INSUFFICIENT_DATA),
         ([None, {"name": "search", "inputSchema": {"type": "object"}}], True),
+        ([{"name": "ghost", "inputSchema": None}], True),
     ],
-    ids=["null-entry", "invalid-entry", "one-valid"],
+    ids=["null-entry", "unnamed-entry", "one-named", "named-with-broken-schema"],
 )
-def test_only_valid_stateless_tools_count(tools: list[Any], expected: bool | str) -> None:
+def test_only_named_stateless_tools_count(tools: list[Any], expected: bool | str) -> None:
     data = AuditData(
         capabilities=ServerCapabilities(tools=ToolsCapability()),
         listings_attempted=frozenset({"tools"}),
         probes=_probes(discover={"capabilities": {"tools": {}}}, stateless={"tools": tools, "resultType": "complete"}),
     )
+    assert judge(data) == expected
+
+
+@pytest.mark.parametrize(
+    ("skills_evidence", "expected"),
+    [
+        (SkillsEvidence(entries=[None]), SKIP_REASON_INSUFFICIENT_DATA),
+        (SkillsEvidence(entries=[{"name": "pdf"}]), SKIP_REASON_INSUFFICIENT_DATA),
+        (SkillsEvidence(entries=[None, {"uri": "skill://pdf/SKILL.md"}]), True),
+        (SkillsEvidence(entries=[], stateless_count=None, stateless_whole=True), SKIP_REASON_INSUFFICIENT_DATA),
+        (SkillsEvidence(entries=[], stateless_count=1), True),
+    ],
+    ids=["session-null", "session-no-uri", "session-one-uri", "stateless-unidentified", "stateless-one"],
+)
+def test_only_skills_with_a_uri_count(skills_evidence: SkillsEvidence, expected: bool | str) -> None:
+    data = AuditData(
+        capabilities=ServerCapabilities(extensions=SKILLS),
+        session_protocol_version=SESSION,
+        skills=skills_evidence,
+        probes=_probes(discover={"capabilities": {"extensions": SKILLS}}),
+    )
+    assert judge(data) == expected
+
+
+@pytest.mark.parametrize(
+    ("outcome", "payload", "expected"),
+    [
+        (ProbeOutcome.UNSUPPORTED, {"resultType": "complete"}, SKIP_REASON_INSUFFICIENT_DATA),
+        (ProbeOutcome.UNSUPPORTED, None, False),
+    ],
+    ids=["malformed-result", "refusal"],
+)
+def test_modern_tools_result_without_a_tools_array_is_a_gap(
+    outcome: ProbeOutcome, payload: dict[str, Any] | None, expected: bool | str
+) -> None:
+    probes = {
+        **_probes(discover={"capabilities": {}}),
+        PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, outcome, {}, payload=payload),
+    }
+    data = AuditData(capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=probes)
     assert judge(data) == expected
