@@ -1501,7 +1501,11 @@ _DIRECTIVE_RE = re.compile(
     # or auxiliary ("the tool always returns", "has never been") they describe.
     r"|(?:^|[,;:(\u2014\u201d\x22]|\b(?:and|or|then|but|so|please))[^\w\n]{0,4}(?:always|never)\b"
     r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
-    r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if|call|use|invoke|send|prefer|always|never)\b",
+    r"|^[^\w\n]*(?:call|use|invoke|send|prefer|always|never)\b"
+    # A condition directs when its main clause does not open with a subject: "When asked, call x" or "If so, BCC y",
+    # not "When available, the tool returns …".
+    r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if)\b[^,]{0,200},\s*"
+    r"(?!(?:the|a|an|it|its|this|that|these|those|they|their|we|our|you|your|there|he|she|i)\b)\w",
     re.IGNORECASE | re.MULTILINE,
 )
 _ANY_TOOL_RE = re.compile(
@@ -1562,6 +1566,7 @@ _SEPARATORS_RE = re.compile(r"[-._/]+")
 _NAMESPACE_RE = re.compile(r"__|[./]")
 _MAX_NAMESPACES = 3
 _QUOTE_PAIRS_DOUBLE = (('"', '"'), ("\u201c", "\u201d"))
+_CODE_PAIRS = (("`", "`"),)
 
 
 class _ForwardFind:
@@ -1588,10 +1593,10 @@ class _QuotedSpans:
     ends: list[int]
 
     @classmethod
-    def of(cls, text: str) -> "_QuotedSpans":
-        """Find the quoted spans of *text*, leftmost first, in one forward pass."""
-        finders = [_ForwardFind(text, opener) for opener, _ in _QUOTE_PAIRS_DOUBLE]
-        closers = [_ForwardFind(text, closer) for _, closer in _QUOTE_PAIRS_DOUBLE]
+    def of(cls, text: str, pairs: tuple[tuple[str, str], ...] = _QUOTE_PAIRS_DOUBLE) -> "_QuotedSpans":
+        """Find the spans of *text* between each opener and closer in *pairs*, leftmost first, in one pass."""
+        finders = [_ForwardFind(text, opener) for opener, _ in pairs]
+        closers = [_ForwardFind(text, closer) for _, closer in pairs]
         starts: list[int] = []
         ends: list[int] = []
         position = 0
@@ -1678,11 +1683,14 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     A phrase in double quotes or named as an attempt (``attempts to call x``) is a mention, not a directive.
     """
     quoted = _QuotedSpans.of(text)
+    code = _QuotedSpans.of(text, _CODE_PAIRS)
     found: list[str] = []
     for offset, sentence in _sentences(text, quoted):
-        # A cue counts only outside quotes: its last character is checked, since an opener may start with punctuation.
+        # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
+        # with punctuation.
         if not any(
             not quoted.contains(offset + cue.end() - 1, offset + cue.end() - 1)
+            and not code.contains(offset + cue.end() - 1, offset + cue.end() - 1)
             for cue in _DIRECTIVE_RE.finditer(sentence)
         ):
             continue
