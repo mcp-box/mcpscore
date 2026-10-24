@@ -1609,20 +1609,21 @@ _TAG_NEEDLES = ('"', "'", ">", ")", "-->", "?>", "]]>")
 _URI_AUTOLINK_RE = re.compile(AUTOLINK_RE.pattern.removeprefix("^").removesuffix("$"))
 _EMAIL_AUTOLINK_RE = re.compile(EMAIL_RE.pattern.removeprefix("^").removesuffix("$"))
 _LINK_SPACE_RE = re.compile(r"[ \t]*\n?[ \t]*")
-_ANGLE_DESTINATION_RE = re.compile(r"<[^<>\n]*>")
-_BARE_DESTINATION_RE = re.compile(r"[^\s()]*(?:\([^\s()]*\)[^\s()]*)*")
+_ANGLE_DESTINATION_RE = re.compile(r"<(?:[^<>\n\\]|\\[\s\S])*>")
+# A bare destination ends at a space or control character and may nest balanced parentheses up to markdown-it's
+# limit; a backslash escapes the next character unless it is a space.
+_DESTINATION_RUN_RE = re.compile(r"[^ \x00-\x1f\x7f()\\]*")
+_MAX_LINK_NESTING = 32
+_LINK_TITLE_RE = re.compile(r"""(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|\((?P<paren>[^)]*)\))\s*\)$""")
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
 
-def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -> list[tuple[int, int, bool]]:
-    """Return the raw HTML tags and links outside *fences* as (start, end, is_tag), in text order.
-
-    Tags are reported so the caller can blank them; links (autolinks, inline link destinations) are only skipped.
-    """
-    markup: list[tuple[int, int, bool]] = []
+def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -> list[tuple[int, int]]:
+    """Return the raw HTML tags, autolinks and inline link destinations outside *fences*, in text order."""
+    markup: list[tuple[int, int]] = []
     if "<" not in text and "](" not in text:
         return markup
     scanner = _HtmlTags(text)
@@ -1631,14 +1632,34 @@ def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -
         if _inside(fences, fence_starts, start):
             continue
         if opener[0] == "](":
-            end, is_tag = scanner.link_end(start), False
-        elif (end := scanner.autolink_end(start)) is not None:
-            is_tag = False
+            end = scanner.link_end(start)
         else:
-            end, is_tag = scanner.end(start), True
+            end = scanner.autolink_end(start)
+            end = scanner.end(start) if end is None else end
         if end is not None:
-            markup.append((start, end, is_tag))
+            markup.append((start, end))
     return markup
+
+
+def _bare_destination_end(text: str, position: int) -> int | None:
+    """Return the end of the bare link destination at *position*, or None when its parentheses do not balance."""
+    depth = 0
+    while True:
+        run = _DESTINATION_RUN_RE.match(text, position)
+        position = position if run is None else run.end()
+        char = text[position : position + 1]
+        if char == "\\" and text[position + 1 : position + 2] not in ("", " "):
+            position += 2
+        elif char == "\\" and position + 1 == len(text):
+            position += 1
+        elif char == "(" and depth < _MAX_LINK_NESTING:
+            depth += 1
+            position += 1
+        elif char == ")" and depth:
+            depth -= 1
+            position += 1
+        else:
+            return position if depth == 0 and char != "(" else None
 
 
 def _after_space(text: str, position: int) -> int:
@@ -1679,13 +1700,15 @@ class _HtmlTags:
         """Return the end of the inline link destination and title after the "](" at *start*, or None."""
         text = self.text
         position = _after_space(text, start + 2)
-        destination = (_ANGLE_DESTINATION_RE if text.startswith("<", position) else _BARE_DESTINATION_RE).match(
-            text, position
-        )
+        if text.startswith("<", position):
+            angle = _ANGLE_DESTINATION_RE.match(text, position)
+            destination = None if angle is None else angle.end()
+        else:
+            destination = _bare_destination_end(text, position)
         if destination is None:
             return None
-        position = _after_space(text, destination.end())
-        if position > destination.end() and text[position : position + 1] in ('"', "'", "("):
+        position = _after_space(text, destination)
+        if position > destination and text[position : position + 1] in ('"', "'", "("):
             close = self._next(")" if text[position] == "(" else text[position], position + 1)
             if close is None:
                 return None
@@ -1847,10 +1870,8 @@ class _QuotedSpans:
         index = tag = 0
         while index < len(runs) or tag < len(markup):
             if tag < len(markup) and (index == len(runs) or markup[tag][0] < runs[index][0]):
-                start, end, is_tag = markup[tag]
-                if is_tag:
-                    honored.append((start, end))
-                position = end
+                honored.append(markup[tag])
+                position = markup[tag][1]
             else:
                 closer = next_same[index]
                 if closer is None:
@@ -1892,7 +1913,11 @@ def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, 
 
 
 def _tag_texts(tag: str) -> Iterator[str]:
-    """Yield the text inside an HTML *tag*: a comment's, CDATA's or instruction's body, or each attribute value."""
+    """Yield the text inside markup: a comment's, CDATA's or instruction's body, an attribute value or a link title."""
+    if tag.startswith("]("):
+        if title := _LINK_TITLE_RE.search(tag):
+            yield title[title.lastgroup or 0]
+        return
     for prefix, suffix in _TAG_BODIES:
         if tag.startswith(prefix):
             yield tag[len(prefix) : len(tag) - len(suffix)]
