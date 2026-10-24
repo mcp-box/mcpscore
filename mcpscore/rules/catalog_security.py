@@ -1622,7 +1622,7 @@ _MAX_LINK_NESTING = 32
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # Emphasis formats a directive without making it an example: "Always call **send_email** first."
-_EMPHASIS_RE = re.compile(r"\*+")
+_EMPHASIS_RE = re.compile(r"\*+|_+")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
@@ -2031,12 +2031,31 @@ def _tag_texts(tag: str) -> Iterator[str]:
 
 
 def _without_emphasis(text: str, code: _QuotedSpans) -> str:
-    """Return *text* with its "*" emphasis delimiters outside *code* blanked, keeping offsets."""
-    if "*" not in text:
+    """Return *text* with its emphasis delimiters outside *code* blanked, keeping offsets.
+
+    Every "*" run is blanked. A "_" run is blanked only when it pairs as CommonMark emphasis: it opens when not
+    after a letter or digit and closes when not before one, so underscores inside or at the end of a tool name
+    stay.
+    """
+    if "*" not in text and "_" not in text:
         return text
-    return _EMPHASIS_RE.sub(
-        lambda match: match[0] if code.contains(match.start(), match.start()) else " " * len(match[0]), text
-    )
+    chars = list(text)
+    openers: list[re.Match[str]] = []
+    for match in _EMPHASIS_RE.finditer(text):
+        start, end = match.span()
+        if code.contains(start, start):
+            continue
+        if match[0][0] == "*":
+            chars[start:end] = " " * (end - start)
+            continue
+        before, after = text[start - 1 : start], text[end : end + 1]
+        if openers and before.strip() and not after.isalnum():
+            opener = openers.pop()
+            chars[opener.start() : opener.end()] = " " * (opener.end() - opener.start())
+            chars[start:end] = " " * (end - start)
+        elif after.strip() and not before.isalnum():
+            openers.append(match)
+    return "".join(chars)
 
 
 def _without_tags(text: str, tags: list[_Markup]) -> str:
