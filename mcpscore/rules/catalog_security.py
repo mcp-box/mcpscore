@@ -1501,11 +1501,12 @@ _DIRECTIVE_RE = re.compile(
     # "always", "never", "do not" direct only opening a clause ("Never use …", "…, then always call …",
     # "you do not need …"); after a subject or auxiliary ("the tool always returns", "messages that do not
     # require …") they describe.
-    r"|(?:^|[,;:(\u2014\u201d\x22]|\b(?:and|or|then|but|so|please|you))[^\w\n]{0,4}"
+    r"|(?:^|[,;:(>\u2014\u201d\x22]|\b(?:and|or|then|but|so|please|you))[^\w\n]{0,4}"
     r"(?:always|never|do\s+not|don['\u2019]t)\b(?!-)"
     r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
-    # An opening verb, also after a polite or sequential word: "Call …", "Please call …", "Next, use …".
-    r"|^[^\w\n]*(?:(?:please|then|now|next|also|finally),?\s+)?"
+    # An opening verb, also after a polite or sequential word ("Call …", "Please call …", "Next, use …") or
+    # right after a markup tag ("<b>Call …").
+    r"|(?:^[^\w\n]*|>\s*)(?:(?:please|then|now|next|also|finally),?\s+)?"
     r"(?:call|use|invoke|send|prefer|always|never|do\s+not|don['\u2019]t)\b(?!-)"
     # A condition directs when its main clause does not open with a subject: "When asked, call x" or "If so, BCC y",
     # not "When available, the tool returns …".
@@ -1514,7 +1515,11 @@ _DIRECTIVE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 # "whether", or an "if" inside a clause ("Reports if the tool should …"); an opening "If …," is a condition.
-_WHETHER_RE = re.compile(r"\bwhether\b|[A-Za-z]\s+(?P<inner_if>if)\b", re.IGNORECASE)
+_WHETHER_RE = re.compile(
+    r"\bwhether\b|\b(?:reports?|returns?|shows?|tells?|indicates?|checks?|asks?|determines?|says|knows?)"
+    r"\s+(?P<inner_if>if)\b",
+    re.IGNORECASE,
+)
 _CLAUSE_BREAK_RE = re.compile(r"[,;:]")
 _ANY_TOOL_RE = re.compile(
     r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
@@ -1577,6 +1582,7 @@ _NAMESPACE_RE = re.compile(r"__|[./]")
 _MAX_NAMESPACES = 3
 _QUOTE_PAIRS_DOUBLE = (('"', '"'), ("\u201c", "\u201d"))
 _BACKTICK_RUN_RE = re.compile(r"`+")
+_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
 
 
 class _ForwardFind:
@@ -1647,12 +1653,23 @@ class _QuotedSpans:
         length is found in one backward pass, keeping the scan linear.
         """
         runs = [(match.start(), match.end()) for match in _BACKTICK_RUN_RE.finditer(text)]
+        breaks = [match.start() for match in _PARAGRAPH_BREAK_RE.finditer(text)]
+        newlines = [index for index, char in enumerate(text) if char == "\n"]
+
+        def opens_line(position: int) -> bool:
+            before = bisect_left(newlines, position)
+            line_start = newlines[before - 1] + 1 if before else 0
+            return position - line_start <= 3 and not text[line_start:position].strip(" ")
+
+        # A fence (three or more backticks opening a line) may span paragraphs; an inline span stays in one.
+        fences = [run[1] - run[0] >= 3 and opens_line(run[0]) for run in runs]
         next_same: list[int | None] = [None] * len(runs)
-        seen: dict[int, int] = {}
+        seen: dict[tuple[object, int], int] = {}
         for index in range(len(runs) - 1, -1, -1):
             length = runs[index][1] - runs[index][0]
-            next_same[index] = seen.get(length)
-            seen[length] = index
+            scope = "fence" if fences[index] else bisect_left(breaks, runs[index][0])
+            next_same[index] = seen.get((scope, length))
+            seen[(scope, length)] = index
         starts: list[int] = []
         ends: list[int] = []
         index = 0
