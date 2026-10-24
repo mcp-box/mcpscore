@@ -1493,8 +1493,8 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 
 # Tool shadowing: a sentence that directs the model, about a tool the server does not list.
 # Sentences end at punctuation, with any closing quotes, backticks or brackets after it, or at a blank line;
-# a single line break only wraps the sentence.
-_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;:])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
+# a single line break only wraps the sentence. A colon introduces what the sentence directs, so it does not end one.
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
 _DIRECTIVE_RE = re.compile(
     # "must-have" is an adjective; cues in a "whether …" clause are handled where cues are read.
     r"\b(?:must|should|make\s+sure|ensure|be\s+sure)\b(?!-)"
@@ -1533,7 +1533,7 @@ _ANY_TOOL_RE = re.compile(
 # only after a non-backtick, so a long run is tried from one position.
 _TOOL_NAME = r"(?<!`)(?P<ticks>`+) ?(?P<ticked>[^`\s]{1,128}) ?(?P=ticks)(?!`)|(?P<bare>[\w./-]+)"
 _TOOL_REFERENCES = (
-    re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})"),
+    re.compile(rf"\b(?i:call|calling|invoke|invoking):?\s+(?i:the\s+)?(?:{_TOOL_NAME})"),
     re.compile(rf"(?<![\w`./-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
 )
 _NAME_JOINERS_RE = re.compile(r"[_./]+")
@@ -1586,7 +1586,10 @@ _QUOTE_PAIRS_DOUBLE = (('"', '"'), ("\u201c", "\u201d"))
 _BACKTICK_RUN_RE = re.compile(r"`+")
 # Block structure only: fences and leaf blocks come from the CommonMark parser, inline spans are paired below.
 _BLOCK_PARSER = MarkdownIt("commonmark").disable("inline")
-_LEAF_BLOCKS = frozenset({"inline", "html_block", "code_block"})
+# Raw HTML blocks are not parsed for inline code, so they hold no spans.
+_LEAF_BLOCKS = frozenset({"inline", "code_block"})
+# A raw HTML tag; a backtick inside one (an attribute value) is not a code delimiter.
+_HTML_TAG_RE = re.compile(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?/?>")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
@@ -1663,10 +1666,12 @@ class _QuotedSpans:
         fences, leaves = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
+        tags = [(match.start(), match.end()) for match in _HTML_TAG_RE.finditer(text)] if "<" in text else []
+        tag_starts = [start for start, _ in tags]
         runs = [
             (match.start(), match.end())
             for match in _BACKTICK_RUN_RE.finditer(text)
-            if not _inside(fences, fence_starts, match.start())
+            if not _inside(fences, fence_starts, match.start()) and not _inside(tags, tag_starts, match.start())
         ]
         # A backslash-escaped backtick cannot open a span, but inside one the backslash is literal, so it closes.
         openers = [start + 1 if _escaped(text, start) else start for start, _ in runs]
