@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
+from markdown_it.common.html_re import HTML_TAG_RE as _COMMONMARK_TAG_RE
 from markdown_it.token import Token
 from mcp_types import Icon
 
@@ -1593,8 +1594,10 @@ _BACKTICK_RUN_RE = re.compile(r"`+")
 _BLOCK_PARSER = MarkdownIt("commonmark").disable("inline")
 # Raw HTML blocks are not parsed for inline code, so they hold no spans.
 _LEAF_BLOCKS = frozenset({"inline", "code_block"})
-# A raw HTML tag; a backtick inside one (an attribute value) is not a code delimiter.
-_HTML_TAG_RE = re.compile(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?/?>")
+# A raw HTML tag, comment or declaration (CommonMark's pattern, unanchored); a backtick inside one is no delimiter.
+# A tag is matched only within a bounded window from its "<", so each one costs a bounded amount.
+_HTML_TAG_RE = re.compile(_COMMONMARK_TAG_RE.pattern.removeprefix("^"))
+_MAX_TAG_LENGTH = 256
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
@@ -1675,8 +1678,11 @@ class _QuotedSpans:
         leaf_starts = [start for start, _ in leaves]
         tags = [
             (match.start(), match.end())
-            for match in (_HTML_TAG_RE.finditer(text) if "<" in text else ())
-            if not _inside(fences, fence_starts, match.start())
+            for match in (
+                _HTML_TAG_RE.match(text, opener.start(), opener.start() + _MAX_TAG_LENGTH)
+                for opener in re.finditer("<", text)
+            )
+            if match is not None and not _inside(fences, fence_starts, match.start())
         ]
         runs = [
             (match.start(), match.end())
@@ -1888,10 +1894,12 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
         ):
             continue
 
-        def directs(match: re.Match[str], sentence: str = sentence, offset: int = offset) -> bool:
+        def directs(
+            match: re.Match[str], sentence: str = sentence, offset: int = offset, indirect: _IndirectClauses = indirect
+        ) -> bool:
             start, end = match.start(), match.end()
             inside = quoted.contains(offset + start, offset + end) or code.contains(offset + start, offset + end)
-            return not (_is_mention(sentence, start, end) or inside)
+            return not (_is_mention(sentence, start, end) or inside or indirect.covers(start))
 
         if any(directs(match) for match in _ANY_TOOL_RE.finditer(sentence)):
             found.append("any_tool_directive")
