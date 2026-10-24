@@ -1494,7 +1494,12 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 # Tool shadowing: a sentence that directs the model, about a tool the server does not list.
 # Sentences end at punctuation, with any closing quotes, backticks or brackets after it, or at a blank line;
 # a single line break only wraps the sentence. A colon introduces what the sentence directs, so it does not end one.
-_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
+# An HTML block tag or line break ends one too: "<p>Call search.</p><p>The send_email tool …".
+_SENTENCE_BREAK_RE = re.compile(
+    r"(?<=[.!?;])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*"
+    r"|<(?:/?(?:p|div|li|ul|ol|h[1-6]|tr|td|th|table|blockquote|pre|section|article)|br|hr)\b[^<>]*>\s*",
+    re.IGNORECASE,
+)
 _DIRECTIVE_RE = re.compile(
     # "must-have" is an adjective; cues in a "whether …" clause are handled where cues are read.
     r"\b(?:must|should|make\s+sure|ensure|be\s+sure)\b(?!-)"
@@ -1655,23 +1660,28 @@ class _QuotedSpans:
             position = end
 
     @classmethod
-    def code_of(cls, text: str) -> "_QuotedSpans":
-        """Find the code of *text*: fenced blocks, and inline spans closed by the next backtick run of equal length.
+    def code_of(cls, text: str) -> "tuple[_QuotedSpans, list[tuple[int, int]]]":
+        """Find the code of *text* and the raw HTML tags outside it.
 
-        Fenced blocks (backtick or tilde, closed by a longer run or by the end of the text) and the leaf blocks an
-        inline span stays inside (a paragraph, a list item's paragraph, a heading) come from the CommonMark parser.
-        Inline spans follow the CommonMark rule too, so ``double ` backticks`` stay one span. Each run's next run of
-        the same length is found in one backward pass. *text* has LF line endings.
+        Code is fenced blocks and inline spans closed by the next backtick run of equal length. Fenced blocks
+        (backtick or tilde, closed by a longer run or by the end of the text) and the leaf blocks an inline span stays
+        inside (a paragraph, a list item's paragraph, a heading) come from the CommonMark parser. Inline spans and
+        tags follow CommonMark too: ``double ` backticks`` stay one span, and whichever of a span and a tag starts
+        first wins, so a backtick in an attribute is no delimiter and a tag inside a span is code. Each run's next
+        run of the same length is found in one backward pass. *text* has LF line endings.
         """
         fences, leaves = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
-        tags = [(match.start(), match.end()) for match in _HTML_TAG_RE.finditer(text)] if "<" in text else []
-        tag_starts = [start for start, _ in tags]
+        tags = [
+            (match.start(), match.end())
+            for match in (_HTML_TAG_RE.finditer(text) if "<" in text else ())
+            if not _inside(fences, fence_starts, match.start())
+        ]
         runs = [
             (match.start(), match.end())
             for match in _BACKTICK_RUN_RE.finditer(text)
-            if not _inside(fences, fence_starts, match.start()) and not _inside(tags, tag_starts, match.start())
+            if not _inside(fences, fence_starts, match.start())
         ]
         # A backslash-escaped backtick cannot open a span, but inside one the backslash is literal, so it closes.
         openers = [start + 1 if _escaped(text, start) else start for start, _ in runs]
@@ -1686,16 +1696,25 @@ class _QuotedSpans:
                 next_same[index] = seen.get((scope, end - openers[index]))
             seen[(scope, end - start)] = index
         spans: list[tuple[int, int]] = list(fences)
-        index = 0
-        while index < len(runs):
-            closer = next_same[index]
-            if closer is None:
+        honored: list[tuple[int, int]] = []
+        index = tag = 0
+        while index < len(runs) or tag < len(tags):
+            if tag < len(tags) and (index == len(runs) or tags[tag][0] < runs[index][0]):
+                honored.append(tags[tag])
+                position = tags[tag][1]
+            else:
+                closer = next_same[index]
+                if closer is None:
+                    index += 1
+                    continue
+                spans.append((openers[index], runs[closer][1]))
+                position = runs[closer][1]
+            while index < len(runs) and runs[index][0] < position:
                 index += 1
-                continue
-            spans.append((openers[index], runs[closer][1]))
-            index = closer + 1
+            while tag < len(tags) and tags[tag][0] < position:
+                tag += 1
         spans.sort()
-        return cls([start for start, _ in spans], [end for _, end in spans])
+        return cls([start for start, _ in spans], [end for _, end in spans]), honored
 
     def end_of(self, position: int) -> int:
         """Return the end of the span that contains *position* (only when :meth:`contains` says so)."""
@@ -1721,6 +1740,17 @@ def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, 
         block = (line_starts[first], line_starts[last] if last < len(line_starts) else len(text))
         (fences if token.type == "fence" else leaves).append(block)
     return fences, leaves
+
+
+def _blanked(text: str, ranges: list[tuple[int, int]]) -> str:
+    """Return *text* with each of the sorted *ranges* replaced by spaces, so offsets are unchanged."""
+    parts: list[str] = []
+    last = 0
+    for start, end in ranges:
+        parts.extend((text[last:start], " " * (end - start)))
+        last = end
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def _escaped(text: str, position: int) -> bool:
@@ -1842,8 +1872,9 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     A phrase in double quotes or named as an attempt (``attempts to call x``) is a mention, not a directive.
     """
     text = _LINE_END_RE.sub("\n", text)
-    code = _QuotedSpans.code_of(text)
-    quoted = _QuotedSpans.of(text, skip=code)
+    code, tags = _QuotedSpans.code_of(text)
+    # Quotes in tag attributes are markup, not prose.
+    quoted = _QuotedSpans.of(_blanked(text, tags), skip=code)
     found: list[str] = []
     for offset, sentence in _sentences(text, quoted, code):
         # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
