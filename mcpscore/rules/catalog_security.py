@@ -1622,7 +1622,8 @@ _MAX_LINK_NESTING = 32
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # Emphasis formats a directive without making it an example: "Always call **send_email** first."
-_EMPHASIS_RE = re.compile(r"\*+|_+|[\[\]]")
+# A reference link's "][id]" suffix goes whole: the identifier is not prose.
+_EMPHASIS_RE = re.compile(r"\*+|_+|\]\[[^\]\n]*\]|[\[\]]")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
@@ -2049,7 +2050,8 @@ def _without_emphasis(text: str, code: _QuotedSpans) -> str:
     """Return *text* with its emphasis delimiters outside *code* blanked, keeping offsets.
 
     Every "*" run and every square bracket is blanked: emphasis and link labels (inline or reference-style,
-    "[send_email][mail]") format a name without changing what the sentence directs. A "_" run is blanked only when
+    "[send_email][mail]") format a name without changing what the sentence directs; a reference's "][mail]" goes
+    whole. A "_" run is blanked only when
     it pairs as CommonMark emphasis: it opens when not after a letter or digit and closes when not before one, so
     underscores inside or at the end of a tool name stay.
     """
