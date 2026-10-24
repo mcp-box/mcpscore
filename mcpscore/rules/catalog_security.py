@@ -1716,7 +1716,8 @@ def _walk(
                 active = image or len(labels) >= floor
                 floor = min(floor, len(labels))
                 end = _reference_end(text, opener, start, references, opens, closes) if active and references else None
-                if end is not None:
+                # A reference link stays inside its leaf block: "[search][" cannot reach into the next paragraph.
+                if end is not None and bisect_left(block_starts, end) - 1 == block:
                     # A resolved reference link reads as its label: "[send_email][mail]" as "send_email".
                     honored.extend(((opener - image, opener + 1, None), (start, end, None)))
                     position = end
@@ -1750,15 +1751,19 @@ def _reference_end(
     Full ("[label][id]"), collapsed ("[label][]") and shortcut ("[label]") forms resolve as in CommonMark: a label
     holds no unescaped bracket and at most 999 characters, and a shortcut is not followed by another label.
     """
-    if close - opener > _MAX_LABEL_LENGTH:
-        return None
     if text.startswith("[", close + 1):
         end = _first_at(closes, close + 2)
         nested = _first_at(opens, close + 2)
         if end is not None and (nested is None or nested > end) and end - close - 2 <= _MAX_LABEL_LENGTH:
-            label = text[close + 2 : end] if text[close + 2 : end].strip() else text[opener + 1 : close]
-            return end + 1 if normalizeReference(label) in references else None
-    return close + 1 if normalizeReference(text[opener + 1 : close]) in references else None
+            if text[close + 2 : end].strip():
+                return end + 1 if normalizeReference(text[close + 2 : end]) in references else None
+            return end + 1 if _visible_label_defined(text, opener, close, references) else None
+    return close + 1 if _visible_label_defined(text, opener, close, references) else None
+
+
+def _visible_label_defined(text: str, opener: int, close: int, references: frozenset[str]) -> bool:
+    """Whether the visible text from *opener* to *close* is a defined label (a collapsed or shortcut reference)."""
+    return close - opener <= _MAX_LABEL_LENGTH and normalizeReference(text[opener + 1 : close]) in references
 
 
 def _bare_destination_end(text: str, position: int) -> int | None:
@@ -2068,7 +2073,7 @@ def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
     start, end, title = markup
     if title is not None:
         yield text[title[0] : title[1]]
-    elif not text.startswith("](", start):
+    elif text.startswith("<", start):
         yield from _tag_texts(text[start:end])
 
 
