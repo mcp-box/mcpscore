@@ -11,7 +11,7 @@ from abc import abstractmethod
 from bisect import bisect_left
 from collections import Counter
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 import ipaddress
 import re
@@ -1621,8 +1621,6 @@ _ANGLE_DESTINATION_RE = re.compile(r"<(?:[^<>\n\\]|\\[\s\S])*>")
 _DESTINATION_RUN_RE = re.compile(r"[^ \x00-\x1f\x7f()\\]*")
 _MAX_LINK_NESTING = 32
 _MAX_LABEL_LENGTH = 999
-# The blockquote markers that open a wrapped line, each after up to three spaces: "\n> > ", "\n>  > ".
-_QUOTE_MARKERS_RE = re.compile(r"\n(?:[ \t]{0,3}>[ \t]?)+")
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # Emphasis formats a directive without making it an example: "Always call **send_email** first."
@@ -1671,7 +1669,7 @@ def _walk(
     fences: list[tuple[int, int]],
     fence_starts: list[int],
     block_starts: list[int],
-    references: frozenset[str] = frozenset(),
+    references: "_References | None" = None,
 ) -> tuple[list[tuple[int, int]], list[_Markup]]:
     """Read *text* left to right as CommonMark does, and return its inline code spans and the markup it honors.
 
@@ -1680,6 +1678,7 @@ def _walk(
     when its "]" closes an open "[" of the same leaf block, and a reference link only when it resolves to one of
     the *references*.
     """
+    references = references or _References()
     link_starts = {start for start, *_ in markup if text.startswith("](", start)}
     brackets = [
         bracket
@@ -1717,7 +1716,11 @@ def _walk(
                 _, opener, image = labels.pop()
                 active = image or len(labels) >= floor
                 floor = min(floor, len(labels))
-                end = _reference_end(text, opener, start, references, opens, closes) if active and references else None
+                end = (
+                    _reference_end(text, opener, start, references, opens, closes)
+                    if active and references.labels
+                    else None
+                )
                 # A reference link stays inside its leaf block: "[search][" cannot reach into the next paragraph.
                 if end is not None and bisect_left(block_starts, end) - 1 == block:
                     # A resolved reference link reads as its label: "[send_email][mail]" as "send_email".
@@ -1746,7 +1749,7 @@ def _walk(
 
 
 def _reference_end(
-    text: str, opener: int, close: int, references: frozenset[str], opens: list[int], closes: list[int]
+    text: str, opener: int, close: int, references: "_References", opens: list[int], closes: list[int]
 ) -> int | None:
     """Return the end of the reference link whose label runs from *opener* to *close*, or None.
 
@@ -1759,21 +1762,29 @@ def _reference_end(
         nested = _first_at(opens, close + 2)
         if end is not None and (nested is None or nested > end):
             if end == close + 2:
-                return end + 1 if _label_key(text, opener, close, opens) in references else None
-            return end + 1 if _label_key(text, close + 1, end, opens) in references else None
-    return close + 1 if _label_key(text, opener, close, opens) in references else None
+                return end + 1 if _label_key(text, opener, close, opens, references) in references.labels else None
+            return end + 1 if _label_key(text, close + 1, end, opens, references) in references.labels else None
+    return close + 1 if _label_key(text, opener, close, opens, references) in references.labels else None
 
 
-def _label_key(text: str, opener: int, close: int, opens: list[int]) -> str | None:
+def _label_key(text: str, opener: int, close: int, opens: list[int], references: "_References") -> str | None:
     """Return the label from *opener* to *close* normalized as a reference label, or None when it is not one.
 
     A label holds no unescaped "[" (so labels never overlap and normalizing them stays linear in the text), and at
-    most 999 characters once the blockquote markers that open its wrapped lines are dropped.
+    most 999 characters once the container prefixes of its wrapped lines are dropped.
     """
     nested = _first_at(opens, opener + 1)
     if nested is not None and nested < close:
         return None
-    label = _QUOTE_MARKERS_RE.sub("\n", text[opener + 1 : close])
+    parts: list[str] = []
+    start = opener + 1
+    newline = text.find("\n", start, close)
+    while newline != -1:
+        parts.append(text[start : newline + 1])
+        start = min(close, newline + 1 + references.prefixes.get(newline + 1, 0))
+        newline = text.find("\n", start, close)
+    parts.append(text[start:close])
+    label = "".join(parts)
     return normalizeReference(label) if len(label) <= _MAX_LABEL_LENGTH and label.strip() else None
 
 
@@ -2051,20 +2062,31 @@ class _QuotedSpans:
         return index >= 0 and end < self.ends[index]
 
 
+@dataclass(frozen=True)
+class _References:
+    """The link reference definitions of a text, and the container prefix of each wrapped paragraph line."""
+
+    labels: frozenset[str] = frozenset()
+    # Offset of a wrapped line's start -> length of the container prefix (blockquote markers, list indentation)
+    # that the parser strips from it.
+    prefixes: dict[int, int] = field(default_factory=dict)
+
+
 def _markdown_blocks(
     text: str,
-) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]], frozenset[str]]:
-    """Return the fenced code blocks, the leaf blocks with inline code, every leaf block, and the reference labels.
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]], _References]:
+    """Return the fenced code blocks, the leaf blocks with inline code, every leaf block, and the references.
 
-    Ranges are character offsets, in order; the labels are the normalized labels of the link reference definitions.
-    A leaf block is a paragraph, a list item's paragraph, a heading, or a code or HTML block.
+    Ranges are character offsets, in order. A leaf block is a paragraph, a list item's paragraph, a heading, or a
+    code or HTML block.
     """
     fences: list[tuple[int, int]] = []
     leaves: list[tuple[int, int]] = []
     blocks: list[tuple[int, int]] = []
     if "`" not in text and "~~~" not in text and "\n" not in text:
-        return fences, leaves, blocks, frozenset()
+        return fences, leaves, blocks, _References()
     line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
+    prefixes: dict[int, int] = {}
     env: dict[str, Any] = {}
     for token in _BLOCK_PARSER.parse(text, env):
         if token.map is None or token.type not in _ALL_LEAF_BLOCKS:
@@ -2076,7 +2098,28 @@ def _markdown_blocks(
             fences.append(block)
         elif token.type in _LEAF_BLOCKS:
             leaves.append(block)
-    return fences, leaves, blocks, frozenset(env.get("references", {}))
+        if token.type == "inline":
+            prefixes.update(_wrapped_line_prefixes(text, line_starts, first, last, token.content))
+    return fences, leaves, blocks, _References(frozenset(env.get("references", {})), prefixes)
+
+
+def _wrapped_line_prefixes(
+    text: str, line_starts: list[int], first: int, last: int, content: str
+) -> Iterator[tuple[int, int]]:
+    """Yield (line start, prefix length) for each wrapped line of a paragraph whose parsed *content* is given.
+
+    The parser strips each line's container prefix, so a raw line ends with its content line; the difference is the
+    prefix. A line where that does not hold (a tab split by indentation) keeps its raw text.
+    """
+    lines = content.split("\n")
+    if len(lines) != last - first:
+        return
+    for offset, line in enumerate(lines[1:], start=first + 1):
+        end = line_starts[offset + 1] - 1 if offset + 1 < len(line_starts) else len(text)
+        raw = text[line_starts[offset] : end]
+        raw = raw.rstrip() if offset == last - 1 else raw
+        if line and raw.endswith(line):
+            yield line_starts[offset], len(raw) - len(line)
 
 
 def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
