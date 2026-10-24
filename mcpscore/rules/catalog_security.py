@@ -8,8 +8,9 @@ never repeats a secret or an injected instruction.
 """
 
 from abc import abstractmethod
+from bisect import bisect_left
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from html.parser import HTMLParser
 import ipaddress
@@ -18,10 +19,13 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
+from markdown_it.common.html_blocks import block_names
+from markdown_it.rules_inline.autolink import AUTOLINK_RE, EMAIL_RE
 from markdown_it.token import Token
 from mcp_types import Icon
 
 from mcpscore.html_text import bound_charrefs
+from mcpscore.probes import PROBE_STATELESS_LIST
 
 from .base import SKIP_REASON_INSUFFICIENT_DATA, AuditData, BaseRule, RuleResult, RuleSeverity
 from .catalog_diagnostics import catalog_result, field_issue, pointer_token
@@ -155,6 +159,7 @@ def _publishable_path(path: str) -> tuple[str, bool]:
             or secret_classes(text)
             or injection_classes(text)
             or exfiltration_link_classes(text)
+            or cross_tool_classes(text, frozenset())
         ):
             return "/".join(segments[:position]), True
     return path, False
@@ -195,12 +200,17 @@ class CatalogSecurityRule(BaseRule):
     def matches(self, text: str) -> list[str]:
         """Return the class name of each finding in *text*, in order."""
 
+    def text_matcher(self, audit_data: AuditData) -> Callable[[str], list[str]]:
+        """Return the matcher for this audit's strings; rules that judge text against the catalog override it."""
+        return self.matches
+
     def check(self, audit_data: AuditData) -> RuleResult:
         """Scan every catalog string and report locations with the matched classes."""
         issues: list[dict[str, Any]] = []
         classes: Counter[str] = Counter()
+        matches = self.text_matcher(audit_data)
         for entry in catalog_texts(audit_data):
-            found = self.matches(entry.text)
+            found = matches(entry.text)
             if found:
                 classes.update(found)
                 path, truncated = _publishable_path(entry.path)
@@ -1481,3 +1491,853 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
     def matches(self, text: str) -> list[str]:
         """Return the exfiltration-link classes found in *text*."""
         return exfiltration_link_classes(text)
+
+
+# Tool shadowing: a sentence that directs the model, about a tool the server does not list.
+# Sentences end at punctuation, with any closing quotes, backticks or brackets after it, or at a blank line;
+# a single line break only wraps the sentence. A colon introduces what the sentence directs, so it does not end one.
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
+# An HTML block tag or line break ends a sentence too: "<p>Call search.</p><p>The send_email tool …".
+# CommonMark's HTML block element names, plus <pre> and <br>; the name must end there ("<p-x>" is inline).
+_BLOCK_TAG_RE = re.compile(rf"<(?:/?(?:{'|'.join([*block_names, 'pre'])})|br)(?=[\s/>])", re.IGNORECASE)
+_DIRECTIVE_RE = re.compile(
+    # "must-have" is an adjective; cues in a "whether …" clause are handled where cues are read.
+    r"\b(?:must|should|make\s+sure|ensure|be\s+sure)\b(?!-)"
+    # "always", "never", "do not" direct only opening a clause ("Never use …", "…, then always call …",
+    # "you do not need …"); after a subject or auxiliary ("the tool always returns", "messages that do not
+    # require …") they describe.
+    r"|(?:^|[,;:(>\u2014\u201d\x22]|\b(?:and|or|then|but|so|please|you))[^\w\n]{0,4}"
+    r"(?:always|never|do\s+not|don['\u2019]t)\b(?!-)"
+    r"|\b(?:first|instead),?\s+(?:call|use|invoke|run)\b"
+    # An opening verb, also after a polite or sequential word ("Call …", "Please call …", "Next, use …") or
+    # right after a markup tag ("<b>Call …").
+    r"|(?:^[^\w\n]*|>\s*)(?:(?:please|then|now|next|also|finally),?\s+)?"
+    r"(?:call|use|invoke|send|prefer|always|never|do\s+not|don['\u2019]t)\b(?!-)"
+    # A condition directs when its main clause does not open with a subject: "When asked, call x" or "If so, BCC y",
+    # not "When available, the tool returns …".
+    r"|^[^\w\n]*(?:when|whenever|before|after|instead\s+of|if)\b[^,]{0,200},\s*"
+    r"(?!(?:the|a|an|it|its|this|that|these|those|they|their|we|our|you|your|there|he|she|i)\b)\w",
+    re.IGNORECASE | re.MULTILINE,
+)
+# "whether", or a reported question ("Reports if/when/how the tool should …"); an opening "If …," is a condition.
+_WHETHER_RE = re.compile(
+    r"\bwhether\b|\b(?:reports?|returns?|shows?|tells?|indicates?|checks?|asks?|determines?|says|knows?)"
+    r"\s+(?P<inner>if|when|how|why|where|what|which)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_BREAK_RE = re.compile(r"[,;:]")
+_ANY_TOOL_RE = re.compile(
+    r"\b(?:use|using|call|calling|invoke|invoking|run|running|with)\s+"
+    r"(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\b"
+    # Or as the subject the sentence directs: "Every tool must BCC …", "Any MCP server should …".
+    r"|\b(?:any|every|all|other|another)(?:\s+other)?\s+(?:mcp\s+)?(?:tools?|servers?)\s+(?:must|should)\b",
+    re.IGNORECASE,
+)
+# A whole identifier is captured as one token and its shape checked in code (see _code_shaped).
+# Inline code may use any backtick run and one space of padding: ``send_email``, `` send_email ``, and may be a call
+# whose arguments hold spaces: `send_email(to, draft)`. A run starts only after a non-backtick, so a long run is
+# tried from one position.
+_TOOL_NAME = r"(?<!`)(?P<ticks>`+) ?(?P<ticked>[^`\s(]{1,128}(?:\([^`]*\))?) ?(?P=ticks)(?!`)|(?P<bare>[\w./-]+)"
+_TOOL_REFERENCES = (
+    re.compile(rf"\b(?i:call|calling|invoke|invoking):?\s+(?i:the\s+)?(?:{_TOOL_NAME})"),
+    re.compile(rf"(?<![\w`./-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
+)
+_NAME_JOINERS_RE = re.compile(r"[_./]+")
+# MCP methods (2025-11-25 and 2026-07-28, with the Skills and Tasks extensions) are protocol, not tools.
+_PROTOCOL_METHODS = frozenset(
+    {
+        "initialize",
+        "ping",
+        "server/discover",
+        "tools/list",
+        "tools/call",
+        "resources/list",
+        "resources/read",
+        "resources/templates/list",
+        "resources/subscribe",
+        "resources/unsubscribe",
+        "prompts/list",
+        "prompts/get",
+        "completion/complete",
+        "logging/setLevel",
+        "sampling/createMessage",
+        "roots/list",
+        "elicitation/create",
+        "skills/list",
+        "skills/get",
+        "resources/directory/read",
+        "tasks/get",
+        "tasks/list",
+        "tasks/result",
+        "tasks/cancel",
+        "notifications/initialized",
+        "notifications/cancelled",
+        "notifications/progress",
+        "notifications/message",
+        "notifications/resources/updated",
+        "notifications/resources/list_changed",
+        "notifications/tools/list_changed",
+        "notifications/prompts/list_changed",
+        "notifications/roots/list_changed",
+        "notifications/elicitation/complete",
+        "notifications/tasks/status",
+    }
+)
+_CAMEL_RE = re.compile(r"[a-z]+(?:[A-Z][a-z0-9]*)+")
+_SEPARATORS_RE = re.compile(r"[-._/]+")
+# Namespaces a client puts in front of a tool name: mcp__notes__search, notes.search, notes/search.
+_NAMESPACE_RE = re.compile(r"__|[./]")
+_MAX_NAMESPACES = 3
+_QUOTE_PAIRS_DOUBLE = (('"', '"'), ("\u201c", "\u201d"))
+_BACKTICK_RUN_RE = re.compile(r"`+")
+# Block structure only: fences and leaf blocks come from the CommonMark parser, inline spans are paired below.
+_BLOCK_PARSER = MarkdownIt("commonmark").disable("inline")
+# Raw HTML blocks are not parsed for inline code, so they hold no spans.
+_LEAF_BLOCKS = frozenset({"inline", "code_block"})
+# Every leaf block ends a sentence: "- Call search\n- The send_email tool …" holds two.
+_ALL_LEAF_BLOCKS = _LEAF_BLOCKS | {"fence", "html_block"}
+# The pieces of a raw HTML tag (CommonMark, "Raw HTML"); a backtick inside a tag is no code delimiter.
+_OPEN_TAG_NAME_RE = re.compile(r"<[A-Za-z][A-Za-z0-9-]*")
+_CLOSING_TAG_RE = re.compile(r"</[A-Za-z][A-Za-z0-9-]*\s*>")
+_ATTRIBUTE_NAME_RE = re.compile(r"\s+[A-Za-z_:][A-Za-z0-9_.:-]*")
+_ATTRIBUTE_EQUALS_RE = re.compile(r"\s*=\s*")
+_UNQUOTED_VALUE_RE = re.compile(r"[^\x22'=<>`\x00-\x20]+")
+_OPEN_TAG_END_RE = re.compile(r"\s*/?>")
+# A comment, instruction, CDATA section or declaration runs from its opener to the first closer after it.
+_TAG_SPANS = (("<!--", "-->"), ("<?", "?>"), ("<![CDATA[", "]]>"))
+_TAG_NEEDLES = ('"', "'", ">", "-->", "?>", "]]>")
+_TITLE_DELIMITERS = ('"', "'", "(", ")")
+# A tag or link as (start, end, title): title is the range of an inline link's title, else None.
+_Markup = tuple[int, int, "tuple[int, int] | None"]
+# An autolink (<https://…>, <user@host>) and an inline link's destination and title, as CommonMark reads them;
+# like a tag, either one outranks a code span that starts after it.
+_URI_AUTOLINK_RE = re.compile(AUTOLINK_RE.pattern.removeprefix("^").removesuffix("$"))
+_EMAIL_AUTOLINK_RE = re.compile(EMAIL_RE.pattern.removeprefix("^").removesuffix("$"))
+_LINK_SPACE_RE = re.compile(r"[ \t]*\n?[ \t]*")
+_ANGLE_DESTINATION_RE = re.compile(r"<(?:[^<>\n\\]|\\[\s\S])*>")
+# A bare destination ends at a space or control character and may nest balanced parentheses up to markdown-it's
+# limit; a backslash escapes the next character unless it is a space.
+_DESTINATION_RUN_RE = re.compile(r"[^ \x00-\x1f\x7f()\\]*")
+_MAX_LINK_NESTING = 32
+_TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
+_ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
+# Emphasis formats a directive without making it an example: "Always call **send_email** first."
+_EMPHASIS_RE = re.compile(r"\*+|_+")
+# CRLF and bare CR read as "\n", as CommonMark reads them.
+_LINE_END_RE = re.compile(r"\r\n|\r")
+
+
+def _markup(
+    text: str, fences: list[tuple[int, int]], fence_starts: list[int], blocks: list[tuple[int, int]]
+) -> "list[_Markup]":
+    """Return the raw HTML tags, autolinks and inline link destinations outside *fences*, in text order.
+
+    Each comes with the range of its link title, when it is an inline link that has one. Markup ends inside the
+    leaf block it starts in (*blocks*, when the text was parsed into blocks), as inline markup does in CommonMark.
+    """
+    markup: list[_Markup] = []
+    if "<" not in text and "](" not in text:
+        return markup
+    scanner = _HtmlTags(text)
+    block_starts = [start for start, _ in blocks]
+    for opener in re.finditer(r"<|\]\(", text):
+        start = opener.start()
+        # A backslash-escaped "<" or "]" is a literal character.
+        if _escaped(text, start) or _inside(fences, fence_starts, start):
+            continue
+        if opener[0] == "](":
+            end = scanner.link_end(start)
+        else:
+            end = scanner.autolink_end(start)
+            end = scanner.end(start) if end is None else end
+        if end is None:
+            continue
+        block = bisect_left(block_starts, start + 1) - 1
+        if blocks and (block < 0 or end > blocks[block][1]):
+            continue
+        markup.append((start, end, scanner.link_titles.get(start)))
+    return markup
+
+
+def _walk(
+    text: str,
+    run_spans: list[tuple[int, int] | None],
+    run_starts: list[int],
+    markup: list[_Markup],
+    fences: list[tuple[int, int]],
+    fence_starts: list[int],
+    block_starts: list[int],
+) -> tuple[list[tuple[int, int]], list[_Markup]]:
+    """Read *text* left to right as CommonMark does, and return its inline code spans and the markup it honors.
+
+    Whichever of a code span (*run_spans*, by backtick run), a tag or a link starts first wins. Link label
+    brackets are counted here, so a bracket inside a code span or tag is literal, and an inline link is honored
+    only when its "]" closes an open "[" of the same leaf block.
+    """
+    link_starts = {start for start, *_ in markup if text.startswith("](", start)}
+    events: list[tuple[int, int, int]] = [(start, 0, index) for index, start in enumerate(run_starts)]
+    events.extend((entry[0], 1, index) for index, entry in enumerate(markup))
+    events.extend(
+        (bracket.start(), 2, bracket[0] == "[")
+        for bracket in re.finditer(r"[\[\]]", text)
+        if bracket.start() not in link_starts
+        and not _escaped(text, bracket.start())
+        and not _inside(fences, fence_starts, bracket.start())
+    )
+    events.sort()
+    spans: list[tuple[int, int]] = []
+    honored: list[_Markup] = []
+    # Open "[" as (block, position, is an image's "!["); openers below *floor* that are not images are inactive,
+    # since a link may not contain another link.
+    labels: list[tuple[int, int, bool]] = []
+    floor = 0
+    position = 0
+    for start, kind, index in events:
+        if start < position:
+            continue
+        block = bisect_left(block_starts, start + 1) - 1
+        if labels and labels[-1][0] != block:
+            labels.clear()
+            floor = 0
+        if kind == 0:
+            if (span := run_spans[index]) is not None:
+                spans.append(span)
+                position = span[1]
+        elif kind == 2:
+            if index:
+                labels.append((block, start, text[start - 1 : start] == "!" and not _escaped(text, start - 1)))
+            elif labels:
+                labels.pop()
+                floor = min(floor, len(labels))
+        elif start in link_starts:
+            if not labels:
+                continue
+            _, opener, image = labels.pop()
+            active = image or len(labels) >= floor
+            floor = min(floor, len(labels))
+            if not active:
+                continue
+            # The label's opener is markup too: "[send_email](…)" reads as "send_email".
+            honored.extend((markup[index], (opener - image, opener + 1, None)))
+            position = markup[index][1]
+            if not image:
+                floor = len(labels)
+        else:
+            honored.append(markup[index])
+            position = markup[index][1]
+    honored.sort()
+    return spans, honored
+
+
+def _bare_destination_end(text: str, position: int) -> int | None:
+    """Return the end of the bare link destination at *position*, or None when its parentheses do not balance."""
+    depth = 0
+    while True:
+        run = _DESTINATION_RUN_RE.match(text, position)
+        position = position if run is None else run.end()
+        char = text[position : position + 1]
+        if char == "\\" and text[position + 1 : position + 2] not in ("", " "):
+            position += 2
+        elif char == "\\" and position + 1 == len(text):
+            position += 1
+        elif char == "(" and depth < _MAX_LINK_NESTING:
+            depth += 1
+            position += 1
+        elif char == ")" and depth:
+            depth -= 1
+            position += 1
+        else:
+            return position if depth == 0 and char != "(" else None
+
+
+def _first_at(positions: list[int], position: int) -> int | None:
+    """Return the first of the sorted *positions* at or after *position*, or None."""
+    index = bisect_left(positions, position)
+    return positions[index] if index < len(positions) else None
+
+
+def _after_space(text: str, position: int) -> int:
+    """Return the position after the spaces, tabs and at most one line break at *position*."""
+    match = _LINK_SPACE_RE.match(text, position)
+    return position if match is None else match.end()
+
+
+class _HtmlTags:
+    """Finds where a raw HTML tag, an autolink or an inline link destination ends, in time linear in the text.
+
+    A quoted attribute value is skipped by a lookup of its closing quote, and what follows a closing quote is
+    scanned once and remembered, so tags that share text (a "<" inside another tag's value) share the work.
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+        self._found = {
+            needle: [match.start() for match in re.finditer(re.escape(needle), text)] for needle in _TAG_NEEDLES
+        }
+        # A link title's delimiters count only unescaped, as markdown-it's parseLinkTitle reads them.
+        self._unescaped = {
+            char: [match.start() for match in re.finditer(re.escape(char), text) if not _escaped(text, match.start())]
+            for char in _TITLE_DELIMITERS
+        }
+        self._after_value: dict[int, int | None] = {}
+        self.link_titles: dict[int, tuple[int, int]] = {}
+
+    def _next(self, needle: str, position: int) -> int | None:
+        return _first_at(self._found[needle], position)
+
+    def _title_end(self, start: int) -> int | None:
+        """Return the position of the closing delimiter of the link title opened at *start*, or None."""
+        opener = self.text[start]
+        close = _first_at(self._unescaped[")" if opener == "(" else opener], start + 1)
+        if close is not None and opener == "(":
+            nested = _first_at(self._unescaped["("], start + 1)
+            if nested is not None and nested < close:
+                return None
+        return close
+
+    def autolink_end(self, start: int) -> int | None:
+        """Return the end of the autolink that starts at the "<" at *start*, or None."""
+        close = self._next(">", start + 1)
+        if close is None:
+            return None
+        inner = (self.text, start + 1, close)
+        return close + 1 if _URI_AUTOLINK_RE.fullmatch(*inner) or _EMAIL_AUTOLINK_RE.fullmatch(*inner) else None
+
+    def link_end(self, start: int) -> int | None:
+        """Return the end of the inline link destination and title after the "](" at *start*, or None."""
+        text = self.text
+        position = _after_space(text, start + 2)
+        if text.startswith("<", position):
+            angle = _ANGLE_DESTINATION_RE.match(text, position)
+            destination = None if angle is None else angle.end()
+        else:
+            destination = _bare_destination_end(text, position)
+        if destination is None:
+            return None
+        position = _after_space(text, destination)
+        title = None
+        if position > destination and text[position : position + 1] in ('"', "'", "("):
+            close = self._title_end(position)
+            if close is None:
+                return None
+            title = (position + 1, close)
+            position = _after_space(text, close + 1)
+        if not text.startswith(")", position):
+            return None
+        if title is not None:
+            self.link_titles[start] = title
+        return position + 1
+
+    def end(self, start: int) -> int | None:
+        """Return the end of the tag that starts at *start*, or None when no tag starts there."""
+        text = self.text
+        if text.startswith(("<!-->", "<!--->"), start):
+            return text.index(">", start + 4) + 1
+        for opener, closer in _TAG_SPANS:
+            if text.startswith(opener, start):
+                close = self._next(closer, start + len(opener))
+                return None if close is None else close + len(closer)
+        if (
+            text.startswith("<!", start)
+            and text[start + 2 : start + 3].isascii()
+            and text[start + 2 : start + 3].isalpha()
+        ):
+            close = self._next(">", start + 2)
+            return None if close is None else close + 1
+        if match := _CLOSING_TAG_RE.match(text, start):
+            return match.end()
+        if match := _OPEN_TAG_NAME_RE.match(text, start):
+            return self._attributes(match.end())
+        return None
+
+    def _attributes(self, position: int) -> int | None:
+        """Return the end of an open tag whose attributes start at *position*, or None."""
+        text = self.text
+        pending: list[int] = []
+        while True:
+            name = _ATTRIBUTE_NAME_RE.match(text, position)
+            if name is None:
+                close = _OPEN_TAG_END_RE.match(text, position)
+                result = None if close is None else close.end()
+                break
+            position = name.end()
+            equals = _ATTRIBUTE_EQUALS_RE.match(text, position)
+            if equals is None:
+                continue
+            value = equals.end()
+            if text[value : value + 1] in ("\x22", "'"):
+                close = self._next(text[value], value + 1)
+                if close is None:
+                    result = None
+                    break
+                position = close + 1
+                if position in self._after_value:
+                    result = self._after_value[position]
+                    break
+                pending.append(position)
+                continue
+            unquoted = _UNQUOTED_VALUE_RE.match(text, value)
+            if unquoted is None:
+                result = None
+                break
+            position = unquoted.end()
+        for after in pending:
+            self._after_value[after] = result
+        return result
+
+
+class _ForwardFind:
+    """Finds a character at or after ever-growing positions, scanning each part of the text once."""
+
+    def __init__(self, text: str, char: str) -> None:
+        super().__init__()
+        self._text = text
+        self._char = char
+        self._found = -2  # position of the last hit; -1 once there is none left
+
+    def at_or_after(self, position: int) -> int:
+        """Return the first index of the character at or after *position*, or -1."""
+        if self._found != -1 and self._found < position:
+            self._found = self._text.find(self._char, position)
+        return self._found
+
+
+@dataclass(frozen=True)
+class _QuotedSpans:
+    """The double-quoted spans of one string, found once and looked up by position."""
+
+    starts: list[int]
+    ends: list[int]
+
+    @classmethod
+    def of(
+        cls,
+        text: str,
+        pairs: tuple[tuple[str, str], ...] = _QUOTE_PAIRS_DOUBLE,
+        skip: "_QuotedSpans | None" = None,
+    ) -> "_QuotedSpans":
+        """Find the spans of *text* between each opener and closer in *pairs*, leftmost first, in one pass.
+
+        Characters inside a *skip* span (inline code) neither open nor close a span.
+        """
+        finders = [_ForwardFind(text, opener) for opener, _ in pairs]
+        closers = [_ForwardFind(text, closer) for _, closer in pairs]
+        starts: list[int] = []
+        ends: list[int] = []
+        position = 0
+
+        def next_outside(finder: _ForwardFind, at: int) -> int:
+            found = finder.at_or_after(at)
+            while found >= 0 and skip is not None and skip.contains(found, found):
+                found = finder.at_or_after(skip.end_of(found))
+            return found
+
+        while True:
+            spans = []
+            for finder, closer in zip(finders, closers, strict=True):
+                start = next_outside(finder, position)
+                end = next_outside(closer, start + 1) if start >= 0 else -1
+                if end >= 0:
+                    spans.append((start, end + 1))
+            if not spans:
+                return cls(starts, ends)
+            start, end = min(spans)
+            starts.append(start)
+            ends.append(end)
+            position = end
+
+    @classmethod
+    def code_of(cls, text: str) -> "tuple[_QuotedSpans, list[_Markup], list[int]]":
+        """Find the code of *text* and the raw HTML tags outside it.
+
+        Code is fenced blocks and inline spans closed by the next backtick run of equal length. Fenced blocks
+        (backtick or tilde, closed by a longer run or by the end of the text) and the leaf blocks an inline span stays
+        inside (a paragraph, a list item's paragraph, a heading) come from the CommonMark parser. Inline spans and
+        tags follow CommonMark too: ``double ` backticks`` stay one span, and whichever of a span and a tag starts
+        first wins, so a backtick in an attribute is no delimiter and a tag inside a span is code. Each run's next
+        run of the same length is found in one backward pass. *text* has LF line endings.
+        """
+        fences, leaves, blocks = _markdown_blocks(text)
+        fence_starts = [start for start, _ in fences]
+        leaf_starts = [start for start, _ in leaves]
+        markup = _markup(text, fences, fence_starts, blocks)
+        runs = [
+            (match.start(), match.end())
+            for match in _BACKTICK_RUN_RE.finditer(text)
+            if not _inside(fences, fence_starts, match.start())
+        ]
+        # A backslash-escaped backtick cannot open a span, but inside one the backslash is literal, so it closes.
+        openers = [start + 1 if _escaped(text, start) else start for start, _ in runs]
+        next_same: list[int | None] = [None] * len(runs)
+        seen: dict[tuple[int, int], int] = {}
+        for index in range(len(runs) - 1, -1, -1):
+            start, end = runs[index]
+            if not _inside(leaves, leaf_starts, start):
+                continue
+            scope = bisect_left(leaf_starts, start + 1) - 1
+            if end > openers[index]:
+                next_same[index] = seen.get((scope, end - openers[index]))
+            seen[(scope, end - start)] = index
+        spans, honored = _walk(
+            text,
+            [(openers[i], runs[c][1]) if c is not None else None for i, c in enumerate(next_same)],
+            [start for start, _ in runs],
+            markup,
+            fences,
+            fence_starts,
+            [start for start, _ in blocks],
+        )
+        spans.extend(fences)
+        spans.sort()
+        return cls([start for start, _ in spans], [end for _, end in spans]), honored, [start for start, _ in blocks]
+
+    def end_of(self, position: int) -> int:
+        """Return the end of the span that contains *position* (only when :meth:`contains` says so)."""
+        return self.ends[bisect_left(self.starts, position) - 1]
+
+    def contains(self, start: int, end: int) -> bool:
+        """Whether *start*..*end* lies strictly inside one quoted span (spans never overlap)."""
+        index = bisect_left(self.starts, start) - 1
+        return index >= 0 and end < self.ends[index]
+
+
+def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return the ranges of fenced code blocks, of leaf blocks with inline code, and of every leaf block.
+
+    A leaf block is a paragraph, a list item's paragraph, a heading, or a code or HTML block; all come in order.
+    """
+    fences: list[tuple[int, int]] = []
+    leaves: list[tuple[int, int]] = []
+    blocks: list[tuple[int, int]] = []
+    if "`" not in text and "~~~" not in text and "\n" not in text:
+        return fences, leaves, blocks
+    line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
+    for token in _BLOCK_PARSER.parse(text):
+        if token.map is None or token.type not in _ALL_LEAF_BLOCKS:
+            continue
+        first, last = token.map
+        block = (line_starts[first], line_starts[last] if last < len(line_starts) else len(text))
+        blocks.append(block)
+        if token.type == "fence":
+            fences.append(block)
+        elif token.type in _LEAF_BLOCKS:
+            leaves.append(block)
+    return fences, leaves, blocks
+
+
+def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
+    """Yield the text inside *markup*: a link's title, or what :func:`_tag_texts` finds in an HTML tag."""
+    start, end, title = markup
+    if title is not None:
+        yield text[title[0] : title[1]]
+    elif not text.startswith("](", start):
+        yield from _tag_texts(text[start:end])
+
+
+def _tag_texts(tag: str) -> Iterator[str]:
+    """Yield the text inside an HTML *tag*: a comment's, CDATA's or instruction's body, or each attribute value."""
+    for prefix, suffix in _TAG_BODIES:
+        if tag.startswith(prefix):
+            yield tag[len(prefix) : len(tag) - len(suffix)]
+            return
+    for value in _ATTRIBUTE_VALUE_RE.finditer(tag):
+        yield value[value.lastgroup or 0]
+
+
+def _without_emphasis(text: str, code: _QuotedSpans) -> str:
+    """Return *text* with its emphasis delimiters outside *code* blanked, keeping offsets.
+
+    Every "*" run is blanked. A "_" run is blanked only when it pairs as CommonMark emphasis: it opens when not
+    after a letter or digit and closes when not before one, so underscores inside or at the end of a tool name
+    stay.
+    """
+    if "*" not in text and "_" not in text:
+        return text
+    chars = list(text)
+    openers: list[re.Match[str]] = []
+    for match in _EMPHASIS_RE.finditer(text):
+        start, end = match.span()
+        if code.contains(start, start):
+            continue
+        if match[0][0] == "*":
+            chars[start:end] = " " * (end - start)
+            continue
+        before, after = text[start - 1 : start], text[end : end + 1]
+        if openers and before.strip() and not after.isalnum():
+            opener = openers.pop()
+            chars[opener.start() : opener.end()] = " " * (opener.end() - opener.start())
+            chars[start:end] = " " * (end - start)
+        elif after.strip() and not before.isalnum():
+            openers.append(match)
+    return "".join(chars)
+
+
+def _without_tags(text: str, tags: list[_Markup]) -> str:
+    """Return *text* with its sorted *tags* and links blanked, keeping offsets.
+
+    A block tag becomes a blank line, so it still ends a sentence; any other markup becomes spaces.
+    """
+    parts: list[str] = []
+    last = 0
+    for start, end, _ in tags:
+        blank = "\n\n" if _BLOCK_TAG_RE.match(text, start) else ""
+        parts.extend((text[last:start], (blank + " " * (end - start))[: end - start]))
+        last = end
+    parts.append(text[last:])
+    return "".join(parts)
+
+
+def _escaped(text: str, position: int) -> bool:
+    """Whether the character at *position* follows an odd number of backslashes."""
+    count = 0
+    while position - count > 0 and text[position - count - 1] == "\\":
+        count += 1
+    return count % 2 == 1
+
+
+def _inside(blocks: list[tuple[int, int]], starts: list[int], position: int) -> bool:
+    """Whether *position* lies in one of *blocks* (sorted ranges whose starts are *starts*)."""
+    index = bisect_left(starts, position + 1) - 1
+    return index >= 0 and position < blocks[index][1]
+
+
+def _sentences(
+    text: str, quoted: _QuotedSpans, code: _QuotedSpans, blocks: list[int] | None = None
+) -> Iterator[tuple[int, str]]:
+    """Yield each sentence of *text* with its offset, keeping a quoted span whole so a quoted example stays one.
+
+    A sentence also ends where one of the leaf *blocks* starts.
+    """
+
+    def free(position: int) -> bool:
+        return not quoted.contains(position, position) and not code.contains(position, position)
+
+    # Judged at the whitespace: 'say "OK." Then' ends a sentence, '"call x. Never y"' stays one example.
+    breaks = [(brk.start(), brk.end()) for brk in _SENTENCE_BREAK_RE.finditer(text) if free(brk.end() - 1)]
+    breaks.extend((block, block) for block in blocks or () if block > 0 and free(block))
+    breaks.sort()
+    start = 0
+    for brk_start, brk_end in breaks:
+        if brk_start > start:
+            yield start, text[start:brk_start]
+        start = max(start, brk_end)
+    yield start, text[start:]
+
+
+def _code_shaped(token: str) -> str | None:
+    """Return *token* as a tool name when it is code-shaped, else None.
+
+    Code-shaped: joined with ``_``, ``.`` or ``/`` (``send_email``, ``mail/send``), or camelCase (``getWeather``),
+    with at least one letter. Plain words, hyphen-only words ("read-only") and numbers ("2.0") are prose.
+    """
+    name = token.rstrip("./-")
+    if not any(char.isascii() and char.isalpha() for char in name):
+        return None
+    if _NAME_JOINERS_RE.search(name):
+        parts = _NAME_JOINERS_RE.split(name.strip("_"))
+        return name if all(part and part[0].isalnum() and part.isascii() for part in parts) else None
+    words = name.split("-")
+    if all(word.isascii() and word.isalnum() for word in words) and any(_CAMEL_RE.fullmatch(w) for w in words):
+        return name
+    return None
+
+
+def _name_key(name: str) -> str:
+    """Fold case and separators, so ``ads.campaign.refresh`` and ``ads/campaign__refresh`` compare equal."""
+    return _SEPARATORS_RE.sub("_", name.casefold())
+
+
+def _is_listed(name: str, listed: frozenset[str]) -> bool:
+    """Whether *name* is a listed name, alone or behind up to three client namespaces (``mcp__server__search``)."""
+    parts = _NAMESPACE_RE.split(name)
+    return any(_name_key("_".join(parts[start:])) in listed for start in range(min(len(parts), _MAX_NAMESPACES + 1)))
+
+
+def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
+    """Whether *match* names a tool, in backticks or code-shaped, that is not among the *listed* names."""
+    if match["ticked"] is not None:
+        if _is_listed(match["ticked"], listed):
+            return False
+        # The callee of a call expression: `fetch_page(url)` names fetch_page.
+        ticked = match["ticked"].split("(", 1)[0] if match["ticked"].endswith(")") else match["ticked"]
+        # A backticked name still needs a letter: `()` or `--` is punctuation, not a tool.
+        if not any(char.isalpha() for char in ticked) or ticked in _PROTOCOL_METHODS:
+            return False
+        return not _is_listed(ticked, listed)
+    if match["bare"].rstrip(".") in _PROTOCOL_METHODS:
+        return False
+    if _is_listed(match["bare"], listed):
+        return False
+    name = _code_shaped(match["bare"])
+    return name is not None and not _is_listed(name, listed)
+
+
+@dataclass(frozen=True)
+class _IndirectClauses:
+    """Where a sentence asks indirectly: "Returns whether the tool should retry" describes, it does not direct.
+
+    A cue is in such a clause when an unquoted "whether" precedes it with no comma, semicolon or colon between.
+    """
+
+    whethers: list[int]
+    breaks: list[int]
+
+    @classmethod
+    def of(cls, sentence: str, offset: int, quoted: "_QuotedSpans", code: "_QuotedSpans") -> "_IndirectClauses":
+        """Find the "whether"s and clause breaks of *sentence* outside quotes and inline code."""
+        whethers = []
+        for match in _WHETHER_RE.finditer(sentence):
+            start = match.start("inner") if match["inner"] else match.start()
+            if not quoted.contains(offset + start, offset + match.end()) and not code.contains(
+                offset + start, offset + match.end()
+            ):
+                whethers.append(start)
+        breaks = [
+            match.start()
+            for match in _CLAUSE_BREAK_RE.finditer(sentence)
+            if not quoted.contains(offset + match.start(), offset + match.start())
+            and not code.contains(offset + match.start(), offset + match.start())
+        ]
+        return cls(whethers, breaks)
+
+    def covers(self, position: int) -> bool:
+        """Whether *position* lies in a clause that an earlier "whether" opened."""
+        index = bisect_left(self.whethers, position) - 1
+        if index < 0:
+            return False
+        return bisect_left(self.breaks, position) == bisect_left(self.breaks, self.whethers[index])
+
+
+def cross_tool_classes(text: str, listed: frozenset[str] | None = None, *, markup: bool = True) -> list[str]:
+    """Return the cross-tool directive classes in *text*.
+
+    ``any_tool_directive``: a directive about any or other tools or servers. ``unlisted_tool_directive``: a
+    directive naming a tool that is not in *listed* (the names the server lists); with *listed* None
+    the catalog is unknown and only the first class is judged. *listed* holds :func:`_name_key` forms.
+    A phrase in double quotes or named as an attempt (``attempts to call x``) is a mention, not a directive.
+    HTML tags are markup: the visible text is judged with them blanked, and each attribute value or comment is
+    judged as plain text of its own (*markup* False: no code spans or tags), since the model reads it too.
+    """
+    text = _LINE_END_RE.sub("\n", text)
+    code, tags, blocks = _QuotedSpans.code_of(text) if markup else (_QuotedSpans([], []), [], [])
+    original = text
+    text = _without_emphasis(_without_tags(text, tags), code)
+    quoted = _QuotedSpans.of(text, skip=code)
+    found: list[str] = []
+    for tag in tags:
+        # Markup inside a prose quote is part of a quoted example, like the rest of the quote.
+        if not quoted.contains(tag[0], tag[1] - 1):
+            for inner in _markup_texts(original, tag):
+                found.extend(cross_tool_classes(inner, listed, markup=False))
+    for offset, sentence in _sentences(text, quoted, code, blocks):
+        # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
+        # with punctuation.
+        indirect = _IndirectClauses.of(sentence, offset, quoted, code)
+        if not any(
+            not quoted.contains(offset + cue.end() - 1, offset + cue.end() - 1)
+            and not code.contains(offset + cue.end() - 1, offset + cue.end() - 1)
+            and not indirect.covers(cue.end() - 1)
+            for cue in _DIRECTIVE_RE.finditer(sentence)
+        ):
+            continue
+
+        def directs(
+            match: re.Match[str], sentence: str = sentence, offset: int = offset, indirect: _IndirectClauses = indirect
+        ) -> bool:
+            start, end = match.start(), match.end()
+            inside = quoted.contains(offset + start, offset + end) or code.contains(offset + start, offset + end)
+            return not (_is_mention(sentence, start, end) or inside or indirect.covers(start))
+
+        if any(directs(match) for match in _ANY_TOOL_RE.finditer(sentence)):
+            found.append("any_tool_directive")
+        if listed is not None:
+            found.extend(
+                "unlisted_tool_directive"
+                for pattern in _TOOL_REFERENCES
+                for match in pattern.finditer(sentence)
+                if directs(match) and _unlisted(match, listed)
+            )
+    return found
+
+
+_DECLARED_LISTINGS = (("prompts", "prompts"), ("resources", "resources"), ("resource_templates", "resources"))
+
+
+def _declares(audit_data: AuditData, capability: str) -> bool:
+    """Whether the audited lifecycle declares *capability*: the session's, or ``server/discover``'s without one."""
+    return getattr(audit_data.capabilities, capability, None) is not None
+
+
+def _stateless_page_whole(audit_data: AuditData) -> bool:
+    """Whether the stateless ``tools/list`` page is the whole catalog (SEP-2322 ``resultType``, no next cursor)."""
+    probe = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
+    page = probe.payload if probe is not None and isinstance(probe.payload, dict) else {}
+    return page.get("resultType") == "complete" and page.get("nextCursor") is None
+
+
+def _listed_names(audit_data: AuditData) -> frozenset[str] | None:
+    """Return the names the server lists, folded by :func:`_name_key`, or None when they were not all seen.
+
+    Every listing must have come back whole: a declared catalog that was never listed, or one that pagination
+    left incomplete, may hold the very name a description points at. Without a session the tools come from one
+    stateless page, which must say it is whole; tools recovered after the session listing failed leave the
+    session's names unknown.
+    """
+    if audit_data.tools is None or any(listing in audit_data.incomplete_listings for listing in _LISTINGS):
+        return None
+    if any(getattr(audit_data, listing) is None and _declares(audit_data, cap) for listing, cap in _DECLARED_LISTINGS):
+        return None
+    # Tools recovered from the stateless lifecycle replaced a failed session listing: the session's own text may
+    # name the tools it served, which are no longer known.
+    if "tools" in audit_data.catalog_versions:
+        return None
+    if audit_data.session_protocol_version is None and not _stateless_page_whole(audit_data):
+        return None
+    items = [*audit_data.tools, *(audit_data.prompts or []), *(audit_data.resources or [])]
+    items += audit_data.resource_templates or []
+    return frozenset(_name_key(item.name) for item in items if item.name)
+
+
+@register_rule
+class CatalogCrossToolDirectivesRule(CatalogSecurityRule):
+    """High check: catalog text does not direct the model's use of tools the server does not list.
+
+    Every connected server shares the model's context, so a description can steer how the agent uses
+    another server's tools without the describing tool ever running (tool shadowing). Directions about the
+    server's own tools are ordinary workflow guidance and pass; a sentence counts only when it directs.
+
+    Scoring: 3 points (HIGH)
+    """
+
+    rule_id = "catalog_cross_tool_directives"
+    basis = (
+        "OWASP MCP Top 10 (beta) MCP03:2025 Tool Poisoning; MCP Local Server Security (a poisoned tool catalog, "
+        "tool shadowing); MCP 2025-11-25 §Security and Trust & Safety (Tool Safety: tool descriptions are untrusted)"
+    )
+    rule_order = 24
+    issue_reason = "cross_tool_directive"
+    expected = "directions that name only this server's own tools"
+    passed_message = "Catalog text directs no tools outside this server"
+    failure_label = "catalog strings directing tools outside this server"
+    fix = (
+        "Rewrite the listed fields so they direct only this server's own tools. Describe how other tools are "
+        "used in your documentation, not in text the model reads."
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return "No Directions for Other Tools in Catalog Text"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def matches(self, text: str) -> list[str]:
+        """Return the cross-tool directive classes found in *text*, without knowing the server's catalog."""
+        return cross_tool_classes(text)
+
+    def text_matcher(self, audit_data: AuditData) -> Callable[[str], list[str]]:
+        """Judge each string against the names this server lists."""
+        listed = _listed_names(audit_data)
+        return lambda text: cross_tool_classes(text, listed)

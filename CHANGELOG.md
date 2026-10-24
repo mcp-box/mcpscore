@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`catalog_cross_tool_directives` (HIGH): catalog text does not direct the
+  model's use of tools the server does not list.** Every connected server
+  shares the model's context, so a description can steer how the agent uses
+  another server's tools without the describing tool ever running (tool
+  shadowing). In each sentence that directs the model (`always`, `must`,
+  `never`, `before …`, `call …`), the rule flags a reference to any or other
+  tools or servers ("with any tool") and a code-shaped tool name, after
+  `call` or `invoke` or before the word `tool`, that the server does not
+  list. The server's own tools, prompts and resources pass, also behind a
+  client prefix or with other separators. Unlisted names are judged only when
+  every catalog the audited lifecycle declares was listed whole. Evidence names the location and class,
+  never the text. Every full audit gains 3 points of maximum score, and gains
+  them in its score unless its catalog directs other tools: DeepWiki moves
+  from 92/109 to 95/112.
 - **`tools_descriptions_unique` (LOW): no two tools share a description.**
   The model picks a tool by its name and description, so tools with the same
   description give it nothing to choose by. Descriptions match after trimming,
