@@ -2109,7 +2109,8 @@ def _wrapped_line_prefixes(
     """Yield (line start, prefix length) for each wrapped line of a paragraph whose parsed *content* is given.
 
     The parser strips each line's container prefix, so a raw line ends with its content line; the difference is the
-    prefix. A line where that does not hold (a tab split by indentation) keeps its raw text.
+    prefix. A tab the prefix consumes only partly comes back as spaces, so the content line is also compared without
+    its leading whitespace, which a reference label collapses anyway. A line matching neither way keeps its raw text.
     """
     lines = content.split("\n")
     if len(lines) != last - first:
@@ -2118,8 +2119,10 @@ def _wrapped_line_prefixes(
         end = line_starts[offset + 1] - 1 if offset + 1 < len(line_starts) else len(text)
         raw = text[line_starts[offset] : end]
         raw = raw.rstrip() if offset == last - 1 else raw
-        if line and raw.endswith(line):
-            yield line_starts[offset], len(raw) - len(line)
+        for tail in (line, line.lstrip(" \t")):
+            if tail and raw.endswith(tail):
+                yield line_starts[offset], len(raw) - len(tail)
+                break
 
 
 def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
