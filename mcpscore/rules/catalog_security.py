@@ -11,7 +11,8 @@ from abc import abstractmethod
 from bisect import bisect_left
 from collections import Counter
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import cached_property
 from html.parser import HTMLParser
 import ipaddress
 import re
@@ -20,6 +21,7 @@ from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
 from markdown_it.common.html_blocks import block_names
+from markdown_it.common.utils import normalizeReference
 from markdown_it.rules_inline.autolink import AUTOLINK_RE, EMAIL_RE
 from markdown_it.token import Token
 from mcp_types import Icon
@@ -1619,22 +1621,29 @@ _ANGLE_DESTINATION_RE = re.compile(r"<(?:[^<>\n\\]|\\[\s\S])*>")
 # limit; a backslash escapes the next character unless it is a space.
 _DESTINATION_RUN_RE = re.compile(r"[^ \x00-\x1f\x7f()\\]*")
 _MAX_LINK_NESTING = 32
+_MAX_LABEL_LENGTH = 999
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # Emphasis formats a directive without making it an example: "Always call **send_email** first."
-_EMPHASIS_RE = re.compile(r"\*+|_+")
+_EMPHASIS_RE = re.compile(r"\*+|_+|[\[\]]")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
 
 def _markup(
-    text: str, fences: list[tuple[int, int]], fence_starts: list[int], blocks: list[tuple[int, int]]
+    text: str,
+    fences: list[tuple[int, int]],
+    fence_starts: list[int],
+    blocks: list[tuple[int, int]],
+    references: "_References | None" = None,
 ) -> "list[_Markup]":
     """Return the raw HTML tags, autolinks and inline link destinations outside *fences*, in text order.
 
     Each comes with the range of its link title, when it is an inline link that has one. Markup ends inside the
-    leaf block it starts in (*blocks*, when the text was parsed into blocks), as inline markup does in CommonMark.
+    leaf block it starts in (*blocks*, when the text was parsed into blocks), as inline markup does in CommonMark,
+    and links count only where inline Markdown is parsed (not in a raw HTML block).
     """
+    references = references or _References()
     markup: list[_Markup] = []
     if "<" not in text and "](" not in text:
         return markup
@@ -1645,10 +1654,11 @@ def _markup(
         # A backslash-escaped "<" or "]" is a literal character.
         if _escaped(text, start) or _inside(fences, fence_starts, start):
             continue
+        links = references.parses_inline(start)
         if opener[0] == "](":
-            end = scanner.link_end(start)
+            end = scanner.link_end(start) if links else None
         else:
-            end = scanner.autolink_end(start)
+            end = scanner.autolink_end(start) if links else None
             end = scanner.end(start) if end is None else end
         if end is None:
             continue
@@ -1667,23 +1677,27 @@ def _walk(
     fences: list[tuple[int, int]],
     fence_starts: list[int],
     block_starts: list[int],
+    references: "_References | None" = None,
 ) -> tuple[list[tuple[int, int]], list[_Markup]]:
     """Read *text* left to right as CommonMark does, and return its inline code spans and the markup it honors.
 
     Whichever of a code span (*run_spans*, by backtick run), a tag or a link starts first wins. Link label
-    brackets are counted here, so a bracket inside a code span or tag is literal, and an inline link is honored
-    only when its "]" closes an open "[" of the same leaf block.
+    brackets are counted here, so a bracket inside a code span or tag is literal. An inline link is honored only
+    when its "]" closes an open "[" of the same leaf block, and a reference link only when it resolves to one of
+    the *references*.
     """
+    references = references or _References()
     link_starts = {start for start, *_ in markup if text.startswith("](", start)}
+    brackets = [
+        bracket
+        for bracket in re.finditer(r"[\[\]]", text)
+        if not _escaped(text, bracket.start()) and not _inside(fences, fence_starts, bracket.start())
+    ]
+    opens = [bracket.start() for bracket in brackets if bracket[0] == "["]
+    closes = [bracket.start() for bracket in brackets if bracket[0] == "]"]
     events: list[tuple[int, int, int]] = [(start, 0, index) for index, start in enumerate(run_starts)]
     events.extend((entry[0], 1, index) for index, entry in enumerate(markup))
-    events.extend(
-        (bracket.start(), 2, bracket[0] == "[")
-        for bracket in re.finditer(r"[\[\]]", text)
-        if bracket.start() not in link_starts
-        and not _escaped(text, bracket.start())
-        and not _inside(fences, fence_starts, bracket.start())
-    )
+    events.extend((bracket.start(), 2, bracket[0] == "[") for bracket in brackets if bracket.start() not in link_starts)
     events.sort()
     spans: list[tuple[int, int]] = []
     honored: list[_Markup] = []
@@ -1707,8 +1721,21 @@ def _walk(
             if index:
                 labels.append((block, start, text[start - 1 : start] == "!" and not _escaped(text, start - 1)))
             elif labels:
-                labels.pop()
+                _, opener, image = labels.pop()
+                active = image or len(labels) >= floor
                 floor = min(floor, len(labels))
+                end = (
+                    _reference_end(text, opener, start, references, opens, closes)
+                    if active and references.labels and references.parses_inline(start)
+                    else None
+                )
+                # A reference link stays inside its leaf block: "[search][" cannot reach into the next paragraph.
+                if end is not None and bisect_left(block_starts, end) - 1 == block:
+                    # A resolved reference link reads as its label: "[send_email][mail]" as "send_email".
+                    honored.extend(((opener - image, opener + 1, None), (start, end, None)))
+                    position = end
+                    if not image:
+                        floor = len(labels)
         elif start in link_starts:
             if not labels:
                 continue
@@ -1727,6 +1754,46 @@ def _walk(
             position = markup[index][1]
     honored.sort()
     return spans, honored
+
+
+def _reference_end(
+    text: str, opener: int, close: int, references: "_References", opens: list[int], closes: list[int]
+) -> int | None:
+    """Return the end of the reference link whose label runs from *opener* to *close*, or None.
+
+    Full ("[label][id]"), collapsed ("[label][]") and shortcut ("[label]") forms resolve as markdown-it resolves
+    them: a label holds no unescaped bracket and, without its blockquote markers, at most 999 characters; an
+    identifier of only whitespace resolves nothing, and a shortcut is not followed by another label.
+    """
+    if text.startswith("[", close + 1):
+        end = _first_at(closes, close + 2)
+        nested = _first_at(opens, close + 2)
+        if end is not None and (nested is None or nested > end):
+            if end == close + 2:
+                return end + 1 if _label_key(text, opener, close, opens, references) in references.labels else None
+            return end + 1 if _label_key(text, close + 1, end, opens, references) in references.labels else None
+    return close + 1 if _label_key(text, opener, close, opens, references) in references.labels else None
+
+
+def _label_key(text: str, opener: int, close: int, opens: list[int], references: "_References") -> str | None:
+    """Return the label from *opener* to *close* normalized as a reference label, or None when it is not one.
+
+    A label holds no unescaped "[" (so labels never overlap and normalizing them stays linear in the text), and at
+    most 999 characters once the container prefixes of its wrapped lines are dropped.
+    """
+    nested = _first_at(opens, opener + 1)
+    if nested is not None and nested < close:
+        return None
+    parts: list[str] = []
+    start = opener + 1
+    newline = text.find("\n", start, close)
+    while newline != -1:
+        parts.append(text[start : newline + 1])
+        start = min(close, newline + 1 + references.prefixes.get(newline + 1, 0))
+        newline = text.find("\n", start, close)
+    parts.append(text[start:close])
+    label = "".join(parts)
+    return normalizeReference(label) if len(label) <= _MAX_LABEL_LENGTH and label.strip() else None
 
 
 def _bare_destination_end(text: str, position: int) -> int | None:
@@ -1958,10 +2025,10 @@ class _QuotedSpans:
         first wins, so a backtick in an attribute is no delimiter and a tag inside a span is code. Each run's next
         run of the same length is found in one backward pass. *text* has LF line endings.
         """
-        fences, leaves, blocks = _markdown_blocks(text)
+        fences, leaves, blocks, references = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
-        markup = _markup(text, fences, fence_starts, blocks)
+        markup = _markup(text, fences, fence_starts, blocks, references)
         runs = [
             (match.start(), match.end())
             for match in _BACKTICK_RUN_RE.finditer(text)
@@ -1987,6 +2054,7 @@ class _QuotedSpans:
             fences,
             fence_starts,
             [start for start, _ in blocks],
+            references,
         )
         spans.extend(fences)
         spans.sort()
@@ -2002,18 +2070,45 @@ class _QuotedSpans:
         return index >= 0 and end < self.ends[index]
 
 
-def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]]]:
-    """Return the ranges of fenced code blocks, of leaf blocks with inline code, and of every leaf block.
+@dataclass(frozen=True)
+class _References:
+    """The link reference definitions of a text, and the container prefix of each wrapped paragraph line."""
 
-    A leaf block is a paragraph, a list item's paragraph, a heading, or a code or HTML block; all come in order.
+    labels: frozenset[str] = frozenset()
+    # Offset of a wrapped line's start -> length of the container prefix (blockquote markers, list indentation)
+    # that the parser strips from it.
+    prefixes: dict[int, int] = field(default_factory=dict)
+    # The paragraphs and headings, whose inline Markdown (links among it) is parsed; None when the text was not
+    # parsed into blocks, so all of it is inline. Raw HTML and indented code blocks hold literal text.
+    inline: list[tuple[int, int]] | None = None
+
+    @cached_property
+    def _inline_starts(self) -> list[int]:
+        return [start for start, _ in self.inline or ()]
+
+    def parses_inline(self, position: int) -> bool:
+        """Whether Markdown at *position* is parsed as inline Markdown (so a link there is a link)."""
+        return self.inline is None or _inside(self.inline, self._inline_starts, position)
+
+
+def _markdown_blocks(
+    text: str,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]], _References]:
+    """Return the fenced code blocks, the leaf blocks with inline code, every leaf block, and the references.
+
+    Ranges are character offsets, in order. A leaf block is a paragraph, a list item's paragraph, a heading, or a
+    code or HTML block.
     """
     fences: list[tuple[int, int]] = []
     leaves: list[tuple[int, int]] = []
     blocks: list[tuple[int, int]] = []
     if "`" not in text and "~~~" not in text and "\n" not in text:
-        return fences, leaves, blocks
+        return fences, leaves, blocks, _References()
     line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
-    for token in _BLOCK_PARSER.parse(text):
+    prefixes: dict[int, int] = {}
+    inline: list[tuple[int, int]] = []
+    env: dict[str, Any] = {}
+    for token in _BLOCK_PARSER.parse(text, env):
         if token.map is None or token.type not in _ALL_LEAF_BLOCKS:
             continue
         first, last = token.map
@@ -2023,7 +2118,32 @@ def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, 
             fences.append(block)
         elif token.type in _LEAF_BLOCKS:
             leaves.append(block)
-    return fences, leaves, blocks
+        if token.type == "inline":
+            inline.append(block)
+            prefixes.update(_wrapped_line_prefixes(text, line_starts, first, last, token.content))
+    return fences, leaves, blocks, _References(frozenset(env.get("references", {})), prefixes, inline)
+
+
+def _wrapped_line_prefixes(
+    text: str, line_starts: list[int], first: int, last: int, content: str
+) -> Iterator[tuple[int, int]]:
+    """Yield (line start, prefix length) for each wrapped line of a paragraph whose parsed *content* is given.
+
+    The parser strips each line's container prefix, so a raw line ends with its content line; the difference is the
+    prefix. A tab the prefix consumes only partly comes back as spaces, so the content line is also compared without
+    its leading whitespace, which a reference label collapses anyway. A line matching neither way keeps its raw text.
+    """
+    lines = content.split("\n")
+    if len(lines) != last - first:
+        return
+    for offset, line in enumerate(lines[1:], start=first + 1):
+        end = line_starts[offset + 1] - 1 if offset + 1 < len(line_starts) else len(text)
+        raw = text[line_starts[offset] : end]
+        raw = raw.rstrip() if offset == last - 1 else raw
+        for tail in (line, line.lstrip(" \t")):
+            if tail and raw.endswith(tail):
+                yield line_starts[offset], len(raw) - len(tail)
+                break
 
 
 def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
@@ -2031,7 +2151,7 @@ def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
     start, end, title = markup
     if title is not None:
         yield text[title[0] : title[1]]
-    elif not text.startswith("](", start):
+    elif text.startswith("<", start):
         yield from _tag_texts(text[start:end])
 
 
@@ -2048,11 +2168,12 @@ def _tag_texts(tag: str) -> Iterator[str]:
 def _without_emphasis(text: str, code: _QuotedSpans) -> str:
     """Return *text* with its emphasis delimiters outside *code* blanked, keeping offsets.
 
-    Every "*" run is blanked. A "_" run is blanked only when it pairs as CommonMark emphasis: it opens when not
-    after a letter or digit and closes when not before one, so underscores inside or at the end of a tool name
-    stay.
+    Every "*" run and every literal square bracket is blanked: emphasis and brackets format a name without changing
+    what the sentence directs (a resolved link's brackets were blanked with its markup). A "_" run is blanked only when
+    it pairs as CommonMark emphasis: it opens when not after a letter or digit and closes when not before one, so
+    underscores inside or at the end of a tool name stay.
     """
-    if "*" not in text and "_" not in text:
+    if not any(char in text for char in "*_[]"):
         return text
     chars = list(text)
     openers: list[re.Match[str]] = []
@@ -2060,7 +2181,7 @@ def _without_emphasis(text: str, code: _QuotedSpans) -> str:
         start, end = match.span()
         if code.contains(start, start):
             continue
-        if match[0][0] == "*":
+        if match[0][0] in "*[]":
             chars[start:end] = " " * (end - start)
             continue
         before, after = text[start - 1 : start], text[end : end + 1]
@@ -2252,12 +2373,14 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None, *, marku
         if any(directs(match) for match in _ANY_TOOL_RE.finditer(sentence)):
             found.append("any_tool_directive")
         if listed is not None:
-            found.extend(
-                "unlisted_tool_directive"
+            # One name can match both patterns ("call send_email tool"); it counts once.
+            names = {
+                match.span("ticked" if match["ticked"] is not None else "bare")
                 for pattern in _TOOL_REFERENCES
                 for match in pattern.finditer(sentence)
                 if directs(match) and _unlisted(match, listed)
-            )
+            }
+            found.extend("unlisted_tool_directive" for _ in names)
     return found
 
 
