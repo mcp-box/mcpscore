@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
+from markdown_it.rules_inline.autolink import AUTOLINK_RE, EMAIL_RE
 from markdown_it.token import Token
 from mcp_types import Icon
 
@@ -1602,15 +1603,52 @@ _UNQUOTED_VALUE_RE = re.compile(r"[^\x22'=<>`\x00-\x20]+")
 _OPEN_TAG_END_RE = re.compile(r"\s*/?>")
 # A comment, instruction, CDATA section or declaration runs from its opener to the first closer after it.
 _TAG_SPANS = (("<!--", "-->"), ("<?", "?>"), ("<![CDATA[", "]]>"))
-_TAG_NEEDLES = ('"', "'", ">", "-->", "?>", "]]>")
+_TAG_NEEDLES = ('"', "'", ">", ")", "-->", "?>", "]]>")
+# An autolink (<https://…>, <user@host>) and an inline link's destination and title, as CommonMark reads them;
+# like a tag, either one outranks a code span that starts after it.
+_URI_AUTOLINK_RE = re.compile(AUTOLINK_RE.pattern.removeprefix("^").removesuffix("$"))
+_EMAIL_AUTOLINK_RE = re.compile(EMAIL_RE.pattern.removeprefix("^").removesuffix("$"))
+_LINK_SPACE_RE = re.compile(r"[ \t]*\n?[ \t]*")
+_ANGLE_DESTINATION_RE = re.compile(r"<[^<>\n]*>")
+_BARE_DESTINATION_RE = re.compile(r"[^\s()]*(?:\([^\s()]*\)[^\s()]*)*")
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
 
+def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -> list[tuple[int, int, bool]]:
+    """Return the raw HTML tags and links outside *fences* as (start, end, is_tag), in text order.
+
+    Tags are reported so the caller can blank them; links (autolinks, inline link destinations) are only skipped.
+    """
+    markup: list[tuple[int, int, bool]] = []
+    if "<" not in text and "](" not in text:
+        return markup
+    scanner = _HtmlTags(text)
+    for opener in re.finditer(r"<|\]\(", text):
+        start = opener.start()
+        if _inside(fences, fence_starts, start):
+            continue
+        if opener[0] == "](":
+            end, is_tag = scanner.link_end(start), False
+        elif (end := scanner.autolink_end(start)) is not None:
+            is_tag = False
+        else:
+            end, is_tag = scanner.end(start), True
+        if end is not None:
+            markup.append((start, end, is_tag))
+    return markup
+
+
+def _after_space(text: str, position: int) -> int:
+    """Return the position after the spaces, tabs and at most one line break at *position*."""
+    match = _LINK_SPACE_RE.match(text, position)
+    return position if match is None else match.end()
+
+
 class _HtmlTags:
-    """Finds where the raw HTML tag at a "<" ends, in time linear in the text over all its "<".
+    """Finds where a raw HTML tag, an autolink or an inline link destination ends, in time linear in the text.
 
     A quoted attribute value is skipped by a lookup of its closing quote, and what follows a closing quote is
     scanned once and remembered, so tags that share text (a "<" inside another tag's value) share the work.
@@ -1628,6 +1666,31 @@ class _HtmlTags:
         found = self._found[needle]
         index = bisect_left(found, position)
         return found[index] if index < len(found) else None
+
+    def autolink_end(self, start: int) -> int | None:
+        """Return the end of the autolink that starts at the "<" at *start*, or None."""
+        close = self._next(">", start + 1)
+        if close is None:
+            return None
+        inner = (self.text, start + 1, close)
+        return close + 1 if _URI_AUTOLINK_RE.fullmatch(*inner) or _EMAIL_AUTOLINK_RE.fullmatch(*inner) else None
+
+    def link_end(self, start: int) -> int | None:
+        """Return the end of the inline link destination and title after the "](" at *start*, or None."""
+        text = self.text
+        position = _after_space(text, start + 2)
+        destination = (_ANGLE_DESTINATION_RE if text.startswith("<", position) else _BARE_DESTINATION_RE).match(
+            text, position
+        )
+        if destination is None:
+            return None
+        position = _after_space(text, destination.end())
+        if position > destination.end() and text[position : position + 1] in ('"', "'", "("):
+            close = self._next(")" if text[position] == "(" else text[position], position + 1)
+            if close is None:
+                return None
+            position = _after_space(text, close + 1)
+        return position + 1 if text.startswith(")", position) else None
 
     def end(self, start: int) -> int | None:
         """Return the end of the tag that starts at *start*, or None when no tag starts there."""
@@ -1761,13 +1824,7 @@ class _QuotedSpans:
         fences, leaves = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
-        tags: list[tuple[int, int]] = []
-        if "<" in text:
-            scanner = _HtmlTags(text)
-            ends = ((opener.start(), scanner.end(opener.start())) for opener in re.finditer("<", text))
-            tags.extend(
-                (start, end) for start, end in ends if end is not None and not _inside(fences, fence_starts, start)
-            )
+        markup = _markup(text, fences, fence_starts)
         runs = [
             (match.start(), match.end())
             for match in _BACKTICK_RUN_RE.finditer(text)
@@ -1788,10 +1845,12 @@ class _QuotedSpans:
         spans: list[tuple[int, int]] = list(fences)
         honored: list[tuple[int, int]] = []
         index = tag = 0
-        while index < len(runs) or tag < len(tags):
-            if tag < len(tags) and (index == len(runs) or tags[tag][0] < runs[index][0]):
-                honored.append(tags[tag])
-                position = tags[tag][1]
+        while index < len(runs) or tag < len(markup):
+            if tag < len(markup) and (index == len(runs) or markup[tag][0] < runs[index][0]):
+                start, end, is_tag = markup[tag]
+                if is_tag:
+                    honored.append((start, end))
+                position = end
             else:
                 closer = next_same[index]
                 if closer is None:
@@ -1801,7 +1860,7 @@ class _QuotedSpans:
                 position = runs[closer][1]
             while index < len(runs) and runs[index][0] < position:
                 index += 1
-            while tag < len(tags) and tags[tag][0] < position:
+            while tag < len(markup) and markup[tag][0] < position:
                 tag += 1
         spans.sort()
         return cls([start for start, _ in spans], [end for _, end in spans]), honored
