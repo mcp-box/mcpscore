@@ -1687,30 +1687,45 @@ def _walk(
     events.sort()
     spans: list[tuple[int, int]] = []
     honored: list[_Markup] = []
-    labels: list[int] = []
+    # Open "[" as (block, position, is an image's "!["); openers below *floor* that are not images are inactive,
+    # since a link may not contain another link.
+    labels: list[tuple[int, int, bool]] = []
+    floor = 0
     position = 0
     for start, kind, index in events:
         if start < position:
             continue
         block = bisect_left(block_starts, start + 1) - 1
-        if labels and labels[-1] != block:
+        if labels and labels[-1][0] != block:
             labels.clear()
+            floor = 0
         if kind == 0:
             if (span := run_spans[index]) is not None:
                 spans.append(span)
                 position = span[1]
         elif kind == 2:
             if index:
-                labels.append(block)
+                labels.append((block, start, text[start - 1 : start] == "!" and not _escaped(text, start - 1)))
             elif labels:
                 labels.pop()
-        elif start in link_starts and not labels:
-            continue
+                floor = min(floor, len(labels))
+        elif start in link_starts:
+            if not labels:
+                continue
+            _, opener, image = labels.pop()
+            active = image or len(labels) >= floor
+            floor = min(floor, len(labels))
+            if not active:
+                continue
+            # The label's opener is markup too: "[send_email](…)" reads as "send_email".
+            honored.extend((markup[index], (opener - image, opener + 1, None)))
+            position = markup[index][1]
+            if not image:
+                floor = len(labels)
         else:
-            if start in link_starts:
-                labels.pop()
             honored.append(markup[index])
             position = markup[index][1]
+    honored.sort()
     return spans, honored
 
 
@@ -2066,8 +2081,8 @@ def _without_tags(text: str, tags: list[_Markup]) -> str:
     parts: list[str] = []
     last = 0
     for start, end, _ in tags:
-        blank = "\n\n" if _BLOCK_TAG_RE.match(text, start) else "  "
-        parts.extend((text[last:start], blank + " " * (end - start - 2)))
+        blank = "\n\n" if _BLOCK_TAG_RE.match(text, start) else ""
+        parts.extend((text[last:start], (blank + " " * (end - start))[: end - start]))
         last = end
     parts.append(text[last:])
     return "".join(parts)
