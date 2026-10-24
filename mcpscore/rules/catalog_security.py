@@ -1583,12 +1583,11 @@ _NAMESPACE_RE = re.compile(r"__|[./]")
 _MAX_NAMESPACES = 3
 _QUOTE_PAIRS_DOUBLE = (('"', '"'), ("\u201c", "\u201d"))
 _BACKTICK_RUN_RE = re.compile(r"`+")
-_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
-# Block structure only: fenced blocks come from the CommonMark parser, inline spans are paired below.
-_FENCE_PARSER = MarkdownIt("commonmark").disable("inline")
-_FENCE_MARKERS = ("```", "~~~")
-# The line endings the parser normalizes to "\n", so its line numbers map back to offsets.
-_LINE_END_RE = re.compile(r"\r\n|\r|\n")
+# Block structure only: fences and leaf blocks come from the CommonMark parser, inline spans are paired below.
+_BLOCK_PARSER = MarkdownIt("commonmark").disable("inline")
+_LEAF_BLOCKS = frozenset({"inline", "html_block", "code_block"})
+# CRLF and bare CR read as "\n", as CommonMark reads them.
+_LINE_END_RE = re.compile(r"\r\n|\r")
 
 
 class _ForwardFind:
@@ -1655,13 +1654,14 @@ class _QuotedSpans:
     def code_of(cls, text: str) -> "_QuotedSpans":
         """Find the code of *text*: fenced blocks, and inline spans closed by the next backtick run of equal length.
 
-        Fenced blocks (backtick or tilde, closed by a longer run or by the end of the text) come from the CommonMark
-        parser. Inline spans follow the CommonMark rule too, so ``double ` backticks`` stay one span, and stay inside
-        one paragraph between fences. Each run's next run of the same length is found in one backward pass.
+        Fenced blocks (backtick or tilde, closed by a longer run or by the end of the text) and the leaf blocks an
+        inline span stays inside (a paragraph, a list item's paragraph, a heading) come from the CommonMark parser.
+        Inline spans follow the CommonMark rule too, so ``double ` backticks`` stay one span. Each run's next run of
+        the same length is found in one backward pass. *text* has LF line endings.
         """
-        fences = _fenced_blocks(text)
+        fences, leaves = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
-        breaks = [match.start() for match in _PARAGRAPH_BREAK_RE.finditer(text)]
+        leaf_starts = [start for start, _ in leaves]
         runs = [
             (match.start(), match.end())
             for match in _BACKTICK_RUN_RE.finditer(text)
@@ -1670,13 +1670,15 @@ class _QuotedSpans:
         # A backslash-escaped backtick cannot open a span, but inside one the backslash is literal, so it closes.
         openers = [start + 1 if _escaped(text, start) else start for start, _ in runs]
         next_same: list[int | None] = [None] * len(runs)
-        seen: dict[tuple[int, int, int], int] = {}
+        seen: dict[tuple[int, int], int] = {}
         for index in range(len(runs) - 1, -1, -1):
             start, end = runs[index]
-            scope = (bisect_left(breaks, start), bisect_left(fence_starts, start))
+            if not _inside(leaves, leaf_starts, start):
+                continue
+            scope = bisect_left(leaf_starts, start + 1) - 1
             if end > openers[index]:
-                next_same[index] = seen.get((*scope, end - openers[index]))
-            seen[(*scope, end - start)] = index
+                next_same[index] = seen.get((scope, end - openers[index]))
+            seen[(scope, end - start)] = index
         spans: list[tuple[int, int]] = list(fences)
         index = 0
         while index < len(runs):
@@ -1699,17 +1701,20 @@ class _QuotedSpans:
         return index >= 0 and end < self.ends[index]
 
 
-def _fenced_blocks(text: str) -> list[tuple[int, int]]:
-    """Return the character ranges of the fenced code blocks in *text*, in order."""
-    if not any(marker in text for marker in _FENCE_MARKERS):
-        return []
-    line_starts = [0, *(match.end() for match in _LINE_END_RE.finditer(text))]
-    blocks: list[tuple[int, int]] = []
-    for token in _FENCE_PARSER.parse(text):
-        if token.type == "fence" and token.map is not None:
-            first, last = token.map
-            blocks.append((line_starts[first], line_starts[last] if last < len(line_starts) else len(text)))
-    return blocks
+def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return the character ranges of the fenced code blocks and of the other leaf blocks of *text*, in order."""
+    fences: list[tuple[int, int]] = []
+    leaves: list[tuple[int, int]] = []
+    if "`" not in text and "~~~" not in text:
+        return fences, leaves
+    line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
+    for token in _BLOCK_PARSER.parse(text):
+        if token.map is None or (token.type != "fence" and token.type not in _LEAF_BLOCKS):
+            continue
+        first, last = token.map
+        block = (line_starts[first], line_starts[last] if last < len(line_starts) else len(text))
+        (fences if token.type == "fence" else leaves).append(block)
+    return fences, leaves
 
 
 def _escaped(text: str, position: int) -> bool:
@@ -1830,6 +1835,7 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[
     the catalog is unknown and only the first class is judged. *listed* holds :func:`_name_key` forms.
     A phrase in double quotes or named as an attempt (``attempts to call x``) is a mention, not a directive.
     """
+    text = _LINE_END_RE.sub("\n", text)
     code = _QuotedSpans.code_of(text)
     quoted = _QuotedSpans.of(text, skip=code)
     found: list[str] = []
