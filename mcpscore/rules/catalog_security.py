@@ -1621,6 +1621,7 @@ _ANGLE_DESTINATION_RE = re.compile(r"<(?:[^<>\n\\]|\\[\s\S])*>")
 _DESTINATION_RUN_RE = re.compile(r"[^ \x00-\x1f\x7f()\\]*")
 _MAX_LINK_NESTING = 32
 _MAX_LABEL_LENGTH = 999
+_QUOTE_MARKERS_RE = re.compile(r"\n[ \t]*(?:>[ \t]?)+")
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # Emphasis formats a directive without making it an example: "Always call **send_email** first."
@@ -1756,14 +1757,19 @@ def _reference_end(
         nested = _first_at(opens, close + 2)
         if end is not None and (nested is None or nested > end) and end - close - 2 <= _MAX_LABEL_LENGTH:
             if text[close + 2 : end].strip():
-                return end + 1 if normalizeReference(text[close + 2 : end]) in references else None
+                return end + 1 if _label_key(text[close + 2 : end]) in references else None
             return end + 1 if _visible_label_defined(text, opener, close, references) else None
     return close + 1 if _visible_label_defined(text, opener, close, references) else None
 
 
 def _visible_label_defined(text: str, opener: int, close: int, references: frozenset[str]) -> bool:
     """Whether the visible text from *opener* to *close* is a defined label (a collapsed or shortcut reference)."""
-    return close - opener - 1 <= _MAX_LABEL_LENGTH and normalizeReference(text[opener + 1 : close]) in references
+    return close - opener - 1 <= _MAX_LABEL_LENGTH and _label_key(text[opener + 1 : close]) in references
+
+
+def _label_key(label: str) -> str:
+    """Return *label* normalized as a reference label, without the blockquote markers that open its wrapped lines."""
+    return normalizeReference(_QUOTE_MARKERS_RE.sub("\n", label))
 
 
 def _bare_destination_end(text: str, position: int) -> int | None:
