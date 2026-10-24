@@ -1594,6 +1594,8 @@ _BACKTICK_RUN_RE = re.compile(r"`+")
 _BLOCK_PARSER = MarkdownIt("commonmark").disable("inline")
 # Raw HTML blocks are not parsed for inline code, so they hold no spans.
 _LEAF_BLOCKS = frozenset({"inline", "code_block"})
+# Every leaf block ends a sentence: "- Call search\n- The send_email tool …" holds two.
+_ALL_LEAF_BLOCKS = _LEAF_BLOCKS | {"fence", "html_block"}
 # The pieces of a raw HTML tag (CommonMark, "Raw HTML"); a backtick inside a tag is no code delimiter.
 _OPEN_TAG_NAME_RE = re.compile(r"<[A-Za-z][A-Za-z0-9-]*")
 _CLOSING_TAG_RE = re.compile(r"</[A-Za-z][A-Za-z0-9-]*\s*>")
@@ -1634,7 +1636,8 @@ def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -
     scanner = _HtmlTags(text)
     for opener in re.finditer(r"<|\]\(", text):
         start = opener.start()
-        if _inside(fences, fence_starts, start):
+        # A backslash-escaped "<" or "]" is a literal character.
+        if _escaped(text, start) or _inside(fences, fence_starts, start):
             continue
         if opener[0] == "](":
             end = scanner.link_end(start)
@@ -1865,7 +1868,7 @@ class _QuotedSpans:
             position = end
 
     @classmethod
-    def code_of(cls, text: str) -> "tuple[_QuotedSpans, list[_Markup]]":
+    def code_of(cls, text: str) -> "tuple[_QuotedSpans, list[_Markup], list[int]]":
         """Find the code of *text* and the raw HTML tags outside it.
 
         Code is fenced blocks and inline spans closed by the next backtick run of equal length. Fenced blocks
@@ -1875,7 +1878,7 @@ class _QuotedSpans:
         first wins, so a backtick in an attribute is no delimiter and a tag inside a span is code. Each run's next
         run of the same length is found in one backward pass. *text* has LF line endings.
         """
-        fences, leaves = _markdown_blocks(text)
+        fences, leaves, blocks = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
         markup = _markup(text, fences, fence_starts)
@@ -1915,7 +1918,7 @@ class _QuotedSpans:
             while tag < len(markup) and markup[tag][0] < position:
                 tag += 1
         spans.sort()
-        return cls([start for start, _ in spans], [end for _, end in spans]), honored
+        return cls([start for start, _ in spans], [end for _, end in spans]), honored, blocks
 
     def end_of(self, position: int) -> int:
         """Return the end of the span that contains *position* (only when :meth:`contains` says so)."""
@@ -1927,20 +1930,28 @@ class _QuotedSpans:
         return index >= 0 and end < self.ends[index]
 
 
-def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    """Return the character ranges of the fenced code blocks and of the other leaf blocks of *text*, in order."""
+def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[int]]:
+    """Return the ranges of fenced code blocks and of leaf blocks with inline code, and every leaf block's start.
+
+    A leaf block is a paragraph, a list item's paragraph, a heading, or a code or HTML block; all come in order.
+    """
     fences: list[tuple[int, int]] = []
     leaves: list[tuple[int, int]] = []
-    if "`" not in text and "~~~" not in text:
-        return fences, leaves
+    starts: list[int] = []
+    if "`" not in text and "~~~" not in text and "\n" not in text:
+        return fences, leaves, starts
     line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
     for token in _BLOCK_PARSER.parse(text):
-        if token.map is None or (token.type != "fence" and token.type not in _LEAF_BLOCKS):
+        if token.map is None or token.type not in _ALL_LEAF_BLOCKS:
             continue
         first, last = token.map
         block = (line_starts[first], line_starts[last] if last < len(line_starts) else len(text))
-        (fences if token.type == "fence" else leaves).append(block)
-    return fences, leaves
+        starts.append(block[0])
+        if token.type == "fence":
+            fences.append(block)
+        elif token.type in _LEAF_BLOCKS:
+            leaves.append(block)
+    return fences, leaves, starts
 
 
 def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
@@ -1991,15 +2002,26 @@ def _inside(blocks: list[tuple[int, int]], starts: list[int], position: int) -> 
     return index >= 0 and position < blocks[index][1]
 
 
-def _sentences(text: str, quoted: _QuotedSpans, code: _QuotedSpans) -> Iterator[tuple[int, str]]:
-    """Yield each sentence of *text* with its offset, keeping a quoted span whole so a quoted example stays one."""
+def _sentences(
+    text: str, quoted: _QuotedSpans, code: _QuotedSpans, blocks: list[int] | None = None
+) -> Iterator[tuple[int, str]]:
+    """Yield each sentence of *text* with its offset, keeping a quoted span whole so a quoted example stays one.
+
+    A sentence also ends where one of the leaf *blocks* starts.
+    """
+
+    def free(position: int) -> bool:
+        return not quoted.contains(position, position) and not code.contains(position, position)
+
+    # Judged at the whitespace: 'say "OK." Then' ends a sentence, '"call x. Never y"' stays one example.
+    breaks = [(brk.start(), brk.end()) for brk in _SENTENCE_BREAK_RE.finditer(text) if free(brk.end() - 1)]
+    breaks.extend((block, block) for block in blocks or () if block > 0 and free(block))
+    breaks.sort()
     start = 0
-    for brk in _SENTENCE_BREAK_RE.finditer(text):
-        # Judged at the whitespace: 'say "OK." Then' ends a sentence, '"call x. Never y"' stays one example.
-        space = brk.end() - 1
-        if not quoted.contains(space, space) and not code.contains(space, space):
-            yield start, text[start : brk.start()]
-            start = brk.end()
+    for brk_start, brk_end in breaks:
+        if brk_start > start:
+            yield start, text[start:brk_start]
+        start = max(start, brk_end)
     yield start, text[start:]
 
 
@@ -2098,14 +2120,14 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None, *, marku
     judged as plain text of its own (*markup* False: no code spans or tags), since the model reads it too.
     """
     text = _LINE_END_RE.sub("\n", text)
-    code, tags = _QuotedSpans.code_of(text) if markup else (_QuotedSpans([], []), [])
+    code, tags, blocks = _QuotedSpans.code_of(text) if markup else (_QuotedSpans([], []), [], [])
     found: list[str] = []
     for tag in tags:
         for inner in _markup_texts(text, tag):
             found.extend(cross_tool_classes(inner, listed, markup=False))
     text = _without_tags(text, tags)
     quoted = _QuotedSpans.of(text, skip=code)
-    for offset, sentence in _sentences(text, quoted, code):
+    for offset, sentence in _sentences(text, quoted, code, blocks):
         # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
         # with punctuation.
         indirect = _IndirectClauses.of(sentence, offset, quoted, code)
