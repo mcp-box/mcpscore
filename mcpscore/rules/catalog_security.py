@@ -1586,6 +1586,8 @@ _PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
 # Block structure only: fenced blocks come from the CommonMark parser, inline spans are paired below.
 _FENCE_PARSER = MarkdownIt("commonmark").disable("inline")
 _FENCE_MARKERS = ("```", "~~~")
+# The line endings the parser normalizes to "\n", so its line numbers map back to offsets.
+_LINE_END_RE = re.compile(r"\r\n|\r|\n")
 
 
 class _ForwardFind:
@@ -1697,7 +1699,7 @@ def _fenced_blocks(text: str) -> list[tuple[int, int]]:
     """Return the character ranges of the fenced code blocks in *text*, in order."""
     if not any(marker in text for marker in _FENCE_MARKERS):
         return []
-    line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
+    line_starts = [0, *(match.end() for match in _LINE_END_RE.finditer(text))]
     blocks: list[tuple[int, int]] = []
     for token in _FENCE_PARSER.parse(text):
         if token.type == "fence" and token.map is not None:
