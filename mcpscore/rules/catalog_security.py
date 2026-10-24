@@ -19,7 +19,6 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
-from markdown_it.common.html_re import HTML_TAG_RE as _COMMONMARK_TAG_RE
 from markdown_it.token import Token
 from mcp_types import Icon
 
@@ -1537,7 +1536,7 @@ _ANY_TOOL_RE = re.compile(
 # Inline code may use any backtick run and one space of padding: ``send_email``, `` send_email ``, and may be a call
 # whose arguments hold spaces: `send_email(to, draft)`. A run starts only after a non-backtick, so a long run is
 # tried from one position.
-_TOOL_NAME = r"(?<!`)(?P<ticks>`+) ?(?P<ticked>[^`\s(]{1,128}(?:\([^`]{0,256}\))?) ?(?P=ticks)(?!`)|(?P<bare>[\w./-]+)"
+_TOOL_NAME = r"(?<!`)(?P<ticks>`+) ?(?P<ticked>[^`\s(]{1,128}(?:\([^`]*\))?) ?(?P=ticks)(?!`)|(?P<bare>[\w./-]+)"
 _TOOL_REFERENCES = (
     re.compile(rf"\b(?i:call|calling|invoke|invoking):?\s+(?i:the\s+)?(?:{_TOOL_NAME})"),
     re.compile(rf"(?<![\w`./-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
@@ -1594,14 +1593,98 @@ _BACKTICK_RUN_RE = re.compile(r"`+")
 _BLOCK_PARSER = MarkdownIt("commonmark").disable("inline")
 # Raw HTML blocks are not parsed for inline code, so they hold no spans.
 _LEAF_BLOCKS = frozenset({"inline", "code_block"})
-# A raw HTML tag, comment or declaration (CommonMark's pattern, unanchored); a backtick inside one is no delimiter.
-# A tag is matched only within a bounded window from its "<", so each one costs a bounded amount.
-_HTML_TAG_RE = re.compile(_COMMONMARK_TAG_RE.pattern.removeprefix("^"))
-_MAX_TAG_LENGTH = 256
+# The pieces of a raw HTML tag (CommonMark, "Raw HTML"); a backtick inside a tag is no code delimiter.
+_OPEN_TAG_NAME_RE = re.compile(r"<[A-Za-z][A-Za-z0-9-]*")
+_CLOSING_TAG_RE = re.compile(r"</[A-Za-z][A-Za-z0-9-]*\s*>")
+_ATTRIBUTE_NAME_RE = re.compile(r"\s+[A-Za-z_:][A-Za-z0-9_.:-]*")
+_ATTRIBUTE_EQUALS_RE = re.compile(r"\s*=\s*")
+_UNQUOTED_VALUE_RE = re.compile(r"[^\x22'=<>`\x00-\x20]+")
+_OPEN_TAG_END_RE = re.compile(r"\s*/?>")
+# A comment, instruction, CDATA section or declaration runs from its opener to the first closer after it.
+_TAG_SPANS = (("<!--", "-->"), ("<?", "?>"), ("<![CDATA[", "]]>"))
+_TAG_NEEDLES = ('"', "'", ">", "-->", "?>", "]]>")
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
+
+
+class _HtmlTags:
+    """Finds where the raw HTML tag at a "<" ends, in time linear in the text over all its "<".
+
+    A quoted attribute value is skipped by a lookup of its closing quote, and what follows a closing quote is
+    scanned once and remembered, so tags that share text (a "<" inside another tag's value) share the work.
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+        self._found = {
+            needle: [match.start() for match in re.finditer(re.escape(needle), text)] for needle in _TAG_NEEDLES
+        }
+        self._after_value: dict[int, int | None] = {}
+
+    def _next(self, needle: str, position: int) -> int | None:
+        found = self._found[needle]
+        index = bisect_left(found, position)
+        return found[index] if index < len(found) else None
+
+    def end(self, start: int) -> int | None:
+        """Return the end of the tag that starts at *start*, or None when no tag starts there."""
+        text = self.text
+        if text.startswith(("<!-->", "<!--->"), start):
+            return text.index(">", start + 4) + 1
+        for opener, closer in _TAG_SPANS:
+            if text.startswith(opener, start):
+                close = self._next(closer, start + len(opener))
+                return None if close is None else close + len(closer)
+        if (
+            text.startswith("<!", start)
+            and text[start + 2 : start + 3].isascii()
+            and text[start + 2 : start + 3].isalpha()
+        ):
+            close = self._next(">", start + 2)
+            return None if close is None else close + 1
+        if match := _CLOSING_TAG_RE.match(text, start):
+            return match.end()
+        if match := _OPEN_TAG_NAME_RE.match(text, start):
+            return self._attributes(match.end())
+        return None
+
+    def _attributes(self, position: int) -> int | None:
+        """Return the end of an open tag whose attributes start at *position*, or None."""
+        text = self.text
+        pending: list[int] = []
+        while True:
+            name = _ATTRIBUTE_NAME_RE.match(text, position)
+            if name is None:
+                close = _OPEN_TAG_END_RE.match(text, position)
+                result = None if close is None else close.end()
+                break
+            position = name.end()
+            equals = _ATTRIBUTE_EQUALS_RE.match(text, position)
+            if equals is None:
+                continue
+            value = equals.end()
+            if text[value : value + 1] in ("\x22", "'"):
+                close = self._next(text[value], value + 1)
+                if close is None:
+                    result = None
+                    break
+                position = close + 1
+                if position in self._after_value:
+                    result = self._after_value[position]
+                    break
+                pending.append(position)
+                continue
+            unquoted = _UNQUOTED_VALUE_RE.match(text, value)
+            if unquoted is None:
+                result = None
+                break
+            position = unquoted.end()
+        for after in pending:
+            self._after_value[after] = result
+        return result
 
 
 class _ForwardFind:
@@ -1678,14 +1761,13 @@ class _QuotedSpans:
         fences, leaves = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
-        tags = [
-            (match.start(), match.end())
-            for match in (
-                _HTML_TAG_RE.match(text, opener.start(), opener.start() + _MAX_TAG_LENGTH)
-                for opener in re.finditer("<", text)
+        tags: list[tuple[int, int]] = []
+        if "<" in text:
+            scanner = _HtmlTags(text)
+            ends = ((opener.start(), scanner.end(opener.start())) for opener in re.finditer("<", text))
+            tags.extend(
+                (start, end) for start, end in ends if end is not None and not _inside(fences, fence_starts, start)
             )
-            if match is not None and not _inside(fences, fence_starts, match.start())
-        ]
         runs = [
             (match.start(), match.end())
             for match in _BACKTICK_RUN_RE.finditer(text)
