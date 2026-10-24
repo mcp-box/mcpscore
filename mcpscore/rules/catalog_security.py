@@ -1583,6 +1583,9 @@ _MAX_NAMESPACES = 3
 _QUOTE_PAIRS_DOUBLE = (('"', '"'), ("\u201c", "\u201d"))
 _BACKTICK_RUN_RE = re.compile(r"`+")
 _PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
+# Block structure only: fenced blocks come from the CommonMark parser, inline spans are paired below.
+_FENCE_PARSER = MarkdownIt("commonmark").disable("inline")
+_FENCE_MARKERS = ("```", "~~~")
 
 
 class _ForwardFind:
@@ -1647,41 +1650,38 @@ class _QuotedSpans:
 
     @classmethod
     def code_of(cls, text: str) -> "_QuotedSpans":
-        """Find the inline code spans of *text*: a run of backticks closes at the next run of the same length.
+        """Find the code of *text*: fenced blocks, and inline spans closed by the next backtick run of equal length.
 
-        This is the CommonMark rule, so ``double ` backticks`` stay one span. Each run's next run of the same
-        length is found in one backward pass, keeping the scan linear.
+        Fenced blocks (backtick or tilde, closed by a longer run or by the end of the text) come from the CommonMark
+        parser. Inline spans follow the CommonMark rule too, so ``double ` backticks`` stay one span, and stay inside
+        one paragraph between fences. Each run's next run of the same length is found in one backward pass.
         """
-        runs = [(match.start(), match.end()) for match in _BACKTICK_RUN_RE.finditer(text)]
+        fences = _fenced_blocks(text)
+        fence_starts = [start for start, _ in fences]
         breaks = [match.start() for match in _PARAGRAPH_BREAK_RE.finditer(text)]
-        newlines = [index for index, char in enumerate(text) if char == "\n"]
-
-        def opens_line(position: int) -> bool:
-            before = bisect_left(newlines, position)
-            line_start = newlines[before - 1] + 1 if before else 0
-            return position - line_start <= 3 and not text[line_start:position].strip(" ")
-
-        # A fence (three or more backticks opening a line) may span paragraphs; an inline span stays in one.
-        fences = [run[1] - run[0] >= 3 and opens_line(run[0]) for run in runs]
+        runs = [
+            (match.start(), match.end())
+            for match in _BACKTICK_RUN_RE.finditer(text)
+            if not _inside(fences, fence_starts, match.start())
+        ]
         next_same: list[int | None] = [None] * len(runs)
-        seen: dict[tuple[object, int], int] = {}
+        seen: dict[tuple[int, int, int], int] = {}
         for index in range(len(runs) - 1, -1, -1):
-            length = runs[index][1] - runs[index][0]
-            scope = "fence" if fences[index] else bisect_left(breaks, runs[index][0])
-            next_same[index] = seen.get((scope, length))
-            seen[(scope, length)] = index
-        starts: list[int] = []
-        ends: list[int] = []
+            start, end = runs[index]
+            key = (bisect_left(breaks, start), bisect_left(fence_starts, start), end - start)
+            next_same[index] = seen.get(key)
+            seen[key] = index
+        spans: list[tuple[int, int]] = list(fences)
         index = 0
         while index < len(runs):
             closer = next_same[index]
             if closer is None:
                 index += 1
                 continue
-            starts.append(runs[index][0])
-            ends.append(runs[closer][1])
+            spans.append((runs[index][0], runs[closer][1]))
             index = closer + 1
-        return cls(starts, ends)
+        spans.sort()
+        return cls([start for start, _ in spans], [end for _, end in spans])
 
     def end_of(self, position: int) -> int:
         """Return the end of the span that contains *position* (only when :meth:`contains` says so)."""
@@ -1691,6 +1691,25 @@ class _QuotedSpans:
         """Whether *start*..*end* lies strictly inside one quoted span (spans never overlap)."""
         index = bisect_left(self.starts, start) - 1
         return index >= 0 and end < self.ends[index]
+
+
+def _fenced_blocks(text: str) -> list[tuple[int, int]]:
+    """Return the character ranges of the fenced code blocks in *text*, in order."""
+    if not any(marker in text for marker in _FENCE_MARKERS):
+        return []
+    line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
+    blocks: list[tuple[int, int]] = []
+    for token in _FENCE_PARSER.parse(text):
+        if token.type == "fence" and token.map is not None:
+            first, last = token.map
+            blocks.append((line_starts[first], line_starts[last] if last < len(line_starts) else len(text)))
+    return blocks
+
+
+def _inside(blocks: list[tuple[int, int]], starts: list[int], position: int) -> bool:
+    """Whether *position* lies in one of *blocks* (sorted ranges whose starts are *starts*)."""
+    index = bisect_left(starts, position + 1) - 1
+    return index >= 0 and position < blocks[index][1]
 
 
 def _sentences(text: str, quoted: _QuotedSpans, code: _QuotedSpans) -> Iterator[tuple[int, str]]:
