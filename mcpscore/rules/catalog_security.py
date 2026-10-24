@@ -12,6 +12,7 @@ from bisect import bisect_left
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from functools import cached_property
 from html.parser import HTMLParser
 import ipaddress
 import re
@@ -1630,13 +1631,19 @@ _LINE_END_RE = re.compile(r"\r\n|\r")
 
 
 def _markup(
-    text: str, fences: list[tuple[int, int]], fence_starts: list[int], blocks: list[tuple[int, int]]
+    text: str,
+    fences: list[tuple[int, int]],
+    fence_starts: list[int],
+    blocks: list[tuple[int, int]],
+    references: "_References | None" = None,
 ) -> "list[_Markup]":
     """Return the raw HTML tags, autolinks and inline link destinations outside *fences*, in text order.
 
     Each comes with the range of its link title, when it is an inline link that has one. Markup ends inside the
-    leaf block it starts in (*blocks*, when the text was parsed into blocks), as inline markup does in CommonMark.
+    leaf block it starts in (*blocks*, when the text was parsed into blocks), as inline markup does in CommonMark,
+    and links count only where inline Markdown is parsed (not in a raw HTML block).
     """
+    references = references or _References()
     markup: list[_Markup] = []
     if "<" not in text and "](" not in text:
         return markup
@@ -1647,10 +1654,11 @@ def _markup(
         # A backslash-escaped "<" or "]" is a literal character.
         if _escaped(text, start) or _inside(fences, fence_starts, start):
             continue
+        links = references.parses_inline(start)
         if opener[0] == "](":
-            end = scanner.link_end(start)
+            end = scanner.link_end(start) if links else None
         else:
-            end = scanner.autolink_end(start)
+            end = scanner.autolink_end(start) if links else None
             end = scanner.end(start) if end is None else end
         if end is None:
             continue
@@ -1718,7 +1726,7 @@ def _walk(
                 floor = min(floor, len(labels))
                 end = (
                     _reference_end(text, opener, start, references, opens, closes)
-                    if active and references.labels
+                    if active and references.labels and references.parses_inline(start)
                     else None
                 )
                 # A reference link stays inside its leaf block: "[search][" cannot reach into the next paragraph.
@@ -2020,7 +2028,7 @@ class _QuotedSpans:
         fences, leaves, blocks, references = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
-        markup = _markup(text, fences, fence_starts, blocks)
+        markup = _markup(text, fences, fence_starts, blocks, references)
         runs = [
             (match.start(), match.end())
             for match in _BACKTICK_RUN_RE.finditer(text)
@@ -2070,6 +2078,17 @@ class _References:
     # Offset of a wrapped line's start -> length of the container prefix (blockquote markers, list indentation)
     # that the parser strips from it.
     prefixes: dict[int, int] = field(default_factory=dict)
+    # The paragraphs and headings, whose inline Markdown (links among it) is parsed; None when the text was not
+    # parsed into blocks, so all of it is inline. Raw HTML and indented code blocks hold literal text.
+    inline: list[tuple[int, int]] | None = None
+
+    @cached_property
+    def _inline_starts(self) -> list[int]:
+        return [start for start, _ in self.inline or ()]
+
+    def parses_inline(self, position: int) -> bool:
+        """Whether Markdown at *position* is parsed as inline Markdown (so a link there is a link)."""
+        return self.inline is None or _inside(self.inline, self._inline_starts, position)
 
 
 def _markdown_blocks(
@@ -2087,6 +2106,7 @@ def _markdown_blocks(
         return fences, leaves, blocks, _References()
     line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
     prefixes: dict[int, int] = {}
+    inline: list[tuple[int, int]] = []
     env: dict[str, Any] = {}
     for token in _BLOCK_PARSER.parse(text, env):
         if token.map is None or token.type not in _ALL_LEAF_BLOCKS:
@@ -2099,8 +2119,9 @@ def _markdown_blocks(
         elif token.type in _LEAF_BLOCKS:
             leaves.append(block)
         if token.type == "inline":
+            inline.append(block)
             prefixes.update(_wrapped_line_prefixes(text, line_starts, first, last, token.content))
-    return fences, leaves, blocks, _References(frozenset(env.get("references", {})), prefixes)
+    return fences, leaves, blocks, _References(frozenset(env.get("references", {})), prefixes, inline)
 
 
 def _wrapped_line_prefixes(
