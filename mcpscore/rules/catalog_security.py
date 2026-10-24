@@ -1495,11 +1495,10 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 # Tool shadowing: a sentence that directs the model, about a tool the server does not list.
 # Sentences end at punctuation, with any closing quotes, backticks or brackets after it, or at a blank line;
 # a single line break only wraps the sentence. A colon introduces what the sentence directs, so it does not end one.
-# An HTML block tag or line break ends one too: "<p>Call search.</p><p>The send_email tool …".
-_SENTENCE_BREAK_RE = re.compile(
-    r"(?<=[.!?;])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*"
-    r"|<(?:/?(?:p|div|li|ul|ol|h[1-6]|tr|td|th|table|blockquote|pre|section|article)|br|hr)\b[^<>]*>\s*",
-    re.IGNORECASE,
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
+# An HTML block tag or line break ends a sentence too: "<p>Call search.</p><p>The send_email tool …".
+_BLOCK_TAG_RE = re.compile(
+    r"<(?:/?(?:p|div|li|ul|ol|h[1-6]|tr|td|th|table|blockquote|pre|section|article)|br|hr)\b", re.IGNORECASE
 )
 _DIRECTIVE_RE = re.compile(
     # "must-have" is an adjective; cues in a "whether …" clause are handled where cues are read.
@@ -1599,6 +1598,8 @@ _LEAF_BLOCKS = frozenset({"inline", "code_block"})
 # A tag is matched only within a bounded window from its "<", so each one costs a bounded amount.
 _HTML_TAG_RE = re.compile(_COMMONMARK_TAG_RE.pattern.removeprefix("^"))
 _MAX_TAG_LENGTH = 256
+_TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
+_ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
@@ -1749,12 +1750,26 @@ def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, 
     return fences, leaves
 
 
-def _blanked(text: str, ranges: list[tuple[int, int]]) -> str:
-    """Return *text* with each of the sorted *ranges* replaced by spaces, so offsets are unchanged."""
+def _tag_texts(tag: str) -> Iterator[str]:
+    """Yield the text inside an HTML *tag*: a comment's, CDATA's or instruction's body, or each attribute value."""
+    for prefix, suffix in _TAG_BODIES:
+        if tag.startswith(prefix):
+            yield tag[len(prefix) : len(tag) - len(suffix)]
+            return
+    for value in _ATTRIBUTE_VALUE_RE.finditer(tag):
+        yield value[value.lastgroup or 0]
+
+
+def _without_tags(text: str, tags: list[tuple[int, int]]) -> str:
+    """Return *text* with its sorted HTML *tags* blanked, keeping offsets.
+
+    A block tag becomes a blank line, so it still ends a sentence; any other tag becomes spaces.
+    """
     parts: list[str] = []
     last = 0
-    for start, end in ranges:
-        parts.extend((text[last:start], " " * (end - start)))
+    for start, end in tags:
+        blank = "\n\n" if _BLOCK_TAG_RE.match(text, start) else "  "
+        parts.extend((text[last:start], blank + " " * (end - start - 2)))
         last = end
     parts.append(text[last:])
     return "".join(parts)
@@ -1870,19 +1885,24 @@ class _IndirectClauses:
         return bisect_left(self.breaks, position) == bisect_left(self.breaks, self.whethers[index])
 
 
-def cross_tool_classes(text: str, listed: frozenset[str] | None = None) -> list[str]:
+def cross_tool_classes(text: str, listed: frozenset[str] | None = None, *, markup: bool = True) -> list[str]:
     """Return the cross-tool directive classes in *text*.
 
     ``any_tool_directive``: a directive about any or other tools or servers. ``unlisted_tool_directive``: a
     directive naming a tool that is not in *listed* (the names the server lists); with *listed* None
     the catalog is unknown and only the first class is judged. *listed* holds :func:`_name_key` forms.
     A phrase in double quotes or named as an attempt (``attempts to call x``) is a mention, not a directive.
+    HTML tags are markup: the visible text is judged with them blanked, and each attribute value or comment is
+    judged as plain text of its own (*markup* False: no code spans or tags), since the model reads it too.
     """
     text = _LINE_END_RE.sub("\n", text)
-    code, tags = _QuotedSpans.code_of(text)
-    # Quotes in tag attributes are markup, not prose.
-    quoted = _QuotedSpans.of(_blanked(text, tags), skip=code)
+    code, tags = _QuotedSpans.code_of(text) if markup else (_QuotedSpans([], []), [])
     found: list[str] = []
+    for start, end in tags:
+        for inner in _tag_texts(text[start:end]):
+            found.extend(cross_tool_classes(inner, listed, markup=False))
+    text = _without_tags(text, tags)
+    quoted = _QuotedSpans.of(text, skip=code)
     for offset, sentence in _sentences(text, quoted, code):
         # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
         # with punctuation.
