@@ -1603,7 +1603,10 @@ _UNQUOTED_VALUE_RE = re.compile(r"[^\x22'=<>`\x00-\x20]+")
 _OPEN_TAG_END_RE = re.compile(r"\s*/?>")
 # A comment, instruction, CDATA section or declaration runs from its opener to the first closer after it.
 _TAG_SPANS = (("<!--", "-->"), ("<?", "?>"), ("<![CDATA[", "]]>"))
-_TAG_NEEDLES = ('"', "'", ">", ")", "-->", "?>", "]]>")
+_TAG_NEEDLES = ('"', "'", ">", "-->", "?>", "]]>")
+_TITLE_DELIMITERS = ('"', "'", "(", ")")
+# A tag or link as (start, end, title): title is the range of an inline link's title, else None.
+_Markup = tuple[int, int, "tuple[int, int] | None"]
 # An autolink (<https://…>, <user@host>) and an inline link's destination and title, as CommonMark reads them;
 # like a tag, either one outranks a code span that starts after it.
 _URI_AUTOLINK_RE = re.compile(AUTOLINK_RE.pattern.removeprefix("^").removesuffix("$"))
@@ -1614,16 +1617,18 @@ _ANGLE_DESTINATION_RE = re.compile(r"<(?:[^<>\n\\]|\\[\s\S])*>")
 # limit; a backslash escapes the next character unless it is a space.
 _DESTINATION_RUN_RE = re.compile(r"[^ \x00-\x1f\x7f()\\]*")
 _MAX_LINK_NESTING = 32
-_LINK_TITLE_RE = re.compile(r"""(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|\((?P<paren>[^)]*)\))\s*\)$""")
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
 
-def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -> list[tuple[int, int]]:
-    """Return the raw HTML tags, autolinks and inline link destinations outside *fences*, in text order."""
-    markup: list[tuple[int, int]] = []
+def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -> "list[_Markup]":
+    """Return the raw HTML tags, autolinks and inline link destinations outside *fences*, in text order.
+
+    Each comes with the range of its link title, when it is an inline link that has one.
+    """
+    markup: list[_Markup] = []
     if "<" not in text and "](" not in text:
         return markup
     scanner = _HtmlTags(text)
@@ -1637,7 +1642,7 @@ def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -
             end = scanner.autolink_end(start)
             end = scanner.end(start) if end is None else end
         if end is not None:
-            markup.append((start, end))
+            markup.append((start, end, scanner.link_titles.get(start)))
     return markup
 
 
@@ -1662,6 +1667,12 @@ def _bare_destination_end(text: str, position: int) -> int | None:
             return position if depth == 0 and char != "(" else None
 
 
+def _first_at(positions: list[int], position: int) -> int | None:
+    """Return the first of the sorted *positions* at or after *position*, or None."""
+    index = bisect_left(positions, position)
+    return positions[index] if index < len(positions) else None
+
+
 def _after_space(text: str, position: int) -> int:
     """Return the position after the spaces, tabs and at most one line break at *position*."""
     match = _LINK_SPACE_RE.match(text, position)
@@ -1681,12 +1692,26 @@ class _HtmlTags:
         self._found = {
             needle: [match.start() for match in re.finditer(re.escape(needle), text)] for needle in _TAG_NEEDLES
         }
+        # A link title's delimiters count only unescaped, as markdown-it's parseLinkTitle reads them.
+        self._unescaped = {
+            char: [match.start() for match in re.finditer(re.escape(char), text) if not _escaped(text, match.start())]
+            for char in _TITLE_DELIMITERS
+        }
         self._after_value: dict[int, int | None] = {}
+        self.link_titles: dict[int, tuple[int, int]] = {}
 
     def _next(self, needle: str, position: int) -> int | None:
-        found = self._found[needle]
-        index = bisect_left(found, position)
-        return found[index] if index < len(found) else None
+        return _first_at(self._found[needle], position)
+
+    def _title_end(self, start: int) -> int | None:
+        """Return the position of the closing delimiter of the link title opened at *start*, or None."""
+        opener = self.text[start]
+        close = _first_at(self._unescaped[")" if opener == "(" else opener], start + 1)
+        if close is not None and opener == "(":
+            nested = _first_at(self._unescaped["("], start + 1)
+            if nested is not None and nested < close:
+                return None
+        return close
 
     def autolink_end(self, start: int) -> int | None:
         """Return the end of the autolink that starts at the "<" at *start*, or None."""
@@ -1708,12 +1733,18 @@ class _HtmlTags:
         if destination is None:
             return None
         position = _after_space(text, destination)
+        title = None
         if position > destination and text[position : position + 1] in ('"', "'", "("):
-            close = self._next(")" if text[position] == "(" else text[position], position + 1)
+            close = self._title_end(position)
             if close is None:
                 return None
+            title = (position + 1, close)
             position = _after_space(text, close + 1)
-        return position + 1 if text.startswith(")", position) else None
+        if not text.startswith(")", position):
+            return None
+        if title is not None:
+            self.link_titles[start] = title
+        return position + 1
 
     def end(self, start: int) -> int | None:
         """Return the end of the tag that starts at *start*, or None when no tag starts there."""
@@ -1834,7 +1865,7 @@ class _QuotedSpans:
             position = end
 
     @classmethod
-    def code_of(cls, text: str) -> "tuple[_QuotedSpans, list[tuple[int, int]]]":
+    def code_of(cls, text: str) -> "tuple[_QuotedSpans, list[_Markup]]":
         """Find the code of *text* and the raw HTML tags outside it.
 
         Code is fenced blocks and inline spans closed by the next backtick run of equal length. Fenced blocks
@@ -1866,7 +1897,7 @@ class _QuotedSpans:
                 next_same[index] = seen.get((scope, end - openers[index]))
             seen[(scope, end - start)] = index
         spans: list[tuple[int, int]] = list(fences)
-        honored: list[tuple[int, int]] = []
+        honored: list[_Markup] = []
         index = tag = 0
         while index < len(runs) or tag < len(markup):
             if tag < len(markup) and (index == len(runs) or markup[tag][0] < runs[index][0]):
@@ -1912,12 +1943,17 @@ def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, 
     return fences, leaves
 
 
+def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
+    """Yield the text inside *markup*: a link's title, or what :func:`_tag_texts` finds in an HTML tag."""
+    start, end, title = markup
+    if title is not None:
+        yield text[title[0] : title[1]]
+    elif not text.startswith("](", start):
+        yield from _tag_texts(text[start:end])
+
+
 def _tag_texts(tag: str) -> Iterator[str]:
-    """Yield the text inside markup: a comment's, CDATA's or instruction's body, an attribute value or a link title."""
-    if tag.startswith("]("):
-        if title := _LINK_TITLE_RE.search(tag):
-            yield title[title.lastgroup or 0]
-        return
+    """Yield the text inside an HTML *tag*: a comment's, CDATA's or instruction's body, or each attribute value."""
     for prefix, suffix in _TAG_BODIES:
         if tag.startswith(prefix):
             yield tag[len(prefix) : len(tag) - len(suffix)]
@@ -1926,14 +1962,14 @@ def _tag_texts(tag: str) -> Iterator[str]:
         yield value[value.lastgroup or 0]
 
 
-def _without_tags(text: str, tags: list[tuple[int, int]]) -> str:
-    """Return *text* with its sorted HTML *tags* blanked, keeping offsets.
+def _without_tags(text: str, tags: list[_Markup]) -> str:
+    """Return *text* with its sorted *tags* and links blanked, keeping offsets.
 
-    A block tag becomes a blank line, so it still ends a sentence; any other tag becomes spaces.
+    A block tag becomes a blank line, so it still ends a sentence; any other markup becomes spaces.
     """
     parts: list[str] = []
     last = 0
-    for start, end in tags:
+    for start, end, _ in tags:
         blank = "\n\n" if _BLOCK_TAG_RE.match(text, start) else "  "
         parts.extend((text[last:start], blank + " " * (end - start - 2)))
         last = end
@@ -2064,8 +2100,8 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None, *, marku
     text = _LINE_END_RE.sub("\n", text)
     code, tags = _QuotedSpans.code_of(text) if markup else (_QuotedSpans([], []), [])
     found: list[str] = []
-    for start, end in tags:
-        for inner in _tag_texts(text[start:end]):
+    for tag in tags:
+        for inner in _markup_texts(text, tag):
             found.extend(cross_tool_classes(inner, listed, markup=False))
     text = _without_tags(text, tags)
     quoted = _QuotedSpans.of(text, skip=code)
