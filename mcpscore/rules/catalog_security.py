@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
+from markdown_it.common.html_blocks import block_names
 from markdown_it.rules_inline.autolink import AUTOLINK_RE, EMAIL_RE
 from markdown_it.token import Token
 from mcp_types import Icon
@@ -1497,9 +1498,8 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 # a single line break only wraps the sentence. A colon introduces what the sentence directs, so it does not end one.
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
 # An HTML block tag or line break ends a sentence too: "<p>Call search.</p><p>The send_email tool …".
-_BLOCK_TAG_RE = re.compile(
-    r"<(?:/?(?:p|div|li|ul|ol|h[1-6]|tr|td|th|table|blockquote|pre|section|article)|br|hr)\b", re.IGNORECASE
-)
+# CommonMark's HTML block element names, plus <pre> and <br>.
+_BLOCK_TAG_RE = re.compile(rf"<(?:/?(?:{'|'.join([*block_names, 'pre'])})|br)\b", re.IGNORECASE)
 _DIRECTIVE_RE = re.compile(
     # "must-have" is an adjective; cues in a "whether …" clause are handled where cues are read.
     r"\b(?:must|should|make\s+sure|ensure|be\s+sure)\b(?!-)"
@@ -1625,15 +1625,19 @@ _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
 
-def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -> "list[_Markup]":
+def _markup(
+    text: str, fences: list[tuple[int, int]], fence_starts: list[int], blocks: list[tuple[int, int]]
+) -> "list[_Markup]":
     """Return the raw HTML tags, autolinks and inline link destinations outside *fences*, in text order.
 
-    Each comes with the range of its link title, when it is an inline link that has one.
+    Each comes with the range of its link title, when it is an inline link that has one. Markup ends inside the
+    leaf block it starts in (*blocks*, when the text was parsed into blocks), as inline markup does in CommonMark.
     """
     markup: list[_Markup] = []
     if "<" not in text and "](" not in text:
         return markup
     scanner = _HtmlTags(text)
+    block_starts = [start for start, _ in blocks]
     for opener in re.finditer(r"<|\]\(", text):
         start = opener.start()
         # A backslash-escaped "<" or "]" is a literal character.
@@ -1644,8 +1648,12 @@ def _markup(text: str, fences: list[tuple[int, int]], fence_starts: list[int]) -
         else:
             end = scanner.autolink_end(start)
             end = scanner.end(start) if end is None else end
-        if end is not None:
-            markup.append((start, end, scanner.link_titles.get(start)))
+        if end is None:
+            continue
+        block = bisect_left(block_starts, start + 1) - 1
+        if blocks and (block < 0 or end > blocks[block][1]):
+            continue
+        markup.append((start, end, scanner.link_titles.get(start)))
     return markup
 
 
@@ -1881,7 +1889,7 @@ class _QuotedSpans:
         fences, leaves, blocks = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
-        markup = _markup(text, fences, fence_starts)
+        markup = _markup(text, fences, fence_starts, blocks)
         runs = [
             (match.start(), match.end())
             for match in _BACKTICK_RUN_RE.finditer(text)
@@ -1918,7 +1926,7 @@ class _QuotedSpans:
             while tag < len(markup) and markup[tag][0] < position:
                 tag += 1
         spans.sort()
-        return cls([start for start, _ in spans], [end for _, end in spans]), honored, blocks
+        return cls([start for start, _ in spans], [end for _, end in spans]), honored, [start for start, _ in blocks]
 
     def end_of(self, position: int) -> int:
         """Return the end of the span that contains *position* (only when :meth:`contains` says so)."""
@@ -1930,28 +1938,28 @@ class _QuotedSpans:
         return index >= 0 and end < self.ends[index]
 
 
-def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[int]]:
-    """Return the ranges of fenced code blocks and of leaf blocks with inline code, and every leaf block's start.
+def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return the ranges of fenced code blocks, of leaf blocks with inline code, and of every leaf block.
 
     A leaf block is a paragraph, a list item's paragraph, a heading, or a code or HTML block; all come in order.
     """
     fences: list[tuple[int, int]] = []
     leaves: list[tuple[int, int]] = []
-    starts: list[int] = []
+    blocks: list[tuple[int, int]] = []
     if "`" not in text and "~~~" not in text and "\n" not in text:
-        return fences, leaves, starts
+        return fences, leaves, blocks
     line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
     for token in _BLOCK_PARSER.parse(text):
         if token.map is None or token.type not in _ALL_LEAF_BLOCKS:
             continue
         first, last = token.map
         block = (line_starts[first], line_starts[last] if last < len(line_starts) else len(text))
-        starts.append(block[0])
+        blocks.append(block)
         if token.type == "fence":
             fences.append(block)
         elif token.type in _LEAF_BLOCKS:
             leaves.append(block)
-    return fences, leaves, starts
+    return fences, leaves, blocks
 
 
 def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
