@@ -1529,8 +1529,9 @@ _ANY_TOOL_RE = re.compile(
     re.IGNORECASE,
 )
 # A whole identifier is captured as one token and its shape checked in code (see _code_shaped).
-# Inline code may use a longer backtick run and one space of padding: ``send_email``, `` send_email ``.
-_TOOL_NAME = r"(?P<ticks>`{1,3}) ?(?P<ticked>[^`\s]{1,128}) ?(?P=ticks)(?!`)|(?P<bare>[\w./-]+)"
+# Inline code may use any backtick run and one space of padding: ``send_email``, `` send_email ``. A run starts
+# only after a non-backtick, so a long run is tried from one position.
+_TOOL_NAME = r"(?<!`)(?P<ticks>`+) ?(?P<ticked>[^`\s]{1,128}) ?(?P=ticks)(?!`)|(?P<bare>[\w./-]+)"
 _TOOL_REFERENCES = (
     re.compile(rf"\b(?i:call|calling|invoke|invoking)\s+(?i:the\s+)?(?:{_TOOL_NAME})"),
     re.compile(rf"(?<![\w`./-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
