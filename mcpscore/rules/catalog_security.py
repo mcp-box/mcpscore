@@ -1520,10 +1520,10 @@ _DIRECTIVE_RE = re.compile(
     r"(?!(?:the|a|an|it|its|this|that|these|those|they|their|we|our|you|your|there|he|she|i)\b)\w",
     re.IGNORECASE | re.MULTILINE,
 )
-# "whether", or an "if" inside a clause ("Reports if the tool should …"); an opening "If …," is a condition.
+# "whether", or a reported question ("Reports if/when/how the tool should …"); an opening "If …," is a condition.
 _WHETHER_RE = re.compile(
     r"\bwhether\b|\b(?:reports?|returns?|shows?|tells?|indicates?|checks?|asks?|determines?|says|knows?)"
-    r"\s+(?P<inner_if>if)\b",
+    r"\s+(?P<inner>if|when|how|why|where|what|which)\b",
     re.IGNORECASE,
 )
 _CLAUSE_BREAK_RE = re.compile(r"[,;:]")
@@ -1848,7 +1848,7 @@ class _IndirectClauses:
         """Find the "whether"s and clause breaks of *sentence* outside quotes and inline code."""
         whethers = []
         for match in _WHETHER_RE.finditer(sentence):
-            start = match.start("inner_if") if match["inner_if"] else match.start()
+            start = match.start("inner") if match["inner"] else match.start()
             if not quoted.contains(offset + start, offset + match.end()) and not code.contains(
                 offset + start, offset + match.end()
             ):
