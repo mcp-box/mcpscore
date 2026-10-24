@@ -1621,6 +1621,8 @@ _DESTINATION_RUN_RE = re.compile(r"[^ \x00-\x1f\x7f()\\]*")
 _MAX_LINK_NESTING = 32
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
+# Emphasis formats a directive without making it an example: "Always call **send_email** first."
+_EMPHASIS_RE = re.compile(r"\*+")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
@@ -1638,14 +1640,13 @@ def _markup(
         return markup
     scanner = _HtmlTags(text)
     block_starts = [start for start, _ in blocks]
-    labels = _closed_labels(text, block_starts)
     for opener in re.finditer(r"<|\]\(", text):
         start = opener.start()
         # A backslash-escaped "<" or "]" is a literal character.
         if _escaped(text, start) or _inside(fences, fence_starts, start):
             continue
         if opener[0] == "](":
-            end = scanner.link_end(start) if start in labels else None
+            end = scanner.link_end(start)
         else:
             end = scanner.autolink_end(start)
             end = scanner.end(start) if end is None else end
@@ -1658,24 +1659,59 @@ def _markup(
     return markup
 
 
-def _closed_labels(text: str, block_starts: list[int]) -> set[int]:
-    """Return the positions of each unescaped "]" that closes an unescaped "[" in the same leaf block."""
-    closed: set[int] = set()
-    open_labels: list[int] = []
-    block = -1
-    for bracket in re.finditer(r"[\[\]]", text):
-        position = bracket.start()
-        if _escaped(text, position):
+def _walk(
+    text: str,
+    run_spans: list[tuple[int, int] | None],
+    run_starts: list[int],
+    markup: list[_Markup],
+    fences: list[tuple[int, int]],
+    fence_starts: list[int],
+    block_starts: list[int],
+) -> tuple[list[tuple[int, int]], list[_Markup]]:
+    """Read *text* left to right as CommonMark does, and return its inline code spans and the markup it honors.
+
+    Whichever of a code span (*run_spans*, by backtick run), a tag or a link starts first wins. Link label
+    brackets are counted here, so a bracket inside a code span or tag is literal, and an inline link is honored
+    only when its "]" closes an open "[" of the same leaf block.
+    """
+    link_starts = {start for start, *_ in markup if text.startswith("](", start)}
+    events: list[tuple[int, int, int]] = [(start, 0, index) for index, start in enumerate(run_starts)]
+    events.extend((entry[0], 1, index) for index, entry in enumerate(markup))
+    events.extend(
+        (bracket.start(), 2, bracket[0] == "[")
+        for bracket in re.finditer(r"[\[\]]", text)
+        if bracket.start() not in link_starts
+        and not _escaped(text, bracket.start())
+        and not _inside(fences, fence_starts, bracket.start())
+    )
+    events.sort()
+    spans: list[tuple[int, int]] = []
+    honored: list[_Markup] = []
+    labels: list[int] = []
+    position = 0
+    for start, kind, index in events:
+        if start < position:
             continue
-        current = bisect_left(block_starts, position + 1) - 1
-        if current != block:
-            block, open_labels = current, []
-        if bracket[0] == "[":
-            open_labels.append(position)
-        elif open_labels:
-            open_labels.pop()
-            closed.add(position)
-    return closed
+        block = bisect_left(block_starts, start + 1) - 1
+        if labels and labels[-1] != block:
+            labels.clear()
+        if kind == 0:
+            if (span := run_spans[index]) is not None:
+                spans.append(span)
+                position = span[1]
+        elif kind == 2:
+            if index:
+                labels.append(block)
+            elif labels:
+                labels.pop()
+        elif start in link_starts and not labels:
+            continue
+        else:
+            if start in link_starts:
+                labels.pop()
+            honored.append(markup[index])
+            position = markup[index][1]
+    return spans, honored
 
 
 def _bare_destination_end(text: str, position: int) -> int | None:
@@ -1928,24 +1964,16 @@ class _QuotedSpans:
             if end > openers[index]:
                 next_same[index] = seen.get((scope, end - openers[index]))
             seen[(scope, end - start)] = index
-        spans: list[tuple[int, int]] = list(fences)
-        honored: list[_Markup] = []
-        index = tag = 0
-        while index < len(runs) or tag < len(markup):
-            if tag < len(markup) and (index == len(runs) or markup[tag][0] < runs[index][0]):
-                honored.append(markup[tag])
-                position = markup[tag][1]
-            else:
-                closer = next_same[index]
-                if closer is None:
-                    index += 1
-                    continue
-                spans.append((openers[index], runs[closer][1]))
-                position = runs[closer][1]
-            while index < len(runs) and runs[index][0] < position:
-                index += 1
-            while tag < len(markup) and markup[tag][0] < position:
-                tag += 1
+        spans, honored = _walk(
+            text,
+            [(openers[i], runs[c][1]) if c is not None else None for i, c in enumerate(next_same)],
+            [start for start, _ in runs],
+            markup,
+            fences,
+            fence_starts,
+            [start for start, _ in blocks],
+        )
+        spans.extend(fences)
         spans.sort()
         return cls([start for start, _ in spans], [end for _, end in spans]), honored, [start for start, _ in blocks]
 
@@ -2000,6 +2028,15 @@ def _tag_texts(tag: str) -> Iterator[str]:
             return
     for value in _ATTRIBUTE_VALUE_RE.finditer(tag):
         yield value[value.lastgroup or 0]
+
+
+def _without_emphasis(text: str, code: _QuotedSpans) -> str:
+    """Return *text* with its "*" emphasis delimiters outside *code* blanked, keeping offsets."""
+    if "*" not in text:
+        return text
+    return _EMPHASIS_RE.sub(
+        lambda match: match[0] if code.contains(match.start(), match.start()) else " " * len(match[0]), text
+    )
 
 
 def _without_tags(text: str, tags: list[_Markup]) -> str:
@@ -2151,7 +2188,7 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None, *, marku
     text = _LINE_END_RE.sub("\n", text)
     code, tags, blocks = _QuotedSpans.code_of(text) if markup else (_QuotedSpans([], []), [], [])
     original = text
-    text = _without_tags(text, tags)
+    text = _without_emphasis(_without_tags(text, tags), code)
     quoted = _QuotedSpans.of(text, skip=code)
     found: list[str] = []
     for tag in tags:
