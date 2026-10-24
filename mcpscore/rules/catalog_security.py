@@ -1638,13 +1638,14 @@ def _markup(
         return markup
     scanner = _HtmlTags(text)
     block_starts = [start for start, _ in blocks]
+    labels = _closed_labels(text, block_starts)
     for opener in re.finditer(r"<|\]\(", text):
         start = opener.start()
         # A backslash-escaped "<" or "]" is a literal character.
         if _escaped(text, start) or _inside(fences, fence_starts, start):
             continue
         if opener[0] == "](":
-            end = scanner.link_end(start)
+            end = scanner.link_end(start) if start in labels else None
         else:
             end = scanner.autolink_end(start)
             end = scanner.end(start) if end is None else end
@@ -1655,6 +1656,26 @@ def _markup(
             continue
         markup.append((start, end, scanner.link_titles.get(start)))
     return markup
+
+
+def _closed_labels(text: str, block_starts: list[int]) -> set[int]:
+    """Return the positions of each unescaped "]" that closes an unescaped "[" in the same leaf block."""
+    closed: set[int] = set()
+    open_labels: list[int] = []
+    block = -1
+    for bracket in re.finditer(r"[\[\]]", text):
+        position = bracket.start()
+        if _escaped(text, position):
+            continue
+        current = bisect_left(block_starts, position + 1) - 1
+        if current != block:
+            block, open_labels = current, []
+        if bracket[0] == "[":
+            open_labels.append(position)
+        elif open_labels:
+            open_labels.pop()
+            closed.add(position)
+    return closed
 
 
 def _bare_destination_end(text: str, position: int) -> int | None:
@@ -2129,12 +2150,15 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None, *, marku
     """
     text = _LINE_END_RE.sub("\n", text)
     code, tags, blocks = _QuotedSpans.code_of(text) if markup else (_QuotedSpans([], []), [], [])
-    found: list[str] = []
-    for tag in tags:
-        for inner in _markup_texts(text, tag):
-            found.extend(cross_tool_classes(inner, listed, markup=False))
+    original = text
     text = _without_tags(text, tags)
     quoted = _QuotedSpans.of(text, skip=code)
+    found: list[str] = []
+    for tag in tags:
+        # Markup inside a prose quote is part of a quoted example, like the rest of the quote.
+        if not quoted.contains(tag[0], tag[1] - 1):
+            for inner in _markup_texts(original, tag):
+                found.extend(cross_tool_classes(inner, listed, markup=False))
     for offset, sentence in _sentences(text, quoted, code, blocks):
         # A cue counts only outside quotes and inline code: its last character is checked, since an opener may start
         # with punctuation.
