@@ -1763,7 +1763,7 @@ def _reference_end(
 
 def _visible_label_defined(text: str, opener: int, close: int, references: frozenset[str]) -> bool:
     """Whether the visible text from *opener* to *close* is a defined label (a collapsed or shortcut reference)."""
-    return close - opener <= _MAX_LABEL_LENGTH and normalizeReference(text[opener + 1 : close]) in references
+    return close - opener - 1 <= _MAX_LABEL_LENGTH and normalizeReference(text[opener + 1 : close]) in references
 
 
 def _bare_destination_end(text: str, position: int) -> int | None:
