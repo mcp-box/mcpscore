@@ -1667,13 +1667,16 @@ class _QuotedSpans:
             for match in _BACKTICK_RUN_RE.finditer(text)
             if not _inside(fences, fence_starts, match.start())
         ]
+        # A backslash-escaped backtick cannot open a span, but inside one the backslash is literal, so it closes.
+        openers = [start + 1 if _escaped(text, start) else start for start, _ in runs]
         next_same: list[int | None] = [None] * len(runs)
         seen: dict[tuple[int, int, int], int] = {}
         for index in range(len(runs) - 1, -1, -1):
             start, end = runs[index]
-            key = (bisect_left(breaks, start), bisect_left(fence_starts, start), end - start)
-            next_same[index] = seen.get(key)
-            seen[key] = index
+            scope = (bisect_left(breaks, start), bisect_left(fence_starts, start))
+            if end > openers[index]:
+                next_same[index] = seen.get((*scope, end - openers[index]))
+            seen[(*scope, end - start)] = index
         spans: list[tuple[int, int]] = list(fences)
         index = 0
         while index < len(runs):
@@ -1681,7 +1684,7 @@ class _QuotedSpans:
             if closer is None:
                 index += 1
                 continue
-            spans.append((runs[index][0], runs[closer][1]))
+            spans.append((openers[index], runs[closer][1]))
             index = closer + 1
         spans.sort()
         return cls([start for start, _ in spans], [end for _, end in spans])
@@ -1707,6 +1710,14 @@ def _fenced_blocks(text: str) -> list[tuple[int, int]]:
             first, last = token.map
             blocks.append((line_starts[first], line_starts[last] if last < len(line_starts) else len(text)))
     return blocks
+
+
+def _escaped(text: str, position: int) -> bool:
+    """Whether the character at *position* follows an odd number of backslashes."""
+    count = 0
+    while position - count > 0 and text[position - count - 1] == "\\":
+        count += 1
+    return count % 2 == 1
 
 
 def _inside(blocks: list[tuple[int, int]], starts: list[int], position: int) -> bool:
