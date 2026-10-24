@@ -1498,8 +1498,8 @@ class CatalogExfiltrationLinksRule(CatalogSecurityRule):
 # a single line break only wraps the sentence. A colon introduces what the sentence directs, so it does not end one.
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?;])[\x22'`\u201d\u2019)\]]*\s+|\n[ \t]*\n\s*")
 # An HTML block tag or line break ends a sentence too: "<p>Call search.</p><p>The send_email tool …".
-# CommonMark's HTML block element names, plus <pre> and <br>.
-_BLOCK_TAG_RE = re.compile(rf"<(?:/?(?:{'|'.join([*block_names, 'pre'])})|br)\b", re.IGNORECASE)
+# CommonMark's HTML block element names, plus <pre> and <br>; the name must end there ("<p-x>" is inline).
+_BLOCK_TAG_RE = re.compile(rf"<(?:/?(?:{'|'.join([*block_names, 'pre'])})|br)(?=[\s/>])", re.IGNORECASE)
 _DIRECTIVE_RE = re.compile(
     # "must-have" is an adjective; cues in a "whether …" clause are handled where cues are read.
     r"\b(?:must|should|make\s+sure|ensure|be\s+sure)\b(?!-)"
