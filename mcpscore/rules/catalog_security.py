@@ -20,6 +20,7 @@ from urllib.parse import unquote, urljoin, urlsplit
 
 from markdown_it import MarkdownIt
 from markdown_it.common.html_blocks import block_names
+from markdown_it.common.utils import normalizeReference
 from markdown_it.rules_inline.autolink import AUTOLINK_RE, EMAIL_RE
 from markdown_it.token import Token
 from mcp_types import Icon
@@ -1619,11 +1620,11 @@ _ANGLE_DESTINATION_RE = re.compile(r"<(?:[^<>\n\\]|\\[\s\S])*>")
 # limit; a backslash escapes the next character unless it is a space.
 _DESTINATION_RUN_RE = re.compile(r"[^ \x00-\x1f\x7f()\\]*")
 _MAX_LINK_NESTING = 32
+_MAX_LABEL_LENGTH = 999
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # Emphasis formats a directive without making it an example: "Always call **send_email** first."
-# A reference link's "][id]" suffix goes whole: the identifier is not prose.
-_EMPHASIS_RE = re.compile(r"\*+|_+|\]\[[^\]\n]*\]|[\[\]]")
+_EMPHASIS_RE = re.compile(r"\*+|_+|[\[\]]")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
@@ -1668,23 +1669,26 @@ def _walk(
     fences: list[tuple[int, int]],
     fence_starts: list[int],
     block_starts: list[int],
+    references: frozenset[str] = frozenset(),
 ) -> tuple[list[tuple[int, int]], list[_Markup]]:
     """Read *text* left to right as CommonMark does, and return its inline code spans and the markup it honors.
 
     Whichever of a code span (*run_spans*, by backtick run), a tag or a link starts first wins. Link label
-    brackets are counted here, so a bracket inside a code span or tag is literal, and an inline link is honored
-    only when its "]" closes an open "[" of the same leaf block.
+    brackets are counted here, so a bracket inside a code span or tag is literal. An inline link is honored only
+    when its "]" closes an open "[" of the same leaf block, and a reference link only when it resolves to one of
+    the *references*.
     """
     link_starts = {start for start, *_ in markup if text.startswith("](", start)}
+    brackets = [
+        bracket
+        for bracket in re.finditer(r"[\[\]]", text)
+        if not _escaped(text, bracket.start()) and not _inside(fences, fence_starts, bracket.start())
+    ]
+    opens = [bracket.start() for bracket in brackets if bracket[0] == "["]
+    closes = [bracket.start() for bracket in brackets if bracket[0] == "]"]
     events: list[tuple[int, int, int]] = [(start, 0, index) for index, start in enumerate(run_starts)]
     events.extend((entry[0], 1, index) for index, entry in enumerate(markup))
-    events.extend(
-        (bracket.start(), 2, bracket[0] == "[")
-        for bracket in re.finditer(r"[\[\]]", text)
-        if bracket.start() not in link_starts
-        and not _escaped(text, bracket.start())
-        and not _inside(fences, fence_starts, bracket.start())
-    )
+    events.extend((bracket.start(), 2, bracket[0] == "[") for bracket in brackets if bracket.start() not in link_starts)
     events.sort()
     spans: list[tuple[int, int]] = []
     honored: list[_Markup] = []
@@ -1708,8 +1712,16 @@ def _walk(
             if index:
                 labels.append((block, start, text[start - 1 : start] == "!" and not _escaped(text, start - 1)))
             elif labels:
-                labels.pop()
+                _, opener, image = labels.pop()
+                active = image or len(labels) >= floor
                 floor = min(floor, len(labels))
+                end = _reference_end(text, opener, start, references, opens, closes) if active and references else None
+                if end is not None:
+                    # A resolved reference link reads as its label: "[send_email][mail]" as "send_email".
+                    honored.extend(((opener - image, opener + 1, None), (start, end, None)))
+                    position = end
+                    if not image:
+                        floor = len(labels)
         elif start in link_starts:
             if not labels:
                 continue
@@ -1728,6 +1740,25 @@ def _walk(
             position = markup[index][1]
     honored.sort()
     return spans, honored
+
+
+def _reference_end(
+    text: str, opener: int, close: int, references: frozenset[str], opens: list[int], closes: list[int]
+) -> int | None:
+    """Return the end of the reference link whose label runs from *opener* to *close*, or None.
+
+    Full ("[label][id]"), collapsed ("[label][]") and shortcut ("[label]") forms resolve as in CommonMark: a label
+    holds no unescaped bracket and at most 999 characters, and a shortcut is not followed by another label.
+    """
+    if close - opener > _MAX_LABEL_LENGTH:
+        return None
+    if text.startswith("[", close + 1):
+        end = _first_at(closes, close + 2)
+        nested = _first_at(opens, close + 2)
+        if end is not None and (nested is None or nested > end) and end - close - 2 <= _MAX_LABEL_LENGTH:
+            label = text[close + 2 : end] if text[close + 2 : end].strip() else text[opener + 1 : close]
+            return end + 1 if normalizeReference(label) in references else None
+    return close + 1 if normalizeReference(text[opener + 1 : close]) in references else None
 
 
 def _bare_destination_end(text: str, position: int) -> int | None:
@@ -1959,7 +1990,7 @@ class _QuotedSpans:
         first wins, so a backtick in an attribute is no delimiter and a tag inside a span is code. Each run's next
         run of the same length is found in one backward pass. *text* has LF line endings.
         """
-        fences, leaves, blocks = _markdown_blocks(text)
+        fences, leaves, blocks, references = _markdown_blocks(text)
         fence_starts = [start for start, _ in fences]
         leaf_starts = [start for start, _ in leaves]
         markup = _markup(text, fences, fence_starts, blocks)
@@ -1988,6 +2019,7 @@ class _QuotedSpans:
             fences,
             fence_starts,
             [start for start, _ in blocks],
+            references,
         )
         spans.extend(fences)
         spans.sort()
@@ -2003,18 +2035,22 @@ class _QuotedSpans:
         return index >= 0 and end < self.ends[index]
 
 
-def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]]]:
-    """Return the ranges of fenced code blocks, of leaf blocks with inline code, and of every leaf block.
+def _markdown_blocks(
+    text: str,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]], frozenset[str]]:
+    """Return the fenced code blocks, the leaf blocks with inline code, every leaf block, and the reference labels.
 
-    A leaf block is a paragraph, a list item's paragraph, a heading, or a code or HTML block; all come in order.
+    Ranges are character offsets, in order; the labels are the normalized labels of the link reference definitions.
+    A leaf block is a paragraph, a list item's paragraph, a heading, or a code or HTML block.
     """
     fences: list[tuple[int, int]] = []
     leaves: list[tuple[int, int]] = []
     blocks: list[tuple[int, int]] = []
     if "`" not in text and "~~~" not in text and "\n" not in text:
-        return fences, leaves, blocks
+        return fences, leaves, blocks, frozenset()
     line_starts = [0, *(index + 1 for index, char in enumerate(text) if char == "\n")]
-    for token in _BLOCK_PARSER.parse(text):
+    env: dict[str, Any] = {}
+    for token in _BLOCK_PARSER.parse(text, env):
         if token.map is None or token.type not in _ALL_LEAF_BLOCKS:
             continue
         first, last = token.map
@@ -2024,7 +2060,7 @@ def _markdown_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, 
             fences.append(block)
         elif token.type in _LEAF_BLOCKS:
             leaves.append(block)
-    return fences, leaves, blocks
+    return fences, leaves, blocks, frozenset(env.get("references", {}))
 
 
 def _markup_texts(text: str, markup: _Markup) -> Iterator[str]:
@@ -2049,9 +2085,8 @@ def _tag_texts(tag: str) -> Iterator[str]:
 def _without_emphasis(text: str, code: _QuotedSpans) -> str:
     """Return *text* with its emphasis delimiters outside *code* blanked, keeping offsets.
 
-    Every "*" run and every square bracket is blanked: emphasis and link labels (inline or reference-style,
-    "[send_email][mail]") format a name without changing what the sentence directs; a reference's "][mail]" goes
-    whole. A "_" run is blanked only when
+    Every "*" run and every literal square bracket is blanked: emphasis and brackets format a name without changing
+    what the sentence directs (a resolved link's brackets were blanked with its markup). A "_" run is blanked only when
     it pairs as CommonMark emphasis: it opens when not after a letter or digit and closes when not before one, so
     underscores inside or at the end of a tool name stay.
     """
