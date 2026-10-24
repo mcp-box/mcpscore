@@ -1622,7 +1622,7 @@ _MAX_LINK_NESTING = 32
 _TAG_BODIES = (("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"), ("<!", ">"))
 _ATTRIBUTE_VALUE_RE = re.compile(r"""=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^\s"'=<>`]+))""")
 # Emphasis formats a directive without making it an example: "Always call **send_email** first."
-_EMPHASIS_RE = re.compile(r"\*+|_+")
+_EMPHASIS_RE = re.compile(r"\*+|_+|[\[\]]")
 # CRLF and bare CR read as "\n", as CommonMark reads them.
 _LINE_END_RE = re.compile(r"\r\n|\r")
 
@@ -2048,11 +2048,12 @@ def _tag_texts(tag: str) -> Iterator[str]:
 def _without_emphasis(text: str, code: _QuotedSpans) -> str:
     """Return *text* with its emphasis delimiters outside *code* blanked, keeping offsets.
 
-    Every "*" run is blanked. A "_" run is blanked only when it pairs as CommonMark emphasis: it opens when not
-    after a letter or digit and closes when not before one, so underscores inside or at the end of a tool name
-    stay.
+    Every "*" run and every square bracket is blanked: emphasis and link labels (inline or reference-style,
+    "[send_email][mail]") format a name without changing what the sentence directs. A "_" run is blanked only when
+    it pairs as CommonMark emphasis: it opens when not after a letter or digit and closes when not before one, so
+    underscores inside or at the end of a tool name stay.
     """
-    if "*" not in text and "_" not in text:
+    if not any(char in text for char in "*_[]"):
         return text
     chars = list(text)
     openers: list[re.Match[str]] = []
@@ -2060,7 +2061,7 @@ def _without_emphasis(text: str, code: _QuotedSpans) -> str:
         start, end = match.span()
         if code.contains(start, start):
             continue
-        if match[0][0] == "*":
+        if match[0][0] in "*[]":
             chars[start:end] = " " * (end - start)
             continue
         before, after = text[start - 1 : start], text[end : end + 1]
@@ -2252,12 +2253,14 @@ def cross_tool_classes(text: str, listed: frozenset[str] | None = None, *, marku
         if any(directs(match) for match in _ANY_TOOL_RE.finditer(sentence)):
             found.append("any_tool_directive")
         if listed is not None:
-            found.extend(
-                "unlisted_tool_directive"
+            # One name can match both patterns ("call send_email tool"); it counts once.
+            names = {
+                match.span("ticked" if match["ticked"] is not None else "bare")
                 for pattern in _TOOL_REFERENCES
                 for match in pattern.finditer(sentence)
                 if directs(match) and _unlisted(match, listed)
-            )
+            }
+            found.extend("unlisted_tool_directive" for _ in names)
     return found
 
 
