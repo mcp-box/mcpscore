@@ -2249,15 +2249,20 @@ def _sentences(
 def _code_shaped(token: str) -> str | None:
     """Return *token* as a tool name when it is code-shaped, else None.
 
-    Code-shaped: joined with ``_``, ``.`` or ``/`` (``send_email``, ``mail/send``), or camelCase (``getWeather``),
-    with at least one letter. Plain words, hyphen-only words ("read-only") and numbers ("2.0") are prose.
+    Code-shaped: joined with ``_`` or ``.`` (``send_email``, ``mail.send``), or camelCase (``getWeather``), with at
+    least one letter; a ``/`` path counts when one of its segments does (``mail/send_email``). Plain words,
+    hyphen-only words ("read-only"), slash-joined words ("read/write") and numbers ("2.0") are prose.
     """
     name = token.rstrip("./-")
     if not any(char.isascii() and char.isalpha() for char in name):
         return None
     if _NAME_JOINERS_RE.search(name):
         parts = _NAME_JOINERS_RE.split(name.strip("_"))
-        return name if all(part and part[0].isalnum() and part.isascii() for part in parts) else None
+        if not all(part and part[0].isalnum() and part.isascii() for part in parts):
+            return None
+        if "/" in name and not any(_code_shaped(segment) for segment in name.split("/")):
+            return None
+        return name
     words = name.split("-")
     if all(word.isascii() and word.isalnum() for word in words) and any(_CAMEL_RE.fullmatch(w) for w in words):
         return name
