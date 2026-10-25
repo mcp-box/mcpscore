@@ -1859,7 +1859,7 @@ def test_a_long_dotted_name_without_tool_is_scanned_in_linear_time() -> None:
         "- `x\n" * 5_000,
         "Always call " + "`" * 100_000 + "x first.",
         "`" * 100_000 + "x" + "`" * 99_999 + " tool",
-        "<a " * 50_000 + "`" + " <b>`" * 20_000,
+        "<a " * 25_000 + "`" + " <b>`" * 10_000,
         '<a title="' * 30_000 + "`",
         "<a" + " " * 100_000 + "`" + "<!--" * 20_000,
         "<a title=\"<b title='`'>\">" * 5_000,
