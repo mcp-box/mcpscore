@@ -73,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Scala) frames and uncaught-exception banners, Go goroutine dumps, and Ruby,
   .NET, Rust, PHP, C++ and Elixir crash output. A server whose malformed-request
   error carries one of these now fails the rule.
+- **Dependencies refreshed.** The lockfile picks up httpx2 and httpcore2
+  2.16.0, starlette 1.10.0, sse-starlette 3.5.1 and patch releases of
+  coverage, ruff, virtualenv and others. The `mcp==2.3.0` pin is unchanged;
+  it is still the latest SDK.
 
 ### Fixed
 
