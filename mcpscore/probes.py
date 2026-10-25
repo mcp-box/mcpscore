@@ -2653,8 +2653,9 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
     # the caller's credentials, and none goes through a proxy that could answer in the server's place.
     # Rebuilt from host and port, so no userinfo reaches either the URL or the Host header.
     url = _url_at(without_credential_params(target.url), parts.hostname or "")
-    authority = urlsplit(url).netloc
     async with _direct_client() as client:
+        # The Host httpx2 itself sends for this URL (an explicit default port is dropped), on every control.
+        authority = client.build_request("POST", url).headers["Host"]
         loopback_control = await _accepted_control(
             _HttpTarget(client, url), PROBE_LOCAL_BIND, "network exposure", host=authority
         )

@@ -643,6 +643,14 @@ async def test_bind_probe_bounds_a_confirmation_that_never_ends(monkeypatch: pyt
     assert result.details["interfaces_unknown"] == 1
 
 
+async def test_bind_probe_sends_the_normalized_host_for_an_explicit_default_port(monkeypatch: pytest.MonkeyPatch):
+    _, _, requests = await _bind_probe(
+        monkeypatch, "http://localhost:80/mcp", ["192.168.1.20"], {"192.168.1.20": True}, serving={"192.168.1.20"}
+    )
+
+    assert {request.headers["Host"] for request in requests} == {"localhost"}
+
+
 async def test_bind_probe_leaves_a_server_that_refuses_the_url_host_unjudged(monkeypatch: pytest.MonkeyPatch):
     """A server that serves only a caller-chosen Host refuses both controls alike, so it is not judged."""
     result, connects, _ = await _bind_probe(
