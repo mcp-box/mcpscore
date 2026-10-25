@@ -61,7 +61,7 @@ from pydantic import TypeAdapter
 from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
 from mcpscore.spec import DRAFT, LATEST, SPEC_VERSIONS, Era, Lifecycle
-from mcpscore.tls import async_client
+from mcpscore.tls import async_client, client_ssl_context
 from mcpscore.url_credentials import credential_query_params, without_credential_params
 
 logger = logging.getLogger(__name__)
@@ -2381,8 +2381,6 @@ async def _accepted_control(
 
     if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
         details["modern_control_http_status"] = control.status_code
-        if control.unobservable is not None:
-            details["modern_control_unobservable"] = control.unobservable
         body = _legacy_initialize_body(10)
         headers = {**_legacy_headers(), **host_header}
         control = await target.post_rpc(
@@ -2404,8 +2402,6 @@ async def _accepted_control(
     # (and another timeout) to a server we cannot judge anyway.
     details["control_http_status"] = control.status_code
     details["control_shape"] = shape
-    if control.unobservable is not None:
-        details["control_unobservable"] = control.unobservable
     if control.status_code in AUTH_GATED_STATUSES:
         # The endpoint refuses the control too, so a refusal of the spoofed twin
         # would say nothing. Not a failure — an unanswerable question.
@@ -2611,8 +2607,12 @@ def _inconclusive_status(status: object) -> bool:
 
 
 def _direct_client(headers: Mapping[str, str] | None = None) -> httpx2.AsyncClient:
-    """Return a client that connects directly, never through an environment proxy, carrying only *headers*."""
-    return async_client(trust_env=False, headers=headers)
+    """Return a client that connects directly, never through an environment proxy, carrying only *headers*.
+
+    ``trust_env=False`` turns off environment proxies and, in httpx2, the CA bundle from ``SSL_CERT_FILE`` and
+    ``SSL_CERT_DIR`` too, so the TLS context is built with that trust explicitly.
+    """
+    return async_client(trust_env=False, headers=headers, verify=client_ssl_context(trust_env=True))
 
 
 def _address_family(host: str) -> int | None:

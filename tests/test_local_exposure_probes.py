@@ -243,6 +243,19 @@ async def test_direct_client_carries_the_given_headers_and_no_proxy(monkeypatch:
         assert client.headers["Authorization"] == "Bearer t"
 
 
+async def test_direct_client_keeps_the_configured_ca_trust(monkeypatch: pytest.MonkeyPatch):
+    seen: list[bool] = []
+
+    def fake_context(trust_env: bool = True):
+        seen.append(trust_env)
+        return True
+
+    monkeypatch.setattr(probes, "client_ssl_context", fake_context)
+    async with probes._direct_client() as client:
+        assert client.trust_env is False
+    assert seen == [True]
+
+
 async def test_host_probe_does_not_judge_a_public_host():
     seen: list[httpx2.Request] = []
     result = await _host_probe(_host_checking_handler(checks_host=False, seen=seen), "https://server.example/mcp")
@@ -585,6 +598,42 @@ async def test_bind_probe_replays_the_accepted_request_instead_of_falling_back(m
     assert result.outcome is ProbeOutcome.SUPPORTED
     assert result.details["interfaces_serving"] == 0
     assert lan_methods == ["server/discover"]
+
+
+async def test_bind_probe_fails_a_legacy_server_served_on_another_interface_and_closes_its_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    deletes: list[str] = []
+
+    async def fake_listening(host: str, port: int) -> bool:
+        return True
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "DELETE":
+            deletes.append(request.url.host)
+            return httpx2.Response(200)
+        body = json.loads(request.content)
+        if body["method"] != "initialize":
+            return httpx2.Response(400)
+        return httpx2.Response(
+            200,
+            headers={"Mcp-Session-Id": "sess"},
+            json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-11-25"}},
+        )
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
+    async with httpx2.AsyncClient() as client:
+        result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+    assert result.outcome is ProbeOutcome.UNSUPPORTED
+    assert result.details["interfaces_serving"] == 1
+    assert deletes == ["localhost", "192.168.1.20"]
 
 
 async def test_bind_probe_passes_a_server_bound_to_loopback_only(monkeypatch: pytest.MonkeyPatch):
