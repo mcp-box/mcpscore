@@ -5,7 +5,6 @@ import ipaddress
 import json
 import socket
 from typing import Self
-from urllib.parse import urlsplit
 
 import httpx2
 import pytest
@@ -622,25 +621,69 @@ async def test_bind_probe_sends_no_url_userinfo(monkeypatch: pytest.MonkeyPatch)
         assert "secret" not in str(request.url)
 
 
-async def test_bind_probe_bounds_a_confirmation_that_never_ends(monkeypatch: pytest.MonkeyPatch):
+async def test_bind_probe_counts_a_network_answer_that_never_finishes_as_unknown(monkeypatch: pytest.MonkeyPatch):
     async def fake_listening(host: str, port: int) -> bool:
         return True
 
-    async def endless_control(target, probe_id, subject, *, host=None):
-        if urlsplit(target.url).hostname == "localhost":
-            return probes._AcceptedControl(body={}, headers={}, shape="modern", details={})
-        await asyncio.sleep(3600)
-        return None
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if request.url.host != "192.168.1.20":
+            return _discover_result(body.get("id"))
 
+        async def heartbeats():
+            while True:
+                yield b": heartbeat\n\n"
+                await asyncio.sleep(0.01)
+
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=heartbeats())
+
+    monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.1)
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    monkeypatch.setattr(probes, "_accepted_control", endless_control)
-    monkeypatch.setattr(probes, "LOCAL_BIND_CONFIRM_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
     async with httpx2.AsyncClient() as client:
         result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
     assert result.outcome is ProbeOutcome.ERROR
     assert result.details["interfaces_unknown"] == 1
+
+
+async def test_bind_probe_closes_a_session_a_stalled_network_answer_issued(monkeypatch: pytest.MonkeyPatch):
+    deletes: list[str] = []
+
+    async def fake_listening(host: str, port: int) -> bool:
+        return True
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "DELETE":
+            deletes.append(f"{request.url.host}/{request.headers['Mcp-Session-Id']}")
+            return httpx2.Response(200)
+        body = json.loads(request.content)
+        if request.url.host != "192.168.1.20":
+            return _discover_result(body.get("id"))
+        if body["method"] != "initialize":
+            return httpx2.Response(400)
+
+        async def heartbeats():
+            while True:
+                yield b": heartbeat\n\n"
+                await asyncio.sleep(0.01)
+
+        return httpx2.Response(
+            200, headers={"content-type": "text/event-stream", "Mcp-Session-Id": "lan-1"}, content=heartbeats()
+        )
+
+    monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.1)
+    # An outer confirmation deadline shorter than the request's own would cancel it before its cleanup runs.
+    monkeypatch.setattr(probes, "LOCAL_BIND_CONFIRM_TIMEOUT_S", 0.05, raising=False)
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
+    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    async with httpx2.AsyncClient() as client:
+        result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert deletes == ["192.168.1.20/lan-1"]
 
 
 async def test_bind_probe_sends_the_normalized_host_for_an_explicit_default_port(monkeypatch: pytest.MonkeyPatch):
