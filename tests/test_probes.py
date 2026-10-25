@@ -3325,6 +3325,13 @@ class TestQueryCredentialVerdicts:
             # A refused token with a 400 says nothing about what happens without it.
             (_status(400, **{"WWW-Authenticate": 'Bearer error="invalid_token"'}), _status(401)),
             (_served, _status(400)),
+            # An HTTP 200 carrying a JSON-RPC error is not served.
+            (
+                _served,
+                lambda: httpx2.Response(
+                    200, json={"jsonrpc": "2.0", "id": 7, "error": {"code": -32001, "message": "Unauthorized"}}
+                ),
+            ),
             (_status(500), _status(401)),
             (_status(302, location="https://elsewhere.example/"), _status(401)),
         ],

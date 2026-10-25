@@ -1767,13 +1767,13 @@ async def _probe_query_credential(target: _HttpTarget) -> ProbeResult:
     (:func:`mcpscore.url_credentials.credential_query_params`); otherwise NOT_APPLICABLE
     with no request sent. The same anonymous ``tools/list`` goes to the URL as given and
     to the URL without its credential parameters, then a legacy ``initialize`` when the
-    request with the credential got a plain 4xx (a missing session). UNSUPPORTED: the first
-    is served (2xx) and the second refused (:func:`_token_refused`), so the server
-    authenticates from the query. SUPPORTED: both ``tools/list`` requests are served, so the
-    credential is not needed; two served handshakes prove nothing, since a server may keep
-    ``initialize`` public. Anything else is NOT_APPLICABLE. Each
-    request reads only up to its response; a session opened is closed. Details name the
-    parameters, never their values.
+    request with the credential got a plain 4xx (a missing session). Served means a 2xx
+    carrying a JSON-RPC result. UNSUPPORTED: the first is served and the second refused
+    (:func:`_token_refused`), so the server authenticates from the query. SUPPORTED: both
+    ``tools/list`` requests are served, so the credential is not needed; two served
+    handshakes prove nothing, since a server may keep ``initialize`` public. Anything
+    else is NOT_APPLICABLE. Each request reads only up to its response; a session opened
+    is closed. Details name the parameters, never their values.
     """
     names = credential_query_params(urlsplit(target.url).query)
     if not names:
@@ -1804,10 +1804,11 @@ async def _probe_query_credential(target: _HttpTarget) -> ProbeResult:
         statuses = [response.status_code for response in responses]
         given, stripped = statuses
         details |= {"method": method, "http_status": given, "without_credential_http_status": stripped}
-        if 200 <= given < 300 and _token_refused(responses[1]):
+        served = [200 <= response.status_code < 300 and response.result is not None for response in responses]
+        if served[0] and _token_refused(responses[1]):
             return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.UNSUPPORTED, details)
         # A served initialize proves only the handshake, which a server may leave public while it guards reads.
-        if method == "tools/list" and 200 <= given < 300 and 200 <= stripped < 300:
+        if method == "tools/list" and all(served):
             return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.SUPPORTED, details)
         # A legacy server refuses the sessionless request with a plain 4xx; its initialize may still decide.
         plain_4xx = 400 <= given < 500 and given not in (408, 429) and not _token_refused(responses[0])
