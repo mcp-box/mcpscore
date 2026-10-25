@@ -238,8 +238,12 @@ async def _bind_probe(
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: addresses)
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
-        result = await _probe_local_bind(_HttpTarget(client, url))
+    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    # The caller's client carries credentials; the probe must never use it.
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer caller-secret"}
+    ) as caller_client:
+        result = await _probe_local_bind(_HttpTarget(caller_client, url))
     return result, connects, requests
 
 
@@ -346,12 +350,46 @@ async def test_bind_probe_counts_a_connection_without_an_http_answer_as_unknown(
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    async with httpx2.AsyncClient() as client:
         result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
     assert result.outcome is ProbeOutcome.ERROR
     assert result.details["interfaces_listening"] == 1
     assert result.details["interfaces_unknown"] == 1
+
+
+async def test_bind_probe_sends_no_caller_credentials(monkeypatch: pytest.MonkeyPatch):
+    _, _, requests = await _bind_probe(
+        monkeypatch,
+        "http://localhost:8000/mcp?api_key=sk-live-secret&tenant=a",
+        ["192.168.1.20"],
+        {"192.168.1.20": True},
+        serving={"192.168.1.20"},
+    )
+
+    assert {request.url.host for request in requests} == {"localhost", "192.168.1.20"}
+    for request in requests:
+        assert "Authorization" not in request.headers
+        assert "api_key" not in str(request.url)
+        assert request.url.params["tenant"] == "a"
+
+
+async def test_bind_probe_leaves_a_server_that_refuses_the_url_host_unjudged(monkeypatch: pytest.MonkeyPatch):
+    """A server that serves only a caller-chosen Host refuses both controls alike, so it is not judged."""
+    result, connects, _ = await _bind_probe(
+        monkeypatch, LOCAL_URL, ["192.168.1.20"], {"192.168.1.20": True}, loopback_status=421
+    )
+
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert connects == []
+
+
+async def test_direct_client_ignores_environment_proxies(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
+    async with probes._direct_client() as client:
+        assert client.trust_env is False
+        assert dict(client.headers).get("authorization") is None
 
 
 async def test_tcp_listening_reports_a_timeout_as_unknown(monkeypatch: pytest.MonkeyPatch):

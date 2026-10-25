@@ -139,8 +139,10 @@ a real deployment would allow."""
 HOST_PROBE_VALUE = "mcpscore.invalid"
 """Foreign ``Host`` sent by the Host-validation probe to a loopback server; a reserved name no server serves."""
 
-LOCAL_BIND_TIMEOUT_S = 2.0
-"""Deadline for one TCP connect to a non-loopback interface address of this machine."""
+LOCAL_BIND_TIMEOUT_S = 5.0
+"""Deadline for one TCP connect to a non-loopback interface address of this machine.
+
+Windows reports a refused connection only after retrying the SYN for about two seconds."""
 
 UNKNOWN_VERSION = "2099-01-01"
 """Deliberately unsupported version used by the unknown-version probe."""
@@ -2524,6 +2526,11 @@ async def _tcp_listening(host: str, port: int) -> bool | None:
     return True
 
 
+def _direct_client() -> httpx2.AsyncClient:
+    """Return a client for requests to this machine's own addresses: no caller headers, cookies or proxies."""
+    return async_client(trust_env=False)
+
+
 def _address_family(host: str) -> int | None:
     """Return the address family a URL host pins, or None for a name such as ``localhost``."""
     try:
@@ -2549,9 +2556,9 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
 
     Every Streamable HTTP revision says a server running locally SHOULD bind
     only to localhost rather than all network interfaces. For a loopback http
-    target the probe first sends the accepted control request
-    (:func:`_accepted_control`) to the audited URL, then TCP-connects to the
-    same port on each default-route address of this machine. Where a
+    target the probe first sends the control request (:func:`_accepted_control`)
+    to the audited URL, then TCP-connects to the same port on each
+    default-route address of this machine. Where a
     connection opens, the same control goes to that address with the audited
     URL's ``Host``: served there, the audited server listens on
     ``0.0.0.0``/``::`` and the network can reach it. A listener that does not
@@ -2561,7 +2568,11 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
     record counts, never addresses. Not applicable to non-loopback or https
     targets (a certificate for ``localhost`` does not cover an address), when
     no address of the target's family can be tried, or when the control
-    request is not accepted on loopback.
+    request is not accepted on loopback. Every request goes out on
+    :func:`_direct_client` to the URL without credential query parameters,
+    and both controls carry the URL's own ``Host``: a server that needs
+    credentials or another ``Host`` refuses the loopback control, and stays
+    unjudged.
     """
     parts = urlsplit(target.url)
     if not _is_loopback_host(parts.hostname):
@@ -2586,25 +2597,31 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
             ProbeOutcome.NOT_APPLICABLE,
             {"reason": "this machine has no routable address of the target's family to try"},
         )
-    loopback_control = await _accepted_control(target, PROBE_LOCAL_BIND, "network exposure")
-    if isinstance(loopback_control, ProbeResult):
-        return loopback_control
+    # A listener on another address is unverified until it serves the control, so no request carries
+    # the caller's credentials, and none goes through a proxy that could answer in the server's place.
+    url = without_credential_params(target.url)
+    async with _direct_client() as client:
+        loopback_control = await _accepted_control(
+            _HttpTarget(client, url), PROBE_LOCAL_BIND, "network exposure", host=parts.netloc
+        )
+        if isinstance(loopback_control, ProbeResult):
+            return loopback_control
 
-    port = parts.port or 80
-    states = await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
-    listening = [address for address, state in zip(addresses, states, strict=True) if state]
-    serving = 0
-    unknown = sum(state is None for state in states)
-    for address in listening:
-        lan_target = _HttpTarget(target.client, _url_at(target.url, address))
-        try:
-            control = await _accepted_control(lan_target, PROBE_LOCAL_BIND, "network exposure", host=parts.netloc)
-        except httpx2.HTTPError:
-            # Connected, but no HTTP answer (a host firewall can accept the connection and drop the request).
-            unknown += 1
-            continue
-        if isinstance(control, _AcceptedControl):
-            serving += 1
+        port = parts.port or 80
+        states = await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
+        listening = [address for address, state in zip(addresses, states, strict=True) if state]
+        serving = 0
+        unknown = sum(state is None for state in states)
+        for address in listening:
+            lan_target = _HttpTarget(client, _url_at(url, address))
+            try:
+                control = await _accepted_control(lan_target, PROBE_LOCAL_BIND, "network exposure", host=parts.netloc)
+            except httpx2.HTTPError:
+                # Connected, but no HTTP answer (a host firewall can accept the connection and drop the request).
+                unknown += 1
+                continue
+            if isinstance(control, _AcceptedControl):
+                serving += 1
     details: dict[str, Any] = {
         "port": port,
         "interfaces_checked": len(addresses),
