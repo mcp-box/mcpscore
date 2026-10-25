@@ -85,7 +85,9 @@ def test_host_rule_fails_a_served_foreign_host():
 def test_bind_rule_passes_a_loopback_only_server():
     rule = LocalBindLoopbackRule()
     data = _audit(
-        PROBE_LOCAL_BIND, ProbeOutcome.SUPPORTED, {"port": 8000, "interfaces_checked": 2, "interfaces_reachable": 0}
+        PROBE_LOCAL_BIND,
+        ProbeOutcome.SUPPORTED,
+        {"port": 8000, "interfaces_checked": 2, "interfaces_listening": 1, "interfaces_serving": 0},
     )
     result = rule.check(data)
     assert result.passed
@@ -96,10 +98,12 @@ def test_bind_rule_passes_a_loopback_only_server():
 def test_bind_rule_fails_a_server_listening_on_every_interface():
     rule = LocalBindLoopbackRule()
     data = _audit(
-        PROBE_LOCAL_BIND, ProbeOutcome.UNSUPPORTED, {"port": 8000, "interfaces_checked": 2, "interfaces_reachable": 1}
+        PROBE_LOCAL_BIND,
+        ProbeOutcome.UNSUPPORTED,
+        {"port": 8000, "interfaces_checked": 2, "interfaces_listening": 1, "interfaces_serving": 1},
     )
     result = rule.check(data)
     assert not result.passed
-    assert result.details["interfaces_reachable"] == 1
-    assert result.details["expected"] == {"interfaces_reachable": 0}
+    assert result.details["interfaces_serving"] == 1
+    assert result.details["expected"] == {"interfaces_serving": 0}
     assert "127.0.0.1" in (result.suggested_fix or "")

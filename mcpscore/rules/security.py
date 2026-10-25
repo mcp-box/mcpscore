@@ -680,10 +680,11 @@ class LocalBindLoopbackRule(_LocalExposureRule):
 
     Every Streamable HTTP revision says a server running locally SHOULD bind
     only to localhost rather than all network interfaces. The observation comes
-    from ``probe_local_bind``, which connects to the audited port on this
-    machine's default-route addresses: a connection there means the server
-    listens on ``0.0.0.0``/``::`` and other machines on the network can reach
-    it. Judged only on loopback targets, which the hosted service never audits.
+    from ``probe_local_bind``, which sends the audited server's accepted control
+    request to the same port on this machine's default-route addresses: served
+    there, the server listens on ``0.0.0.0``/``::`` and other machines on the
+    network can reach it. Judged only on loopback http targets, which the
+    hosted service never audits.
 
     Scoring: 2 points (MEDIUM)
     """
@@ -701,23 +702,24 @@ class LocalBindLoopbackRule(_LocalExposureRule):
         return "Local Server Bound To Loopback Only"
 
     def check(self, audit_data: AuditData) -> RuleResult:
-        """Pass when the audited port answered on no non-loopback address of this machine."""
+        """Pass when no default-route address of this machine served the audited server's control request."""
         probe = (audit_data.probes or {})[self.probe_id]
         passed = probe.outcome is ProbeOutcome.SUPPORTED
         details = {
             "spec": _SECURITY_WARNING_URL,
             "port": probe.details.get("port"),
             "interfaces_checked": probe.details.get("interfaces_checked"),
-            "interfaces_reachable": probe.details.get("interfaces_reachable"),
+            "interfaces_listening": probe.details.get("interfaces_listening"),
+            "interfaces_serving": probe.details.get("interfaces_serving"),
         }
         return diagnostic_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=(
-                "✅ The local server listens on loopback only"
+                "✅ The local server does not answer MCP requests on this machine's network addresses"
                 if passed
-                else "❌ The local server also listens on this machine's network address, "
+                else "❌ The local server also answers MCP requests on this machine's network address, "
                 "so other machines on the network can reach it"
             ),
             details=details,
@@ -728,5 +730,5 @@ class LocalBindLoopbackRule(_LocalExposureRule):
                 "only behind authentication."
             ),
             audit_data=audit_data,
-            expected={"interfaces_reachable": 0},
+            expected={"interfaces_serving": 0},
         )

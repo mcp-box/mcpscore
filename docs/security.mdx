@@ -127,10 +127,13 @@ mcpscore http://localhost:8000/mcp
   main defence; this is the second layer.
 - **`security_local_bind_loopback`** (MEDIUM): the transport spec says a
   server running locally should bind only to localhost, not to all network
-  interfaces. The rule opens a TCP connection to the same port on this
-  machine's network addresses, and fails when one connects: the server
-  listens on `0.0.0.0` or `::`, and other machines on the network can reach
-  it. The report records how many addresses were tried, never the addresses.
+  interfaces. The rule connects to the same port on this machine's network
+  addresses and sends the request the server accepted on localhost. It fails
+  when the server answers there: it listens on `0.0.0.0` or `::`, and other
+  machines on the network can reach it. Another program on that port does
+  not count, and a connection that times out leaves the rule unjudged. It
+  runs for `http://` targets only. The report records how many addresses
+  were tried, never the addresses.
 
 ## How the catalog-text rules decide
 

@@ -163,6 +163,7 @@ async def test_tcp_listening_tells_an_open_port_from_a_closed_one():
     finally:
         server.close()
         await server.wait_closed()
+    # A closed loopback port refuses the connection.
     assert await _tcp_listening("127.0.0.1", port) is False
 
 
@@ -210,58 +211,155 @@ def test_non_loopback_addresses_keep_routable_default_route_addresses(monkeypatc
     assert _non_loopback_addresses() == expected
 
 
-async def _bind_probe(monkeypatch: pytest.MonkeyPatch, url: str, addresses: list[str], listening: set[str]):
-    calls: list[tuple[str, int]] = []
+async def _bind_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    addresses: list[str],
+    states: dict[str, bool | None],
+    *,
+    serving: set[str] = frozenset(),
+    loopback_status: int = 200,
+):
+    """Run the bind probe with scripted interface addresses, TCP answers and MCP-serving hosts."""
+    connects: list[tuple[str, int]] = []
+    requests: list[httpx2.Request] = []
 
-    async def fake_listening(host: str, port: int) -> bool:
-        calls.append((host, port))
-        return host in listening
+    async def fake_listening(host: str, port: int) -> bool | None:
+        connects.append((host, port))
+        return states.get(host, False)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        body = json.loads(request.content)
+        host = request.url.host
+        if host in serving or (_is_loopback_host(host) and loopback_status == 200):
+            return _discover_result(body.get("id"))
+        return httpx2.Response(loopback_status if _is_loopback_host(host) else 404)
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: addresses)
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    async with httpx2.AsyncClient() as client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
         result = await _probe_local_bind(_HttpTarget(client, url))
-    return result, calls
+    return result, connects, requests
 
 
-async def test_bind_probe_fails_a_server_reachable_on_another_interface(monkeypatch: pytest.MonkeyPatch):
-    result, calls = await _bind_probe(
-        monkeypatch, LOCAL_URL, ["192.168.1.20", "2001:db8::20"], listening={"192.168.1.20"}
+async def test_bind_probe_fails_a_server_that_serves_on_another_interface(monkeypatch: pytest.MonkeyPatch):
+    result, connects, requests = await _bind_probe(
+        monkeypatch,
+        LOCAL_URL,
+        ["192.168.1.20", "2001:db8::20"],
+        {"192.168.1.20": True, "2001:db8::20": False},
+        serving={"192.168.1.20"},
     )
 
     assert result.probe_id == PROBE_LOCAL_BIND
     assert result.outcome is ProbeOutcome.UNSUPPORTED
-    assert result.details == {"port": 8000, "interfaces_checked": 2, "interfaces_reachable": 1}
-    assert sorted(calls) == [("192.168.1.20", 8000), ("2001:db8::20", 8000)]
+    assert result.details == {
+        "port": 8000,
+        "interfaces_checked": 2,
+        "interfaces_listening": 1,
+        "interfaces_serving": 1,
+        "interfaces_unknown": 0,
+    }
+    assert sorted(connects) == [("192.168.1.20", 8000), ("2001:db8::20", 8000)]
+    lan = [request for request in requests if request.url.host == "192.168.1.20"]
+    # The network-address control carries the audited URL's Host, so a Host check cannot hide the server.
+    assert [request.headers["Host"] for request in lan] == ["localhost:8000"]
+    assert str(lan[0].url) == "http://192.168.1.20:8000/mcp"
     # The report records counts, never this machine's addresses.
     assert "192.168.1.20" not in json.dumps(result.details)
 
 
-async def test_bind_probe_passes_a_server_bound_to_loopback_only(monkeypatch: pytest.MonkeyPatch):
-    result, _ = await _bind_probe(monkeypatch, "http://127.0.0.1/mcp", ["192.168.1.20"], listening=set())
+async def test_bind_probe_ignores_an_unrelated_listener_on_the_same_port(monkeypatch: pytest.MonkeyPatch):
+    result, _, _ = await _bind_probe(monkeypatch, LOCAL_URL, ["192.168.1.20"], {"192.168.1.20": True})
 
     assert result.outcome is ProbeOutcome.SUPPORTED
-    assert result.details == {"port": 80, "interfaces_checked": 1, "interfaces_reachable": 0}
+    assert result.details["interfaces_listening"] == 1
+    assert result.details["interfaces_serving"] == 0
 
 
-async def test_bind_probe_uses_the_https_default_port(monkeypatch: pytest.MonkeyPatch):
-    _, calls = await _bind_probe(monkeypatch, "https://[::1]/mcp", ["192.168.1.20"], listening=set())
+async def test_bind_probe_passes_a_server_bound_to_loopback_only(monkeypatch: pytest.MonkeyPatch):
+    result, connects, _ = await _bind_probe(monkeypatch, "http://127.0.0.1/mcp", ["192.168.1.20"], {})
 
-    assert calls == [("192.168.1.20", 443)]
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["interfaces_serving"] == 0
+    assert connects == [("192.168.1.20", 80)]
+
+
+async def test_bind_probe_with_an_unknown_answer_is_an_error(monkeypatch: pytest.MonkeyPatch):
+    result, _, _ = await _bind_probe(
+        monkeypatch, LOCAL_URL, ["192.168.1.20", "2001:db8::20"], {"192.168.1.20": False, "2001:db8::20": None}
+    )
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_unknown"] == 1
+
+
+async def test_bind_probe_checks_only_the_target_family(monkeypatch: pytest.MonkeyPatch):
+    result, connects, _ = await _bind_probe(monkeypatch, "http://[::1]:8000/mcp", ["192.168.1.20", "2001:db8::20"], {})
+
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert connects == [("2001:db8::20", 8000)]
+
+
+async def test_bind_probe_without_an_address_of_the_target_family_is_not_applicable(monkeypatch: pytest.MonkeyPatch):
+    result, connects, requests = await _bind_probe(monkeypatch, "http://[::1]:8000/mcp", ["192.168.1.20"], {})
+
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert connects == []
+    assert requests == []
+
+
+async def test_bind_probe_does_not_judge_an_access_controlled_server(monkeypatch: pytest.MonkeyPatch):
+    result, connects, _ = await _bind_probe(
+        monkeypatch, LOCAL_URL, ["192.168.1.20"], {"192.168.1.20": True}, loopback_status=401
+    )
+
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert connects == []
+
+
+@pytest.mark.parametrize("url", ["https://localhost:8443/mcp", "https://server.example/mcp"])
+async def test_bind_probe_does_not_judge_https_or_public_targets(monkeypatch: pytest.MonkeyPatch, url: str):
+    result, connects, requests = await _bind_probe(monkeypatch, url, ["192.168.1.20"], {"192.168.1.20": True})
+
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+    assert connects == []
+    assert requests == []
 
 
 async def test_bind_probe_without_a_routable_address_is_not_applicable(monkeypatch: pytest.MonkeyPatch):
-    result, calls = await _bind_probe(monkeypatch, LOCAL_URL, [], listening=set())
+    result, connects, _ = await _bind_probe(monkeypatch, LOCAL_URL, [], {})
 
     assert result.outcome is ProbeOutcome.NOT_APPLICABLE
-    assert calls == []
+    assert connects == []
 
 
-async def test_bind_probe_does_not_judge_a_public_host(monkeypatch: pytest.MonkeyPatch):
-    result, calls = await _bind_probe(monkeypatch, "https://server.example/mcp", ["192.168.1.20"], {"192.168.1.20"})
+async def test_bind_probe_counts_a_connection_without_an_http_answer_as_unknown(monkeypatch: pytest.MonkeyPatch):
+    async def fake_listening(host: str, port: int) -> bool:
+        return True
 
-    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
-    assert calls == []
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            raise httpx2.ReadTimeout("no answer", request=request)
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_listening"] == 1
+    assert result.details["interfaces_unknown"] == 1
+
+
+async def test_tcp_listening_reports_a_timeout_as_unknown(monkeypatch: pytest.MonkeyPatch):
+    async def never_connects(host: str, port: int):
+        raise TimeoutError
+
+    monkeypatch.setattr(probes.asyncio, "open_connection", never_connects)
+    assert await _tcp_listening("192.168.1.20", 8000) is None
 
 
 def test_both_probes_are_http_only():

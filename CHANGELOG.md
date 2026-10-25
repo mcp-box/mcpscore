@@ -25,8 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   servers as the threat and says a local server should bind only to
   localhost. The first rule sends an accepted request again with a foreign
   `Host` and passes when it is refused (both official SDKs refuse it by
-  default). The second connects to the audited port on this machine's
-  network addresses and fails when the server answers there. Both skip any
+  default). The second sends the same accepted request to the audited port
+  on this machine's network addresses and fails when the server serves it
+  there; another program on the port does not count. Both skip any
   target that is not `localhost`, `127.0.0.0/8` or `::1`, so no remote or
   web audit changes; an audit of a local HTTP server gains up to 4 points of
   maximum score.

@@ -2336,7 +2336,9 @@ class _AcceptedControl:
     """Control status and shape, plus the rejected modern control when it fell back."""
 
 
-async def _accepted_control(target: _HttpTarget, probe_id: str, subject: str) -> _AcceptedControl | ProbeResult:
+async def _accepted_control(
+    target: _HttpTarget, probe_id: str, subject: str, *, host: str | None = None
+) -> _AcceptedControl | ProbeResult:
     """Send the control request a spoofed-header probe is judged against.
 
     The control is ``server/discover`` (mandatory in 2026-07-28), falling back
@@ -2344,13 +2346,15 @@ async def _accepted_control(target: _HttpTarget, probe_id: str, subject: str) ->
     server rejects the modern request. Sessions that handshake opens are closed
     with DELETE. The control drops any ``Origin`` a caller configured as a
     client default, so it is the headerless twin of the spoofed request.
-    Returns a NOT_APPLICABLE result when the control is access-controlled or
+    ``host`` replaces the ``Host`` header, for a control sent to another
+    address of the same server. Returns a NOT_APPLICABLE result when the control is access-controlled or
     not accepted in either shape: a refusal of the spoofed twin would then say
     nothing about *subject* handling.
     """
     target_version = _target_version()
     body = _request_body("server/discover", 10, _modern_meta(target_version))
-    headers = _request_headers(target_version, "server/discover")
+    host_header = {"Host": host} if host is not None else {}
+    headers = {**_request_headers(target_version, "server/discover"), **host_header}
     control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
     shape = "modern"
     details: dict[str, Any] = {}
@@ -2365,9 +2369,9 @@ async def _accepted_control(target: _HttpTarget, probe_id: str, subject: str) ->
     if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
         details["modern_control_http_status"] = control.status_code
         body = _legacy_initialize_body(10)
-        headers = _legacy_headers()
+        headers = {**_legacy_headers(), **host_header}
         control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
-        await target.end_session(control)
+        await target.end_session(control, host_header)
         shape = "legacy-initialize"
         accepted = served(control, "protocolVersion")
     else:
@@ -2501,47 +2505,119 @@ def _non_loopback_addresses() -> list[str]:
     return sorted(addresses)
 
 
-async def _tcp_listening(host: str, port: int) -> bool:
-    """Whether a TCP connect to *host*:*port* succeeds within ``LOCAL_BIND_TIMEOUT_S``; never raises."""
+async def _tcp_listening(host: str, port: int) -> bool | None:
+    """Connect to *host*:*port*: True when it accepts, False when it refuses, None when the answer is unknown.
+
+    Only a refusal proves the port closed. A timeout (a firewall that drops
+    the packet) or any other socket error leaves it unknown. Never raises.
+    """
     try:
         async with asyncio.timeout(LOCAL_BIND_TIMEOUT_S):
             _, writer = await asyncio.open_connection(host, port)
-    except (OSError, TimeoutError):
+    except ConnectionRefusedError:
         return False
+    except (OSError, TimeoutError):
+        return None
     writer.close()
     with suppress(OSError):
         await writer.wait_closed()
     return True
 
 
+def _address_family(host: str) -> int | None:
+    """Return the address family a URL host pins, or None for a name such as ``localhost``."""
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is None:
+        return socket.AF_INET6
+    return socket.AF_INET
+
+
+def _url_at(url: str, address: str) -> str:
+    """*url* with its host replaced by *address*, keeping scheme, port, path and query."""
+    parts = urlsplit(url)
+    netloc = f"[{address}]" if ":" in address else address
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return parts._replace(netloc=netloc).geturl()
+
+
 async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
-    """Check whether a loopback server's port also answers on this machine's other interfaces.
+    """Check whether a loopback server also serves MCP on this machine's network addresses.
 
     Every Streamable HTTP revision says a server running locally SHOULD bind
-    only to localhost rather than all network interfaces. For a loopback target
-    the probe connects (TCP only, nothing is sent) to the same port on each
-    routable address of this machine: a connection there means the server is
-    bound to ``0.0.0.0``/``::`` and reachable from the network. Details record
-    counts, never the addresses. Not applicable to non-loopback targets or when
-    this machine has no routable interface address.
+    only to localhost rather than all network interfaces. For a loopback http
+    target the probe first sends the accepted control request
+    (:func:`_accepted_control`) to the audited URL, then TCP-connects to the
+    same port on each default-route address of this machine. Where a
+    connection opens, the same control goes to that address with the audited
+    URL's ``Host``: served there, the audited server listens on
+    ``0.0.0.0``/``::`` and the network can reach it. A listener that does not
+    serve it is another program and does not count. Only a refused connection
+    proves a port closed, so a timeout, or a connection whose request gets no
+    HTTP answer, with no address serving, makes the probe an ERROR. Details
+    record counts, never addresses. Not applicable to non-loopback or https
+    targets (a certificate for ``localhost`` does not cover an address), when
+    no address of the target's family can be tried, or when the control
+    request is not accepted on loopback.
     """
     parts = urlsplit(target.url)
     if not _is_loopback_host(parts.hostname):
         return ProbeResult(
             PROBE_LOCAL_BIND, ProbeOutcome.NOT_APPLICABLE, {"reason": "target is not a loopback address"}
         )
-    port = parts.port or (443 if parts.scheme == "https" else 80)
-    addresses = await asyncio.to_thread(_non_loopback_addresses)
+    if parts.scheme != "http":
+        return ProbeResult(
+            PROBE_LOCAL_BIND,
+            ProbeOutcome.NOT_APPLICABLE,
+            {"reason": "an https target's certificate does not cover this machine's network addresses"},
+        )
+    family = _address_family(parts.hostname or "")
+    addresses = [
+        address
+        for address in await asyncio.to_thread(_non_loopback_addresses)
+        if family is None or _address_family(address) == family
+    ]
     if not addresses:
         return ProbeResult(
             PROBE_LOCAL_BIND,
             ProbeOutcome.NOT_APPLICABLE,
-            {"reason": "this machine has no routable interface address to try"},
+            {"reason": "this machine has no routable address of the target's family to try"},
         )
-    reachable = await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
-    details = {"port": port, "interfaces_checked": len(addresses), "interfaces_reachable": sum(reachable)}
-    outcome = ProbeOutcome.UNSUPPORTED if any(reachable) else ProbeOutcome.SUPPORTED
-    return ProbeResult(PROBE_LOCAL_BIND, outcome, details)
+    loopback_control = await _accepted_control(target, PROBE_LOCAL_BIND, "network exposure")
+    if isinstance(loopback_control, ProbeResult):
+        return loopback_control
+
+    port = parts.port or 80
+    states = await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
+    listening = [address for address, state in zip(addresses, states, strict=True) if state]
+    serving = 0
+    unknown = sum(state is None for state in states)
+    for address in listening:
+        lan_target = _HttpTarget(target.client, _url_at(target.url, address))
+        try:
+            control = await _accepted_control(lan_target, PROBE_LOCAL_BIND, "network exposure", host=parts.netloc)
+        except httpx2.HTTPError:
+            # Connected, but no HTTP answer (a host firewall can accept the connection and drop the request).
+            unknown += 1
+            continue
+        if isinstance(control, _AcceptedControl):
+            serving += 1
+    details: dict[str, Any] = {
+        "port": port,
+        "interfaces_checked": len(addresses),
+        "interfaces_listening": len(listening),
+        "interfaces_serving": serving,
+        "interfaces_unknown": unknown,
+    }
+    if serving:
+        return ProbeResult(PROBE_LOCAL_BIND, ProbeOutcome.UNSUPPORTED, details)
+    if unknown:
+        details["reason"] = "an address neither refused the connection nor answered the request"
+        return ProbeResult(PROBE_LOCAL_BIND, ProbeOutcome.ERROR, details)
+    return ProbeResult(PROBE_LOCAL_BIND, ProbeOutcome.SUPPORTED, details)
 
 
 async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
