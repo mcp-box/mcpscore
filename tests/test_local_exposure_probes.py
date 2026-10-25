@@ -116,6 +116,72 @@ async def test_host_probe_omits_the_port_for_a_default_port_target():
     assert seen[-1].headers["Host"] == HOST_PROBE_VALUE
 
 
+def _sse(*events: str) -> bytes:
+    return "".join(f"{event}\n\n" for event in events).encode()
+
+
+async def test_host_probe_reads_a_control_answered_after_an_sse_priming_event():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if request.headers["Host"] != "localhost:8000":
+            return httpx2.Response(421)
+        result = {"jsonrpc": "2.0", "id": body["id"], "result": {"supportedVersions": ["2026-07-28"]}}
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_sse("id: 1\ndata:", f"data: {json.dumps(result)}"),
+        )
+
+    result = await _host_probe(handler)
+
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["control_http_status"] == 200
+
+
+async def test_origin_probe_reads_a_control_answered_after_an_sse_priming_event():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if request.headers.get("Origin") is not None:
+            return httpx2.Response(403)
+        result = {"jsonrpc": "2.0", "id": body["id"], "result": {"supportedVersions": ["2026-07-28"]}}
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_sse("id: 1\ndata:", f"data: {json.dumps(result)}"),
+        )
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await probes._probe_origin_validation(_HttpTarget(client, "https://server.example/mcp"))
+
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["control_shape"] == "modern"
+
+
+@pytest.mark.parametrize("status", [408, 429])
+async def test_host_probe_does_not_credit_a_timeout_or_rate_limit(status: int):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers["Host"].startswith(HOST_PROBE_VALUE):
+            return httpx2.Response(status)
+        return _discover_result(json.loads(request.content).get("id"))
+
+    result = await _host_probe(handler)
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["http_status"] == status
+
+
+@pytest.mark.parametrize(
+    ("url", "control_host"), [("http://localhost:80/mcp", "localhost"), ("https://localhost:443/mcp", "localhost")]
+)
+async def test_host_probe_follows_the_normalized_default_port(url: str, control_host: str):
+    seen: list[httpx2.Request] = []
+    await _host_probe(_host_checking_handler(checks_host=False, seen=seen), url)
+
+    control, spoofed = seen
+    assert control.headers["Host"] == control_host
+    assert spoofed.headers["Host"] == HOST_PROBE_VALUE
+
+
 async def test_host_probe_fails_a_server_that_serves_any_host():
     result = await _host_probe(_host_checking_handler(checks_host=False))
 
@@ -185,7 +251,7 @@ async def test_host_probe_bounds_a_spoofed_response_that_never_ends(monkeypatch:
         return _discover_result(json.loads(request.content).get("id"))
 
     monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(httpx2.TimeoutException):
         await _host_probe(handler)
 
 
@@ -198,7 +264,7 @@ async def test_bind_probe_bounds_a_loopback_control_that_never_ends(monkeypatch:
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
     async with httpx2.AsyncClient() as client:
-        with pytest.raises(TimeoutError):
+        with pytest.raises(httpx2.TimeoutException):
             await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
 

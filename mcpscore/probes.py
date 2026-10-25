@@ -655,7 +655,6 @@ class _HttpTarget:
         anonymous: bool = False,
         follow_redirects: bool = True,
         omit_headers: tuple[str, ...] = (),
-        deadline: float | None = None,
     ) -> _HttpProbeResponse:
         """POST a probe request, optionally stripping headers from the final request.
 
@@ -673,21 +672,17 @@ class _HttpTarget:
         client defaults, so a caller-supplied default cannot accidentally
         restore a header that a negative probe intends to omit. The shared
         client's defaults are never mutated because probes run concurrently.
-        ``deadline`` bounds the whole exchange in seconds, raising
-        ``TimeoutError``: the client timeout bounds each read, so a stream kept
-        open with heartbeats would otherwise never end.
         """
         request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
         if anonymous:
             _strip_credentials(request)
         for header in omit_headers:
             request.headers.pop(header, None)
-        async with asyncio.timeout(deadline):
-            response = (
-                await send_within_origin(self.client, request, **_no_client_auth(anonymous))
-                if follow_redirects
-                else await self.client.send(request, follow_redirects=False, **_no_client_auth(anonymous))
-            )
+        response = (
+            await send_within_origin(self.client, request, **_no_client_auth(anonymous))
+            if follow_redirects
+            else await self.client.send(request, follow_redirects=False, **_no_client_auth(anonymous))
+        )
         return _HttpProbeResponse(
             status_code=response.status_code,
             headers=dict(response.headers),
@@ -705,6 +700,7 @@ class _HttpTarget:
         cleanup_headers: dict[str, str] | None = None,
         anonymous: bool = False,
         read_limit: int | None = None,
+        omit_headers: tuple[str, ...] = (),
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -724,6 +720,7 @@ class _HttpTarget:
         ``cleanup_headers`` are added to that DELETE. With ``anonymous``, the
         client's ``Authorization`` and cookies are removed from the request and its
         cleanup; an ``Authorization`` passed in ``headers`` is kept. ``read_limit`` replaces the default byte cap.
+        ``omit_headers`` are removed after the client's defaults are merged, as in :meth:`post`.
         """
         request = self.client.build_request(
             "POST",
@@ -734,6 +731,8 @@ class _HttpTarget:
         )
         if anonymous:
             _strip_credentials(request, headers)
+        for header in omit_headers:
+            request.headers.pop(header, None)
         response: httpx2.Response | None = None
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
@@ -2365,9 +2364,7 @@ async def _accepted_control(
     body = _request_body("server/discover", 10, _modern_meta(target_version))
     host_header = {"Host": host} if host is not None else {}
     headers = {**_request_headers(target_version, "server/discover"), **host_header}
-    control = await target.post(
-        body, headers, follow_redirects=False, omit_headers=("Origin",), deadline=PROBE_TIMEOUT_S
-    )
+    control = await target.post_rpc(body, headers, follow_redirects=False, omit_headers=("Origin",))
     shape = "modern"
     details: dict[str, Any] = {}
 
@@ -2382,9 +2379,7 @@ async def _accepted_control(
         details["modern_control_http_status"] = control.status_code
         body = _legacy_initialize_body(10)
         headers = {**_legacy_headers(), **host_header}
-        control = await target.post(
-            body, headers, follow_redirects=False, omit_headers=("Origin",), deadline=PROBE_TIMEOUT_S
-        )
+        control = await target.post_rpc(body, headers, follow_redirects=False, omit_headers=("Origin",))
         await target.end_session(control, host_header)
         shape = "legacy-initialize"
         accepted = served(control, "protocolVersion")
@@ -2433,7 +2428,7 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
 
     spoofed = dict(control.headers)
     spoofed["Origin"] = ORIGIN_PROBE_VALUE
-    response = await target.post(control.body, spoofed, follow_redirects=False, deadline=PROBE_TIMEOUT_S)
+    response = await target.post_rpc(control.body, spoofed, follow_redirects=False)
     if control.shape == "legacy-initialize":
         await target.end_session(response)
 
@@ -2467,18 +2462,21 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
     if isinstance(control, ProbeResult):
         return control
 
-    # A rebound request keeps the port, so only the hostname is foreign.
-    port = urlsplit(target.url).port
+    # A rebound request keeps the port, so only the hostname is foreign. httpx2 drops an explicit default
+    # port from the control's Host, so the spoofed Host follows its normalized port.
+    port = httpx2.URL(target.url).port
     foreign_host = HOST_PROBE_VALUE if port is None else f"{HOST_PROBE_VALUE}:{port}"
     spoofed = {**control.headers, "Host": foreign_host}
-    response = await target.post(
-        control.body, spoofed, follow_redirects=False, omit_headers=("Origin",), deadline=PROBE_TIMEOUT_S
-    )
+    response = await target.post_rpc(control.body, spoofed, follow_redirects=False, omit_headers=("Origin",))
     if control.shape == "legacy-initialize":
         await target.end_session(response, {"Host": foreign_host})
 
     details = _base_details(response)
     details.update(control.details)
+    if response.status_code in (408, 429):
+        # A timeout or rate limit refuses any Host alike, so it says nothing about Host validation.
+        details["reason"] = f"HTTP {response.status_code} is not a Host decision"
+        return ProbeResult(PROBE_HOST_VALIDATION, ProbeOutcome.ERROR, details)
     refused = 400 <= response.status_code < 500
     return ProbeResult(PROBE_HOST_VALIDATION, ProbeOutcome.SUPPORTED if refused else ProbeOutcome.UNSUPPORTED, details)
 

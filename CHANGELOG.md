@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `serviceAPIKey`), never by substring; ambiguous names such as `key` count
   only with a secret-shaped value.
 
+### Fixed
+
+- **`security_origin_validation` judges a server whose answer arrives after
+  an SSE priming event.** The control request read only the first `data:`
+  line of an SSE answer, so a server that opens its stream with the empty
+  priming event the spec recommends skipped as not applicable. The control
+  is now read event by event until its response, under one deadline.
+
 ## [1.28.0] - 2026-10-25
 
 Catalog text is checked for two more attacks at HIGH: links that run script
