@@ -156,6 +156,30 @@ async def test_host_probe_judges_a_legacy_server_through_initialize_and_closes_i
     assert deletes == ["sess-1", "sess-1"]
 
 
+async def test_host_probe_bounds_a_spoofed_response_that_never_ends(monkeypatch: pytest.MonkeyPatch):
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers["Host"] == HOST_PROBE_VALUE:
+            await asyncio.sleep(3600)
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
+    with pytest.raises(TimeoutError):
+        await _host_probe(handler)
+
+
+async def test_bind_probe_bounds_a_loopback_control_that_never_ends(monkeypatch: pytest.MonkeyPatch):
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        await asyncio.sleep(3600)
+        return httpx2.Response(200)
+
+    monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    async with httpx2.AsyncClient() as client:
+        with pytest.raises(TimeoutError):
+            await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+
 async def test_tcp_listening_tells_an_open_port_from_a_closed_one():
     server = await asyncio.start_server(lambda _reader, writer: writer.close(), "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]

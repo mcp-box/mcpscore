@@ -655,6 +655,7 @@ class _HttpTarget:
         anonymous: bool = False,
         follow_redirects: bool = True,
         omit_headers: tuple[str, ...] = (),
+        deadline: float | None = None,
     ) -> _HttpProbeResponse:
         """POST a probe request, optionally stripping headers from the final request.
 
@@ -672,17 +673,21 @@ class _HttpTarget:
         client defaults, so a caller-supplied default cannot accidentally
         restore a header that a negative probe intends to omit. The shared
         client's defaults are never mutated because probes run concurrently.
+        ``deadline`` bounds the whole exchange in seconds, raising
+        ``TimeoutError``: the client timeout bounds each read, so a stream kept
+        open with heartbeats would otherwise never end.
         """
         request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
         if anonymous:
             _strip_credentials(request)
         for header in omit_headers:
             request.headers.pop(header, None)
-        response = (
-            await send_within_origin(self.client, request, **_no_client_auth(anonymous))
-            if follow_redirects
-            else await self.client.send(request, follow_redirects=False, **_no_client_auth(anonymous))
-        )
+        async with asyncio.timeout(deadline):
+            response = (
+                await send_within_origin(self.client, request, **_no_client_auth(anonymous))
+                if follow_redirects
+                else await self.client.send(request, follow_redirects=False, **_no_client_auth(anonymous))
+            )
         return _HttpProbeResponse(
             status_code=response.status_code,
             headers=dict(response.headers),
@@ -2360,7 +2365,9 @@ async def _accepted_control(
     body = _request_body("server/discover", 10, _modern_meta(target_version))
     host_header = {"Host": host} if host is not None else {}
     headers = {**_request_headers(target_version, "server/discover"), **host_header}
-    control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
+    control = await target.post(
+        body, headers, follow_redirects=False, omit_headers=("Origin",), deadline=PROBE_TIMEOUT_S
+    )
     shape = "modern"
     details: dict[str, Any] = {}
 
@@ -2375,7 +2382,9 @@ async def _accepted_control(
         details["modern_control_http_status"] = control.status_code
         body = _legacy_initialize_body(10)
         headers = {**_legacy_headers(), **host_header}
-        control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
+        control = await target.post(
+            body, headers, follow_redirects=False, omit_headers=("Origin",), deadline=PROBE_TIMEOUT_S
+        )
         await target.end_session(control, host_header)
         shape = "legacy-initialize"
         accepted = served(control, "protocolVersion")
@@ -2424,7 +2433,7 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
 
     spoofed = dict(control.headers)
     spoofed["Origin"] = ORIGIN_PROBE_VALUE
-    response = await target.post(control.body, spoofed, follow_redirects=False)
+    response = await target.post(control.body, spoofed, follow_redirects=False, deadline=PROBE_TIMEOUT_S)
     if control.shape == "legacy-initialize":
         await target.end_session(response)
 
@@ -2460,7 +2469,9 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
 
     spoofed = dict(control.headers)
     spoofed["Host"] = HOST_PROBE_VALUE
-    response = await target.post(control.body, spoofed, follow_redirects=False, omit_headers=("Origin",))
+    response = await target.post(
+        control.body, spoofed, follow_redirects=False, omit_headers=("Origin",), deadline=PROBE_TIMEOUT_S
+    )
     if control.shape == "legacy-initialize":
         await target.end_session(response)
 
