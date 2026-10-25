@@ -45,7 +45,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable, Mapping
 
     from mcp import StdioServerParameters
 from urllib.parse import urlsplit
@@ -2465,7 +2465,8 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
     validated. The control request (:func:`_accepted_control`) must be accepted
     first, so an access-controlled server is not credited with a refusal it
     gives everyone. The spoofed twin carries no ``Origin``, so only ``Host``
-    can explain a refusal.
+    can explain a refusal. Both go out on :func:`_direct_client` with the
+    caller's headers, so no proxy stands between them and the server.
     """
     if not _is_loopback_host(urlsplit(target.url).hostname):
         return ProbeResult(
@@ -2473,25 +2474,28 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
             ProbeOutcome.NOT_APPLICABLE,
             {"reason": "target is not a loopback address; a public host's Host routing is not validation"},
         )
-    control = await _accepted_control(target, PROBE_HOST_VALIDATION, "Host")
-    if isinstance(control, ProbeResult):
-        return control
+    # Direct, with the caller's headers: a proxy could refuse or rewrite the foreign Host itself.
+    async with _direct_client(target.client.headers) as client:
+        direct = _HttpTarget(client, target.url)
+        control = await _accepted_control(direct, PROBE_HOST_VALIDATION, "Host")
+        if isinstance(control, ProbeResult):
+            return control
 
-    # A rebound request keeps the port, so only the hostname is foreign: the port comes from the Host the
-    # control actually sent (a caller-configured one, or the URL's with an explicit default port dropped).
-    effective_host = target.client.build_request("POST", target.url).headers["Host"]
-    foreign_host = f"{HOST_PROBE_VALUE}{_port_suffix(effective_host)}"
-    spoofed = {**control.headers, "Host": foreign_host}
-    response = await target.post_rpc(
-        control.body,
-        spoofed,
-        follow_redirects=False,
-        omit_headers=("Origin",),
-        close_session_on_failure=True,
-        cleanup_headers={"Host": foreign_host},
-    )
-    if control.shape == "legacy-initialize":
-        await target.end_session(response, {"Host": foreign_host})
+        # A rebound request keeps the port, so only the hostname is foreign: the port comes from the Host the
+        # control actually sent (a caller-configured one, or the URL's with an explicit default port dropped).
+        effective_host = client.build_request("POST", target.url).headers["Host"]
+        foreign_host = f"{HOST_PROBE_VALUE}{_port_suffix(effective_host)}"
+        spoofed = {**control.headers, "Host": foreign_host}
+        response = await direct.post_rpc(
+            control.body,
+            spoofed,
+            follow_redirects=False,
+            omit_headers=("Origin",),
+            close_session_on_failure=True,
+            cleanup_headers={"Host": foreign_host},
+        )
+        if control.shape == "legacy-initialize":
+            await direct.end_session(response, {"Host": foreign_host})
 
     details = _base_details(response)
     details.update(control.details)
@@ -2570,14 +2574,45 @@ async def _tcp_listening(host: str, port: int) -> bool | None:
     return True
 
 
+async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: str) -> bool | None:
+    """Send an accepted control unchanged to another address: True when served, False when refused, None unknown.
+
+    The request keeps its shape, so a listener is credited only with the exact
+    request the audited server accepted. A session it issues is closed. A
+    timeout, rate limit, server error, unreadable body or missing HTTP answer
+    is unknown.
+    """
+    headers = {**control.headers, "Host": host}
+    try:
+        response = await target.post_rpc(
+            control.body,
+            headers,
+            follow_redirects=False,
+            omit_headers=("Origin",),
+            close_session_on_failure=True,
+            cleanup_headers={"Host": host},
+        )
+    except httpx2.HTTPError:
+        # Connected, no complete HTTP answer: a host firewall can accept a connection and drop the request.
+        return None
+    if control.shape == "legacy-initialize":
+        await target.end_session(response, {"Host": host})
+    field = "supportedVersions" if control.shape == "modern" else "protocolVersion"
+    if 200 <= response.status_code < 300 and (response.result or {}).get(field) is not None:
+        return True
+    if _inconclusive_status(response.status_code) or response.unobservable is not None:
+        return None
+    return False
+
+
 def _inconclusive_status(status: object) -> bool:
     """Whether an HTTP status refuses any request alike: a timeout (408), a rate limit (429) or a server error."""
     return isinstance(status, int) and (status in (408, 429) or status >= 500)
 
 
-def _direct_client() -> httpx2.AsyncClient:
-    """Return a client for requests to this machine's own addresses: no caller headers, cookies or proxies."""
-    return async_client(trust_env=False)
+def _direct_client(headers: Mapping[str, str] | None = None) -> httpx2.AsyncClient:
+    """Return a client that connects directly, never through an environment proxy, carrying only *headers*."""
+    return async_client(trust_env=False, headers=headers)
 
 
 def _address_family(host: str) -> int | None:
@@ -2665,23 +2700,9 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
         serving = 0
         unknown = sum(state is None for state in states)
         for address in listening:
-            lan_target = _HttpTarget(client, _url_at(url, address))
-            try:
-                # Each control request has its own deadline in post_rpc, which also closes a session it issued.
-                control = await _accepted_control(lan_target, PROBE_LOCAL_BIND, "network exposure", host=authority)
-            except httpx2.HTTPError:
-                # Connected, no complete HTTP answer: a host firewall can accept a connection and drop the request.
-                unknown += 1
-                continue
-            if isinstance(control, _AcceptedControl):
-                serving += 1
-            elif any(
-                _inconclusive_status(control.details.get(key))
-                for key in ("control_http_status", "modern_control_http_status")
-            ) or any(key in control.details for key in ("control_unobservable", "modern_control_unobservable")):
-                # A timeout, rate limit, server error or unreadable body, to either control shape, says nothing
-                # about which program answered.
-                unknown += 1
+            served = await _replay_control(_HttpTarget(client, _url_at(url, address)), loopback_control, authority)
+            serving += served is True
+            unknown += served is None
     details: dict[str, Any] = {
         "port": port,
         "interfaces_checked": len(addresses),

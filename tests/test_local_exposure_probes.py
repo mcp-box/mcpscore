@@ -5,6 +5,7 @@ import ipaddress
 import json
 import socket
 from typing import Self
+from unittest.mock import patch
 
 import httpx2
 import pytest
@@ -49,9 +50,19 @@ def _host_checking_handler(*, checks_host: bool, seen: list[httpx2.Request] | No
     return handler
 
 
-async def _host_probe(handler, url: str = LOCAL_URL):
-    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
-        return await _probe_host_validation(_HttpTarget(client, url))
+def _direct_mock(handler):
+    """Stand in for the probe's direct client: same handler, carrying the caller's headers."""
+    return patch.object(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
+
+
+async def _host_probe(handler, url: str = LOCAL_URL, headers: dict[str, str] | None = None):
+    async with httpx2.AsyncClient(headers=headers) as caller_client:
+        with _direct_mock(handler):
+            return await _probe_host_validation(_HttpTarget(caller_client, url))
 
 
 @pytest.mark.parametrize(
@@ -110,11 +121,7 @@ async def test_host_probe_keeps_the_port_so_only_the_hostname_is_foreign():
 
 async def test_host_probe_keeps_the_port_of_a_caller_configured_host():
     seen: list[httpx2.Request] = []
-    handler = _host_checking_handler(checks_host=False, seen=seen)
-    async with httpx2.AsyncClient(
-        transport=httpx2.MockTransport(handler), headers={"Host": "localhost:9000"}
-    ) as client:
-        await _probe_host_validation(_HttpTarget(client, LOCAL_URL))
+    await _host_probe(_host_checking_handler(checks_host=False, seen=seen), headers={"Host": "localhost:9000"})
 
     control, spoofed = seen
     assert control.headers["Host"] == "localhost:9000"
@@ -211,14 +218,29 @@ async def test_host_probe_fails_a_server_that_serves_any_host():
 
 async def test_host_probe_drops_a_caller_configured_origin():
     seen: list[httpx2.Request] = []
-    handler = _host_checking_handler(checks_host=True, seen=seen)
-    async with httpx2.AsyncClient(
-        transport=httpx2.MockTransport(handler), headers={"Origin": "http://localhost:8000"}
-    ) as client:
-        result = await _probe_host_validation(_HttpTarget(client, LOCAL_URL))
+    result = await _host_probe(
+        _host_checking_handler(checks_host=True, seen=seen), headers={"Origin": "http://localhost:8000"}
+    )
 
     assert result.outcome is ProbeOutcome.SUPPORTED
     assert all("Origin" not in request.headers for request in seen)
+
+
+async def test_host_probe_sends_both_requests_directly_with_the_caller_headers():
+    seen: list[httpx2.Request] = []
+    result = await _host_probe(
+        _host_checking_handler(checks_host=True, seen=seen), headers={"Authorization": "Bearer caller-token"}
+    )
+
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert [request.headers["Authorization"] for request in seen] == ["Bearer caller-token"] * 2
+
+
+async def test_direct_client_carries_the_given_headers_and_no_proxy(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
+    async with probes._direct_client({"Authorization": "Bearer t"}) as client:
+        assert client.trust_env is False
+        assert client.headers["Authorization"] == "Bearer t"
 
 
 async def test_host_probe_does_not_judge_a_public_host():
@@ -282,7 +304,11 @@ async def test_bind_probe_bounds_a_loopback_control_that_never_ends(monkeypatch:
 
     monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
-    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
     async with httpx2.AsyncClient() as client:
         with pytest.raises(httpx2.TimeoutException):
             await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
@@ -371,7 +397,11 @@ async def _bind_probe(
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: addresses)
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
     # The caller's client carries credentials; the probe must never use it.
     async with httpx2.AsyncClient(
         transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer caller-secret"}
@@ -429,7 +459,11 @@ async def test_bind_probe_counts_an_inconclusive_network_answer_as_unknown(
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
     async with httpx2.AsyncClient() as client:
         result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
@@ -451,7 +485,11 @@ async def test_bind_probe_counts_an_inconclusive_modern_answer_before_a_refused_
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
     async with httpx2.AsyncClient() as client:
         result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
@@ -472,7 +510,11 @@ async def test_bind_probe_counts_an_unreadable_network_answer_as_unknown(monkeyp
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
     async with httpx2.AsyncClient() as client:
         result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
@@ -510,6 +552,39 @@ async def test_host_probe_closes_a_session_whose_spoofed_answer_never_finishes(m
         await _host_probe(handler)
 
     assert ("sess-2", f"{HOST_PROBE_VALUE}:8000") in deletes
+
+
+async def test_bind_probe_replays_the_accepted_request_instead_of_falling_back(monkeypatch: pytest.MonkeyPatch):
+    """A legacy server on the network address must not stand in for a modern-only audited server."""
+    lan_methods: list[str] = []
+
+    async def fake_listening(host: str, port: int) -> bool:
+        return True
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if request.url.host != "192.168.1.20":
+            return _discover_result(body.get("id"))
+        lan_methods.append(body["method"])
+        if body["method"] == "server/discover":
+            return httpx2.Response(400)
+        return httpx2.Response(
+            200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-11-25"}}
+        )
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
+    async with httpx2.AsyncClient() as client:
+        result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["interfaces_serving"] == 0
+    assert lan_methods == ["server/discover"]
 
 
 async def test_bind_probe_passes_a_server_bound_to_loopback_only(monkeypatch: pytest.MonkeyPatch):
@@ -580,7 +655,11 @@ async def test_bind_probe_counts_a_connection_without_an_http_answer_as_unknown(
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
     async with httpx2.AsyncClient() as client:
         result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
@@ -640,7 +719,11 @@ async def test_bind_probe_counts_a_network_answer_that_never_finishes_as_unknown
     monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.1)
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
     async with httpx2.AsyncClient() as client:
         result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
@@ -659,10 +742,13 @@ async def test_bind_probe_closes_a_session_a_stalled_network_answer_issued(monke
             deletes.append(f"{request.url.host}/{request.headers['Mcp-Session-Id']}")
             return httpx2.Response(200)
         body = json.loads(request.content)
-        if request.url.host != "192.168.1.20":
-            return _discover_result(body.get("id"))
         if body["method"] != "initialize":
             return httpx2.Response(400)
+        if request.url.host != "192.168.1.20":
+            # A legacy-only server on loopback, so the replayed control is its initialize.
+            return httpx2.Response(
+                200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-11-25"}}
+            )
 
         async def heartbeats():
             while True:
@@ -678,7 +764,11 @@ async def test_bind_probe_closes_a_session_a_stalled_network_answer_issued(monke
     monkeypatch.setattr(probes, "LOCAL_BIND_CONFIRM_TIMEOUT_S", 0.05, raising=False)
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
-    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(
+        probes,
+        "_direct_client",
+        lambda headers=None: httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers),
+    )
     async with httpx2.AsyncClient() as client:
         result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
 
