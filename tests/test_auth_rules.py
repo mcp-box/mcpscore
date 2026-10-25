@@ -7,6 +7,7 @@ import pytest
 from mcpscore.probes import (
     PROBE_AUTH_METADATA,
     PROBE_INVALID_TOKEN,
+    PROBE_QUERY_CREDENTIAL,
     PROBE_UNAUTHENTICATED,
     ProbeOutcome,
     ProbeResult,
@@ -23,6 +24,7 @@ from mcpscore.rules.auth import (
     AuthScopesAdvertisedRule,
     AuthServerMetadataPresentRule,
     AuthServerPkceRule,
+    AuthTokenNotInQueryRule,
     AuthWwwAuthenticateRule,
 )
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, RuleSeverity
@@ -555,3 +557,56 @@ class TestInvalidTokenRejected:
         result = self.rule.check(_data(_unauth(401), token=token))
 
         assert "same request without a token gets HTTP 403" in result.message
+
+
+def _query(outcome: ProbeOutcome, **details: object) -> AuditData:
+    probe = ProbeResult(PROBE_QUERY_CREDENTIAL, outcome, {"credential_params": ["token"], **details})
+    return AuditData(url=f"{URL}?token=rdme_x", probes={PROBE_QUERY_CREDENTIAL: probe})
+
+
+class TestTokenNotInQuery:
+    rule = AuthTokenNotInQueryRule()
+
+    def test_is_high_in_the_security_group(self):
+        assert self.rule.severity is RuleSeverity.HIGH
+        assert self.rule.group_name == "security"
+        assert self.rule.min_spec_version == "2025-03-26"
+
+    def test_url_without_a_credential_is_not_applicable(self):
+        probe = ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.NOT_APPLICABLE, {"reason": "no credential"})
+        assert self.rule.skip_reason(AuditData(url=URL, probes={PROBE_QUERY_CREDENTIAL: probe})) == (
+            SKIP_REASON_NOT_APPLICABLE
+        )
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            AuditData(url=URL),
+            AuditData(
+                url=URL, probes={PROBE_QUERY_CREDENTIAL: ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.ERROR)}
+            ),
+            _query(ProbeOutcome.NOT_APPLICABLE, reason="HTTP 401 with the credential and 401 without it"),
+        ],
+    )
+    def test_unobserved_or_inconclusive_is_insufficient_data(self, data: AuditData):
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_server_reading_the_query_fails(self):
+        data = _query(ProbeOutcome.UNSUPPORTED, http_status=200, without_credential_http_status=401)
+        assert self.rule.skip_reason(data) is None
+
+        result = self.rule.check(data)
+
+        assert not result.passed
+        assert '"token"' in result.message
+        assert "HTTP 401" in result.message
+        assert result.details["without_credential_http_status"] == 401
+        assert "Authorization: Bearer" in (result.suggested_fix or "")
+        assert "rdme_x" not in str(result.to_dict())
+
+    def test_server_not_needing_the_credential_passes_with_advice(self):
+        result = self.rule.check(_query(ProbeOutcome.SUPPORTED, http_status=200, without_credential_http_status=200))
+
+        assert result.passed
+        assert "remove it from the URL" in result.message
+        assert result.suggested_fix is None

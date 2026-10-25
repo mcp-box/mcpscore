@@ -144,6 +144,8 @@ def data_for(rule_id: str, *, failure: bool) -> AuditData:
 
 
 def _fail_auth(rule_id, probes, metadata):
+    if rule_id == "auth_token_not_in_query":
+        return  # its own probe's failing fixture is the whole observation
     if rule_id == "auth_www_authenticate":
         probes[PROBE_UNAUTHENTICATED].details["www_authenticate"] = None
     elif rule_id == "auth_invalid_token_rejected":
@@ -183,10 +185,10 @@ def test_each_rule_guidance_contract(rule_id, failure, monkeypatch):
         assert "suggested_fix" not in wire
 
 
-def test_inventory_covers_all_53_rules():
-    assert len(RULES) == 53
+def test_inventory_covers_all_54_rules():
+    assert len(RULES) == 54
     assert sum(r.group_name == "readiness" for r in RULES.values()) == 21
-    assert sum(r.group_name == "security" for r in RULES.values()) == 14
+    assert sum(r.group_name == "security" for r in RULES.values()) == 15
 
 
 @pytest.mark.parametrize("outcome", [ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE])
