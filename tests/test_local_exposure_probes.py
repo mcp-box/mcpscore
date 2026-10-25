@@ -395,6 +395,60 @@ async def test_bind_probe_ignores_an_unrelated_listener_on_the_same_port(monkeyp
     assert result.details["interfaces_serving"] == 0
 
 
+@pytest.mark.parametrize("status", [408, 429, 500, 503])
+async def test_bind_probe_counts_an_inconclusive_network_answer_as_unknown(
+    monkeypatch: pytest.MonkeyPatch, status: int
+):
+    async def fake_listening(host: str, port: int) -> bool:
+        return True
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            return httpx2.Response(status)
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
+    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    async with httpx2.AsyncClient() as client:
+        result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_unknown"] == 1
+
+
+async def test_host_probe_closes_a_session_whose_spoofed_answer_never_finishes(monkeypatch: pytest.MonkeyPatch):
+    deletes: list[tuple[str, str]] = []
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "DELETE":
+            deletes.append((request.headers["Mcp-Session-Id"], request.headers["Host"]))
+            return httpx2.Response(200)
+        body = json.loads(request.content)
+        if body["method"] != "initialize":
+            return httpx2.Response(400, json={"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32600}})
+        if request.headers["Host"].startswith(HOST_PROBE_VALUE):
+
+            async def stalled():
+                yield b": heartbeat\n\n"
+                await asyncio.sleep(3600)
+
+            return httpx2.Response(
+                200, headers={"Mcp-Session-Id": "sess-2", "content-type": "text/event-stream"}, content=stalled()
+            )
+        return httpx2.Response(
+            200,
+            headers={"Mcp-Session-Id": "sess-1"},
+            json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-11-25"}},
+        )
+
+    monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.1)
+    with pytest.raises(httpx2.TimeoutException):
+        await _host_probe(handler)
+
+    assert ("sess-2", f"{HOST_PROBE_VALUE}:8000") in deletes
+
+
 async def test_bind_probe_passes_a_server_bound_to_loopback_only(monkeypatch: pytest.MonkeyPatch):
     result, connects, _ = await _bind_probe(monkeypatch, "http://127.0.0.1/mcp", ["192.168.1.20"], {})
 

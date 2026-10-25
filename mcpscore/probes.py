@@ -2364,7 +2364,14 @@ async def _accepted_control(
     body = _request_body("server/discover", 10, _modern_meta(target_version))
     host_header = {"Host": host} if host is not None else {}
     headers = {**_request_headers(target_version, "server/discover"), **host_header}
-    control = await target.post_rpc(body, headers, follow_redirects=False, omit_headers=("Origin",))
+    control = await target.post_rpc(
+        body,
+        headers,
+        follow_redirects=False,
+        omit_headers=("Origin",),
+        close_session_on_failure=True,
+        cleanup_headers=host_header,
+    )
     shape = "modern"
     details: dict[str, Any] = {}
 
@@ -2379,7 +2386,14 @@ async def _accepted_control(
         details["modern_control_http_status"] = control.status_code
         body = _legacy_initialize_body(10)
         headers = {**_legacy_headers(), **host_header}
-        control = await target.post_rpc(body, headers, follow_redirects=False, omit_headers=("Origin",))
+        control = await target.post_rpc(
+            body,
+            headers,
+            follow_redirects=False,
+            omit_headers=("Origin",),
+            close_session_on_failure=True,
+            cleanup_headers=host_header,
+        )
         await target.end_session(control, host_header)
         shape = "legacy-initialize"
         accepted = served(control, "protocolVersion")
@@ -2428,7 +2442,7 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
 
     spoofed = dict(control.headers)
     spoofed["Origin"] = ORIGIN_PROBE_VALUE
-    response = await target.post_rpc(control.body, spoofed, follow_redirects=False)
+    response = await target.post_rpc(control.body, spoofed, follow_redirects=False, close_session_on_failure=True)
     if control.shape == "legacy-initialize":
         await target.end_session(response)
 
@@ -2467,7 +2481,14 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
     port = httpx2.URL(target.url).port
     foreign_host = HOST_PROBE_VALUE if port is None else f"{HOST_PROBE_VALUE}:{port}"
     spoofed = {**control.headers, "Host": foreign_host}
-    response = await target.post_rpc(control.body, spoofed, follow_redirects=False, omit_headers=("Origin",))
+    response = await target.post_rpc(
+        control.body,
+        spoofed,
+        follow_redirects=False,
+        omit_headers=("Origin",),
+        close_session_on_failure=True,
+        cleanup_headers={"Host": foreign_host},
+    )
     if control.shape == "legacy-initialize":
         await target.end_session(response, {"Host": foreign_host})
 
@@ -2538,6 +2559,11 @@ async def _tcp_listening(host: str, port: int) -> bool | None:
     with suppress(OSError):
         await writer.wait_closed()
     return True
+
+
+def _inconclusive_status(status: object) -> bool:
+    """Whether an HTTP status refuses any request alike: a timeout (408), a rate limit (429) or a server error."""
+    return isinstance(status, int) and (status in (408, 429) or status >= 500)
 
 
 def _direct_client() -> httpx2.AsyncClient:
@@ -2640,6 +2666,9 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
                 continue
             if isinstance(control, _AcceptedControl):
                 serving += 1
+            elif _inconclusive_status(control.details.get("control_http_status")):
+                # A timeout, rate limit or server error says nothing about which program answered.
+                unknown += 1
     details: dict[str, Any] = {
         "port": port,
         "interfaces_checked": len(addresses),
