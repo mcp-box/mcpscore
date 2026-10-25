@@ -2467,13 +2467,15 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
     if isinstance(control, ProbeResult):
         return control
 
-    spoofed = dict(control.headers)
-    spoofed["Host"] = HOST_PROBE_VALUE
+    # A rebound request keeps the port, so only the hostname is foreign.
+    port = urlsplit(target.url).port
+    foreign_host = HOST_PROBE_VALUE if port is None else f"{HOST_PROBE_VALUE}:{port}"
+    spoofed = {**control.headers, "Host": foreign_host}
     response = await target.post(
         control.body, spoofed, follow_redirects=False, omit_headers=("Origin",), deadline=PROBE_TIMEOUT_S
     )
     if control.shape == "legacy-initialize":
-        await target.end_session(response)
+        await target.end_session(response, {"Host": foreign_host})
 
     details = _base_details(response)
     details.update(control.details)

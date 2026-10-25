@@ -89,10 +89,31 @@ async def test_host_probe_passes_a_server_that_refuses_a_foreign_host():
     assert result.details["control_shape"] == "modern"
     control, spoofed = seen
     assert control.headers["Host"] == "localhost:8000"
-    assert spoofed.headers["Host"] == HOST_PROBE_VALUE
+    assert spoofed.headers["Host"] == f"{HOST_PROBE_VALUE}:8000"
     # Only Host can explain the refusal: neither request carries an Origin.
     assert "Origin" not in control.headers
     assert "Origin" not in spoofed.headers
+
+
+async def test_host_probe_keeps_the_port_so_only_the_hostname_is_foreign():
+    """A server that checks only the port must not pass: a rebound request keeps the port."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if not request.headers["Host"].endswith(":8000"):
+            return httpx2.Response(400, text="bad port")
+        return _discover_result(json.loads(request.content).get("id"))
+
+    result = await _host_probe(handler)
+
+    assert result.outcome is ProbeOutcome.UNSUPPORTED
+    assert result.details["http_status"] == 200
+
+
+async def test_host_probe_omits_the_port_for_a_default_port_target():
+    seen: list[httpx2.Request] = []
+    await _host_probe(_host_checking_handler(checks_host=False, seen=seen), "http://localhost/mcp")
+
+    assert seen[-1].headers["Host"] == HOST_PROBE_VALUE
 
 
 async def test_host_probe_fails_a_server_that_serves_any_host():
@@ -133,11 +154,11 @@ async def test_host_probe_does_not_judge_an_access_controlled_server():
 
 
 async def test_host_probe_judges_a_legacy_server_through_initialize_and_closes_its_sessions():
-    deletes: list[str] = []
+    deletes: list[tuple[str, str]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "DELETE":
-            deletes.append(request.headers["Mcp-Session-Id"])
+            deletes.append((request.headers["Mcp-Session-Id"], request.headers["Host"]))
             return httpx2.Response(200)
         body = json.loads(request.content)
         if body["method"] != "initialize":
@@ -153,12 +174,13 @@ async def test_host_probe_judges_a_legacy_server_through_initialize_and_closes_i
     assert result.outcome is ProbeOutcome.UNSUPPORTED
     assert result.details["control_shape"] == "legacy-initialize"
     assert result.details["modern_control_http_status"] == 400
-    assert deletes == ["sess-1", "sess-1"]
+    # Each session is closed on the Host that opened it.
+    assert deletes == [("sess-1", "localhost:8000"), ("sess-1", f"{HOST_PROBE_VALUE}:8000")]
 
 
 async def test_host_probe_bounds_a_spoofed_response_that_never_ends(monkeypatch: pytest.MonkeyPatch):
     async def handler(request: httpx2.Request) -> httpx2.Response:
-        if request.headers["Host"] == HOST_PROBE_VALUE:
+        if request.headers["Host"].startswith(HOST_PROBE_VALUE):
             await asyncio.sleep(3600)
         return _discover_result(json.loads(request.content).get("id"))
 
