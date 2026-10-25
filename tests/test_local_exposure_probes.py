@@ -5,6 +5,7 @@ import ipaddress
 import json
 import socket
 from typing import Self
+from urllib.parse import urlsplit
 
 import httpx2
 import pytest
@@ -373,6 +374,43 @@ async def test_bind_probe_sends_no_caller_credentials(monkeypatch: pytest.Monkey
         assert "Authorization" not in request.headers
         assert "api_key" not in str(request.url)
         assert request.url.params["tenant"] == "a"
+
+
+async def test_bind_probe_sends_no_url_userinfo(monkeypatch: pytest.MonkeyPatch):
+    _, _, requests = await _bind_probe(
+        monkeypatch,
+        "http://user:secret@localhost:8000/mcp",
+        ["192.168.1.20"],
+        {"192.168.1.20": True},
+        serving={"192.168.1.20"},
+    )
+
+    assert {request.url.host for request in requests} == {"localhost", "192.168.1.20"}
+    for request in requests:
+        assert request.headers["Host"] == "localhost:8000"
+        assert "Authorization" not in request.headers
+        assert "secret" not in str(request.url)
+
+
+async def test_bind_probe_bounds_a_confirmation_that_never_ends(monkeypatch: pytest.MonkeyPatch):
+    async def fake_listening(host: str, port: int) -> bool:
+        return True
+
+    async def endless_control(target, probe_id, subject, *, host=None):
+        if urlsplit(target.url).hostname == "localhost":
+            return probes._AcceptedControl(body={}, headers={}, shape="modern", details={})
+        await asyncio.sleep(3600)
+        return None
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
+    monkeypatch.setattr(probes, "_accepted_control", endless_control)
+    monkeypatch.setattr(probes, "LOCAL_BIND_CONFIRM_TIMEOUT_S", 0.01)
+    async with httpx2.AsyncClient() as client:
+        result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_unknown"] == 1
 
 
 async def test_bind_probe_leaves_a_server_that_refuses_the_url_host_unjudged(monkeypatch: pytest.MonkeyPatch):

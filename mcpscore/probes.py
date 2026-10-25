@@ -144,6 +144,9 @@ LOCAL_BIND_TIMEOUT_S = 5.0
 
 Windows reports a refused connection only after retrying the SYN for about two seconds."""
 
+LOCAL_BIND_CONFIRM_TIMEOUT_S = 2 * PROBE_TIMEOUT_S
+"""Deadline for confirming one network address serves the audited server: the modern control and its fallback."""
+
 UNKNOWN_VERSION = "2099-01-01"
 """Deliberately unsupported version used by the unknown-version probe."""
 
@@ -2599,10 +2602,12 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
         )
     # A listener on another address is unverified until it serves the control, so no request carries
     # the caller's credentials, and none goes through a proxy that could answer in the server's place.
-    url = without_credential_params(target.url)
+    # Rebuilt from host and port, so no userinfo reaches either the URL or the Host header.
+    url = _url_at(without_credential_params(target.url), parts.hostname or "")
+    authority = urlsplit(url).netloc
     async with _direct_client() as client:
         loopback_control = await _accepted_control(
-            _HttpTarget(client, url), PROBE_LOCAL_BIND, "network exposure", host=parts.netloc
+            _HttpTarget(client, url), PROBE_LOCAL_BIND, "network exposure", host=authority
         )
         if isinstance(loopback_control, ProbeResult):
             return loopback_control
@@ -2615,9 +2620,11 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
         for address in listening:
             lan_target = _HttpTarget(client, _url_at(url, address))
             try:
-                control = await _accepted_control(lan_target, PROBE_LOCAL_BIND, "network exposure", host=parts.netloc)
-            except httpx2.HTTPError:
-                # Connected, but no HTTP answer (a host firewall can accept the connection and drop the request).
+                # One deadline for the whole confirmation: a stream kept open with heartbeats never times out a read.
+                async with asyncio.timeout(LOCAL_BIND_CONFIRM_TIMEOUT_S):
+                    control = await _accepted_control(lan_target, PROBE_LOCAL_BIND, "network exposure", host=authority)
+            except (httpx2.HTTPError, TimeoutError):
+                # Connected, no complete HTTP answer: a host firewall can accept a connection and drop the request.
                 unknown += 1
                 continue
             if isinstance(control, _AcceptedControl):
