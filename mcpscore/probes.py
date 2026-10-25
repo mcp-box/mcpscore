@@ -2498,8 +2498,8 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
 
     details = _base_details(response)
     details.update(control.details)
-    if response.status_code in (408, 429):
-        # A timeout or rate limit refuses any Host alike, so it says nothing about Host validation.
+    if _inconclusive_status(response.status_code):
+        # A timeout, rate limit or server error answers any Host alike, so it says nothing about Host validation.
         details["reason"] = f"HTTP {response.status_code} is not a Host decision"
         return ProbeResult(PROBE_HOST_VALIDATION, ProbeOutcome.ERROR, details)
     refused = 400 <= response.status_code < 500

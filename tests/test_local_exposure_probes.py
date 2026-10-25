@@ -178,8 +178,8 @@ async def test_origin_probe_reads_a_control_answered_after_an_sse_priming_event(
     assert result.details["control_shape"] == "modern"
 
 
-@pytest.mark.parametrize("status", [408, 429])
-async def test_host_probe_does_not_credit_a_timeout_or_rate_limit(status: int):
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503])
+async def test_host_probe_does_not_judge_a_timeout_rate_limit_or_server_error(status: int):
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.headers["Host"].startswith(HOST_PROBE_VALUE):
             return httpx2.Response(status)
