@@ -3358,13 +3358,25 @@ class TestQueryCredentialVerdicts:
         assert result.details["method"] == "initialize"
         assert result.details["without_credential_http_status"] == 401
 
-    async def test_legacy_server_ignoring_the_credential_is_supported(self):
+    async def test_two_served_handshakes_prove_nothing(self):
+        # A public initialize says nothing about reads the credential may still guard.
         def initialize(has_token: bool) -> httpx2.Response:
             return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "2025-11-25"}})
 
         result = await self._probe(_scripted(_status(400), _status(400), initialize=initialize))
 
-        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["method"] == "initialize"
+
+    async def test_missing_session_with_the_credential_and_401_without_it_tries_initialize(self):
+        def initialize(has_token: bool) -> httpx2.Response:
+            if not has_token:
+                return httpx2.Response(401)
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "2025-11-25"}})
+
+        result = await self._probe(_scripted(_status(404), _status(401), initialize=initialize))
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
         assert result.details["method"] == "initialize"
 
     async def test_two_plain_400s_without_an_initialize_answer_stay_undecided(self):

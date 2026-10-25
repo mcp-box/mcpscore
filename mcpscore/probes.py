@@ -1766,10 +1766,12 @@ async def _probe_query_credential(target: _HttpTarget) -> ProbeResult:
     Runs only when the audited URL carries a credential parameter
     (:func:`mcpscore.url_credentials.credential_query_params`); otherwise NOT_APPLICABLE
     with no request sent. The same anonymous ``tools/list`` goes to the URL as given and
-    to the URL without its credential parameters, then a legacy ``initialize`` if neither
-    answer decides. UNSUPPORTED: the first is served (2xx) and the second refused
-    (:func:`_token_refused`), so the server authenticates from the query. SUPPORTED: both
-    are served, so the credential is not needed. Anything else is NOT_APPLICABLE. Each
+    to the URL without its credential parameters, then a legacy ``initialize`` when the
+    request with the credential got a plain 4xx (a missing session). UNSUPPORTED: the first
+    is served (2xx) and the second refused (:func:`_token_refused`), so the server
+    authenticates from the query. SUPPORTED: both ``tools/list`` requests are served, so the
+    credential is not needed; two served handshakes prove nothing, since a server may keep
+    ``initialize`` public. Anything else is NOT_APPLICABLE. Each
     request reads only up to its response; a session opened is closed. Details name the
     parameters, never their values.
     """
@@ -1804,10 +1806,12 @@ async def _probe_query_credential(target: _HttpTarget) -> ProbeResult:
         details |= {"method": method, "http_status": given, "without_credential_http_status": stripped}
         if 200 <= given < 300 and _token_refused(responses[1]):
             return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.UNSUPPORTED, details)
-        if 200 <= given < 300 and 200 <= stripped < 300:
+        # A served initialize proves only the handshake, which a server may leave public while it guards reads.
+        if method == "tools/list" and 200 <= given < 300 and 200 <= stripped < 300:
             return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.SUPPORTED, details)
-        # Only a plain 4xx to both (a legacy server refusing the sessionless request) is worth the initialize.
-        if not all(400 <= status < 500 and status not in (*AUTH_GATED_STATUSES, 408, 429) for status in statuses):
+        # A legacy server refuses the sessionless request with a plain 4xx; its initialize may still decide.
+        plain_4xx = 400 <= given < 500 and given not in (408, 429) and not _token_refused(responses[0])
+        if not (plain_4xx and 400 <= stripped < 500 and stripped not in (408, 429)):
             break
     details["reason"] = (
         f"HTTP {details['http_status']} with the credential and {details['without_credential_http_status']} "
