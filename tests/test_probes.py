@@ -35,6 +35,7 @@ from mcpscore.probes import (
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
     PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_PROMPTS_INVALID_CURSOR,
+    PROBE_QUERY_CREDENTIAL,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
@@ -222,6 +223,8 @@ async def test_modern_server_supports_all_probed_behaviors():
         PROBE_SESSION_DELETE,
         # Serves anonymous requests, so there is no token check to probe.
         PROBE_INVALID_TOKEN,
+        # The audited URL carries no credential in its query.
+        PROBE_QUERY_CREDENTIAL,
     }
     for probe_id in PROBE_IDS:
         expected = ProbeOutcome.NOT_APPLICABLE if probe_id in not_applicable else ProbeOutcome.SUPPORTED
@@ -1628,9 +1631,11 @@ async def test_network_failure_yields_error_outcomes_not_exceptions():
 
     results = await _run(handler)
 
-    for probe_id in PROBE_IDS:
+    # The query-credential probe sends nothing for a URL without a credential in its query.
+    for probe_id in set(PROBE_IDS) - {PROBE_QUERY_CREDENTIAL}:
         assert results[probe_id].outcome is ProbeOutcome.ERROR, probe_id
         assert results[probe_id].details["exception"] == "ConnectError"
+    assert results[PROBE_QUERY_CREDENTIAL].outcome is ProbeOutcome.NOT_APPLICABLE
 
 
 async def test_non_mcp_endpoint_is_unsupported():
@@ -3208,3 +3213,74 @@ class TestInvalidTokenProbe:
         assert results[PROBE_INVALID_TOKEN].outcome is ProbeOutcome.SUPPORTED
         assert _token_requests(seen)
         assert all("X-Api-Key" not in r.headers for r in _token_requests(seen))
+
+
+QUERY_URL = "https://server.example/mcp?transport=streamable&token=rdme_secret123"
+
+
+async def _run_at(url: str, handler, headers: dict[str, str] | None = None) -> dict[str, ProbeResult]:
+    async with (
+        httpx2.AsyncClient(transport=httpx2.MockTransport(handler), headers=headers) as client,
+        _client(handler) as fresh_client,
+    ):
+        return await run_all_probes(url, client=client, fresh_client=fresh_client)
+
+
+def _query_gate(seen: list[httpx2.Request], *, reads_query: bool = True, gate_all: bool = False):
+    """Build a server that serves tools/list only when the URL's token is present (or always, or never)."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST" and json.loads(request.content or b"{}").get("method") == "tools/list":
+            seen.append(request)
+        has_token = request.url.params.get("token") == "rdme_secret123"
+        if gate_all or (reads_query and not has_token):
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+        return _modern_server_handler(request)
+
+    return handler
+
+
+class TestQueryCredentialProbe:
+    async def test_server_reading_the_query_credential_is_unsupported(self):
+        seen: list[httpx2.Request] = []
+        result = (await _run_at(QUERY_URL, _query_gate(seen)))[PROBE_QUERY_CREDENTIAL]
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["credential_params"] == ["token"]
+        assert result.details["http_status"] == 200
+        assert result.details["without_credential_http_status"] == 401
+        # The stripped request keeps every other parameter.
+        assert any(r.url.params.get("transport") == "streamable" and "token" not in r.url.params for r in seen)
+
+    async def test_details_never_carry_the_credential_value(self):
+        result = (await _run_at(QUERY_URL, _query_gate([])))[PROBE_QUERY_CREDENTIAL]
+
+        assert "rdme_secret123" not in json.dumps(result.to_dict())
+
+    async def test_server_ignoring_the_query_credential_is_supported(self):
+        result = (await _run_at(QUERY_URL, _query_gate([], reads_query=False)))[PROBE_QUERY_CREDENTIAL]
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["without_credential_http_status"] == 200
+
+    async def test_credential_that_does_not_open_the_gate_is_not_applicable(self):
+        result = (await _run_at(QUERY_URL, _query_gate([], gate_all=True)))[PROBE_QUERY_CREDENTIAL]
+
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["credential_params"] == ["token"]
+        assert "do not show" in result.details["reason"]
+
+    async def test_url_without_a_credential_sends_nothing(self):
+        seen: list[httpx2.Request] = []
+        result = (await _run_at(URL, _query_gate(seen, reads_query=False)))[PROBE_QUERY_CREDENTIAL]
+
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert "credential_params" not in result.details
+
+    async def test_requests_are_anonymous(self):
+        seen: list[httpx2.Request] = []
+        await _run_at(QUERY_URL, _query_gate(seen), headers={"Authorization": "Bearer caller-token"})
+
+        stripped = [r for r in seen if "token" not in r.url.params]
+        assert stripped
+        assert all("Authorization" not in r.headers for r in stripped)

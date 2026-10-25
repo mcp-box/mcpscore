@@ -62,6 +62,7 @@ from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
 from mcpscore.spec import DRAFT, LATEST, SPEC_VERSIONS, Era, Lifecycle
 from mcpscore.tls import async_client
+from mcpscore.url_credentials import credential_query_params, without_credential_params
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,7 @@ PROBE_NOTIFICATION_ACCEPTED = "probe_notification_accepted"
 PROBE_INVALID_REQUEST = "probe_invalid_request"
 PROBE_GET_STREAM = "probe_get_stream"
 PROBE_SESSION_DELETE = "probe_session_delete"
+PROBE_QUERY_CREDENTIAL = "probe_query_credential"
 
 _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -208,6 +210,7 @@ _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_INVALID_REQUEST,
     PROBE_GET_STREAM,
     PROBE_SESSION_DELETE,
+    PROBE_QUERY_CREDENTIAL,
 )
 CATALOG_CONNECTION_PROBE_IDS: tuple[str, ...] = (
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
@@ -235,6 +238,7 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_INVALID_REQUEST,
         PROBE_GET_STREAM,
         PROBE_SESSION_DELETE,
+        PROBE_QUERY_CREDENTIAL,
     }
 )
 """Probes whose *subject* is an HTTP construct, so they cannot run over stdio.
@@ -256,7 +260,7 @@ STDIO_PROBE_IDS: tuple[str, ...] = tuple(p for p in _SINGLE_TARGET_PROBE_IDS if 
 _AUTH_DISCOVERY_PROBE_IDS = (PROBE_UNAUTHENTICATED, PROBE_AUTH_METADATA, PROBE_INVALID_TOKEN)
 """Probes that run after the unauthenticated request, because they depend on what it observed."""
 
-_ANONYMOUS_PROBE_IDS = frozenset(_AUTH_DISCOVERY_PROBE_IDS)
+_ANONYMOUS_PROBE_IDS = frozenset((*_AUTH_DISCOVERY_PROBE_IDS, PROBE_QUERY_CREDENTIAL))
 """Probes that must see the server as an unauthenticated client does.
 
 These run on a client that carries none of the caller's headers: --header may
@@ -1756,6 +1760,53 @@ async def _judge_served_initialize(target: _HttpTarget, details: dict[str, Any])
     return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.NOT_APPLICABLE, details)
 
 
+def _answered(status: int) -> bool:
+    """Whether a response got past any auth gate and says something: not 401/403, a redirect, 408/429 or 5xx."""
+    return status not in AUTH_GATED_STATUSES and status < 500 and status not in (408, 429) and not 300 <= status < 400
+
+
+async def _probe_query_credential(target: _HttpTarget) -> ProbeResult:
+    """Ask whether the server takes its credential from the URL's query string.
+
+    Runs only when the audited URL carries a credential parameter
+    (:func:`mcpscore.url_credentials.credential_query_params`); otherwise NOT_APPLICABLE
+    with no request sent. The same anonymous request goes to the URL as given and to
+    the URL without its credential parameters. UNSUPPORTED: the first is answered and
+    the second refused with 401/403, so the server authenticates from the query.
+    SUPPORTED: both are answered, so the credential is not needed. Anything else,
+    including a refused first request, is NOT_APPLICABLE. Details name the
+    parameters, never their values.
+    """
+    names = credential_query_params(urlsplit(target.url).query)
+    if not names:
+        return ProbeResult(
+            PROBE_QUERY_CREDENTIAL,
+            ProbeOutcome.NOT_APPLICABLE,
+            {"reason": "the URL carries no credential in its query"},
+        )
+    target_version = _target_version()
+    body = _request_body("tools/list", 7, _modern_meta(target_version))
+    headers = _request_headers(target_version, "tools/list")
+    given = await target.post(body, headers, anonymous=True, follow_redirects=False)
+    stripped = await replace(target, url=without_credential_params(target.url)).post(
+        body, headers, anonymous=True, follow_redirects=False
+    )
+    details: dict[str, Any] = {
+        "credential_params": [name[:40] for name in names[:5]],
+        "http_status": given.status_code,
+        "without_credential_http_status": stripped.status_code,
+    }
+    if _answered(given.status_code) and stripped.status_code in AUTH_GATED_STATUSES:
+        return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.UNSUPPORTED, details)
+    if _answered(given.status_code) and _answered(stripped.status_code):
+        return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.SUPPORTED, details)
+    details["reason"] = (
+        f"HTTP {given.status_code} with the credential and {stripped.status_code} without it "
+        "do not show whether the server reads it"
+    )
+    return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.NOT_APPLICABLE, details)
+
+
 def observed_auth_status(probes: dict[str, ProbeResult] | None) -> int | None:
     """HTTP status of an auth gate the probes observed, or None if they saw no gate.
 
@@ -2847,6 +2898,7 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_INVALID_REQUEST: _probe_invalid_request,
     PROBE_GET_STREAM: _probe_get_stream,
     PROBE_SESSION_DELETE: _probe_session_delete,
+    PROBE_QUERY_CREDENTIAL: _probe_query_credential,
 }
 """Probes whose subject is an HTTP construct (see HTTP_ONLY_PROBE_IDS)."""
 

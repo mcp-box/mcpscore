@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`auth_token_not_in_query` (HIGH): the server does not take its credential
+  from the URL's query string.** MCP Authorization §Access Token Usage says
+  access tokens MUST NOT be in the URI query string, yet some hosted servers
+  document `?token=…` for clients that can't send headers, so the credential
+  lands in logs, browser history and shared configurations. When the audited
+  URL carries a credential parameter, a new anonymous probe sends the same
+  request without it: the rule fails only when that request is refused with
+  401/403 while the full URL is served. A server that answers either way
+  passes, with a note to drop the parameter from the URL. Other URLs skip as
+  not applicable, so no existing score changes.
+- **`mcpscore.url_credentials`**: `credential_query_params` and
+  `without_credential_params` decide which query parameters carry a
+  credential. Names match exactly after normalising (`apiKey`, `api-key`,
+  `serviceAPIKey`), never by substring; ambiguous names such as `key` count
+  only with a secret-shaped value.
+
 ## [1.28.0] - 2026-10-25
 
 Catalog text is checked for two more attacks at HIGH: links that run script

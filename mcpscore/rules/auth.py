@@ -28,6 +28,7 @@ from ..probes import (
     AUTH_GATED_STATUSES,
     PROBE_AUTH_METADATA,
     PROBE_INVALID_TOKEN,
+    PROBE_QUERY_CREDENTIAL,
     PROBE_UNAUTHENTICATED,
     ProbeOutcome,
     ProbeResult,
@@ -914,6 +915,93 @@ class AuthInvalidTokenRejectedRule(AuthPostureBaseRule):
                 "Validate every bearer token (signature or introspection, expiry, audience) before handling the "
                 "request, and answer an invalid one with HTTP 401. A failed check must never fall back to a "
                 "default identity."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
+        )
+
+
+@register_rule
+class AuthTokenNotInQueryRule(BaseRule):
+    """High check: the server does not take its credential from the URL's query string."""
+
+    rule_id = "auth_token_not_in_query"
+    basis = (
+        "MCP Authorization (2025-03-26, 2025-06-18, 2025-11-25) §Access Token Usage, Token Requirements: access "
+        "tokens MUST NOT be included in the URI query string; OAuth 2.1 §5.1 (bearer token in the Authorization "
+        "header)"
+    )
+    group_name = "security"
+    group_order = 3
+    rule_order = 14
+    min_spec_version = "2025-03-26"
+    probe_id: ClassVar[str] = PROBE_QUERY_CREDENTIAL
+
+    @property
+    def rule_name(self) -> str:
+        return "Auth - Token Not in URL Query"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.HIGH
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless the audited URL carries a credential and the probe could tell whether the server reads it."""
+        probe = (audit_data.probes or {}).get(self.probe_id)
+        if probe is None or probe.outcome is ProbeOutcome.ERROR:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if probe.outcome is ProbeOutcome.NOT_APPLICABLE:
+            # Inconclusive answers still name the parameters; a URL without any has nothing to judge.
+            return (
+                SKIP_REASON_INSUFFICIENT_DATA if probe.details.get("credential_params") else SKIP_REASON_NOT_APPLICABLE
+            )
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """High check: the server still answers when the URL's credential parameters are removed.
+
+        Fails only on evidence: the request with the credential is answered and the same
+        request without it is refused with 401/403, so the server authenticates from the
+        query. When both are answered the credential is not needed, which passes with a
+        note to drop it from the URL.
+
+        Args:
+            audit_data: The collected server data for this audit
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        probe = (audit_data.probes or {})[self.probe_id]
+        names = probe.details.get("credential_params") or []
+        listed = evidence_preview(names)
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        if passed:
+            message = (
+                f"✅ The server answers without the credential in the URL's query ({listed}); "
+                "remove it from the URL, where it ends up in logs and shared configurations"
+            )
+        else:
+            message = (
+                f"❌ The server takes its credential from the URL's query string ({listed}): without it the same "
+                f"request gets HTTP {probe.details.get('without_credential_http_status')}"
+            )
+        return diagnostic_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "basis": self.basis,
+                "credential_params": names,
+                "http_status": probe.details.get("http_status"),
+                "without_credential_http_status": probe.details.get("without_credential_http_status"),
+            },
+            suggested_fix=(
+                "Stop reading credentials from the query string. Accept them as Authorization: Bearer <token>, or "
+                "implement MCP authorization so clients sign in themselves; clients without custom headers can use "
+                "a local bridge such as mcp-remote --header."
             )
             if not passed
             else None,
