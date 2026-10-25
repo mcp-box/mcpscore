@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-10-25
+
+Catalog text is checked for two more attacks at HIGH: links that run script
+or carry data out, and text that directs the model's use of tools the server
+does not list (tool shadowing). A LOW rule flags tools that share a
+description, and `server_exposes_primitive` (MEDIUM) replaces
+`tools_at_least_one` (CRITICAL), so a server that serves resources, prompts
+or skills but no tools is no longer penalized. A full audit of a server with
+two or more tools gains 4 points of maximum score, and most such servers
+gain all 4 in their score: DeepWiki moves from 91/108 to 95/112. Servers
+whose catalog text is flagged score lower.
+
 ### Added
 
 - **`catalog_cross_tool_directives` (HIGH): catalog text does not direct the
@@ -2313,7 +2325,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.27.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.28.0...HEAD
+[1.28.0]: https://github.com/mcp-box/mcpscore/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/mcp-box/mcpscore/compare/v1.26.1...v1.27.0
 [1.26.1]: https://github.com/mcp-box/mcpscore/compare/v1.26.0...v1.26.1
 [1.26.0]: https://github.com/mcp-box/mcpscore/compare/v1.25.0...v1.26.0
