@@ -495,6 +495,11 @@ def _parse_payload_text(text: str, content_type: str) -> dict[str, Any] | None:
 _RPC_READ_LIMIT = 65_536
 """Bytes of a JSON-RPC answer read while waiting for the response before giving up."""
 
+CONTROL_READ_LIMIT = 4 * 1024 * 1024
+"""Bytes of a control answer (``server/discover`` or ``initialize``) read before giving up.
+
+Either result can carry long server instructions, which the default cap would cut off."""
+
 
 class _StreamDeadline(httpx2.ReadTimeout):
     """No matching JSON-RPC response arrived before the deadline."""
@@ -2368,6 +2373,7 @@ async def _accepted_control(
         omit_headers=("Origin",),
         close_session_on_failure=True,
         cleanup_headers=host_header,
+        read_limit=CONTROL_READ_LIMIT,
     )
     shape = "modern"
     details: dict[str, Any] = {}
@@ -2379,6 +2385,17 @@ async def _accepted_control(
     def served(response: _HttpProbeResponse, field: str) -> bool:
         return 200 <= response.status_code < 300 and (response.result or {}).get(field) is not None
 
+    def unreadable(response: _HttpProbeResponse) -> ProbeResult | None:
+        # An answer that could not be read is no evidence either way: never a refusal to fall back from.
+        if response.unobservable is None:
+            return None
+        details["control_http_status"] = response.status_code
+        details["control_unobservable"] = response.unobservable
+        details["reason"] = f"control answer could not be read ({response.unobservable})"
+        return ProbeResult(probe_id, ProbeOutcome.ERROR, details)
+
+    if (unread := unreadable(control)) is not None:
+        return unread
     if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
         details["modern_control_http_status"] = control.status_code
         body = _legacy_initialize_body(10)
@@ -2390,8 +2407,11 @@ async def _accepted_control(
             omit_headers=("Origin",),
             close_session_on_failure=True,
             cleanup_headers=host_header,
+            read_limit=CONTROL_READ_LIMIT,
         )
         await target.end_session(control, host_header)
+        if (unread := unreadable(control)) is not None:
+            return unread
         shape = "legacy-initialize"
         accepted = served(control, "protocolVersion")
     else:
@@ -2587,6 +2607,7 @@ async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: 
             omit_headers=("Origin",),
             close_session_on_failure=True,
             cleanup_headers={"Host": host},
+            read_limit=CONTROL_READ_LIMIT,
         )
     except httpx2.HTTPError:
         # Connected, no complete HTTP answer: a host firewall can accept a connection and drop the request.

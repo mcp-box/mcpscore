@@ -184,6 +184,38 @@ async def test_origin_probe_reads_a_control_answered_after_an_sse_priming_event(
     assert result.details["control_shape"] == "modern"
 
 
+async def test_origin_probe_judges_a_server_whose_discover_answer_is_large():
+    instructions = "x" * 100_000
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if request.headers.get("Origin") is not None:
+            return httpx2.Response(403)
+        if body["method"] != "server/discover":
+            return httpx2.Response(400)
+        result = {"supportedVersions": ["2026-07-28"], "instructions": instructions}
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await probes._probe_origin_validation(_HttpTarget(client, "https://server.example/mcp"))
+
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["control_shape"] == "modern"
+
+
+async def test_an_unreadable_control_answer_is_no_evidence(monkeypatch: pytest.MonkeyPatch):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=b" " * 2_000)
+
+    monkeypatch.setattr(probes, "CONTROL_READ_LIMIT", 1_000)
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await probes._probe_origin_validation(_HttpTarget(client, "https://server.example/mcp"))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["control_unobservable"] == "capped"
+    assert "modern_control_http_status" not in result.details
+
+
 @pytest.mark.parametrize("status", [408, 429, 500, 502, 503])
 async def test_host_probe_does_not_judge_a_timeout_rate_limit_or_server_error(status: int):
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -518,9 +550,10 @@ async def test_bind_probe_counts_an_unreadable_network_answer_as_unknown(monkeyp
         body = json.loads(request.content)
         if request.url.host != "192.168.1.20":
             return _discover_result(body.get("id"))
-        # Over post_rpc's read cap, so neither control shape can be read.
-        return httpx2.Response(200, headers={"content-type": "application/json"}, content=b" " * 70_000)
+        # Over the control read cap, so the replayed control cannot be read.
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=b" " * 2_000)
 
+    monkeypatch.setattr(probes, "CONTROL_READ_LIMIT", 1_000)
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
     monkeypatch.setattr(
