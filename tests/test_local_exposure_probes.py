@@ -468,7 +468,8 @@ async def test_bind_probe_counts_an_unreadable_network_answer_as_unknown(monkeyp
         body = json.loads(request.content)
         if request.url.host != "192.168.1.20":
             return _discover_result(body.get("id"))
-        return httpx2.Response(200, headers={"content-encoding": "gzip"}, content=b"compressed")
+        # Over post_rpc's read cap, so neither control shape can be read.
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=b" " * 70_000)
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
