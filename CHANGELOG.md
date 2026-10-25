@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   401/403 while the full URL is served. A server that answers either way
   passes, with a note to drop the parameter from the URL. Other URLs skip as
   not applicable, so no existing score changes.
+- **`security_host_header_validation` and `security_local_bind_loopback`
+  (MEDIUM): exposure checks for a server audited on a loopback address.**
+  The transport spec's Security Warning names DNS rebinding against local
+  servers as the threat and says a local server should bind only to
+  localhost. The first rule sends an accepted request again with a foreign
+  `Host` and passes when it is refused (both official SDKs refuse it by
+  default). The second connects to the audited port on this machine's
+  network addresses and fails when the server answers there. Both skip any
+  target that is not `localhost`, `127.0.0.0/8` or `::1`, so no remote or
+  web audit changes; an audit of a local HTTP server gains up to 4 points of
+  maximum score.
 - **`mcpscore.url_credentials`**: `credential_query_params` and
   `without_credential_params` decide which query parameters carry a
   credential. Names match exactly after normalising (`apiKey`, `api-key`,

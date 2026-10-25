@@ -31,7 +31,7 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -136,6 +136,12 @@ ORIGIN_PROBE_VALUE = "https://mcpscore.invalid"
 """Foreign Origin sent by the Origin-validation probe; must never be an origin
 a real deployment would allow."""
 
+HOST_PROBE_VALUE = "mcpscore.invalid"
+"""Foreign ``Host`` sent by the Host-validation probe to a loopback server; a reserved name no server serves."""
+
+LOCAL_BIND_TIMEOUT_S = 2.0
+"""Deadline for one TCP connect to a non-loopback interface address of this machine."""
+
 UNKNOWN_VERSION = "2099-01-01"
 """Deliberately unsupported version used by the unknown-version probe."""
 
@@ -180,6 +186,8 @@ PROBE_INVALID_REQUEST = "probe_invalid_request"
 PROBE_GET_STREAM = "probe_get_stream"
 PROBE_SESSION_DELETE = "probe_session_delete"
 PROBE_QUERY_CREDENTIAL = "probe_query_credential"
+PROBE_HOST_VALIDATION = "probe_host_validation"
+PROBE_LOCAL_BIND = "probe_local_bind"
 
 _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
@@ -211,6 +219,8 @@ _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_GET_STREAM,
     PROBE_SESSION_DELETE,
     PROBE_QUERY_CREDENTIAL,
+    PROBE_HOST_VALIDATION,
+    PROBE_LOCAL_BIND,
 )
 CATALOG_CONNECTION_PROBE_IDS: tuple[str, ...] = (
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
@@ -239,6 +249,8 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_GET_STREAM,
         PROBE_SESSION_DELETE,
         PROBE_QUERY_CREDENTIAL,
+        PROBE_HOST_VALIDATION,
+        PROBE_LOCAL_BIND,
     }
 )
 """Probes whose *subject* is an HTTP construct, so they cannot run over stdio.
@@ -247,9 +259,10 @@ Not "probes that happen to use HTTP" — every probe does that over an HTTP
 target. These ask questions that only exist in HTTP: required/mirrored request
 headers, the removed GET stream and ``Mcp-Session-Id``, the unauthenticated
 status and ``WWW-Authenticate`` challenge, RFC 9728/8414 well-known documents,
-``Origin`` validation against DNS rebinding, raw malformed HTTP request
-bodies, and the Streamable HTTP envelope (notification ``202``, the GET
-stream, session ``DELETE``, invalid JSON-RPC bodies). Over stdio they record
+``Origin`` and ``Host`` validation against DNS rebinding, the interfaces a
+local server listens on, raw malformed HTTP request bodies, and the
+Streamable HTTP envelope (notification ``202``, the GET stream, session
+``DELETE``, invalid JSON-RPC bodies). Over stdio they record
 ``NOT_APPLICABLE``, which is the honest answer: this probe path cannot send
 malformed wire input through the SDK transport.
 """
@@ -2311,6 +2324,73 @@ async def _probe_removed_method(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_REMOVED_METHOD, outcome, details)
 
 
+@dataclass(frozen=True)
+class _AcceptedControl:
+    """A harmless request the server accepted, to be repeated with one header spoofed."""
+
+    body: dict[str, Any]
+    headers: dict[str, str]
+    shape: str
+    """``modern`` (``server/discover``) or ``legacy-initialize``."""
+    details: dict[str, Any]
+    """Control status and shape, plus the rejected modern control when it fell back."""
+
+
+async def _accepted_control(target: _HttpTarget, probe_id: str, subject: str) -> _AcceptedControl | ProbeResult:
+    """Send the control request a spoofed-header probe is judged against.
+
+    The control is ``server/discover`` (mandatory in 2026-07-28), falling back
+    to the ``initialize`` every 2025-11-25 client opens with when a legacy-only
+    server rejects the modern request. Sessions that handshake opens are closed
+    with DELETE. The control drops any ``Origin`` a caller configured as a
+    client default, so it is the headerless twin of the spoofed request.
+    Returns a NOT_APPLICABLE result when the control is access-controlled or
+    not accepted in either shape: a refusal of the spoofed twin would then say
+    nothing about *subject* handling.
+    """
+    target_version = _target_version()
+    body = _request_body("server/discover", 10, _modern_meta(target_version))
+    headers = _request_headers(target_version, "server/discover")
+    control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
+    shape = "modern"
+    details: dict[str, Any] = {}
+
+    # "Accepted" means the server answered the method, not merely 2xx: a legacy
+    # server may return HTTP 200 carrying a JSON-RPC method-not-found error,
+    # and judging that server on a request it cannot serve would fail it for
+    # the wrong reason.
+    def served(response: _HttpProbeResponse, field: str) -> bool:
+        return 200 <= response.status_code < 300 and (response.result or {}).get(field) is not None
+
+    if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
+        details["modern_control_http_status"] = control.status_code
+        body = _legacy_initialize_body(10)
+        headers = _legacy_headers()
+        control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
+        await target.end_session(control)
+        shape = "legacy-initialize"
+        accepted = served(control, "protocolVersion")
+    else:
+        accepted = served(control, "supportedVersions")
+
+    # Decide on the control before sending anything spoofed. When the answer is
+    # already unknowable, the second request would add security-relevant traffic
+    # (and another timeout) to a server we cannot judge anyway.
+    details["control_http_status"] = control.status_code
+    details["control_shape"] = shape
+    if control.status_code in AUTH_GATED_STATUSES:
+        # The endpoint refuses the control too, so a refusal of the spoofed twin
+        # would say nothing. Not a failure — an unanswerable question.
+        details["reason"] = f"control request is access-controlled; {subject} handling not observable"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    if not accepted:
+        details["reason"] = f"control request was not accepted (HTTP {control.status_code}" + (
+            f", JSON-RPC error {control.error_code})" if control.error_code is not None else ")"
+        )
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    return _AcceptedControl(body=body, headers=headers, shape=shape, details=details)
+
+
 async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
     """Send a harmless request with an invalid foreign ``Origin``.
 
@@ -2324,71 +2404,144 @@ async def _probe_origin_validation(target: _HttpTarget) -> ProbeResult:
     server refuses everyone. Judged on its own, every server that rejects
     unauthenticated callers would pass a CRITICAL security check it has not
     earned — measured against the registry, 54 servers answer 403 to any
-    unauthenticated request. So this sends a control request *without* the
-    foreign Origin first, and only judges the server when that control shows the
-    same request would otherwise be accepted.
-
-    The modern control is ``server/discover``, mandatory in 2026-07-28, so a
-    server without tools is judged like any other. A legacy-only server rejects
-    the modern control before it looks at Origin, so the control falls back to
-    the request every 2025-11-25 client opens with: ``initialize``. Sessions
-    that handshake opens are closed with DELETE. Both controls drop any
-    ``Origin`` a caller configured as a client default — the control must be
-    the headerless twin of the spoofed request. ``details["control_shape"]``
-    records which request judged the server.
+    unauthenticated request. So the probe first sends a control request without
+    the foreign Origin (:func:`_accepted_control`), and only judges the server
+    when that control shows the same request would otherwise be accepted.
+    ``details["control_shape"]`` records which request judged the server.
     """
-    target_version = _target_version()
-    body = _request_body("server/discover", 10, _modern_meta(target_version))
-    headers = _request_headers(target_version, "server/discover")
-    control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
-    shape = "modern"
-    unjudged: dict[str, Any] = {}
+    control = await _accepted_control(target, PROBE_ORIGIN_VALIDATION, "Origin")
+    if isinstance(control, ProbeResult):
+        return control
 
-    # "Accepted" means the server answered the method, not merely 2xx: a legacy
-    # server may return HTTP 200 carrying a JSON-RPC method-not-found error,
-    # and judging that server on a request it cannot serve would fail it for
-    # the wrong reason.
-    def served(response: _HttpProbeResponse, field: str) -> bool:
-        return 200 <= response.status_code < 300 and (response.result or {}).get(field) is not None
-
-    if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
-        unjudged["modern_control_http_status"] = control.status_code
-        body = _legacy_initialize_body(10)
-        headers = _legacy_headers()
-        control = await target.post(body, headers, follow_redirects=False, omit_headers=("Origin",))
-        await target.end_session(control)
-        shape = "legacy-initialize"
-        accepted = served(control, "protocolVersion")
-    else:
-        accepted = served(control, "supportedVersions")
-
-    # Decide on the control before sending anything spoofed. When the answer is
-    # already unknowable, the second request would add security-relevant traffic
-    # (and another timeout) to a server we cannot judge anyway.
-    unjudged["control_http_status"] = control.status_code
-    unjudged["control_shape"] = shape
-    if control.status_code in AUTH_GATED_STATUSES:
-        # The endpoint refuses the control too, so a 403 to the foreign Origin
-        # would say nothing about Origin handling. Not a failure — an
-        # unanswerable question.
-        unjudged["reason"] = "control request is access-controlled; Origin handling not observable"
-        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
-    if not accepted:
-        unjudged["reason"] = f"control request was not accepted (HTTP {control.status_code}" + (
-            f", JSON-RPC error {control.error_code})" if control.error_code is not None else ")"
-        )
-        return ProbeResult(PROBE_ORIGIN_VALIDATION, ProbeOutcome.NOT_APPLICABLE, unjudged)
-
-    spoofed = dict(headers)
+    spoofed = dict(control.headers)
     spoofed["Origin"] = ORIGIN_PROBE_VALUE
-    response = await target.post(body, spoofed, follow_redirects=False)
-    if shape == "legacy-initialize":
+    response = await target.post(control.body, spoofed, follow_redirects=False)
+    if control.shape == "legacy-initialize":
         await target.end_session(response)
 
     details = _base_details(response)
-    details.update(unjudged)  # control status and shape, plus the rejected modern control when it fell back
+    details.update(control.details)
     outcome = ProbeOutcome.SUPPORTED if response.status_code == 403 else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_ORIGIN_VALIDATION, outcome, details)
+
+
+async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
+    """Send a harmless request to a loopback server with a foreign ``Host``.
+
+    DNS rebinding points a hostname the attacker controls at 127.0.0.1, so the
+    browser's request reaches a local server carrying that hostname as ``Host``.
+    A local server that checks ``Host`` against the names it is served under
+    refuses it, as both official SDKs do by default for loopback binds (Python
+    421, TypeScript 403); any 4xx counts as a refusal. Public hosts are not
+    judged: behind virtual hosting a foreign ``Host`` is routed elsewhere, not
+    validated. The control request (:func:`_accepted_control`) must be accepted
+    first, so an access-controlled server is not credited with a refusal it
+    gives everyone. The spoofed twin carries no ``Origin``, so only ``Host``
+    can explain a refusal.
+    """
+    if not _is_loopback_host(urlsplit(target.url).hostname):
+        return ProbeResult(
+            PROBE_HOST_VALIDATION,
+            ProbeOutcome.NOT_APPLICABLE,
+            {"reason": "target is not a loopback address; a public host's Host routing is not validation"},
+        )
+    control = await _accepted_control(target, PROBE_HOST_VALIDATION, "Host")
+    if isinstance(control, ProbeResult):
+        return control
+
+    spoofed = dict(control.headers)
+    spoofed["Host"] = HOST_PROBE_VALUE
+    response = await target.post(control.body, spoofed, follow_redirects=False, omit_headers=("Origin",))
+    if control.shape == "legacy-initialize":
+        await target.end_session(response)
+
+    details = _base_details(response)
+    details.update(control.details)
+    refused = 400 <= response.status_code < 500
+    return ProbeResult(PROBE_HOST_VALIDATION, ProbeOutcome.SUPPORTED if refused else ProbeOutcome.UNSUPPORTED, details)
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    """Whether a URL host is ``localhost`` (or a ``*.localhost`` name) or a loopback literal IP; no DNS lookup."""
+    if not host:
+        return False
+    lowered = host.lower().rstrip(".")
+    if lowered == "localhost" or lowered.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(lowered.strip("[]"))
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped.is_loopback
+    return ip.is_loopback
+
+
+def _non_loopback_addresses() -> list[str]:
+    """Return this machine's default-route addresses (IPv4, IPv6), minus loopback, link-local and unspecified ones.
+
+    A UDP ``connect`` to a documentation address sends no packet but makes the
+    OS pick the source address it would route from. A server bound to every
+    interface answers there; host-name lookups are skipped, as they can stall
+    for seconds on machines without a resolvable host name.
+    """
+    found: set[str] = set()
+    for family, documentation_address in ((socket.AF_INET, "192.0.2.1"), (socket.AF_INET6, "2001:db8::1")):
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                sock.connect((documentation_address, 9))
+                found.add(sock.getsockname()[0])
+        except OSError:
+            continue
+    addresses = []
+    for address in found:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])  # getsockname() returns a numeric address
+        if not (ip.is_loopback or ip.is_link_local or ip.is_unspecified):
+            addresses.append(str(ip))
+    return sorted(addresses)
+
+
+async def _tcp_listening(host: str, port: int) -> bool:
+    """Whether a TCP connect to *host*:*port* succeeds within ``LOCAL_BIND_TIMEOUT_S``; never raises."""
+    try:
+        async with asyncio.timeout(LOCAL_BIND_TIMEOUT_S):
+            _, writer = await asyncio.open_connection(host, port)
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with suppress(OSError):
+        await writer.wait_closed()
+    return True
+
+
+async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
+    """Check whether a loopback server's port also answers on this machine's other interfaces.
+
+    Every Streamable HTTP revision says a server running locally SHOULD bind
+    only to localhost rather than all network interfaces. For a loopback target
+    the probe connects (TCP only, nothing is sent) to the same port on each
+    routable address of this machine: a connection there means the server is
+    bound to ``0.0.0.0``/``::`` and reachable from the network. Details record
+    counts, never the addresses. Not applicable to non-loopback targets or when
+    this machine has no routable interface address.
+    """
+    parts = urlsplit(target.url)
+    if not _is_loopback_host(parts.hostname):
+        return ProbeResult(
+            PROBE_LOCAL_BIND, ProbeOutcome.NOT_APPLICABLE, {"reason": "target is not a loopback address"}
+        )
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    addresses = await asyncio.to_thread(_non_loopback_addresses)
+    if not addresses:
+        return ProbeResult(
+            PROBE_LOCAL_BIND,
+            ProbeOutcome.NOT_APPLICABLE,
+            {"reason": "this machine has no routable interface address to try"},
+        )
+    reachable = await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
+    details = {"port": port, "interfaces_checked": len(addresses), "interfaces_reachable": sum(reachable)}
+    outcome = ProbeOutcome.UNSUPPORTED if any(reachable) else ProbeOutcome.SUPPORTED
+    return ProbeResult(PROBE_LOCAL_BIND, outcome, details)
 
 
 async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
@@ -2913,6 +3066,8 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_GET_STREAM: _probe_get_stream,
     PROBE_SESSION_DELETE: _probe_session_delete,
     PROBE_QUERY_CREDENTIAL: _probe_query_credential,
+    PROBE_HOST_VALIDATION: _probe_host_validation,
+    PROBE_LOCAL_BIND: _probe_local_bind,
 }
 """Probes whose subject is an HTTP construct (see HTTP_ONLY_PROBE_IDS)."""
 
