@@ -109,6 +109,27 @@ async def test_host_probe_keeps_the_port_so_only_the_hostname_is_foreign():
     assert result.details["http_status"] == 200
 
 
+async def test_host_probe_keeps_the_port_of_a_caller_configured_host():
+    seen: list[httpx2.Request] = []
+    handler = _host_checking_handler(checks_host=False, seen=seen)
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), headers={"Host": "localhost:9000"}
+    ) as client:
+        await _probe_host_validation(_HttpTarget(client, LOCAL_URL))
+
+    control, spoofed = seen
+    assert control.headers["Host"] == "localhost:9000"
+    assert spoofed.headers["Host"] == f"{HOST_PROBE_VALUE}:9000"
+
+
+@pytest.mark.parametrize(
+    ("host", "suffix"),
+    [("localhost:8000", ":8000"), ("localhost", ""), ("[::1]:8000", ":8000"), ("[::1]", ""), ("host:", "")],
+)
+def test_port_suffix(host: str, suffix: str):
+    assert probes._port_suffix(host) == suffix
+
+
 async def test_host_probe_omits_the_port_for_a_default_port_target():
     seen: list[httpx2.Request] = []
     await _host_probe(_host_checking_handler(checks_host=False, seen=seen), "http://localhost/mcp")
@@ -428,6 +449,26 @@ async def test_bind_probe_counts_an_inconclusive_modern_answer_before_a_refused_
         if request.url.host != "192.168.1.20":
             return _discover_result(body.get("id"))
         return httpx2.Response(503 if body["method"] == "server/discover" else 400)
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
+    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    async with httpx2.AsyncClient() as client:
+        result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_unknown"] == 1
+
+
+async def test_bind_probe_counts_an_unreadable_network_answer_as_unknown(monkeypatch: pytest.MonkeyPatch):
+    async def fake_listening(host: str, port: int) -> bool:
+        return True
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if request.url.host != "192.168.1.20":
+            return _discover_result(body.get("id"))
+        return httpx2.Response(200, headers={"content-encoding": "gzip"}, content=b"compressed")
 
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     monkeypatch.setattr(probes, "_tcp_listening", fake_listening)

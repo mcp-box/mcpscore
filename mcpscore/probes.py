@@ -2384,6 +2384,8 @@ async def _accepted_control(
 
     if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
         details["modern_control_http_status"] = control.status_code
+        if control.unobservable is not None:
+            details["modern_control_unobservable"] = control.unobservable
         body = _legacy_initialize_body(10)
         headers = {**_legacy_headers(), **host_header}
         control = await target.post_rpc(
@@ -2405,6 +2407,8 @@ async def _accepted_control(
     # (and another timeout) to a server we cannot judge anyway.
     details["control_http_status"] = control.status_code
     details["control_shape"] = shape
+    if control.unobservable is not None:
+        details["control_unobservable"] = control.unobservable
     if control.status_code in AUTH_GATED_STATUSES:
         # The endpoint refuses the control too, so a refusal of the spoofed twin
         # would say nothing. Not a failure — an unanswerable question.
@@ -2476,10 +2480,10 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
     if isinstance(control, ProbeResult):
         return control
 
-    # A rebound request keeps the port, so only the hostname is foreign. httpx2 drops an explicit default
-    # port from the control's Host, so the spoofed Host follows its normalized port.
-    port = httpx2.URL(target.url).port
-    foreign_host = HOST_PROBE_VALUE if port is None else f"{HOST_PROBE_VALUE}:{port}"
+    # A rebound request keeps the port, so only the hostname is foreign: the port comes from the Host the
+    # control actually sent (a caller-configured one, or the URL's with an explicit default port dropped).
+    effective_host = target.client.build_request("POST", target.url).headers["Host"]
+    foreign_host = f"{HOST_PROBE_VALUE}{_port_suffix(effective_host)}"
     spoofed = {**control.headers, "Host": foreign_host}
     response = await target.post_rpc(
         control.body,
@@ -2500,6 +2504,14 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
         return ProbeResult(PROBE_HOST_VALIDATION, ProbeOutcome.ERROR, details)
     refused = 400 <= response.status_code < 500
     return ProbeResult(PROBE_HOST_VALIDATION, ProbeOutcome.SUPPORTED if refused else ProbeOutcome.UNSUPPORTED, details)
+
+
+def _port_suffix(host: str) -> str:
+    """Return the ``:port`` a ``Host`` value ends with, or an empty string; an IPv6 literal's colons are bracketed."""
+    head, separator, port = host.rpartition(":")
+    if separator and port.isdigit() and (not head.startswith("[") or head.endswith("]")):
+        return f":{port}"
+    return ""
 
 
 def _is_loopback_host(host: str | None) -> bool:
@@ -2669,9 +2681,9 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
             elif any(
                 _inconclusive_status(control.details.get(key))
                 for key in ("control_http_status", "modern_control_http_status")
-            ):
-                # A timeout, rate limit or server error, to either control shape, says nothing about which
-                # program answered.
+            ) or any(key in control.details for key in ("control_unobservable", "modern_control_unobservable")):
+                # A timeout, rate limit, server error or unreadable body, to either control shape, says nothing
+                # about which program answered.
                 unknown += 1
     details: dict[str, Any] = {
         "port": port,
