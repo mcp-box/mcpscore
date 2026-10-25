@@ -417,6 +417,28 @@ async def test_bind_probe_counts_an_inconclusive_network_answer_as_unknown(
     assert result.details["interfaces_unknown"] == 1
 
 
+async def test_bind_probe_counts_an_inconclusive_modern_answer_before_a_refused_fallback_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fake_listening(host: str, port: int) -> bool:
+        return True
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if request.url.host != "192.168.1.20":
+            return _discover_result(body.get("id"))
+        return httpx2.Response(503 if body["method"] == "server/discover" else 400)
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", fake_listening)
+    monkeypatch.setattr(probes, "_direct_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
+    async with httpx2.AsyncClient() as client:
+        result = await _probe_local_bind(_HttpTarget(client, LOCAL_URL))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_unknown"] == 1
+
+
 async def test_host_probe_closes_a_session_whose_spoofed_answer_never_finishes(monkeypatch: pytest.MonkeyPatch):
     deletes: list[tuple[str, str]] = []
 

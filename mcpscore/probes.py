@@ -2666,8 +2666,12 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
                 continue
             if isinstance(control, _AcceptedControl):
                 serving += 1
-            elif _inconclusive_status(control.details.get("control_http_status")):
-                # A timeout, rate limit or server error says nothing about which program answered.
+            elif any(
+                _inconclusive_status(control.details.get(key))
+                for key in ("control_http_status", "modern_control_http_status")
+            ):
+                # A timeout, rate limit or server error, to either control shape, says nothing about which
+                # program answered.
                 unknown += 1
     details: dict[str, Any] = {
         "port": port,
