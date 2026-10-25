@@ -56,6 +56,10 @@ def test_ordinary_parameters_are_not_credentials(query: str | None):
         ("https://example.com/mcp?key=getting-started&key2=x", "https://example.com/mcp?key=getting-started&key2=x"),
         ("https://example.com:8443/v1/mcp?sig=ghp_abc#part", "https://example.com:8443/v1/mcp#part"),
         ("https://example.com/mcp", "https://example.com/mcp"),
+        # Kept parameters stay byte for byte as sent.
+        ("https://example.com/mcp?a=x%20y&flag&b=%FF&token=t", "https://example.com/mcp?a=x%20y&flag&b=%FF"),
+        ("https://example.com/mcp?a=x+y", "https://example.com/mcp?a=x+y"),
+        ("https://example.com/mcp?api%5Fkey=abc&q=1", "https://example.com/mcp?q=1"),
     ],
 )
 def test_without_credential_params_keeps_everything_else(url: str, expected: str):

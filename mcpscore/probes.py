@@ -1760,21 +1760,17 @@ async def _judge_served_initialize(target: _HttpTarget, details: dict[str, Any])
     return ProbeResult(PROBE_INVALID_TOKEN, ProbeOutcome.NOT_APPLICABLE, details)
 
 
-def _answered(status: int) -> bool:
-    """Whether a response got past any auth gate and says something: not 401/403, a redirect, 408/429 or 5xx."""
-    return status not in AUTH_GATED_STATUSES and status < 500 and status not in (408, 429) and not 300 <= status < 400
-
-
 async def _probe_query_credential(target: _HttpTarget) -> ProbeResult:
     """Ask whether the server takes its credential from the URL's query string.
 
     Runs only when the audited URL carries a credential parameter
     (:func:`mcpscore.url_credentials.credential_query_params`); otherwise NOT_APPLICABLE
-    with no request sent. The same anonymous request goes to the URL as given and to
-    the URL without its credential parameters. UNSUPPORTED: the first is answered and
-    the second refused with 401/403, so the server authenticates from the query.
-    SUPPORTED: both are answered, so the credential is not needed. Anything else,
-    including a refused first request, is NOT_APPLICABLE. Details name the
+    with no request sent. The same anonymous ``tools/list`` goes to the URL as given and
+    to the URL without its credential parameters, then a legacy ``initialize`` if neither
+    answer decides. UNSUPPORTED: the first is served (2xx) and the second refused
+    (:func:`_token_refused`), so the server authenticates from the query. SUPPORTED: both
+    are served, so the credential is not needed. Anything else is NOT_APPLICABLE. Each
+    request reads only up to its response; a session opened is closed. Details name the
     parameters, never their values.
     """
     names = credential_query_params(urlsplit(target.url).query)
@@ -1784,25 +1780,38 @@ async def _probe_query_credential(target: _HttpTarget) -> ProbeResult:
             ProbeOutcome.NOT_APPLICABLE,
             {"reason": "the URL carries no credential in its query"},
         )
+    stripped_target = replace(target, url=without_credential_params(target.url))
     target_version = _target_version()
-    body = _request_body("tools/list", 7, _modern_meta(target_version))
-    headers = _request_headers(target_version, "tools/list")
-    given = await target.post(body, headers, anonymous=True, follow_redirects=False)
-    stripped = await replace(target, url=without_credential_params(target.url)).post(
-        body, headers, anonymous=True, follow_redirects=False
+    attempts = (
+        (
+            "tools/list",
+            _request_body("tools/list", 7, _modern_meta(target_version)),
+            _request_headers(target_version, "tools/list"),
+        ),
+        ("initialize", _legacy_initialize_body(8), _legacy_headers()),
     )
-    details: dict[str, Any] = {
-        "credential_params": [name[:40] for name in names[:5]],
-        "http_status": given.status_code,
-        "without_credential_http_status": stripped.status_code,
-    }
-    if _answered(given.status_code) and stripped.status_code in AUTH_GATED_STATUSES:
-        return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.UNSUPPORTED, details)
-    if _answered(given.status_code) and _answered(stripped.status_code):
-        return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.SUPPORTED, details)
+    details: dict[str, Any] = {"credential_params": [name[:40] for name in names[:5]]}
+    for method, body, headers in attempts:
+        responses: list[_HttpProbeResponse] = []
+        for each in (target, stripped_target):
+            response = await each.post_rpc(
+                body, headers, follow_redirects=False, close_session_on_failure=True, anonymous=True
+            )
+            await each.end_session(response, anonymous=True)
+            responses.append(response)
+        statuses = [response.status_code for response in responses]
+        given, stripped = statuses
+        details |= {"method": method, "http_status": given, "without_credential_http_status": stripped}
+        if 200 <= given < 300 and _token_refused(responses[1]):
+            return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.UNSUPPORTED, details)
+        if 200 <= given < 300 and 200 <= stripped < 300:
+            return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.SUPPORTED, details)
+        # Only a plain 4xx to both (a legacy server refusing the sessionless request) is worth the initialize.
+        if not all(400 <= status < 500 and status not in (*AUTH_GATED_STATUSES, 408, 429) for status in statuses):
+            break
     details["reason"] = (
-        f"HTTP {given.status_code} with the credential and {stripped.status_code} without it "
-        "do not show whether the server reads it"
+        f"HTTP {details['http_status']} with the credential and {details['without_credential_http_status']} "
+        "without it do not show whether the server reads it"
     )
     return ProbeResult(PROBE_QUERY_CREDENTIAL, ProbeOutcome.NOT_APPLICABLE, details)
 

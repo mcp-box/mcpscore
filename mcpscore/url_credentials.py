@@ -7,7 +7,7 @@ URLs before auditing, so both agree on what counts.
 """
 
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 # Parameter names that always carry a credential, after normalising (see _normalise).
 _CREDENTIAL_NAMES = frozenset({"token", "access_token", "api_key", "apikey", "secret", "client_secret", "password"})
@@ -51,18 +51,19 @@ def credential_query_params(query: str | None) -> list[str]:
     secret-shaped value.
     """
     found: list[str] = []
-    for name, value in parse_qsl(query or "", keep_blank_values=True):
+    for name, value in (_decoded(field) for field in (query or "").split("&") if field):
         if _is_credential(name, value) and name not in found:
             found.append(name)
     return found
 
 
 def without_credential_params(url: str) -> str:
-    """Return ``url`` with its credential query parameters removed and every other part kept."""
+    """Return ``url`` with its credential query parameters removed and every other byte kept as sent."""
     parts = urlsplit(url)
-    kept = [
-        (name, value)
-        for name, value in parse_qsl(parts.query, keep_blank_values=True)
-        if not _is_credential(name, value)
-    ]
-    return urlunsplit(parts._replace(query=urlencode(kept)))
+    kept = [field for field in parts.query.split("&") if not _is_credential(*_decoded(field))]
+    return urlunsplit(parts._replace(query="&".join(field for field in kept if field)))
+
+
+def _decoded(field: str) -> tuple[str, str]:
+    name, _, value = field.partition("=")
+    return unquote_plus(name), unquote_plus(value)

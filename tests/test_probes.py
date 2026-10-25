@@ -3284,3 +3284,105 @@ class TestQueryCredentialProbe:
         stripped = [r for r in seen if "token" not in r.url.params]
         assert stripped
         assert all("Authorization" not in r.headers for r in stripped)
+
+
+def _scripted(given, stripped, *, initialize=None, seen: list[httpx2.Request] | None = None):
+    """Answer the query-credential probe's requests: ``given`` with the token, ``stripped`` without it."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method != "POST" or not request.content:
+            return _modern_server_handler(request)
+        method = json.loads(request.content).get("method")
+        if method not in ("tools/list", "initialize") or request.url.params.get("transport") != "streamable":
+            return _modern_server_handler(request)
+        if seen is not None:
+            seen.append(request)
+        has_token = "token" in request.url.params
+        if method == "initialize" and initialize is not None:
+            return initialize(has_token)
+        return given() if has_token else stripped()
+
+    return handler
+
+
+def _status(code: int, **headers: str):
+    return lambda: httpx2.Response(code, headers=headers)
+
+
+def _served():
+    return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 7, "result": {"tools": []}})
+
+
+class TestQueryCredentialVerdicts:
+    async def _probe(self, handler) -> ProbeResult:
+        # Run the probe alone: the scripted answers would otherwise also reach every other probe.
+        async with _client(handler) as client:
+            return await probes._probe_query_credential(probes._HttpTarget(client, QUERY_URL))
+
+    @pytest.mark.parametrize(
+        ("given", "stripped"),
+        [
+            # A refused token with a 400 says nothing about what happens without it.
+            (_status(400, **{"WWW-Authenticate": 'Bearer error="invalid_token"'}), _status(401)),
+            (_served, _status(400)),
+            (_status(500), _status(401)),
+            (_status(302, location="https://elsewhere.example/"), _status(401)),
+        ],
+    )
+    async def test_undecided_answers_are_not_applicable(self, given, stripped):
+        result = await self._probe(_scripted(given, stripped))
+
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["method"] == "tools/list"
+
+    async def test_an_invalid_token_challenge_without_the_credential_is_a_refusal(self):
+        refused = _status(400, **{"WWW-Authenticate": 'Bearer error="invalid_token"'})
+        result = await self._probe(_scripted(_served, refused))
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+
+    async def test_legacy_server_is_judged_through_initialize(self):
+        def initialize(has_token: bool) -> httpx2.Response:
+            if not has_token:
+                return httpx2.Response(401)
+            return httpx2.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "2025-11-25"}},
+                headers={"Mcp-Session-Id": "s1"},
+            )
+
+        seen: list[httpx2.Request] = []
+        result = await self._probe(_scripted(_status(400), _status(400), initialize=initialize, seen=seen))
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["method"] == "initialize"
+        assert result.details["without_credential_http_status"] == 401
+
+    async def test_legacy_server_ignoring_the_credential_is_supported(self):
+        def initialize(has_token: bool) -> httpx2.Response:
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 8, "result": {"protocolVersion": "2025-11-25"}})
+
+        result = await self._probe(_scripted(_status(400), _status(400), initialize=initialize))
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["method"] == "initialize"
+
+    async def test_two_plain_400s_without_an_initialize_answer_stay_undecided(self):
+        result = await self._probe(_scripted(_status(400), _status(400)))
+
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["method"] == "initialize"
+
+    async def test_an_sse_answer_kept_open_does_not_stall_the_probe(self):
+        def stream() -> httpx2.Response:
+            async def events():
+                yield b'data: {"jsonrpc":"2.0","id":7,"result":{"tools":[]}}\n\n'
+                while True:
+                    yield b": heartbeat\n\n"
+                    await asyncio.sleep(0.01)
+
+            return httpx2.Response(200, headers={"Content-Type": "text/event-stream"}, content=events())
+
+        result = await asyncio.wait_for(self._probe(_scripted(stream, _status(401))), timeout=30)
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
