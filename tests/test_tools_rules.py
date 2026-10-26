@@ -14,6 +14,7 @@ This module tests all tool-related audit rules including:
 And the is_valid_schema() helper function.
 """
 
+import tracemalloc
 from typing import Any
 
 from mcp_types import Tool, ToolAnnotations, ToolExecution
@@ -1307,6 +1308,46 @@ class TestToolsInputDefaultsMatchTypeRule:
     def test_boolean_subschemas_are_skipped(self) -> None:
         properties = {"any": True, "mode": {"anyOf": [False, {"type": "string", "default": 0}]}}
         assert self._paths(self._tool(properties)) == ["/properties/mode/anyOf/1"]
+
+    def test_paths_over_the_limit_are_omitted(self) -> None:
+        result = self.rule.check(AuditData(tools=[self._tool({"k" * 300: {"type": "integer", "default": None}})]))
+        [failure] = result.details["mismatched_defaults"]
+        assert failure["path_omitted"] is True
+        assert "path" not in failure
+        [issue] = result.details["issues"]
+        assert issue["path_omitted"] is True
+        assert "path" not in issue
+
+    def test_large_data_does_not_build_paths(self) -> None:
+        name = "k" * 16384
+        tool = self._tool({name: {"type": "array", "default": [[0]] * 2048, "examples": [[[0]] * 2048]}})
+        tracemalloc.start()
+        try:
+            self.rule.check(AuditData(tools=[tool]))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 8 * 1024 * 1024
+
+    def test_embedded_dialect_switch_is_unjudged(self) -> None:
+        tool = self._tool(
+            {
+                "pair": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "prefixItems": [],
+                    "default": 1,
+                    "type": "string",
+                }
+            }
+        )
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_const_is_ignored_before_draft_06(self) -> None:
+        tool = self._tool(
+            {"x": {"type": "integer", "const": 0, "default": 1}},
+            **{"$schema": "http://json-schema.org/draft-04/schema#"},
+        )
+        assert self._paths(tool) == []
 
     def test_pointer_tokens_are_escaped(self) -> None:
         result = self.rule.check(AuditData(tools=[self._tool({"a/b~c": {"type": "string", "default": 3}})]))

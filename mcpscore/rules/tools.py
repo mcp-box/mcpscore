@@ -1430,6 +1430,9 @@ _JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 _JSON_TYPES = frozenset({"null", "boolean", "integer", "number", "string", "array", "object"})
 # Before 2019-09, keywords beside a $ref are ignored.
 _REF_OVERRIDES_SIBLINGS = frozenset({"draft-03", "draft-04", "draft-06", "draft-07"})
+# const arrived in draft-06.
+_WITHOUT_CONST = frozenset({"draft-03", "draft-04"})
+_MAX_POINTER_LENGTH = 255
 
 
 def _nesting_exceeds(value: Any, limit: int) -> bool:
@@ -1460,21 +1463,47 @@ def _mentions_default(value: Any) -> bool:
     return False
 
 
-def _json_pointers(schema: dict[str, Any]) -> dict[int, tuple[int, str]]:
-    """Map each object in *schema* to its document-order position and JSON pointer."""
-    pointers: dict[int, tuple[int, str]] = {}
-    stack: list[tuple[Any, str]] = [(schema, "")]
+class _Origin(NamedTuple):
+    order: int
+    parent: int | None
+    token: str
+
+
+def _json_origins(schema: dict[str, Any]) -> dict[int, _Origin]:
+    """Map each object in *schema* to its document-order position and a link to its parent.
+
+    Pointers are built from these links only when needed (``_json_pointer``), so no
+    path string is allocated for data such as ``default`` or ``examples`` values.
+    """
+    origins: dict[int, _Origin] = {}
+    stack: list[tuple[Any, int | None, str]] = [(schema, None, "")]
     while stack:
-        item, pointer = stack.pop()
+        item, parent, token = stack.pop()
         if isinstance(item, dict):
-            pointers.setdefault(id(item), (len(pointers), pointer))
-            children = [(child, f"{pointer}/{pointer_token(str(key))}") for key, child in item.items()]
+            origins.setdefault(id(item), _Origin(len(origins), parent, token))
+            children = [(child, id(item), str(key)) for key, child in item.items()]
         elif isinstance(item, list):
-            children = [(child, f"{pointer}/{index}") for index, child in enumerate(item)]
+            origins.setdefault(id(item), _Origin(len(origins), parent, token))
+            children = [(child, id(item), str(index)) for index, child in enumerate(item)]
         else:
             continue
         stack.extend(reversed(children))
-    return pointers
+    return origins
+
+
+def _json_pointer(origins: dict[int, _Origin], node: int, limit: int) -> str | None:
+    """Return the JSON pointer of *node*, or None once it would exceed *limit* characters."""
+    tokens: list[str] = []
+    length = 0
+    origin = origins[node]
+    while origin.parent is not None:
+        token = pointer_token(origin.token)
+        length += len(token) + 1
+        if length > limit:
+            return None
+        tokens.append(token)
+        origin = origins[origin.parent]
+    return "".join("/" + token for token in reversed(tokens))
 
 
 def _json_type(value: Any) -> str:
@@ -1515,7 +1544,7 @@ def _json_equal(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
-def _default_mismatch(subschema: dict[str, Any], default: Any) -> str | None:
+def _default_mismatch(subschema: dict[str, Any], default: Any, *, const: bool) -> str | None:
     """Name the ``type``, ``enum`` or ``const`` keyword of *subschema* that rejects *default*, if any."""
     declared = subschema.get("type")
     names = [declared] if isinstance(declared, str) else declared if isinstance(declared, list) else []
@@ -1525,7 +1554,7 @@ def _default_mismatch(subschema: dict[str, Any], default: Any) -> str | None:
     enum = subschema.get("enum")
     if isinstance(enum, list) and not any(_json_equal(default, member) for member in enum):
         return "enum"
-    if "const" in subschema and not _json_equal(default, subschema["const"]):
+    if const and "const" in subschema and not _json_equal(default, subschema["const"]):
         return "const"
     return None
 
@@ -1559,13 +1588,16 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
     while stack:
         subschema = stack.pop()
         if isinstance(subschema, dict):
+            # An embedded $schema switches dialect mid-document; mixed-dialect tools are left unjudged.
+            if subschemas and "$schema" in subschema:
+                return unjudged
             subschemas.append(subschema)
             try:
                 stack.extend(specification.subresources_of(subschema))
             except (AttributeError, TypeError):
                 return unjudged
-    pointers = _json_pointers(schema)
-    subschemas.sort(key=lambda subschema: pointers[id(subschema)][0])
+    origins = _json_origins(schema)
+    subschemas.sort(key=lambda subschema: origins[id(subschema)].order)
     failures: list[dict[str, Any]] = []
     found = False
     for subschema in subschemas:
@@ -1575,20 +1607,28 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
         if "$ref" in subschema and specification.name in _REF_OVERRIDES_SIBLINGS:
             continue
         default = subschema["default"]
-        mismatch = _default_mismatch(subschema, default)
+        mismatch = _default_mismatch(subschema, default, const=specification.name not in _WITHOUT_CONST)
         if mismatch is not None:
-            pointer = pointers[id(subschema)][1]
-            failure: dict[str, Any] = {
-                "tool": tool.name,
-                "path": pointer or "/",
-                "default_type": _json_type(default),
-                "mismatch": mismatch,
-            }
+            pointer = _json_pointer(origins, id(subschema), _MAX_POINTER_LENGTH)
+            failure: dict[str, Any] = {"tool": tool.name, "default_type": _json_type(default), "mismatch": mismatch}
+            if pointer is None:
+                failure["path_omitted"] = True
+            else:
+                failure["path"] = pointer or "/"
             declared = subschema.get("type")
             if mismatch == "type":
                 failure["declared_type"] = declared
-            failures.append({**failure, "_pointer": "/inputSchema" + pointer})
+            failures.append({**failure, "_pointer": None if pointer is None else "/inputSchema" + pointer})
     return _DefaultsCheck(failures, found, found)
+
+
+def _default_issue(failure: dict[str, Any]) -> dict[str, Any]:
+    reason, expected = "default_type_mismatch", "a default matching the declared type, enum or const"
+    if failure["_pointer"] is None:
+        issue = field_issue("tool", failure["_entity_index"], "", reason, expected)
+        del issue["path"]
+        return {**issue, "path_omitted": True}
+    return field_issue("tool", failure["_entity_index"], failure["_pointer"] + "/default", reason, expected)
 
 
 @register_rule
@@ -1648,16 +1688,7 @@ class ToolsInputDefaultsMatchTypeRule(ToolsBaseRule):
                 "parameter as `T | None`; in Zod, add `.nullable()` or drop the default."
             ),
             recommendation=True,
-            issues=(
-                field_issue(
-                    "tool",
-                    failure["_entity_index"],
-                    failure["_pointer"] + "/default",
-                    "default_type_mismatch",
-                    "a default matching the declared type, enum or const",
-                )
-                for failure in mismatched_defaults
-            ),
+            issues=(_default_issue(failure) for failure in mismatched_defaults),
         )
 
 
