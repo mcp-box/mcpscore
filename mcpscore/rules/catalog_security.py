@@ -1545,6 +1545,8 @@ _TOOL_REFERENCES = (
     re.compile(rf"(?<![\w`./-])(?:{_TOOL_NAME})\s+(?i:tool)\b"),
 )
 _NAME_JOINERS_RE = re.compile(r"[_./]+")
+# MCP 2025-11-25 Tools §Tool Names: the allowed characters, with at least one letter.
+_BACKTICKED_TOOL_RE = re.compile(r"[A-Za-z0-9_./-]*[A-Za-z][A-Za-z0-9_./-]*")
 # MCP methods (2025-11-25 and 2026-07-28, with the Skills and Tasks extensions) are protocol, not tools.
 _PROTOCOL_METHODS = frozenset(
     {
@@ -2287,8 +2289,9 @@ def _unlisted(match: re.Match[str], listed: frozenset[str]) -> bool:
             return False
         # The callee of a call expression: `fetch_page(url)` names fetch_page.
         ticked = match["ticked"].split("(", 1)[0] if match["ticked"].endswith(")") else match["ticked"]
-        # A backticked name still needs a letter: `()` or `--` is punctuation, not a tool.
-        if not any(char.isalpha() for char in ticked) or ticked in _PROTOCOL_METHODS:
+        # Tool names use only A-Z, a-z, 0-9, "_", "-" and "." (plus "/" behind a client namespace) and need a
+        # letter: `iam:CreateRole` or `--` is code or punctuation, not a tool.
+        if _BACKTICKED_TOOL_RE.fullmatch(ticked) is None or ticked in _PROTOCOL_METHODS:
             return False
         return not _is_listed(ticked, listed)
     if match["bare"].rstrip(".") in _PROTOCOL_METHODS:

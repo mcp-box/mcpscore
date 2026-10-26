@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line of an SSE answer, so a server that opens its stream with the empty
   priming event the spec recommends skipped as not applicable. The control
   is now read event by event until its response, under one deadline.
+- **`catalog_cross_tool_directives` no longer reads backticked code as a tool
+  name.** A name in backticks now counts only when it uses the characters MCP
+  allows in tool names (letters, digits, `_`, `-`, `.`, plus `/` for a client
+  namespace), so an AWS action such as `` `iam:CreateRole` `` or a URL after
+  "call" is code, not an unlisted tool. Servers whose catalog text only
+  named such code now pass.
 
 ## [1.28.0] - 2026-10-25
 

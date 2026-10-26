@@ -212,8 +212,10 @@ replay an injected instruction.
     sentence it flags a reference to any or other tools or servers ("with any
     tool", "using another server", "every tool must …") as `any_tool_directive`, and a tool name
     the server does not list as `unlisted_tool_directive`. A tool name is
-    code-shaped: in backticks, joined with `_` or `.`, or camelCase, or a
-    `/` path with such a segment (`mail/send_email`, not "read/write"),
+    code-shaped: in backticks and made of tool-name characters (letters,
+    digits, `_`, `-`, `.` and `/`, so not `iam:CreateRole`), joined with `_`
+    or `.`, or camelCase, or a `/` path with such a segment
+    (`mail/send_email`, not "read/write"),
     after `call` or `invoke` or before the word `tool`. Names of the
     server's own tools, prompts and resources pass, also behind a client
     namespace such as `mcp__notes__search` or `notes.search`, and so do
