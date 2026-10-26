@@ -911,3 +911,146 @@ async def test_tcp_listening_reports_a_timeout_as_unknown(monkeypatch: pytest.Mo
 def test_both_probes_are_http_only():
     assert PROBE_HOST_VALIDATION in probes.HTTP_ONLY_PROBE_IDS
     assert PROBE_LOCAL_BIND in probes.HTTP_ONLY_PROBE_IDS
+
+
+async def test_injected_client_carries_the_local_server_probes(monkeypatch: pytest.MonkeyPatch):
+    """With an injected client, the local-server probes send through it and never open a client of their own."""
+    seen: list[httpx2.Request] = []
+    handler = _host_checking_handler(checks_host=True, seen=seen)
+
+    def no_own_client(headers=None):
+        raise AssertionError("a probe opened its own client although one was injected")
+
+    async def no_socket(*args, **kwargs):
+        raise AssertionError("a probe opened a socket although a client was injected")
+
+    monkeypatch.setattr(probes, "_direct_client", no_own_client)
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(asyncio, "open_connection", no_socket)
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        results = await probes.run_all_probes(LOCAL_URL, client=injected)
+        assert not injected.is_closed
+
+    assert results[PROBE_HOST_VALIDATION].outcome is ProbeOutcome.SUPPORTED
+    # The mock answers on every address, as a server bound to 0.0.0.0 does.
+    assert results[PROBE_LOCAL_BIND].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_LOCAL_BIND].details["interfaces_serving"] == 1
+    assert any(request.headers["Host"].startswith(HOST_PROBE_VALUE) for request in seen)
+    assert any(request.url.host == "192.168.1.20" for request in seen)
+
+
+async def test_bind_probe_sends_no_caller_credentials_through_an_injected_client(monkeypatch: pytest.MonkeyPatch):
+    seen: list[httpx2.Request] = []
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(_host_checking_handler(checks_host=False, seen=seen)),
+        headers={"Authorization": "Bearer caller-secret", "X-API-Key": "caller-key", "Host": "other.example"},
+        cookies={"session": "caller-cookie"},
+        auth=httpx2.BasicAuth("caller", "password"),
+        params={"api_key": "caller-param", "tenant": "caller-tenant"},
+    ) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, f"{LOCAL_URL}?tenant=a", injected=True))
+        assert injected.headers["X-API-Key"] == "caller-key"
+
+    assert result.outcome is ProbeOutcome.UNSUPPORTED
+    assert {request.url.host for request in seen} == {"localhost", "192.168.1.20"}
+    for request in seen:
+        assert "Authorization" not in request.headers
+        assert "X-API-Key" not in request.headers
+        assert "Cookie" not in request.headers
+        assert "User-Agent" in request.headers
+        # The URL's own routing parameter, not the client's default of the same name nor its credential.
+        assert request.url.query == b"tenant=a"
+        # The URL's own authority, not the injected client's Host default.
+        assert request.headers["Host"] == "localhost:8000"
+
+
+async def test_credential_free_session_cleanup_drops_the_client_defaults():
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(204)
+
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        headers={"Authorization": "Bearer caller-secret", "X-API-Key": "caller-key"},
+        auth=httpx2.BasicAuth("caller", "password"),
+    ) as client:
+        target = _HttpTarget(client, f"{LOCAL_URL}?token=abc123secretvalue&page=2", credential_free=True)
+        issued = probes._HttpProbeResponse(status_code=200, headers={"mcp-session-id": "s1"}, payload=None)
+        await target.end_session(issued, {"Host": "localhost:8000"})
+
+    assert [request.method for request in seen] == ["DELETE"]
+    assert "Authorization" not in seen[0].headers
+    assert "X-API-Key" not in seen[0].headers
+    assert seen[0].headers["Mcp-Session-Id"] == "s1"
+    assert seen[0].headers["Host"] == "localhost:8000"
+    assert str(seen[0].url) == "http://localhost:8000/mcp?page=2"
+
+
+async def test_injected_client_refusal_proves_an_address_closed(monkeypatch: pytest.MonkeyPatch):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            raise httpx2.ConnectError("All connection attempts failed") from ConnectionRefusedError(61, "refused")
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["interfaces_listening"] == 0
+    assert result.details["interfaces_serving"] == 0
+    assert result.details["interfaces_unknown"] == 0
+
+
+async def test_injected_client_connect_failure_without_refusal_stays_unknown(monkeypatch: pytest.MonkeyPatch):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            raise httpx2.ConnectError("timed out") from TimeoutError()
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_listening"] == 0
+    assert result.details["interfaces_unknown"] == 1
+
+
+async def test_injected_client_inconclusive_answer_confirms_a_listener(monkeypatch: pytest.MonkeyPatch):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            return httpx2.Response(503)
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_listening"] == 1
+    assert result.details["interfaces_unknown"] == 1
+
+
+async def test_injected_client_stalled_stream_confirms_a_listener(monkeypatch: pytest.MonkeyPatch):
+    class Stalled(httpx2.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.sleep(3600)
+            yield b""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=Stalled())
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_listening"] == 1
+    assert result.details["interfaces_unknown"] == 1

@@ -31,7 +31,7 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -508,6 +508,12 @@ class _StreamDeadline(httpx2.ReadTimeout):
         super().__init__("no matching JSON-RPC response before the deadline", request=request)
 
 
+def _answered_status(exc: BaseException) -> int | None:
+    """Return the HTTP status of an answer whose headers arrived before *exc* ended the exchange, if any."""
+    status = getattr(exc, "answered_status", None)
+    return status if isinstance(status, int) else None
+
+
 class _ReadCapReached(Exception):  # noqa: N818 — a signal, not an error condition
     """The answer exceeded ``_RPC_READ_LIMIT`` before the response was found."""
 
@@ -640,6 +646,25 @@ def _strip_credentials(request: httpx2.Request, keep: dict[str, str] | None = No
         request.headers["Authorization"] = keep["Authorization"]
 
 
+_TRANSPORT_HEADERS = frozenset({"accept", "accept-encoding", "connection", "user-agent"})
+"""Client default headers that carry no caller context, kept on a credential-free request."""
+
+
+def _strip_client_defaults(
+    request: httpx2.Request, client: httpx2.AsyncClient, url: str, keep: Mapping[str, str]
+) -> None:
+    """Remove what *client* adds by default, such as an API key, from one request built for *url*.
+
+    Default headers go, except transport headers and *keep*. The URL is rebuilt from *url* without its
+    credential query parameters, so the client's default query parameters neither add to nor replace its own.
+    """
+    kept = {name.lower() for name in keep}
+    for name in client.headers:
+        if name.lower() not in _TRANSPORT_HEADERS and name.lower() not in kept:
+            request.headers.pop(name, None)
+    request.url = httpx2.URL(without_credential_params(url))
+
+
 @dataclass(frozen=True)
 class _HttpTarget:
     """A probe target reached over HTTP(S)."""
@@ -648,6 +673,10 @@ class _HttpTarget:
     url: str
     auth_challenge: str | None = None
     """``WWW-Authenticate`` observed by the unauthenticated probe, for discovery that follows it."""
+    injected: bool = False
+    """Whether ``client`` was supplied by the caller, so probes that open their own client use it instead."""
+    credential_free: bool = False
+    """Send ``post_rpc`` and ``end_session`` requests without the client's credentials, auth or default headers."""
 
     async def post(
         self,
@@ -731,8 +760,11 @@ class _HttpTarget:
             headers={**headers, "Accept-Encoding": "identity"},
             timeout=PROBE_TIMEOUT_S,
         )
+        anonymous = anonymous or self.credential_free
         if anonymous:
             _strip_credentials(request, headers)
+        if self.credential_free:
+            _strip_client_defaults(request, self.client, self.url, headers)
         for header in omit_headers:
             request.headers.pop(header, None)
         response: httpx2.Response | None = None
@@ -786,7 +818,12 @@ class _HttpTarget:
                     unobservable="unfinished",
                 )
             if isinstance(exc, TimeoutError):
-                raise _StreamDeadline(request) from exc
+                deadline = _StreamDeadline(request)
+                if response is not None:
+                    deadline.answered_status = response.status_code  # type: ignore[attr-defined]
+                raise deadline from exc
+            if response is not None and isinstance(exc, httpx2.HTTPError):
+                exc.answered_status = response.status_code  # type: ignore[attr-defined]
             raise
         finally:
             if response is not None:
@@ -902,8 +939,11 @@ class _HttpTarget:
         try:
             request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
             request.headers.pop("Origin", None)
+            anonymous = anonymous or self.credential_free
             if anonymous:
                 _strip_credentials(request, extra_headers)
+            if self.credential_free:
+                _strip_client_defaults(request, self.client, self.url, headers)
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 answer = await self.client.send(
                     request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
@@ -2484,7 +2524,7 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
     validated. The control request (:func:`_accepted_control`) must be accepted
     first, so an access-controlled server is not credited with a refusal it
     gives everyone. The spoofed twin carries no ``Origin``, so only ``Host``
-    can explain a refusal. Both go out on :func:`_direct_client` with the
+    can explain a refusal. Both go out on :func:`_probe_client` with the
     caller's headers, so no proxy stands between them and the server.
     """
     if not _is_loopback_host(urlsplit(target.url).hostname):
@@ -2494,7 +2534,7 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
             {"reason": "target is not a loopback address; a public host's Host routing is not validation"},
         )
     # Direct, with the caller's headers: a proxy could refuse or rewrite the foreign Host itself.
-    async with _direct_client(target.client.headers) as client:
+    async with _probe_client(target, target.client.headers) as client:
         direct = _HttpTarget(client, target.url)
         control = await _accepted_control(direct, PROBE_HOST_VALIDATION, "Host")
         if isinstance(control, ProbeResult):
@@ -2593,13 +2633,17 @@ async def _tcp_listening(host: str, port: int) -> bool | None:
     return True
 
 
-async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: str) -> bool | None:
-    """Send an accepted control unchanged to another address: True when served, False when refused, None unknown.
+_Replay = Literal["served", "refused", "inconclusive", "closed", "unknown"]
+
+
+async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: str) -> _Replay:
+    """Send an accepted control unchanged to another address and say how it was answered.
 
     The request keeps its shape, so a listener is credited only with the exact
-    request the audited server accepted. A session it issues is closed. A
-    timeout, rate limit, server error, unreadable body or missing HTTP answer
-    is unknown.
+    request the audited server accepted ("served"). A timeout, rate limit,
+    server error, unreadable or unfinished body is "inconclusive"; any other HTTP answer
+    is "refused". A session it issues is closed. A refused connection is
+    "closed"; a connection with no HTTP answer is "unknown".
     """
     headers = {**control.headers, "Host": host}
     try:
@@ -2612,16 +2656,33 @@ async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: 
             cleanup_headers={"Host": host},
             read_limit=CONTROL_READ_LIMIT,
         )
-    except httpx2.HTTPError:
+    except httpx2.HTTPError as exc:
+        if _answered_status(exc) is not None:
+            # The headers arrived, so something listens there; the body never finished.
+            return "inconclusive"
+        if _connection_refused(exc):
+            return "closed"
         # Connected, no complete HTTP answer: a host firewall can accept a connection and drop the request.
-        return None
+        return "unknown"
     if control.shape == "legacy-initialize":
         await target.end_session(response, {"Host": host})
     field = "supportedVersions" if control.shape == "modern" else "protocolVersion"
     if 200 <= response.status_code < 300 and (response.result or {}).get(field) is not None:
-        return True
+        return "served"
     if _inconclusive_status(response.status_code) or response.unobservable is not None:
-        return None
+        return "inconclusive"
+    return "refused"
+
+
+def _connection_refused(exc: BaseException) -> bool:
+    """Whether a transport error was caused by a refused connection, the only proof a port is closed."""
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen:
+        if isinstance(cause, ConnectionRefusedError):
+            return True
+        seen.add(id(cause))
+        cause = cause.__cause__ or cause.__context__
     return False
 
 
@@ -2637,6 +2698,18 @@ def _direct_client(headers: Mapping[str, str] | None = None) -> httpx2.AsyncClie
     ``SSL_CERT_DIR`` too, so the TLS context is built with that trust explicitly.
     """
     return async_client(trust_env=False, headers=headers, verify=client_ssl_context(trust_env=True))
+
+
+def _probe_client(
+    target: _HttpTarget, headers: Mapping[str, str] | None = None
+) -> AbstractAsyncContextManager[httpx2.AsyncClient]:
+    """Return the client a probe that bypasses proxies sends on: an injected client as is, else a new direct one.
+
+    A caller that injects a client controls every request the probes send; the injected client is not closed here.
+    """
+    if target.injected:
+        return nullcontext(target.client)
+    return _direct_client(headers)
 
 
 def _address_family(host: str) -> int | None:
@@ -2677,10 +2750,12 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
     targets (a certificate for ``localhost`` does not cover an address), when
     no address of the target's family can be tried, or when the control
     request is not accepted on loopback. Every request goes out on
-    :func:`_direct_client` to the URL without credential query parameters,
+    :func:`_probe_client` to the URL without credential query parameters,
     and both controls carry the URL's own ``Host``: a server that needs
     credentials or another ``Host`` refuses the loopback control, and stays
-    unjudged.
+    unjudged. With an injected client, every request goes through it without
+    the client's credentials or default headers, and no TCP connection of
+    the probe's own is opened: each address is judged by the replay alone.
     """
     parts = urlsplit(target.url)
     if not _is_loopback_host(parts.hostname):
@@ -2709,28 +2784,41 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
     # the caller's credentials, and none goes through a proxy that could answer in the server's place.
     # Rebuilt from host and port, so no userinfo reaches either the URL or the Host header.
     url = _url_at(without_credential_params(target.url), parts.hostname or "")
-    async with _direct_client() as client:
-        # The Host httpx2 itself sends for this URL (an explicit default port is dropped), on every control.
-        authority = client.build_request("POST", url).headers["Host"]
+    async with _probe_client(target) as client:
+        # The Host httpx2 itself sends for this URL (an explicit default port is dropped), on every control;
+        # a standalone request, so a Host default on an injected client cannot replace it.
+        authority = httpx2.Request("POST", url).headers["Host"]
         loopback_control = await _accepted_control(
-            _HttpTarget(client, url), PROBE_LOCAL_BIND, "network exposure", host=authority
+            _HttpTarget(client, url, credential_free=True), PROBE_LOCAL_BIND, "network exposure", host=authority
         )
         if isinstance(loopback_control, ProbeResult):
             return loopback_control
 
         port = parts.port or 80
-        states = await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
-        listening = [address for address, state in zip(addresses, states, strict=True) if state]
-        serving = 0
+        # An injected client's transport answers for every address, so no socket of the probe's own is opened.
+        states = (
+            [True] * len(addresses)
+            if target.injected
+            else await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
+        )
+        listening = serving = 0
         unknown = sum(state is None for state in states)
-        for address in listening:
-            served = await _replay_control(_HttpTarget(client, _url_at(url, address)), loopback_control, authority)
-            serving += served is True
-            unknown += served is None
+        for address, state in zip(addresses, states, strict=True):
+            if not state:
+                continue
+            replay = await _replay_control(
+                _HttpTarget(client, _url_at(url, address), credential_free=True), loopback_control, authority
+            )
+            serving += replay == "served"
+            unknown += replay in ("inconclusive", "unknown")
+            # Without a TCP check of the probe's own, only an HTTP answer confirms a listener.
+            listening += replay in ("served", "refused", "inconclusive") or (
+                replay == "unknown" and not target.injected
+            )
     details: dict[str, Any] = {
         "port": port,
         "interfaces_checked": len(addresses),
-        "interfaces_listening": len(listening),
+        "interfaces_listening": listening,
         "interfaces_serving": serving,
         "interfaces_unknown": unknown,
     }
@@ -3426,8 +3514,8 @@ async def run_all_probes(
         client: Optional preconfigured httpx client (tests inject a
             MockTransport-backed one); short-lived clients are created
             otherwise. An injected client is used for every single-target
-            probe, including the anonymous ones — the caller configures its
-            headers.
+            probe, including the anonymous ones and the local-server probes
+            that otherwise bypass proxies — the caller configures its headers.
         headers: Extra HTTP headers (e.g. an ``Authorization`` bearer) merged
             into the short-lived authenticated client's defaults; probes in
             ``_ANONYMOUS_PROBE_IDS`` run on a separate client that carries
@@ -3446,7 +3534,9 @@ async def run_all_probes(
 
     async def run_one(probe_id: str, http_client: httpx2.AsyncClient, auth_challenge: str | None = None) -> ProbeResult:
         try:
-            result = await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url, auth_challenge))
+            result = await _HTTP_PROBES[probe_id](
+                _HttpTarget(http_client, url, auth_challenge, injected=client is not None)
+            )
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
