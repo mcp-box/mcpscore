@@ -55,9 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a client that sends the advertised default gets a validation error
   instead of the default. JSON Schema 2020-12 Validation §9.2 recommends
   that a default be valid against its schema; the rule checks every
-  `default` in each tool's `inputSchema`, resolving local `$ref`s and never
-  fetching remote ones. Servers whose tools declare no default skip as not
-  applicable; others gain 2 points of maximum score.
+  `default` in each tool's `inputSchema` with the schema's own dialect,
+  resolving local `$ref`s and never fetching remote ones. Servers whose tools
+  declare no default skip as not applicable, and servers none of whose
+  defaults can be judged skip as insufficient data; others gain 2 points of
+  maximum score.
 - **`mcpscore.url_credentials`**: `credential_query_params` and
   `without_credential_params` decide which query parameters carry a
   credential. Names match exactly after normalising (`apiKey`, `api-key`,

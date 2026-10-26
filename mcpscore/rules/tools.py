@@ -1,14 +1,14 @@
 from abc import abstractmethod
 from collections import Counter
-from collections.abc import Iterator
 import re
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import Draft202012Validator, validator_for
 from mcp_types import Tool
 from referencing import Registry
 from referencing.exceptions import Unresolvable
+from referencing.jsonschema import specification_with
 
 from mcpscore.diagnostics import quoted_preview
 
@@ -1428,46 +1428,9 @@ class ToolsOutputPropertiesDocumentedRule(ToolsBaseRule):
         )
 
 
-# Keywords whose values are subschemas; data keywords (default, const, enum, examples) are not walked.
-_SCHEMA_MAP_KEYWORDS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas")
-_SCHEMA_KEYWORDS = (
-    "items",
-    "additionalItems",
-    "additionalProperties",
-    "unevaluatedItems",
-    "unevaluatedProperties",
-    "propertyNames",
-    "contains",
-    "not",
-    "if",
-    "then",
-    "else",
-)
-_SCHEMA_LIST_KEYWORDS = ("allOf", "anyOf", "oneOf", "prefixItems")
-_MAX_SCHEMA_DEPTH = 64
-
-
-def _subschemas(schema: dict[str, Any], pointer: str, depth: int = 0) -> Iterator[tuple[dict[str, Any], str]]:
-    """Yield *schema* and every nested subschema with its JSON pointer, to a bounded depth."""
-    yield schema, pointer
-    if depth >= _MAX_SCHEMA_DEPTH:
-        return
-    for keyword in _SCHEMA_MAP_KEYWORDS:
-        children = schema.get(keyword)
-        if isinstance(children, dict):
-            for name, child in children.items():
-                if isinstance(child, dict):
-                    yield from _subschemas(child, f"{pointer}/{keyword}/{pointer_token(str(name))}", depth + 1)
-    for keyword in _SCHEMA_KEYWORDS:
-        child = schema.get(keyword)
-        if isinstance(child, dict):
-            yield from _subschemas(child, f"{pointer}/{keyword}", depth + 1)
-    for keyword in _SCHEMA_LIST_KEYWORDS:
-        children = schema.get(keyword)
-        if isinstance(children, list):
-            for index, child in enumerate(children):
-                if isinstance(child, dict):
-                    yield from _subschemas(child, f"{pointer}/{keyword}/{index}", depth + 1)
+# jsonschema validates recursively; a schema nested deeper than this could exhaust Python's stack.
+_MAX_SCHEMA_NESTING = 128
+_JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
 
 def _nesting_exceeds(value: Any, limit: int) -> bool:
@@ -1484,8 +1447,35 @@ def _nesting_exceeds(value: Any, limit: int) -> bool:
     return False
 
 
-def _has_default(tool: Tool) -> bool:
-    return any("default" in subschema for subschema, _ in _subschemas(tool.input_schema, ""))
+def _mentions_default(value: Any) -> bool:
+    """Return whether any object in JSON *value* has a ``default`` key, whatever keyword holds it."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if "default" in item:
+                return True
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
+
+
+def _json_pointers(schema: dict[str, Any]) -> dict[int, tuple[int, str]]:
+    """Map each object in *schema* to its document-order position and JSON pointer."""
+    pointers: dict[int, tuple[int, str]] = {}
+    stack: list[tuple[Any, str]] = [(schema, "")]
+    while stack:
+        item, pointer = stack.pop()
+        if isinstance(item, dict):
+            pointers.setdefault(id(item), (len(pointers), pointer))
+            children = [(child, f"{pointer}/{pointer_token(str(key))}") for key, child in item.items()]
+        elif isinstance(item, list):
+            children = [(child, f"{pointer}/{index}") for index, child in enumerate(item)]
+        else:
+            continue
+        stack.extend(reversed(children))
+    return pointers
 
 
 def _json_type(value: Any) -> str:
@@ -1502,42 +1492,65 @@ def _json_type(value: Any) -> str:
     return "array" if isinstance(value, list) else "object"
 
 
-def _invalid_defaults(tool: Tool) -> list[dict[str, Any]]:
-    """Find input-schema defaults that fail the subschema declaring them.
+class _DefaultsCheck(NamedTuple):
+    failures: list[dict[str, Any]]
+    found: bool
+    judged: int
 
-    Schemas in an unknown ``$schema`` dialect, invalid in their own dialect, or
-    nested too deeply to validate are left unjudged. ``$ref`` resolves within the tool's
-    schema only: an empty registry keeps remote references unresolved, never fetched.
+
+def _check_defaults(tool: Tool) -> _DefaultsCheck:
+    """Validate each input-schema default against the subschema declaring it.
+
+    Subschemas are found with the dialect's own keyword rules (``referencing``),
+    so data keywords such as ``examples`` are never read as schemas. A schema in
+    an unknown dialect, invalid in its dialect, nested too deeply, or holding an
+    embedded resource (``$id``) is left unjudged, as is a default whose ``$ref``
+    cannot be resolved locally or recurses without end. Remote references are
+    never fetched: the registry is empty.
     """
     schema = tool.input_schema
-    # jsonschema validates recursively; a schema this deep would exhaust Python's stack.
-    if _nesting_exceeds(schema, _MAX_SCHEMA_DEPTH * 2):
-        return []
-    dialect = schema.get("$schema")
-    if dialect is None:
-        validator_class = Draft202012Validator
-    elif isinstance(dialect, str):
-        # validator_for falls back to the default for an unknown URI; only a known dialect is judged.
-        validator_class = validator_for(schema, default=Draft202012Validator)
-        if str(validator_class.META_SCHEMA.get("$schema")).rstrip("#") != dialect.rstrip("#"):
-            return []
-    else:
-        return []
+    unjudged = _DefaultsCheck([], _mentions_default(schema), 0)
+    if _nesting_exceeds(schema, _MAX_SCHEMA_NESTING):
+        return unjudged
+    dialect = schema.get("$schema", _JSON_SCHEMA_2020_12)
+    if not isinstance(dialect, str):
+        return unjudged
+    # validator_for falls back to the default for an unknown URI; only a known dialect is judged.
+    validator_class = validator_for(schema, default=Draft202012Validator)
+    meta_schema_uri = str(validator_class.META_SCHEMA.get("$schema"))
+    if meta_schema_uri.rstrip("#") != dialect.rstrip("#"):
+        return unjudged
     try:
         validator_class.check_schema(schema)
     except SchemaError:
-        return []
+        return unjudged
+    specification = specification_with(meta_schema_uri)
+    subschemas: list[dict[str, Any]] = []
+    stack: list[Any] = [schema]
+    while stack:
+        subschema = stack.pop()
+        if isinstance(subschema, dict):
+            if subschemas and specification.id_of(subschema) is not None:
+                return unjudged
+            subschemas.append(subschema)
+            stack.extend(specification.subresources_of(subschema))
+    pointers = _json_pointers(schema)
+    subschemas.sort(key=lambda subschema: pointers[id(subschema)][0])
     validator = validator_class(schema, registry=Registry())
     failures: list[dict[str, Any]] = []
-    for subschema, pointer in _subschemas(schema, ""):
+    found = judged = 0
+    for subschema in subschemas:
         if "default" not in subschema:
             continue
+        found += 1
         default = subschema["default"]
         try:
             valid = validator.evolve(schema=subschema).is_valid(default)
-        except Unresolvable:
+        except (Unresolvable, RecursionError):
             continue
+        judged += 1
         if not valid:
+            pointer = pointers[id(subschema)][1]
             failure: dict[str, Any] = {"tool": tool.name, "path": pointer or "/", "default_type": _json_type(default)}
             declared = subschema.get("type")
             if isinstance(declared, str) or (
@@ -1545,7 +1558,7 @@ def _invalid_defaults(tool: Tool) -> list[dict[str, Any]]:
             ):
                 failure["declared_type"] = declared
             failures.append({**failure, "_pointer": "/inputSchema" + pointer})
-    return failures
+    return _DefaultsCheck(failures, found > 0, judged)
 
 
 @register_rule
@@ -1569,12 +1582,15 @@ class ToolsInputDefaultsValidRule(ToolsBaseRule):
         return RuleSeverity.MEDIUM
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip unless at least one tool's input schema declares a ``default``."""
+        """Skip when no tool declares a ``default``, or when none of the defaults can be judged."""
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
-        if not any(_has_default(tool) for tool in audit_data.tools or []):
+        checks = [_check_defaults(tool) for tool in audit_data.tools or []]
+        if not any(check.found for check in checks):
             return SKIP_REASON_NOT_APPLICABLE
+        if not any(check.judged for check in checks):
+            return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
@@ -1582,7 +1598,7 @@ class ToolsInputDefaultsValidRule(ToolsBaseRule):
         invalid_defaults: list[dict[str, Any]] = [
             {**failure, "_entity_index": index}
             for index, tool in enumerate(tools)
-            for failure in _invalid_defaults(tool)
+            for failure in _check_defaults(tool).failures
         ]
         passed = not invalid_defaults
         message = (

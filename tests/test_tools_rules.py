@@ -1203,9 +1203,59 @@ class TestToolsInputDefaultsValidRule:
         [{"$schema": "https://example.com/custom-dialect"}, {"$schema": 5}, {"minLength": "two"}],
         ids=["unknown-dialect", "non-string-dialect", "invalid-schema"],
     )
-    def test_schemas_the_validator_cannot_judge_are_skipped(self, extra: dict[str, Any]) -> None:
+    def test_schemas_the_validator_cannot_judge_are_insufficient_data(self, extra: dict[str, Any]) -> None:
         tool = self._tool({"limit": {"type": "integer", "default": None}}, **extra)
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
         assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+    def test_findings_from_judgeable_tools_survive_an_unjudgeable_one(self) -> None:
+        unjudgeable = self._tool({"limit": {"type": "integer", "default": None}}, "custom", **{"$schema": 5})
+        judgeable = self._tool({"limit": {"type": "integer", "default": None}})
+        data = AuditData(tools=[unjudgeable, judgeable])
+        assert self.rule.skip_reason(data) is None
+        assert [f["tool"] for f in self.rule.check(data).details["invalid_defaults"]] == ["search"]
+
+    def test_self_referencing_ref_is_unjudged_not_raised(self) -> None:
+        tool = self._tool({"x": {"$ref": "#/properties/x", "default": 1}})
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+    def test_embedded_resource_scope_is_unjudged(self) -> None:
+        tool = self._tool(
+            {
+                "inner": {
+                    "$id": "https://example.com/inner",
+                    "$defs": {"T": {"type": "string"}},
+                    "$ref": "#/$defs/T",
+                    "default": "ok",
+                }
+            },
+            **{"$defs": {"T": {"type": "integer"}}},
+        )
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_draft_07_tuple_items_and_dependencies_are_walked(self) -> None:
+        tool = self._tool(
+            {
+                "pair": {"type": "array", "items": [{"type": "string", "default": 1}]},
+                "a": {"type": "string"},
+            },
+            dependencies={"a": {"properties": {"b": {"type": "integer", "default": "x"}}}},
+            **{"$schema": "http://json-schema.org/draft-07/schema#"},
+        )
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
+            "/properties/pair/items/0",
+            "/dependencies/a/properties/b",
+        ]
+
+    def test_draft_07_prefix_items_are_data(self) -> None:
+        tool = self._tool(
+            {"pair": {"type": "array", "prefixItems": [{"type": "string", "default": 1}]}},
+            **{"$schema": "http://json-schema.org/draft-07/schema#"},
+        )
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert result.passed is True
 
     def test_declared_draft_07_dialect_is_used(self) -> None:
         tool = self._tool(
@@ -1239,11 +1289,11 @@ class TestToolsInputDefaultsValidRule:
         result = self.rule.check(AuditData(tools=[self._tool({"root": schema})]))
         assert result.passed is True
 
-    def test_defaults_below_the_walk_depth_are_not_applicable(self) -> None:
+    def test_too_deep_schema_with_defaults_is_insufficient_data(self) -> None:
         schema: dict[str, Any] = {"type": "string", "default": 1}
         for _ in range(100):
             schema = {"type": "object", "properties": {"n": schema}}
-        assert self.rule.skip_reason(AuditData(tools=[self._tool({"root": schema})])) == SKIP_REASON_NOT_APPLICABLE
+        assert self.rule.skip_reason(AuditData(tools=[self._tool({"root": schema})])) == SKIP_REASON_INSUFFICIENT_DATA
 
     def test_boolean_subschemas_are_skipped(self) -> None:
         properties = {"any": True, "mode": {"anyOf": [False, {"type": "string", "default": 0}]}}
