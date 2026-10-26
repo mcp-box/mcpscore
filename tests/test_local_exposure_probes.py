@@ -949,7 +949,7 @@ async def test_bind_probe_sends_no_caller_credentials_through_an_injected_client
         auth=httpx2.BasicAuth("caller", "password"),
         params={"api_key": "caller-param", "tenant": "caller-tenant"},
     ) as injected:
-        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+        result = await _probe_local_bind(_HttpTarget(injected, f"{LOCAL_URL}?tenant=a", injected=True))
         assert injected.headers["X-API-Key"] == "caller-key"
 
     assert result.outcome is ProbeOutcome.UNSUPPORTED
@@ -959,7 +959,8 @@ async def test_bind_probe_sends_no_caller_credentials_through_an_injected_client
         assert "X-API-Key" not in request.headers
         assert "Cookie" not in request.headers
         assert "User-Agent" in request.headers
-        assert request.url.query == b""
+        # The URL's own routing parameter, not the client's default of the same name nor its credential.
+        assert request.url.query == b"tenant=a"
         # The URL's own authority, not the injected client's Host default.
         assert request.headers["Host"] == "localhost:8000"
 
@@ -986,3 +987,32 @@ async def test_credential_free_session_cleanup_drops_the_client_defaults():
     assert seen[0].headers["Mcp-Session-Id"] == "s1"
     assert seen[0].headers["Host"] == "localhost:8000"
     assert str(seen[0].url) == "http://localhost:8000/mcp?page=2"
+
+
+async def test_injected_client_refusal_proves_an_address_closed(monkeypatch: pytest.MonkeyPatch):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            raise httpx2.ConnectError("All connection attempts failed") from ConnectionRefusedError(61, "refused")
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["interfaces_serving"] == 0
+    assert result.details["interfaces_unknown"] == 0
+
+
+async def test_injected_client_connect_failure_without_refusal_stays_unknown(monkeypatch: pytest.MonkeyPatch):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            raise httpx2.ConnectError("timed out") from TimeoutError()
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_unknown"] == 1

@@ -644,20 +644,19 @@ _TRANSPORT_HEADERS = frozenset({"accept", "accept-encoding", "connection", "user
 """Client default headers that carry no caller context, kept on a credential-free request."""
 
 
-def _strip_client_defaults(request: httpx2.Request, client: httpx2.AsyncClient, keep: Mapping[str, str]) -> None:
-    """Remove what *client* adds by default, such as an API key, from one built request.
+def _strip_client_defaults(
+    request: httpx2.Request, client: httpx2.AsyncClient, url: str, keep: Mapping[str, str]
+) -> None:
+    """Remove what *client* adds by default, such as an API key, from one request built for *url*.
 
-    Default headers go, except transport headers and *keep*; so do the client's default query parameters and
-    any credential query parameter left in the URL.
+    Default headers go, except transport headers and *keep*. The URL is rebuilt from *url* without its
+    credential query parameters, so the client's default query parameters neither add to nor replace its own.
     """
     kept = {name.lower() for name in keep}
     for name in client.headers:
         if name.lower() not in _TRANSPORT_HEADERS and name.lower() not in kept:
             request.headers.pop(name, None)
-    url = request.url
-    for name in client.params:
-        url = url.copy_remove_param(name)
-    request.url = httpx2.URL(without_credential_params(str(url)))
+    request.url = httpx2.URL(without_credential_params(url))
 
 
 @dataclass(frozen=True)
@@ -759,7 +758,7 @@ class _HttpTarget:
         if anonymous:
             _strip_credentials(request, headers)
         if self.credential_free:
-            _strip_client_defaults(request, self.client, headers)
+            _strip_client_defaults(request, self.client, self.url, headers)
         for header in omit_headers:
             request.headers.pop(header, None)
         response: httpx2.Response | None = None
@@ -933,7 +932,7 @@ class _HttpTarget:
             if anonymous:
                 _strip_credentials(request, extra_headers)
             if self.credential_free:
-                _strip_client_defaults(request, self.client, headers)
+                _strip_client_defaults(request, self.client, self.url, headers)
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 answer = await self.client.send(
                     request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
@@ -2628,8 +2627,8 @@ async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: 
 
     The request keeps its shape, so a listener is credited only with the exact
     request the audited server accepted. A session it issues is closed. A
-    timeout, rate limit, server error, unreadable body or missing HTTP answer
-    is unknown.
+    refused connection is False; a timeout, rate limit, server error,
+    unreadable body or missing HTTP answer is unknown.
     """
     headers = {**control.headers, "Host": host}
     try:
@@ -2642,7 +2641,9 @@ async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: 
             cleanup_headers={"Host": host},
             read_limit=CONTROL_READ_LIMIT,
         )
-    except httpx2.HTTPError:
+    except httpx2.HTTPError as exc:
+        if _connection_refused(exc):
+            return False
         # Connected, no complete HTTP answer: a host firewall can accept a connection and drop the request.
         return None
     if control.shape == "legacy-initialize":
@@ -2652,6 +2653,18 @@ async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: 
         return True
     if _inconclusive_status(response.status_code) or response.unobservable is not None:
         return None
+    return False
+
+
+def _connection_refused(exc: BaseException) -> bool:
+    """Whether a transport error was caused by a refused connection, the only proof a port is closed."""
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen:
+        if isinstance(cause, ConnectionRefusedError):
+            return True
+        seen.add(id(cause))
+        cause = cause.__cause__ or cause.__context__
     return False
 
 
