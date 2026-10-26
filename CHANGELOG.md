@@ -60,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema cannot stall the audit. Servers whose tools declare no default skip
   as not applicable, and servers whose schemas can't be read skip as
   insufficient data; others gain 2 points of maximum score.
+- **`server_instructions_tool_references` (LOW): tools the instructions tell
+  the agent to call are listed.** Instructions that name a tool the server
+  doesn't list, often left behind by a rename, send the agent after a tool
+  that doesn't exist. A name counts only as inline code with an explicit
+  tool cue beside it ("call `search`", "the `search` tool", "`search()`"),
+  so parameters and field names in backticks are not read as tools. Servers
+  whose instructions name no tool this way skip as not applicable; others
+  gain 1 point of maximum score.
 - **`mcpscore.url_credentials`**: `credential_query_params` and
   `without_credential_params` decide which query parameters carry a
   credential. Names match exactly after normalising (`apiKey`, `api-key`,

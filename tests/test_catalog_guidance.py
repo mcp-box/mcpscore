@@ -219,6 +219,14 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
         cases.append((f"server_{suffix}", AuditData(server_info=info), path, action))
     cases.append(("server_instructions_present", AuditData(instructions=None), "/instructions", "limitations"))
     cases.append(
+        (
+            "server_instructions_tool_references",
+            AuditData(instructions="Call `lookup` first.", tools=[tool()], capabilities=ServerCapabilities(tools={})),
+            "/instructions",
+            "tools/list",
+        )
+    )
+    cases.append(
         ("server_exposes_primitive", AuditData(capabilities=ServerCapabilities(), tools=[]), "", "list method")
     )
     cases += [

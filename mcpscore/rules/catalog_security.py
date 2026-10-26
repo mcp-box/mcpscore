@@ -2400,7 +2400,7 @@ def _declares(audit_data: AuditData, capability: str) -> bool:
     return getattr(audit_data.capabilities, capability, None) is not None
 
 
-def _stateless_page_whole(audit_data: AuditData) -> bool:
+def stateless_page_whole(audit_data: AuditData) -> bool:
     """Whether the stateless ``tools/list`` page is the whole catalog (SEP-2322 ``resultType``, no next cursor)."""
     probe = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
     page = probe.payload if probe is not None and isinstance(probe.payload, dict) else {}
@@ -2423,7 +2423,7 @@ def _listed_names(audit_data: AuditData) -> frozenset[str] | None:
     # name the tools it served, which are no longer known.
     if "tools" in audit_data.catalog_versions:
         return None
-    if audit_data.session_protocol_version is None and not _stateless_page_whole(audit_data):
+    if audit_data.session_protocol_version is None and not stateless_page_whole(audit_data):
         return None
     items = [*audit_data.tools, *(audit_data.prompts or []), *(audit_data.resources or [])]
     items += audit_data.resource_templates or []
