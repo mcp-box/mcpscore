@@ -49,6 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule judges servers on 2025-06-18 or later where at least one tool
   declares an `outputSchema`; others skip as not applicable. Such an audit
   gains 1 point of maximum score.
+- **`tools_input_defaults_valid` (MEDIUM): each input `default` is valid
+  against the schema that declares it.** A Python parameter written
+  `limit: int = None` advertises `{"type": "integer", "default": null}`, so
+  a client that sends the advertised default gets a validation error
+  instead of the default. JSON Schema 2020-12 Validation §9.2 recommends
+  that a default be valid against its schema; the rule checks every
+  `default` in each tool's `inputSchema`, resolving local `$ref`s and never
+  fetching remote ones. Servers whose tools declare no default skip as not
+  applicable; others gain 2 points of maximum score.
 - **`mcpscore.url_credentials`**: `credential_query_params` and
   `without_credential_params` decide which query parameters carry a
   credential. Names match exactly after normalising (`apiKey`, `api-key`,

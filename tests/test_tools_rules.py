@@ -28,6 +28,7 @@ from mcpscore.rules.tools import (
     ToolsDescriptionPresentRule,
     ToolsDescriptionsUniqueRule,
     ToolsExecutionConsistentRule,
+    ToolsInputDefaultsValidRule,
     ToolsInputPropertiesDocumentedRule,
     ToolsInputSchemaValidRule,
     ToolsMcpHeadersNotSensitiveRule,
@@ -1106,6 +1107,148 @@ class TestToolsOutputPropertiesDocumentedRule:
             output_schema={"type": "object", "properties": {"n": {"type": "integer", "description": "Count"}}},
         )
         assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+
+class TestToolsInputDefaultsValidRule:
+    """Test that input defaults are valid against the subschema declaring them."""
+
+    rule = ToolsInputDefaultsValidRule()
+
+    @staticmethod
+    def _tool(properties: dict[str, Any], name: str = "search", **extra: Any) -> Tool:
+        return Tool(name=name, input_schema={"type": "object", "properties": properties, **extra})
+
+    def test_rule_properties(self) -> None:
+        assert self.rule.rule_id == "tools_input_defaults_valid"
+        assert self.rule.severity is RuleSeverity.MEDIUM
+        assert self.rule.applies_to("2024-11-05") is True
+
+    def test_not_applicable_without_any_default(self) -> None:
+        data = AuditData(tools=[self._tool({"q": {"type": "string"}})])
+        assert self.rule.skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_applies_when_a_nested_default_exists(self) -> None:
+        nested = {"type": "array", "items": {"type": "object", "properties": {"n": {"default": 1}}}}
+        data = AuditData(tools=[self._tool({"q": {"type": "string"}}), self._tool({"rows": nested})])
+        assert self.rule.skip_reason(data) is None
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": "integer", "default": 10},
+            {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
+            {"type": ["integer", "null"], "default": None},
+            {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
+            {"type": "string", "format": "date", "default": "not a date"},
+        ],
+        ids=["typed", "nullable-anyof", "nullable-type-list", "enum", "format-not-asserted"],
+    )
+    def test_valid_defaults_pass(self, schema: dict[str, Any]) -> None:
+        result = self.rule.check(AuditData(tools=[self._tool({"limit": schema})]))
+        assert result.passed is True
+        assert result.details == {"invalid_defaults": []}
+        assert result.suggested_fix is None
+
+    def test_null_default_on_integer_fails_with_locations(self) -> None:
+        tools = [
+            self._tool({"q": {"type": "string"}}, "plain"),
+            self._tool({"q": {"type": "string"}, "limit": {"type": "integer", "default": None, "title": "Limit"}}),
+        ]
+        result = self.rule.check(AuditData(tools=tools))
+        assert result.passed is False
+        assert result.severity is RuleSeverity.MEDIUM
+        assert "rejects: 1" in result.message
+        assert result.details["invalid_defaults"] == [
+            {"tool": "search", "path": "/properties/limit", "default_type": "null", "declared_type": "integer"}
+        ]
+        assert [(issue["entity_index"], issue["path"]) for issue in result.details["issues"]] == [
+            (1, "/inputSchema/properties/limit/default")
+        ]
+        assert result.suggested_fix is not None
+        assert "T | None" in result.suggested_fix
+
+    def test_nested_and_combinator_defaults_are_checked(self) -> None:
+        properties = {
+            "rows": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"n": {"type": "integer", "default": "x"}}},
+            },
+            "mode": {"anyOf": [{"type": "string", "minLength": 2, "default": "a"}, {"type": "null"}]},
+        }
+        result = self.rule.check(AuditData(tools=[self._tool(properties)]))
+        assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
+            "/properties/rows/items/properties/n",
+            "/properties/mode/anyOf/0",
+        ]
+
+    def test_local_refs_resolve_against_the_tool_schema(self) -> None:
+        tool = self._tool(
+            {"good": {"$ref": "#/$defs/Order", "default": "asc"}, "bad": {"$ref": "#/$defs/Order", "default": "up"}},
+            **{"$defs": {"Order": {"enum": ["asc", "desc"]}}},
+        )
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert [failure["path"] for failure in result.details["invalid_defaults"]] == ["/properties/bad"]
+        assert "declared_type" not in result.details["invalid_defaults"][0]
+
+    def test_remote_refs_are_not_fetched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def no_network(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("remote $ref fetched")
+
+        monkeypatch.setattr("urllib.request.urlopen", no_network)
+        tool = self._tool({"x": {"$ref": "https://example.com/schema.json", "default": 1}})
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+    @pytest.mark.parametrize(
+        "extra",
+        [{"$schema": "https://example.com/custom-dialect"}, {"$schema": 5}, {"minLength": "two"}],
+        ids=["unknown-dialect", "non-string-dialect", "invalid-schema"],
+    )
+    def test_schemas_the_validator_cannot_judge_are_skipped(self, extra: dict[str, Any]) -> None:
+        tool = self._tool({"limit": {"type": "integer", "default": None}}, **extra)
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+    def test_declared_draft_07_dialect_is_used(self) -> None:
+        tool = self._tool(
+            {"pair": {"type": "array", "items": [{"type": "string"}], "default": [1]}},
+            **{"$schema": "http://json-schema.org/draft-07/schema#"},
+        )
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert [failure["path"] for failure in result.details["invalid_defaults"]] == ["/properties/pair"]
+
+    def test_data_keywords_are_not_walked(self) -> None:
+        tool = self._tool({"q": {"type": "object", "examples": [{"default": None, "type": "integer"}]}})
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_pointer_tokens_are_escaped(self) -> None:
+        result = self.rule.check(AuditData(tools=[self._tool({"a/b~c": {"type": "string", "default": 3}})]))
+        assert result.details["invalid_defaults"][0]["path"] == "/properties/a~1b~0c"
+        assert result.details["invalid_defaults"][0]["default_type"] == "integer"
+
+    @pytest.mark.parametrize(
+        ("default", "expected"),
+        [(True, "boolean"), (1.5, "number"), ([1], "array"), ({"a": 1}, "object")],
+    )
+    def test_default_types_are_named(self, default: Any, expected: str) -> None:
+        result = self.rule.check(AuditData(tools=[self._tool({"q": {"type": "string", "default": default}})]))
+        assert result.details["invalid_defaults"][0]["default_type"] == expected
+
+    def test_deep_nesting_is_bounded(self) -> None:
+        schema: dict[str, Any] = {"type": "string", "default": 1}
+        for _ in range(200):
+            schema = {"type": "object", "properties": {"n": schema}}
+        result = self.rule.check(AuditData(tools=[self._tool({"root": schema})]))
+        assert result.passed is True
+
+    def test_defaults_below_the_walk_depth_are_not_applicable(self) -> None:
+        schema: dict[str, Any] = {"type": "string", "default": 1}
+        for _ in range(100):
+            schema = {"type": "object", "properties": {"n": schema}}
+        assert self.rule.skip_reason(AuditData(tools=[self._tool({"root": schema})])) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_boolean_subschemas_are_skipped(self) -> None:
+        properties = {"any": True, "mode": {"anyOf": [False, {"type": "string", "default": 0}]}}
+        result = self.rule.check(AuditData(tools=[self._tool(properties)]))
+        assert [failure["path"] for failure in result.details["invalid_defaults"]] == ["/properties/mode/anyOf/1"]
 
 
 # ============================================================================

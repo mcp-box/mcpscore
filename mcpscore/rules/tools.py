@@ -1,9 +1,14 @@
 from abc import abstractmethod
 from collections import Counter
+from collections.abc import Iterator
 import re
 from typing import Any, cast
 
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import Draft202012Validator, validator_for
 from mcp_types import Tool
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 from mcpscore.diagnostics import quoted_preview
 
@@ -1419,6 +1424,193 @@ class ToolsOutputPropertiesDocumentedRule(ToolsBaseRule):
                     "a nonblank property description",
                 )
                 for failure in undocumented_properties
+            ),
+        )
+
+
+# Keywords whose values are subschemas; data keywords (default, const, enum, examples) are not walked.
+_SCHEMA_MAP_KEYWORDS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas")
+_SCHEMA_KEYWORDS = (
+    "items",
+    "additionalItems",
+    "additionalProperties",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+    "propertyNames",
+    "contains",
+    "not",
+    "if",
+    "then",
+    "else",
+)
+_SCHEMA_LIST_KEYWORDS = ("allOf", "anyOf", "oneOf", "prefixItems")
+_MAX_SCHEMA_DEPTH = 64
+
+
+def _subschemas(schema: dict[str, Any], pointer: str, depth: int = 0) -> Iterator[tuple[dict[str, Any], str]]:
+    """Yield *schema* and every nested subschema with its JSON pointer, to a bounded depth."""
+    yield schema, pointer
+    if depth >= _MAX_SCHEMA_DEPTH:
+        return
+    for keyword in _SCHEMA_MAP_KEYWORDS:
+        children = schema.get(keyword)
+        if isinstance(children, dict):
+            for name, child in children.items():
+                if isinstance(child, dict):
+                    yield from _subschemas(child, f"{pointer}/{keyword}/{pointer_token(str(name))}", depth + 1)
+    for keyword in _SCHEMA_KEYWORDS:
+        child = schema.get(keyword)
+        if isinstance(child, dict):
+            yield from _subschemas(child, f"{pointer}/{keyword}", depth + 1)
+    for keyword in _SCHEMA_LIST_KEYWORDS:
+        children = schema.get(keyword)
+        if isinstance(children, list):
+            for index, child in enumerate(children):
+                if isinstance(child, dict):
+                    yield from _subschemas(child, f"{pointer}/{keyword}/{index}", depth + 1)
+
+
+def _nesting_exceeds(value: Any, limit: int) -> bool:
+    """Return whether JSON *value* nests deeper than *limit*, without recursing."""
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        children = item.values() if isinstance(item, dict) else item if isinstance(item, list) else ()
+        for child in children:
+            if isinstance(child, (dict, list)):
+                if depth + 1 > limit:
+                    return True
+                stack.append((child, depth + 1))
+    return False
+
+
+def _has_default(tool: Tool) -> bool:
+    return any("default" in subschema for subschema, _ in _subschemas(tool.input_schema, ""))
+
+
+def _json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return "array" if isinstance(value, list) else "object"
+
+
+def _invalid_defaults(tool: Tool) -> list[dict[str, Any]]:
+    """Find input-schema defaults that fail the subschema declaring them.
+
+    Schemas in an unknown ``$schema`` dialect, invalid in their own dialect, or
+    nested too deeply to validate are left unjudged. ``$ref`` resolves within the tool's
+    schema only: an empty registry keeps remote references unresolved, never fetched.
+    """
+    schema = tool.input_schema
+    # jsonschema validates recursively; a schema this deep would exhaust Python's stack.
+    if _nesting_exceeds(schema, _MAX_SCHEMA_DEPTH * 2):
+        return []
+    dialect = schema.get("$schema")
+    if dialect is None:
+        validator_class = Draft202012Validator
+    elif isinstance(dialect, str):
+        # validator_for falls back to the default for an unknown URI; only a known dialect is judged.
+        validator_class = validator_for(schema, default=Draft202012Validator)
+        if str(validator_class.META_SCHEMA.get("$schema")).rstrip("#") != dialect.rstrip("#"):
+            return []
+    else:
+        return []
+    try:
+        validator_class.check_schema(schema)
+    except SchemaError:
+        return []
+    validator = validator_class(schema, registry=Registry())
+    failures: list[dict[str, Any]] = []
+    for subschema, pointer in _subschemas(schema, ""):
+        if "default" not in subschema:
+            continue
+        default = subschema["default"]
+        try:
+            valid = validator.evolve(schema=subschema).is_valid(default)
+        except Unresolvable:
+            continue
+        if not valid:
+            failure: dict[str, Any] = {"tool": tool.name, "path": pointer or "/", "default_type": _json_type(default)}
+            declared = subschema.get("type")
+            if isinstance(declared, str) or (
+                isinstance(declared, list) and all(isinstance(item, str) for item in declared)
+            ):
+                failure["declared_type"] = declared
+            failures.append({**failure, "_pointer": "/inputSchema" + pointer})
+    return failures
+
+
+@register_rule
+class ToolsInputDefaultsValidRule(ToolsBaseRule):
+    """Medium check: Each input default must be valid against the schema declaring it."""
+
+    rule_id = "tools_input_defaults_valid"
+    basis = (
+        "JSON Schema 2020-12 Validation §9.2 (default SHOULD be valid against its schema); "
+        "MCP 2025-11-25 Tools §Tool (inputSchema is a JSON Schema, 2020-12 default)"
+    )
+    rule_order = 23
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Input defaults should match their own schema"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        # MEDIUM: a client that sends the advertised default gets a validation error.
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless at least one tool's input schema declares a ``default``."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        if not any(_has_default(tool) for tool in audit_data.tools or []):
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find input defaults that the subschema declaring them rejects."""
+        invalid_defaults: list[dict[str, Any]] = [
+            {**failure, "_entity_index": index}
+            for index, tool in enumerate(tools)
+            for failure in _invalid_defaults(tool)
+        ]
+        passed = not invalid_defaults
+        message = (
+            "✅ All tool input defaults are valid against their own schema"
+            if passed
+            else f"❌ Number of tool input defaults their own schema rejects: {len(invalid_defaults)}"
+        )
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"invalid_defaults": _legacy_locations(invalid_defaults)},
+            suggested_fix=(
+                "Make each reported default valid for its field, or remove it: a client that sends the "
+                "advertised default gets a validation error. In Python, type an optional parameter as "
+                "`T | None`; in Zod, add `.nullable()` or drop the default."
+            ),
+            recommendation=True,
+            issues=(
+                field_issue(
+                    "tool",
+                    failure["_entity_index"],
+                    failure["_pointer"] + "/default",
+                    "invalid_default",
+                    "a default valid against its own schema",
+                )
+                for failure in invalid_defaults
             ),
         )
 

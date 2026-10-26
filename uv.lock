@@ -538,6 +538,7 @@ dependencies = [
     { name = "markdown-it-py" },
     { name = "mcp" },
     { name = "pyyaml" },
+    { name = "referencing" },
 ]
 
 [package.dev-dependencies]
@@ -558,6 +559,7 @@ requires-dist = [
     { name = "markdown-it-py", specifier = ">=4.0" },
     { name = "mcp", specifier = "==2.3.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "referencing", specifier = ">=0.28" },
 ]
 
 [package.metadata.requires-dev]
