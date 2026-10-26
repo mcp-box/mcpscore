@@ -34,6 +34,7 @@ from .base import (
     requires_server_info,
 )
 from .catalog_diagnostics import catalog_result, field_issue
+from .catalog_security import stateless_page_whole
 from .registry import register_rule
 from .skills import discover_capabilities, discover_declares_skills
 
@@ -398,7 +399,9 @@ class ServerInstructionsToolReferencesRule(BaseRule):
         unavailable = audit_data.tools is None and (declares_tools or "tools" in audit_data.listings_attempted)
         # Tools recovered from the stateless lifecycle may differ from the ones the session's instructions describe.
         recovered = "tools" in audit_data.catalog_versions
-        if unavailable or recovered or "tools" in audit_data.incomplete_listings:
+        # Without a session the tools come from one stateless page, which must say it is the whole catalog.
+        partial_page = audit_data.session_protocol_version is None and not stateless_page_whole(audit_data)
+        if unavailable or recovered or partial_page or "tools" in audit_data.incomplete_listings:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 

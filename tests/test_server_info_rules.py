@@ -693,12 +693,14 @@ class TestServerInstructionsToolReferencesRule:
     @staticmethod
     def _data(instructions: str | None, *names: str, **extra: Any) -> AuditData:
         tools = [Tool(name=name, input_schema={"type": "object"}) for name in names]
-        return AuditData(
-            instructions=instructions,
-            tools=tools,
-            capabilities=ServerCapabilities(tools=ToolsCapability()),
+        fields: dict[str, Any] = {
+            "instructions": instructions,
+            "tools": tools,
+            "capabilities": ServerCapabilities(tools=ToolsCapability()),
+            "session_protocol_version": "2025-11-25",
             **extra,
-        )
+        }
+        return AuditData(**fields)
 
     def test_rule_properties(self) -> None:
         assert self.rule.rule_id == "server_instructions_tool_references"
@@ -784,12 +786,36 @@ class TestServerInstructionsToolReferencesRule:
         assert self.rule.skip_reason(data) is None
         assert self.rule.check(data).details["unknown_tool_references"] == ["lookup"]
 
+    @pytest.mark.parametrize(
+        ("page", "judged"),
+        [
+            ({"resultType": "complete", "tools": []}, True),
+            ({"resultType": "complete", "tools": [], "nextCursor": "2"}, False),
+            ({"resultType": "partial", "tools": []}, False),
+            (None, False),
+        ],
+        ids=["whole", "paginated", "partial", "no-page"],
+    )
+    def test_without_a_session_the_stateless_page_must_be_whole(
+        self, page: dict[str, Any] | None, judged: bool
+    ) -> None:
+        probes = {PROBE_STATELESS_LIST: ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {}, payload=page)}
+        data = self._data("Call `lookup` first.", "search", session_protocol_version=None, probes=probes)
+        assert (self.rule.skip_reason(data) is None) is judged
+        if not judged:
+            assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
     def test_recovered_tool_catalog_is_insufficient_data(self) -> None:
         data = self._data("Call `lookup` first.", "search", catalog_versions={"tools": "2026-07-28"})
         assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
     def test_server_without_tools_capability_fails_its_references(self) -> None:
-        data = AuditData(instructions="Call `search` first.", tools=None, capabilities=ServerCapabilities())
+        data = AuditData(
+            instructions="Call `search` first.",
+            tools=None,
+            capabilities=ServerCapabilities(),
+            session_protocol_version="2025-11-25",
+        )
         assert self.rule.skip_reason(data) is None
         assert self.rule.check(data).details["unknown_tool_references"] == ["search"]
 
