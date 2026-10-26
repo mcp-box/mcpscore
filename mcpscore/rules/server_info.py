@@ -396,6 +396,15 @@ class ServerInstructionsToolReferencesRule(BaseRule):
         if not references:
             return SKIP_REASON_NOT_APPLICABLE
         declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
+        stateless = (audit_data.probes or {}).get(PROBE_STATELESS_LIST)
+        # Without a session, Method not found for tools/list means no tools are served: every reference is unknown.
+        if (
+            audit_data.session_protocol_version is None
+            and not declares_tools
+            and stateless is not None
+            and stateless.details.get("error_code") == ERROR_METHOD_NOT_FOUND
+        ):
+            return None
         unavailable = audit_data.tools is None and (declares_tools or "tools" in audit_data.listings_attempted)
         # Tools recovered from the stateless lifecycle may differ from the ones the session's instructions describe.
         recovered = "tools" in audit_data.catalog_versions

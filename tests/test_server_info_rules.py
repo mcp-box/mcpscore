@@ -805,6 +805,33 @@ class TestServerInstructionsToolReferencesRule:
         if not judged:
             assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
+    @pytest.mark.parametrize(("error_code", "judged"), [(-32601, True), (-32603, False)])
+    def test_modern_only_server_refusing_tools_fails_its_references(self, error_code: int, judged: bool) -> None:
+        refused = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, {"error_code": error_code}, payload=None)
+        data = AuditData(
+            instructions="Call `lookup` first.",
+            tools=None,
+            capabilities=ServerCapabilities(),
+            listings_attempted={"tools"},
+            probes={PROBE_STATELESS_LIST: refused},
+        )
+        if judged:
+            assert self.rule.skip_reason(data) is None
+            assert self.rule.check(data).details["unknown_tool_references"] == ["lookup"]
+        else:
+            assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_tools_capability_keeps_a_refusal_insufficient(self) -> None:
+        refused = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, {"error_code": -32601}, payload=None)
+        data = AuditData(
+            instructions="Call `lookup` first.",
+            tools=None,
+            capabilities=ServerCapabilities(tools=ToolsCapability()),
+            listings_attempted={"tools"},
+            probes={PROBE_STATELESS_LIST: refused},
+        )
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
     def test_recovered_tool_catalog_is_insufficient_data(self) -> None:
         data = self._data("Call `lookup` first.", "search", catalog_versions={"tools": "2026-07-28"})
         assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
