@@ -2622,17 +2622,17 @@ async def _tcp_listening(host: str, port: int) -> bool | None:
     return True
 
 
-_Replay = Literal["served", "refused", "closed", "unknown"]
+_Replay = Literal["served", "refused", "inconclusive", "closed", "unknown"]
 
 
 async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: str) -> _Replay:
     """Send an accepted control unchanged to another address and say how it was answered.
 
     The request keeps its shape, so a listener is credited only with the exact
-    request the audited server accepted ("served"); any other HTTP answer is
-    "refused". A session it issues is closed. A refused connection is
-    "closed"; a timeout, rate limit, server error, unreadable body or missing
-    HTTP answer is "unknown".
+    request the audited server accepted ("served"). A timeout, rate limit,
+    server error or unreadable body is "inconclusive"; any other HTTP answer
+    is "refused". A session it issues is closed. A refused connection is
+    "closed"; a connection with no HTTP answer is "unknown".
     """
     headers = {**control.headers, "Host": host}
     try:
@@ -2656,7 +2656,7 @@ async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: 
     if 200 <= response.status_code < 300 and (response.result or {}).get(field) is not None:
         return "served"
     if _inconclusive_status(response.status_code) or response.unobservable is not None:
-        return "unknown"
+        return "inconclusive"
     return "refused"
 
 
@@ -2796,9 +2796,11 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
                 _HttpTarget(client, _url_at(url, address), credential_free=True), loopback_control, authority
             )
             serving += replay == "served"
-            unknown += replay == "unknown"
+            unknown += replay in ("inconclusive", "unknown")
             # Without a TCP check of the probe's own, only an HTTP answer confirms a listener.
-            listening += replay in ("served", "refused") or (replay == "unknown" and not target.injected)
+            listening += replay in ("served", "refused", "inconclusive") or (
+                replay == "unknown" and not target.injected
+            )
     details: dict[str, Any] = {
         "port": port,
         "interfaces_checked": len(addresses),
