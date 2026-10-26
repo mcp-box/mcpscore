@@ -72,6 +72,7 @@ dependencies = [
     "mcp==2.3.0",
     "httpx2>=2.10.0",
     "jsonschema>=4.21",
+    "referencing>=0.28",
     "markdown-it-py>=4.0",
     "pyyaml>=6.0",
 ]
