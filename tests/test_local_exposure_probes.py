@@ -944,9 +944,10 @@ async def test_bind_probe_sends_no_caller_credentials_through_an_injected_client
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
     async with httpx2.AsyncClient(
         transport=httpx2.MockTransport(_host_checking_handler(checks_host=False, seen=seen)),
-        headers={"Authorization": "Bearer caller-secret", "X-API-Key": "caller-key"},
+        headers={"Authorization": "Bearer caller-secret", "X-API-Key": "caller-key", "Host": "other.example"},
         cookies={"session": "caller-cookie"},
         auth=httpx2.BasicAuth("caller", "password"),
+        params={"api_key": "caller-param", "tenant": "caller-tenant"},
     ) as injected:
         result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
         assert injected.headers["X-API-Key"] == "caller-key"
@@ -958,6 +959,9 @@ async def test_bind_probe_sends_no_caller_credentials_through_an_injected_client
         assert "X-API-Key" not in request.headers
         assert "Cookie" not in request.headers
         assert "User-Agent" in request.headers
+        assert request.url.query == b""
+        # The URL's own authority, not the injected client's Host default.
+        assert request.headers["Host"] == "localhost:8000"
 
 
 async def test_credential_free_session_cleanup_drops_the_client_defaults():
@@ -972,7 +976,7 @@ async def test_credential_free_session_cleanup_drops_the_client_defaults():
         headers={"Authorization": "Bearer caller-secret", "X-API-Key": "caller-key"},
         auth=httpx2.BasicAuth("caller", "password"),
     ) as client:
-        target = _HttpTarget(client, LOCAL_URL, credential_free=True)
+        target = _HttpTarget(client, f"{LOCAL_URL}?token=abc123secretvalue&page=2", credential_free=True)
         issued = probes._HttpProbeResponse(status_code=200, headers={"mcp-session-id": "s1"}, payload=None)
         await target.end_session(issued, {"Host": "localhost:8000"})
 
@@ -981,3 +985,4 @@ async def test_credential_free_session_cleanup_drops_the_client_defaults():
     assert "X-API-Key" not in seen[0].headers
     assert seen[0].headers["Mcp-Session-Id"] == "s1"
     assert seen[0].headers["Host"] == "localhost:8000"
+    assert str(seen[0].url) == "http://localhost:8000/mcp?page=2"

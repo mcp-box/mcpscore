@@ -645,11 +645,19 @@ _TRANSPORT_HEADERS = frozenset({"accept", "accept-encoding", "connection", "user
 
 
 def _strip_client_defaults(request: httpx2.Request, client: httpx2.AsyncClient, keep: Mapping[str, str]) -> None:
-    """Remove the headers *client* adds by default, such as an API key, except transport headers and *keep*."""
+    """Remove what *client* adds by default, such as an API key, from one built request.
+
+    Default headers go, except transport headers and *keep*; so do the client's default query parameters and
+    any credential query parameter left in the URL.
+    """
     kept = {name.lower() for name in keep}
     for name in client.headers:
         if name.lower() not in _TRANSPORT_HEADERS and name.lower() not in kept:
             request.headers.pop(name, None)
+    url = request.url
+    for name in client.params:
+        url = url.copy_remove_param(name)
+    request.url = httpx2.URL(without_credential_params(str(url)))
 
 
 @dataclass(frozen=True)
@@ -2746,8 +2754,9 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
     # Rebuilt from host and port, so no userinfo reaches either the URL or the Host header.
     url = _url_at(without_credential_params(target.url), parts.hostname or "")
     async with _probe_client(target) as client:
-        # The Host httpx2 itself sends for this URL (an explicit default port is dropped), on every control.
-        authority = client.build_request("POST", url).headers["Host"]
+        # The Host httpx2 itself sends for this URL (an explicit default port is dropped), on every control;
+        # a standalone request, so a Host default on an injected client cannot replace it.
+        authority = httpx2.Request("POST", url).headers["Host"]
         loopback_control = await _accepted_control(
             _HttpTarget(client, url, credential_free=True), PROBE_LOCAL_BIND, "network exposure", host=authority
         )
