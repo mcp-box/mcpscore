@@ -640,6 +640,18 @@ def _strip_credentials(request: httpx2.Request, keep: dict[str, str] | None = No
         request.headers["Authorization"] = keep["Authorization"]
 
 
+_TRANSPORT_HEADERS = frozenset({"accept", "accept-encoding", "connection", "user-agent"})
+"""Client default headers that carry no caller context, kept on a credential-free request."""
+
+
+def _strip_client_defaults(request: httpx2.Request, client: httpx2.AsyncClient, keep: Mapping[str, str]) -> None:
+    """Remove the headers *client* adds by default, such as an API key, except transport headers and *keep*."""
+    kept = {name.lower() for name in keep}
+    for name in client.headers:
+        if name.lower() not in _TRANSPORT_HEADERS and name.lower() not in kept:
+            request.headers.pop(name, None)
+
+
 @dataclass(frozen=True)
 class _HttpTarget:
     """A probe target reached over HTTP(S)."""
@@ -650,6 +662,8 @@ class _HttpTarget:
     """``WWW-Authenticate`` observed by the unauthenticated probe, for discovery that follows it."""
     injected: bool = False
     """Whether ``client`` was supplied by the caller, so probes that open their own client use it instead."""
+    credential_free: bool = False
+    """Send ``post_rpc`` and ``end_session`` requests without the client's credentials, auth or default headers."""
 
     async def post(
         self,
@@ -733,8 +747,11 @@ class _HttpTarget:
             headers={**headers, "Accept-Encoding": "identity"},
             timeout=PROBE_TIMEOUT_S,
         )
+        anonymous = anonymous or self.credential_free
         if anonymous:
             _strip_credentials(request, headers)
+        if self.credential_free:
+            _strip_client_defaults(request, self.client, headers)
         for header in omit_headers:
             request.headers.pop(header, None)
         response: httpx2.Response | None = None
@@ -904,8 +921,11 @@ class _HttpTarget:
         try:
             request = self.client.build_request("DELETE", self.url, headers=headers, timeout=PROBE_TIMEOUT_S)
             request.headers.pop("Origin", None)
+            anonymous = anonymous or self.credential_free
             if anonymous:
                 _strip_credentials(request, extra_headers)
+            if self.credential_free:
+                _strip_client_defaults(request, self.client, headers)
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 answer = await self.client.send(
                     request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
@@ -2694,7 +2714,9 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
     :func:`_probe_client` to the URL without credential query parameters,
     and both controls carry the URL's own ``Host``: a server that needs
     credentials or another ``Host`` refuses the loopback control, and stays
-    unjudged.
+    unjudged. With an injected client, every request goes through it without
+    the client's credentials or default headers, and no TCP connection of
+    the probe's own is opened: each address is judged by the replay alone.
     """
     parts = urlsplit(target.url)
     if not _is_loopback_host(parts.hostname):
@@ -2727,18 +2749,25 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
         # The Host httpx2 itself sends for this URL (an explicit default port is dropped), on every control.
         authority = client.build_request("POST", url).headers["Host"]
         loopback_control = await _accepted_control(
-            _HttpTarget(client, url), PROBE_LOCAL_BIND, "network exposure", host=authority
+            _HttpTarget(client, url, credential_free=True), PROBE_LOCAL_BIND, "network exposure", host=authority
         )
         if isinstance(loopback_control, ProbeResult):
             return loopback_control
 
         port = parts.port or 80
-        states = await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
+        # An injected client's transport answers for every address, so no socket of the probe's own is opened.
+        states = (
+            [True] * len(addresses)
+            if target.injected
+            else await asyncio.gather(*(_tcp_listening(address, port) for address in addresses))
+        )
         listening = [address for address, state in zip(addresses, states, strict=True) if state]
         serving = 0
         unknown = sum(state is None for state in states)
         for address in listening:
-            served = await _replay_control(_HttpTarget(client, _url_at(url, address)), loopback_control, authority)
+            served = await _replay_control(
+                _HttpTarget(client, _url_at(url, address), credential_free=True), loopback_control, authority
+            )
             serving += served is True
             unknown += served is None
     details: dict[str, Any] = {

@@ -921,12 +921,12 @@ async def test_injected_client_carries_the_local_server_probes(monkeypatch: pyte
     def no_own_client(headers=None):
         raise AssertionError("a probe opened its own client although one was injected")
 
-    async def listening(host: str, port: int) -> bool:
-        return True
+    async def no_socket(*args, **kwargs):
+        raise AssertionError("a probe opened a socket although a client was injected")
 
     monkeypatch.setattr(probes, "_direct_client", no_own_client)
     monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
-    monkeypatch.setattr(probes, "_tcp_listening", listening)
+    monkeypatch.setattr(asyncio, "open_connection", no_socket)
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
         results = await probes.run_all_probes(LOCAL_URL, client=injected)
         assert not injected.is_closed
@@ -937,3 +937,47 @@ async def test_injected_client_carries_the_local_server_probes(monkeypatch: pyte
     assert results[PROBE_LOCAL_BIND].details["interfaces_serving"] == 1
     assert any(request.headers["Host"].startswith(HOST_PROBE_VALUE) for request in seen)
     assert any(request.url.host == "192.168.1.20" for request in seen)
+
+
+async def test_bind_probe_sends_no_caller_credentials_through_an_injected_client(monkeypatch: pytest.MonkeyPatch):
+    seen: list[httpx2.Request] = []
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(_host_checking_handler(checks_host=False, seen=seen)),
+        headers={"Authorization": "Bearer caller-secret", "X-API-Key": "caller-key"},
+        cookies={"session": "caller-cookie"},
+        auth=httpx2.BasicAuth("caller", "password"),
+    ) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+        assert injected.headers["X-API-Key"] == "caller-key"
+
+    assert result.outcome is ProbeOutcome.UNSUPPORTED
+    assert {request.url.host for request in seen} == {"localhost", "192.168.1.20"}
+    for request in seen:
+        assert "Authorization" not in request.headers
+        assert "X-API-Key" not in request.headers
+        assert "Cookie" not in request.headers
+        assert "User-Agent" in request.headers
+
+
+async def test_credential_free_session_cleanup_drops_the_client_defaults():
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(204)
+
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        headers={"Authorization": "Bearer caller-secret", "X-API-Key": "caller-key"},
+        auth=httpx2.BasicAuth("caller", "password"),
+    ) as client:
+        target = _HttpTarget(client, LOCAL_URL, credential_free=True)
+        issued = probes._HttpProbeResponse(status_code=200, headers={"mcp-session-id": "s1"}, payload=None)
+        await target.end_session(issued, {"Host": "localhost:8000"})
+
+    assert [request.method for request in seen] == ["DELETE"]
+    assert "Authorization" not in seen[0].headers
+    assert "X-API-Key" not in seen[0].headers
+    assert seen[0].headers["Mcp-Session-Id"] == "s1"
+    assert seen[0].headers["Host"] == "localhost:8000"
