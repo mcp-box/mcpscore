@@ -872,8 +872,8 @@ class AuthIssParameterSupportedRule(AuthMetadataBaseRule):
         An authorization server SHOULD send `iss` in its authorization responses, and one that does MUST
         say so in its metadata. A client checks `iss` against the issuer it started the flow with, which
         stops a mix-up attack: a malicious authorization server getting the code another one issued.
-        Only the advertisement is observable without signing in, so a server that sends `iss` without
-        advertising it also fails.
+        Without the advertisement a client accepts a response with no `iss`. Only the advertisement is
+        observable without signing in, so a server that sends `iss` without advertising it also fails.
 
         Args:
             audit_data: The collected server data for this audit
@@ -889,7 +889,7 @@ class AuthIssParameterSupportedRule(AuthMetadataBaseRule):
             if passed
             else (
                 "❌ The authorization server does not advertise the iss parameter in authorization responses "
-                "(authorization_response_iss_parameter_supported), so clients cannot detect a mix-up attack"
+                "(authorization_response_iss_parameter_supported), so clients cannot require it"
             )
         )
         return diagnostic_result(

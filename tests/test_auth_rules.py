@@ -518,6 +518,7 @@ class TestAuthIssParameterSupported:
         assert result.passed is False
         assert result.severity is RuleSeverity.LOW
         assert "authorization_response_iss_parameter_supported" in result.message
+        assert "mix-up" not in result.message
         assert result.suggested_fix is not None
         assert "authorization_response_iss_parameter_supported: true" in result.suggested_fix
         assert "RFC 9207" in result.details["basis"]
