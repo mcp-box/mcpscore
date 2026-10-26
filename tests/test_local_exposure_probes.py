@@ -911,3 +911,29 @@ async def test_tcp_listening_reports_a_timeout_as_unknown(monkeypatch: pytest.Mo
 def test_both_probes_are_http_only():
     assert PROBE_HOST_VALIDATION in probes.HTTP_ONLY_PROBE_IDS
     assert PROBE_LOCAL_BIND in probes.HTTP_ONLY_PROBE_IDS
+
+
+async def test_injected_client_carries_the_local_server_probes(monkeypatch: pytest.MonkeyPatch):
+    """With an injected client, the local-server probes send through it and never open a client of their own."""
+    seen: list[httpx2.Request] = []
+    handler = _host_checking_handler(checks_host=True, seen=seen)
+
+    def no_own_client(headers=None):
+        raise AssertionError("a probe opened its own client although one was injected")
+
+    async def listening(host: str, port: int) -> bool:
+        return True
+
+    monkeypatch.setattr(probes, "_direct_client", no_own_client)
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    monkeypatch.setattr(probes, "_tcp_listening", listening)
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        results = await probes.run_all_probes(LOCAL_URL, client=injected)
+        assert not injected.is_closed
+
+    assert results[PROBE_HOST_VALIDATION].outcome is ProbeOutcome.SUPPORTED
+    # The mock answers on every address, as a server bound to 0.0.0.0 does.
+    assert results[PROBE_LOCAL_BIND].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_LOCAL_BIND].details["interfaces_serving"] == 1
+    assert any(request.headers["Host"].startswith(HOST_PROBE_VALUE) for request in seen)
+    assert any(request.url.host == "192.168.1.20" for request in seen)

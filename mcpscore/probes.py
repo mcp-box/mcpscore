@@ -31,7 +31,7 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -648,6 +648,8 @@ class _HttpTarget:
     url: str
     auth_challenge: str | None = None
     """``WWW-Authenticate`` observed by the unauthenticated probe, for discovery that follows it."""
+    injected: bool = False
+    """Whether ``client`` was supplied by the caller, so probes that open their own client use it instead."""
 
     async def post(
         self,
@@ -2484,7 +2486,7 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
     validated. The control request (:func:`_accepted_control`) must be accepted
     first, so an access-controlled server is not credited with a refusal it
     gives everyone. The spoofed twin carries no ``Origin``, so only ``Host``
-    can explain a refusal. Both go out on :func:`_direct_client` with the
+    can explain a refusal. Both go out on :func:`_probe_client` with the
     caller's headers, so no proxy stands between them and the server.
     """
     if not _is_loopback_host(urlsplit(target.url).hostname):
@@ -2494,7 +2496,7 @@ async def _probe_host_validation(target: _HttpTarget) -> ProbeResult:
             {"reason": "target is not a loopback address; a public host's Host routing is not validation"},
         )
     # Direct, with the caller's headers: a proxy could refuse or rewrite the foreign Host itself.
-    async with _direct_client(target.client.headers) as client:
+    async with _probe_client(target, target.client.headers) as client:
         direct = _HttpTarget(client, target.url)
         control = await _accepted_control(direct, PROBE_HOST_VALIDATION, "Host")
         if isinstance(control, ProbeResult):
@@ -2639,6 +2641,18 @@ def _direct_client(headers: Mapping[str, str] | None = None) -> httpx2.AsyncClie
     return async_client(trust_env=False, headers=headers, verify=client_ssl_context(trust_env=True))
 
 
+def _probe_client(
+    target: _HttpTarget, headers: Mapping[str, str] | None = None
+) -> AbstractAsyncContextManager[httpx2.AsyncClient]:
+    """Return the client a probe that bypasses proxies sends on: an injected client as is, else a new direct one.
+
+    A caller that injects a client controls every request the probes send; the injected client is not closed here.
+    """
+    if target.injected:
+        return nullcontext(target.client)
+    return _direct_client(headers)
+
+
 def _address_family(host: str) -> int | None:
     """Return the address family a URL host pins, or None for a name such as ``localhost``."""
     try:
@@ -2677,7 +2691,7 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
     targets (a certificate for ``localhost`` does not cover an address), when
     no address of the target's family can be tried, or when the control
     request is not accepted on loopback. Every request goes out on
-    :func:`_direct_client` to the URL without credential query parameters,
+    :func:`_probe_client` to the URL without credential query parameters,
     and both controls carry the URL's own ``Host``: a server that needs
     credentials or another ``Host`` refuses the loopback control, and stays
     unjudged.
@@ -2709,7 +2723,7 @@ async def _probe_local_bind(target: _HttpTarget) -> ProbeResult:
     # the caller's credentials, and none goes through a proxy that could answer in the server's place.
     # Rebuilt from host and port, so no userinfo reaches either the URL or the Host header.
     url = _url_at(without_credential_params(target.url), parts.hostname or "")
-    async with _direct_client() as client:
+    async with _probe_client(target) as client:
         # The Host httpx2 itself sends for this URL (an explicit default port is dropped), on every control.
         authority = client.build_request("POST", url).headers["Host"]
         loopback_control = await _accepted_control(
@@ -3426,8 +3440,8 @@ async def run_all_probes(
         client: Optional preconfigured httpx client (tests inject a
             MockTransport-backed one); short-lived clients are created
             otherwise. An injected client is used for every single-target
-            probe, including the anonymous ones — the caller configures its
-            headers.
+            probe, including the anonymous ones and the local-server probes
+            that otherwise bypass proxies — the caller configures its headers.
         headers: Extra HTTP headers (e.g. an ``Authorization`` bearer) merged
             into the short-lived authenticated client's defaults; probes in
             ``_ANONYMOUS_PROBE_IDS`` run on a separate client that carries
@@ -3446,7 +3460,9 @@ async def run_all_probes(
 
     async def run_one(probe_id: str, http_client: httpx2.AsyncClient, auth_challenge: str | None = None) -> ProbeResult:
         try:
-            result = await _HTTP_PROBES[probe_id](_HttpTarget(http_client, url, auth_challenge))
+            result = await _HTTP_PROBES[probe_id](
+                _HttpTarget(http_client, url, auth_challenge, injected=client is not None)
+            )
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
