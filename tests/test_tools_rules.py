@@ -1276,6 +1276,21 @@ class TestToolsInputDefaultsMatchTypeRule:
         assert self.rule.skip_reason(AuditData(tools=[tool])) is None
         assert self._paths(tool) == []
 
+    def test_draft_07_ref_siblings_are_not_walked(self) -> None:
+        tool = self._tool(
+            {"s": {"$ref": "#/definitions/S", "properties": {"n": {"type": "integer", "default": "bad"}}}},
+            definitions={"S": {"type": "object"}},
+            **{"$schema": "http://json-schema.org/draft-07/schema#"},
+        )
+        assert self._paths(tool) == []
+
+    def test_2020_12_ref_siblings_are_walked(self) -> None:
+        tool = self._tool(
+            {"s": {"$ref": "#/$defs/S", "properties": {"n": {"type": "integer", "default": "bad"}}}},
+            **{"$defs": {"S": {"type": "object"}}},
+        )
+        assert self._paths(tool) == ["/properties/s/properties/n"]
+
     def test_data_keywords_are_not_walked(self) -> None:
         tool = self._tool({"q": {"type": "object", "examples": [{"default": None, "type": "integer"}]}})
         assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_NOT_APPLICABLE

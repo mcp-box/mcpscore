@@ -1595,6 +1595,8 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
             if subschemas and "$schema" in subschema:
                 return unjudged
             subschemas.append(subschema)
+            if "$ref" in subschema and specification.name in _REF_OVERRIDES_SIBLINGS:
+                continue
             try:
                 stack.extend(specification.subresources_of(subschema))
             except (AttributeError, TypeError):
