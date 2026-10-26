@@ -1345,12 +1345,19 @@ class TestToolsInputDefaultsMatchTypeRule:
         tool = self._tool({"k" * 100_000: {"type": "object", "properties": children}})
         result = self.rule.check(AuditData(tools=[tool]))
         assert result.details["issues_total"] == 200
-        assert all(failure["path_omitted"] for failure in result.details["mismatched_defaults"])
+        assert all(issue["path_omitted"] for issue in result.details["issues"])
         assert max(escaped, default=0) < 100_000
 
     def test_paths_that_outgrow_the_limit_when_escaped_are_omitted(self) -> None:
         result = self.rule.check(AuditData(tools=[self._tool({"/" * 130: {"type": "integer", "default": None}})]))
         assert result.details["mismatched_defaults"][0]["path_omitted"] is True
+
+    def test_details_are_bounded(self) -> None:
+        tool = self._tool({f"p{index}": {"type": "integer", "default": None} for index in range(25)})
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert len(result.details["mismatched_defaults"]) == 20
+        assert result.details["issues_total"] == 25
+        assert "25" in result.message
 
     def test_large_data_does_not_build_paths(self) -> None:
         name = "k" * 16384

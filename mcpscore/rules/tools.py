@@ -1686,7 +1686,8 @@ class ToolsInputDefaultsMatchTypeRule(ToolsBaseRule):
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"mismatched_defaults": _legacy_locations(mismatched_defaults)},
+            # Bounded like issues; issues_total keeps the full count.
+            details={"mismatched_defaults": _legacy_locations(mismatched_defaults[:20])},
             suggested_fix=(
                 "Make each reported default match its field's type, enum or const, or remove it: a client "
                 "that sends the advertised default gets a validation error. In Python, type an optional "
