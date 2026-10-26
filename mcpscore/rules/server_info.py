@@ -1,7 +1,9 @@
 from abc import abstractmethod
 from dataclasses import dataclass
+import re
 from typing import Any
 
+from markdown_it import MarkdownIt
 from mcp_types import Implementation
 
 from mcpscore.diagnostics import quoted_preview
@@ -22,6 +24,7 @@ from mcpscore.spec import Era
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
     AuditData,
     BaseRule,
     RuleResult,
@@ -285,6 +288,114 @@ class ServerInstructionsPresentRule(BaseRule):
                 "Add instructions describing when to use this server, important limitations and the intended workflow."
             ),
             issues=[field_issue("server", None, "/instructions", "missing_metadata", "nonblank usage instructions")],
+            recommendation=True,
+        )
+
+
+_INSTRUCTIONS_MARKDOWN = MarkdownIt("commonmark")
+_MAX_INSTRUCTIONS_BYTES = 64 * 1024
+# The tool-name character set and length from Tools §Tool Names.
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
+# Only an explicit tool cue makes a code span a tool reference: "call `x`", "the `x` tool", "`x()`".
+_CUE_BEFORE = re.compile(r"\b(?:call|calling|invoke|invoking|tool|tools)\s*$", re.IGNORECASE)
+_CUE_AFTER = re.compile(r"^\s*tools?\b", re.IGNORECASE)
+_CUE_WINDOW = 32
+
+
+def instruction_tool_references(instructions: str) -> list[str] | None:
+    """Return the names *instructions* present as tools, in order, or None when too large to parse.
+
+    A name counts only as an inline code span with a tool cue in the text right beside it,
+    as CommonMark parses it, so parameters and field names in backticks are not read as tools.
+    """
+    if len(instructions.encode("utf-8")) > _MAX_INSTRUCTIONS_BYTES:
+        return None
+    references: list[str] = []
+    for token in _INSTRUCTIONS_MARKDOWN.parse(instructions):
+        children = token.children or []
+        for index, child in enumerate(children):
+            if child.type != "code_inline":
+                continue
+            text = child.content.strip()
+            called = text.endswith("()")
+            name = text[:-2] if called else text
+            if not _TOOL_NAME.fullmatch(name):
+                continue
+            before = children[index - 1].content[-_CUE_WINDOW:] if index and children[index - 1].type == "text" else ""
+            after_index = index + 1
+            after = (
+                children[after_index].content[:_CUE_WINDOW]
+                if after_index < len(children) and children[after_index].type == "text"
+                else ""
+            )
+            if called or _CUE_BEFORE.search(before) or _CUE_AFTER.match(after):
+                references.append(name)
+    return references
+
+
+@register_rule
+class ServerInstructionsToolReferencesRule(BaseRule):
+    """Low check: Tools that the instructions tell the agent to call must be listed.
+
+    Instructions that name a tool the server does not list (often left behind by a
+    rename) send the agent after a tool that does not exist.
+    """
+
+    group_name = "server_info"
+    group_order = 2
+    rule_id = "server_instructions_tool_references"
+    basis = "MCP 2025-11-25 Lifecycle §Initialization (instructions); Tools §Listing Tools"
+    rule_order = 8
+
+    @property
+    def rule_name(self) -> str:
+        return "Server Info - Instructions reference listed tools"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip without tool references in the instructions, or without a complete tool list."""
+        instructions = audit_data.instructions
+        if not instructions or not instructions.strip():
+            return SKIP_REASON_NOT_APPLICABLE
+        references = instruction_tool_references(instructions)
+        if references is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if not references:
+            return SKIP_REASON_NOT_APPLICABLE
+        declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
+        unavailable = audit_data.tools is None and (declares_tools or "tools" in audit_data.listings_attempted)
+        if unavailable or "tools" in audit_data.incomplete_listings:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Report tool names the instructions present as tools but tools/list does not contain."""
+        listed = {tool.name for tool in audit_data.tools or []}
+        references = instruction_tool_references(audit_data.instructions or "") or []
+        unknown = list(dict.fromkeys(name for name in references if name not in listed))
+        passed = not unknown
+        message = (
+            "✅ Every tool the instructions name is listed"
+            if passed
+            else f"❌ Number of tools the instructions name but the server does not list: {len(unknown)}"
+        )
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"unknown_tool_references": unknown[:20]},
+            suggested_fix=(
+                "Update the instructions to use the tool names tools/list returns, or remove references to "
+                "tools the server no longer provides."
+            ),
+            issues=(
+                field_issue("server", None, "/instructions", "unknown_tool_reference", "a tool name from tools/list")
+                for _ in unknown
+            ),
             recommendation=True,
         )
 

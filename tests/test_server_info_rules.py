@@ -35,12 +35,13 @@ from mcpscore.rules import (
     ServerExposesPrimitiveRule,
     ServerIconsPresentRule,
     ServerInstructionsPresentRule,
+    ServerInstructionsToolReferencesRule,
     ServerNamePresentRule,
     ServerTitlePresentRule,
     ServerVersionPresentRule,
     ServerWebsiteUrlPresentRule,
 )
-from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from mcpscore.skills import SkillsEvidence
 
 
@@ -682,3 +683,105 @@ async def test_failed_connection_listing_keeps_its_catalog_unsettled() -> None:
     probes = {**results, **_probes(discover={"capabilities": {}}), PROBE_STATELESS_LIST: refusal}
     data = AuditData(capabilities=ServerCapabilities(), session_protocol_version=SESSION, probes=probes)
     assert judge(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+class TestServerInstructionsToolReferencesRule:
+    """Test that tools the instructions tell the agent to call are listed."""
+
+    rule = ServerInstructionsToolReferencesRule()
+
+    @staticmethod
+    def _data(instructions: str | None, *names: str, **extra: Any) -> AuditData:
+        tools = [Tool(name=name, input_schema={"type": "object"}) for name in names]
+        return AuditData(
+            instructions=instructions,
+            tools=tools,
+            capabilities=ServerCapabilities(tools=ToolsCapability()),
+            **extra,
+        )
+
+    def test_rule_properties(self) -> None:
+        assert self.rule.rule_id == "server_instructions_tool_references"
+        assert self.rule.severity is RuleSeverity.LOW
+        assert self.rule.applies_to("2024-11-05") is True
+
+    @pytest.mark.parametrize("instructions", [None, "", "  ", "Search the docs before answering."])
+    def test_not_applicable_without_tool_references(self, instructions: str | None) -> None:
+        assert self.rule.skip_reason(self._data(instructions, "search")) == SKIP_REASON_NOT_APPLICABLE
+
+    @pytest.mark.parametrize(
+        "instructions",
+        [
+            "Pass `limit` and read `built_at` from the result.",
+            "Use `listing_id` from the response.",
+            "Tools: `search`, `fetch`.",
+            "```\ncall `lookup` tool\n```",
+            "    call `lookup` (indented code)",
+            "Call `two words` or `x/y` first.",
+        ],
+        ids=["parameters", "use-is-not-a-cue", "list-after-colon", "fenced-code", "indented-code", "not-a-tool-name"],
+    )
+    def test_backticks_without_a_tool_cue_are_not_references(self, instructions: str) -> None:
+        assert self.rule.skip_reason(self._data(instructions, "search")) == SKIP_REASON_NOT_APPLICABLE
+
+    @pytest.mark.parametrize(
+        "instructions",
+        [
+            "Call `search` first.",
+            "Invoke `search` to look things up.",
+            "The `search` tool finds pages.",
+            "Prefer the `search` tools over guessing.",
+            "Start with `search()`.",
+            "Use the tool `search`.",
+        ],
+    )
+    def test_cued_references_to_listed_tools_pass(self, instructions: str) -> None:
+        data = self._data(instructions, "search")
+        assert self.rule.skip_reason(data) is None
+        result = self.rule.check(data)
+        assert result.passed is True
+        assert result.details == {"unknown_tool_references": []}
+        assert result.suggested_fix is None
+
+    def test_unknown_references_fail_once_per_name(self) -> None:
+        data = self._data(
+            "Call `search`, then the `lookup` tool. Retry with `lookup()`. Finally call `Search`.", "search"
+        )
+        result = self.rule.check(data)
+        assert result.passed is False
+        assert result.severity is RuleSeverity.LOW
+        assert "does not list: 2" in result.message
+        assert result.details["unknown_tool_references"] == ["lookup", "Search"]
+        assert [issue["path"] for issue in result.details["issues"]] == ["/instructions", "/instructions"]
+        assert result.suggested_fix is not None
+        assert "tools/list" in result.suggested_fix
+
+    def test_server_without_tools_capability_fails_its_references(self) -> None:
+        data = AuditData(instructions="Call `search` first.", tools=None, capabilities=ServerCapabilities())
+        assert self.rule.skip_reason(data) is None
+        assert self.rule.check(data).details["unknown_tool_references"] == ["search"]
+
+    def test_unavailable_tool_list_is_insufficient_data(self) -> None:
+        data = AuditData(
+            instructions="Call `search` first.", tools=None, capabilities=ServerCapabilities(tools=ToolsCapability())
+        )
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_incomplete_tool_list_is_insufficient_data(self) -> None:
+        data = self._data("Call `lookup` first.", "search", incomplete_listings={"tools"})
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_oversized_instructions_are_insufficient_data(self) -> None:
+        data = self._data("Call `search` first. " + "x" * (64 * 1024), "search")
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_details_are_bounded(self) -> None:
+        instructions = " ".join(f"Call `t{index}`." for index in range(25))
+        result = self.rule.check(self._data(instructions, "search"))
+        assert len(result.details["unknown_tool_references"]) == 20
+        assert result.details["issues_total"] == 25
+
+    def test_cue_window_keeps_long_prose_linear(self) -> None:
+        data = self._data("call " * 10_000 + "`lookup`" + " tool" * 2_000, "search")
+        assert self.rule.skip_reason(data) is None
+        assert self.rule.check(data).details["unknown_tool_references"] == ["lookup"]
