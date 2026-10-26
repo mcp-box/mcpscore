@@ -1,12 +1,10 @@
 from abc import abstractmethod
 from collections import Counter
-from collections.abc import Iterator
 import re
 from typing import Any, NamedTuple, cast
 
-from jsonschema.exceptions import SchemaError, ValidationError
-from jsonschema.protocols import Validator
-from jsonschema.validators import Draft202012Validator, extend, validator_for
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import Draft202012Validator, validator_for
 from mcp_types import Tool
 from referencing import Registry
 from referencing.jsonschema import specification_with
@@ -1448,13 +1446,17 @@ def _nesting_exceeds(value: Any, limit: int) -> bool:
     return False
 
 
-def _mentions_default(value: Any) -> bool:
-    """Return whether any object in JSON *value* has a ``default`` key, whatever keyword holds it."""
+# Keywords whose validation runs a regex taken from the schema.
+_REGEX_KEYWORDS = frozenset({"pattern", "patternProperties"})
+
+
+def _mentions_key(value: Any, keys: frozenset[str]) -> bool:
+    """Return whether any object in JSON *value* has one of *keys*, whatever keyword holds it."""
     stack = [value]
     while stack:
         item = stack.pop()
         if isinstance(item, dict):
-            if "default" in item:
+            if not keys.isdisjoint(item):
                 return True
             stack.extend(item.values())
         elif isinstance(item, list):
@@ -1493,43 +1495,6 @@ def _json_type(value: Any) -> str:
     return "array" if isinstance(value, list) else "object"
 
 
-def _skip_keyword(validator: Validator, value: Any, instance: Any, schema: dict[str, Any]) -> Iterator[ValidationError]:
-    return iter(())
-
-
-_REGEX_FREE_VALIDATORS: dict[type[Validator], type[Validator]] = {}
-
-
-def _regex_free(validator_class: type[Validator]) -> type[Validator]:
-    """Return *validator_class* with every keyword that runs a schema regex disabled.
-
-    Patterns come from the audited server and Python's ``re`` can backtrack
-    without bound, so ``pattern``, ``patternProperties`` and the keywords that
-    consult them are skipped. Skipping only loosens validation: it can miss an
-    invalid default, never report a valid one.
-    """
-    if validator_class not in _REGEX_FREE_VALIDATORS:
-        additional_properties = validator_class.VALIDATORS.get("additionalProperties", _skip_keyword)
-
-        def additional_properties_without_patterns(
-            validator: Validator, value: Any, instance: Any, schema: dict[str, Any]
-        ) -> Iterator[ValidationError]:
-            if "patternProperties" in schema:
-                return iter(())
-            return additional_properties(validator, value, instance, schema)
-
-        _REGEX_FREE_VALIDATORS[validator_class] = extend(
-            validator_class,
-            {
-                "pattern": _skip_keyword,
-                "patternProperties": _skip_keyword,
-                "additionalProperties": additional_properties_without_patterns,
-                "unevaluatedProperties": _skip_keyword,
-            },
-        )
-    return _REGEX_FREE_VALIDATORS[validator_class]
-
-
 class _DefaultsCheck(NamedTuple):
     failures: list[dict[str, Any]]
     found: bool
@@ -1544,11 +1509,11 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
     an unknown dialect, invalid in its dialect, nested too deeply, or holding an
     embedded resource (``$id``) is left unjudged, as is a default whose ``$ref``
     cannot be resolved locally, recurses without end or lands on a non-schema
-    value. Remote references are never fetched: the registry is empty. Schema
-    regexes are not run (see ``_regex_free``).
+    value, or a string or container default in a schema that uses regexes.
+    Remote references are never fetched: the registry is empty.
     """
     schema = tool.input_schema
-    unjudged = _DefaultsCheck([], _mentions_default(schema), 0)
+    unjudged = _DefaultsCheck([], _mentions_key(schema, frozenset({"default"})), 0)
     if _nesting_exceeds(schema, _MAX_SCHEMA_NESTING):
         return unjudged
     dialect = schema.get("$schema", _JSON_SCHEMA_2020_12)
@@ -1575,7 +1540,10 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
             stack.extend(specification.subresources_of(subschema))
     pointers = _json_pointers(schema)
     subschemas.sort(key=lambda subschema: pointers[id(subschema)][0])
-    validator = _regex_free(validator_class)(schema, registry=Registry())
+    validator = validator_class(schema, registry=Registry())
+    # Python's re can backtrack without bound on a server-supplied pattern, so a default
+    # that could reach one (a string, or a container of strings) is not validated.
+    regexes = _mentions_key(schema, _REGEX_KEYWORDS)
     failures: list[dict[str, Any]] = []
     found = judged = 0
     for subschema in subschemas:
@@ -1583,6 +1551,8 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
             continue
         found += 1
         default = subschema["default"]
+        if regexes and isinstance(default, (str, list, dict)):
+            continue
         valid: bool | None
         try:
             valid = validator.evolve(schema=subschema).is_valid(default)

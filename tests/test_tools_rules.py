@@ -1229,26 +1229,53 @@ class TestToolsInputDefaultsValidRule:
     def test_schema_regexes_are_not_run(self) -> None:
         # Exponential under Python's re: matching would not finish within the test run.
         tool = self._tool({"x": {"type": "string", "pattern": "^(a+)+$", "default": "a" * 64 + "!"}})
-        result = self.rule.check(AuditData(tools=[tool]))
-        assert result.passed is True
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
 
-    def test_pattern_properties_do_not_make_valid_defaults_fail(self) -> None:
+    def test_explicit_dialect_root_object_default_does_not_run_regexes(self) -> None:
+        tool = Tool(
+            name="search",
+            input_schema={
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {"x": {"type": "string", "pattern": "^(a+)+$"}},
+                "default": {"x": "a" * 64 + "!"},
+            },
+        )
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_negated_pattern_default_is_not_reported(self) -> None:
+        tool = self._tool({"x": {"not": {"pattern": "^a$"}, "default": "b"}})
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+    def test_scalar_defaults_are_judged_beside_regexes(self) -> None:
         tool = self._tool(
             {
-                "tags": {
-                    "type": "object",
-                    "patternProperties": {"^x-": {"type": "string"}},
-                    "additionalProperties": False,
-                    "default": {"x-team": "core"},
-                },
+                "code": {"type": "string", "pattern": "^[A-Z]+$", "default": "abc"},
+                "tags": {"type": "object", "patternProperties": {"^x-": {"type": "string"}}, "default": {"x-a": 1}},
+                "limit": {"type": "integer", "default": None},
+                "ratio": {"type": "integer", "default": 0.5},
+            }
+        )
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
+            "/properties/limit",
+            "/properties/ratio",
+        ]
+
+    def test_container_defaults_are_judged_without_regexes(self) -> None:
+        tool = self._tool(
+            {
                 "meta": {"type": "object", "properties": {"a": {"type": "integer"}}, "default": {"a": "1"}},
                 "strict": {"type": "object", "additionalProperties": False, "default": {"extra": 1}},
+                "ids": {"type": "array", "items": {"type": "integer"}, "default": ["1"]},
             }
         )
         result = self.rule.check(AuditData(tools=[tool]))
         assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
             "/properties/meta",
             "/properties/strict",
+            "/properties/ids",
         ]
 
     def test_embedded_resource_scope_is_unjudged(self) -> None:

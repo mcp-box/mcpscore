@@ -56,8 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the default. JSON Schema 2020-12 Validation §9.2 recommends
   that a default be valid against its schema; the rule checks every
   `default` in each tool's `inputSchema` with the schema's own dialect,
-  resolving local `$ref`s and never fetching remote ones; schema regexes
-  (`pattern`, `patternProperties`) are not run. Servers whose tools
+  resolving local `$ref`s and never fetching remote ones. Schema regexes
+  are never run: in a schema that uses `pattern` or `patternProperties`,
+  only `null`, boolean and number defaults are judged. Servers whose tools
   declare no default skip as not applicable, and servers none of whose
   defaults can be judged skip as insufficient data; others gain 2 points of
   maximum score.
