@@ -216,6 +216,23 @@ async def test_an_unreadable_control_answer_is_no_evidence(monkeypatch: pytest.M
     assert "modern_control_http_status" not in result.details
 
 
+async def test_an_unreadable_legacy_fallback_answer_is_no_evidence(monkeypatch: pytest.MonkeyPatch):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "DELETE":
+            return httpx2.Response(200)
+        if json.loads(request.content)["method"] == "server/discover":
+            return httpx2.Response(400)
+        return httpx2.Response(200, headers={"content-type": "application/json"}, content=b" " * 2_000)
+
+    monkeypatch.setattr(probes, "CONTROL_READ_LIMIT", 1_000)
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await probes._probe_origin_validation(_HttpTarget(client, "https://server.example/mcp"))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["modern_control_http_status"] == 400
+    assert result.details["control_unobservable"] == "capped"
+
+
 @pytest.mark.parametrize("status", [408, 429, 500, 502, 503])
 async def test_host_probe_does_not_judge_a_timeout_rate_limit_or_server_error(status: int):
     def handler(request: httpx2.Request) -> httpx2.Response:
