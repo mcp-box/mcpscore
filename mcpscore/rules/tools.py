@@ -823,6 +823,111 @@ def _schema_issues(tools: list[Tool], *, output: bool = False) -> dict[str, Any]
     return {"issues": issues, "issues_total": total, "issues_omitted": total - len(issues)}
 
 
+# Longer text cannot be a bare echo of a 128-character name or a placeholder, so it is not examined.
+_MAX_ECHO_LENGTH = 512
+_PLACEHOLDER_DESCRIPTIONS = frozenset(
+    {
+        "todo",
+        "tbd",
+        "fixme",
+        "description",
+        "description here",
+        "tool description",
+        "add description",
+        "add a description",
+        "no description",
+        "placeholder",
+        "lorem ipsum",
+        "lorem ipsum dolor sit amet",
+    }
+)
+_PLACEHOLDER_PREFIX = re.compile(r"(?:todo|tbd|fixme)\s*:", re.IGNORECASE)
+_CAMEL_BOUNDARY = re.compile(r"(?<=[^\W_])(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])")
+_WORD = re.compile(r"[^\W_]+")
+
+
+def _words(text: str) -> list[str]:
+    """Split identifier-style or prose *text* into case-folded words (camel, snake, kebab, dotted)."""
+    return [word.casefold() for word in _WORD.findall(_CAMEL_BOUNDARY.sub(" ", text))]
+
+
+def uninformative_description(tool: Tool) -> str | None:
+    """Return why *tool*'s description says nothing beyond its name, or None.
+
+    ``echoes_name``: the description is the tool's name or title in other casing or
+    separators (``get_user`` / "Get user."). ``placeholder``: template text such as
+    "TODO" or "description here". Missing descriptions are another rule's concern.
+    """
+    description = tool.description
+    if description is None or len(description) > _MAX_ECHO_LENGTH:
+        return None
+    normalized = normalized_description(description)
+    if normalized is None:
+        return None
+    if normalized in _PLACEHOLDER_DESCRIPTIONS or _PLACEHOLDER_PREFIX.match(normalized):
+        return "placeholder"
+    words = _words(description)
+    if words and any(words == _words(label) for label in (tool.name, tool.title) if label):
+        return "echoes_name"
+    return None
+
+
+@register_rule
+class ToolsDescriptionsInformativeRule(ToolsBaseRule):
+    """Low check: A tool description should say more than the tool's name."""
+
+    rule_id = "tools_descriptions_informative"
+    basis = "MCP 2025-11-25 Tools §Tool (description: human-readable description of functionality)"
+    rule_order = 24
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Descriptions should say more than the name"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip a catalog in which no tool has a description."""
+        if reason := super().skip_reason(audit_data):
+            return reason
+        if not any(normalized_description(tool.description) for tool in audit_data.tools or []):
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find descriptions that only repeat the tool's name or are placeholder text."""
+        # Tool names and reason classes only: the description text is publisher-controlled and never echoed.
+        flagged = [(tool.name, reason) for tool in tools if (reason := uninformative_description(tool))]
+        passed = not flagged
+        message = (
+            "✅ Every tool description says more than the tool's name"
+            if passed
+            else f"❌ Number of tool descriptions that say nothing beyond the name: {len(flagged)}"
+        )
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"uninformative_descriptions": [{"tool": name, "reason": reason} for name, reason in flagged[:20]]},
+            suggested_fix=(
+                "Rewrite each reported description to say what the tool does, what it returns and when to use it, "
+                "instead of repeating its name or leaving template text."
+            ),
+            issues=fields(
+                tools,
+                "tool",
+                "/description",
+                "uninformative_description",
+                "a description that says what the tool does and when to use it",
+                lambda tool: uninformative_description(tool) is not None,
+            ),
+            recommendation=True,
+        )
+
+
 @register_rule
 class ToolsInputSchemaValidRule(ToolsBaseRule):
     """High check: Verify that each tool has a valid input schema."""

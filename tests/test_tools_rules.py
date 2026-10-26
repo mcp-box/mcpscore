@@ -14,6 +14,7 @@ This module tests all tool-related audit rules including:
 And the is_valid_schema() helper function.
 """
 
+import json
 import tracemalloc
 from typing import Any
 
@@ -27,6 +28,7 @@ from mcpscore.rules.tools import (
     ToolsAnnotationsPresentRule,
     ToolsBaseRule,
     ToolsDescriptionPresentRule,
+    ToolsDescriptionsInformativeRule,
     ToolsDescriptionsUniqueRule,
     ToolsExecutionConsistentRule,
     ToolsInputDefaultsMatchTypeRule,
@@ -1108,6 +1110,104 @@ class TestToolsOutputPropertiesDocumentedRule:
             output_schema={"type": "object", "properties": {"n": {"type": "integer", "description": "Count"}}},
         )
         assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+
+class TestToolsDescriptionsInformativeRule:
+    """Test that tool descriptions say more than the tool's name."""
+
+    rule = ToolsDescriptionsInformativeRule()
+
+    @staticmethod
+    def _tool(name: str, description: str | None, title: str | None = None) -> Tool:
+        return Tool(name=name, title=title, description=description, input_schema={"type": "object"})
+
+    def _flagged(self, *tools: Tool) -> list[dict[str, str]]:
+        return self.rule.check(AuditData(tools=list(tools))).details["uninformative_descriptions"]
+
+    def test_rule_properties(self) -> None:
+        assert self.rule.rule_id == "tools_descriptions_informative"
+        assert self.rule.severity is RuleSeverity.LOW
+        assert self.rule.applies_to("2024-11-05") is True
+
+    @pytest.mark.parametrize("description", [None, "", "   "])
+    def test_not_applicable_without_any_description(self, description: str | None) -> None:
+        data = AuditData(tools=[self._tool("search", description)])
+        assert self.rule.skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    @pytest.mark.parametrize(
+        ("name", "description", "title"),
+        [
+            ("get_user", "Get user.", None),
+            ("getUser", "get user", None),
+            ("get-user", "GET USER", None),
+            ("users.get", "Users get", None),
+            ("HTTPRequest", "HTTP request", None),
+            ("search", "Search", None),
+            ("s", "Search docs", "Search docs"),
+            ("指南", "指南", None),
+        ],
+    )
+    def test_descriptions_that_echo_the_name_fail(self, name: str, description: str, title: str | None) -> None:
+        assert self._flagged(self._tool(name, description, title)) == [{"tool": name, "reason": "echoes_name"}]
+
+    @pytest.mark.parametrize(
+        "description",
+        ["TODO", "tbd", "FIXME.", "Description here", "Tool description", "Lorem ipsum", "TODO: describe this"],
+    )
+    def test_placeholder_descriptions_fail(self, description: str) -> None:
+        assert self._flagged(self._tool("lookup", description)) == [{"tool": "lookup", "reason": "placeholder"}]
+
+    @pytest.mark.parametrize(
+        ("name", "description"),
+        [
+            ("get_user", "Get a user by ID and return their profile."),
+            ("todo_list", "Todo list manager"),
+            ("search", "Search the docs"),
+            ("fetch", "Fetch a URL and return its text"),
+            ("describe", "Describe"[:0] + "Describe a dataset's columns"),
+        ],
+    )
+    def test_informative_descriptions_pass(self, name: str, description: str) -> None:
+        result = self.rule.check(AuditData(tools=[self._tool(name, description)]))
+        assert result.passed is True
+        assert result.details == {"uninformative_descriptions": []}
+        assert result.suggested_fix is None
+
+    def test_failure_reports_names_and_reasons_only(self) -> None:
+        tools = [self._tool("fetch", "Fetch a URL"), self._tool("get_user", "Get user"), self._tool("x", "TODO")]
+        result = self.rule.check(AuditData(tools=tools))
+        assert result.passed is False
+        assert result.severity is RuleSeverity.LOW
+        assert "beyond the name: 2" in result.message
+        assert result.details["uninformative_descriptions"] == [
+            {"tool": "get_user", "reason": "echoes_name"},
+            {"tool": "x", "reason": "placeholder"},
+        ]
+        assert [(issue["entity_index"], issue["path"]) for issue in result.details["issues"]] == [
+            (1, "/description"),
+            (2, "/description"),
+        ]
+        assert "Get user" not in json.dumps(result.details)
+        assert result.suggested_fix is not None
+        assert "when to use it" in result.suggested_fix
+
+    def test_missing_descriptions_are_left_to_the_presence_rule(self) -> None:
+        tools = (self._tool("a", None), self._tool("c", "  "), self._tool("b", "Does b things"))
+        assert self._flagged(*tools) == []
+        assert self.rule.skip_reason(AuditData(tools=list(tools))) is None
+
+    def test_empty_catalog_is_not_applicable(self) -> None:
+        assert self.rule.skip_reason(AuditData(tools=[])) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_long_descriptions_are_not_examined(self) -> None:
+        name = "k" * 600
+        assert self._flagged(self._tool(name[:128], " ".join(["k" * 128]) + " " * 600)) == []
+
+    def test_details_are_bounded(self) -> None:
+        tools = [self._tool(f"t{index}", "TODO") for index in range(25)]
+        result = self.rule.check(AuditData(tools=tools))
+        assert len(result.details["uninformative_descriptions"]) == 20
+        assert result.details["issues_total"] == 25
 
 
 class TestToolsInputDefaultsMatchTypeRule:

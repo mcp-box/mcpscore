@@ -160,6 +160,7 @@ from .skills import (
 from .tools import (
     ToolsAnnotationsPresentRule,
     ToolsDescriptionPresentRule,
+    ToolsDescriptionsInformativeRule,
     ToolsExecutionConsistentRule,
     ToolsIconsValidRule,
     ToolsInputDefaultsMatchTypeRule,
@@ -307,6 +308,7 @@ __all__ = (
     "ToolsAnnotationsPresentRule",
     "ToolsCatalogConnectionIndependentRule",
     "ToolsDescriptionPresentRule",
+    "ToolsDescriptionsInformativeRule",
     "ToolsExecutionConsistentRule",
     "ToolsIconsValidRule",
     "ToolsInputDefaultsMatchTypeRule",

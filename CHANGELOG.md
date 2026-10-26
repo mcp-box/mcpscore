@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so parameters and field names in backticks are not read as tools. Servers
   whose instructions name no tool this way skip as not applicable; others
   gain 1 point of maximum score.
+- **`tools_descriptions_informative` (LOW): a tool description says more
+  than the tool's name.** The model picks tools by their descriptions, and
+  one that only repeats the name in other casing (`get_user` / "Get user")
+  or is template text ("TODO", "description here") gives it nothing to go
+  on. The rule reports tool names and a reason only, never the description
+  text. Catalogs without any description skip as not applicable; others
+  gain 1 point of maximum score.
 - **`mcpscore.url_credentials`**: `credential_query_params` and
   `without_credential_params` decide which query parameters carry a
   credential. Names match exactly after normalising (`apiKey`, `api-key`,
