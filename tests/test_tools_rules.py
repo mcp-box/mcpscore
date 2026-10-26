@@ -1220,6 +1220,37 @@ class TestToolsInputDefaultsValidRule:
         assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
         assert self.rule.check(AuditData(tools=[tool])).passed is True
 
+    @pytest.mark.parametrize("target", [7, [1], "s", None, 1.5])
+    def test_non_schema_ref_target_is_unjudged_not_raised(self, target: Any) -> None:
+        tool = self._tool({"x": {"$ref": "#/examples/0", "default": 1}}, examples=[target])
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+    def test_schema_regexes_are_not_run(self) -> None:
+        # Exponential under Python's re: matching would not finish within the test run.
+        tool = self._tool({"x": {"type": "string", "pattern": "^(a+)+$", "default": "a" * 64 + "!"}})
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert result.passed is True
+
+    def test_pattern_properties_do_not_make_valid_defaults_fail(self) -> None:
+        tool = self._tool(
+            {
+                "tags": {
+                    "type": "object",
+                    "patternProperties": {"^x-": {"type": "string"}},
+                    "additionalProperties": False,
+                    "default": {"x-team": "core"},
+                },
+                "meta": {"type": "object", "properties": {"a": {"type": "integer"}}, "default": {"a": "1"}},
+                "strict": {"type": "object", "additionalProperties": False, "default": {"extra": 1}},
+            }
+        )
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
+            "/properties/meta",
+            "/properties/strict",
+        ]
+
     def test_embedded_resource_scope_is_unjudged(self) -> None:
         tool = self._tool(
             {

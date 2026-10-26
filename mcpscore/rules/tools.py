@@ -1,13 +1,14 @@
 from abc import abstractmethod
 from collections import Counter
+from collections.abc import Iterator
 import re
 from typing import Any, NamedTuple, cast
 
-from jsonschema.exceptions import SchemaError
-from jsonschema.validators import Draft202012Validator, validator_for
+from jsonschema.exceptions import SchemaError, ValidationError
+from jsonschema.protocols import Validator
+from jsonschema.validators import Draft202012Validator, extend, validator_for
 from mcp_types import Tool
 from referencing import Registry
-from referencing.exceptions import Unresolvable
 from referencing.jsonschema import specification_with
 
 from mcpscore.diagnostics import quoted_preview
@@ -1492,6 +1493,43 @@ def _json_type(value: Any) -> str:
     return "array" if isinstance(value, list) else "object"
 
 
+def _skip_keyword(validator: Validator, value: Any, instance: Any, schema: dict[str, Any]) -> Iterator[ValidationError]:
+    return iter(())
+
+
+_REGEX_FREE_VALIDATORS: dict[type[Validator], type[Validator]] = {}
+
+
+def _regex_free(validator_class: type[Validator]) -> type[Validator]:
+    """Return *validator_class* with every keyword that runs a schema regex disabled.
+
+    Patterns come from the audited server and Python's ``re`` can backtrack
+    without bound, so ``pattern``, ``patternProperties`` and the keywords that
+    consult them are skipped. Skipping only loosens validation: it can miss an
+    invalid default, never report a valid one.
+    """
+    if validator_class not in _REGEX_FREE_VALIDATORS:
+        additional_properties = validator_class.VALIDATORS.get("additionalProperties", _skip_keyword)
+
+        def additional_properties_without_patterns(
+            validator: Validator, value: Any, instance: Any, schema: dict[str, Any]
+        ) -> Iterator[ValidationError]:
+            if "patternProperties" in schema:
+                return iter(())
+            return additional_properties(validator, value, instance, schema)
+
+        _REGEX_FREE_VALIDATORS[validator_class] = extend(
+            validator_class,
+            {
+                "pattern": _skip_keyword,
+                "patternProperties": _skip_keyword,
+                "additionalProperties": additional_properties_without_patterns,
+                "unevaluatedProperties": _skip_keyword,
+            },
+        )
+    return _REGEX_FREE_VALIDATORS[validator_class]
+
+
 class _DefaultsCheck(NamedTuple):
     failures: list[dict[str, Any]]
     found: bool
@@ -1505,8 +1543,9 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
     so data keywords such as ``examples`` are never read as schemas. A schema in
     an unknown dialect, invalid in its dialect, nested too deeply, or holding an
     embedded resource (``$id``) is left unjudged, as is a default whose ``$ref``
-    cannot be resolved locally or recurses without end. Remote references are
-    never fetched: the registry is empty.
+    cannot be resolved locally, recurses without end or lands on a non-schema
+    value. Remote references are never fetched: the registry is empty. Schema
+    regexes are not run (see ``_regex_free``).
     """
     schema = tool.input_schema
     unjudged = _DefaultsCheck([], _mentions_default(schema), 0)
@@ -1536,7 +1575,7 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
             stack.extend(specification.subresources_of(subschema))
     pointers = _json_pointers(schema)
     subschemas.sort(key=lambda subschema: pointers[id(subschema)][0])
-    validator = validator_class(schema, registry=Registry())
+    validator = _regex_free(validator_class)(schema, registry=Registry())
     failures: list[dict[str, Any]] = []
     found = judged = 0
     for subschema in subschemas:
@@ -1544,9 +1583,12 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
             continue
         found += 1
         default = subschema["default"]
+        valid: bool | None
         try:
             valid = validator.evolve(schema=subschema).is_valid(default)
-        except (Unresolvable, RecursionError):
+        except Exception:  # noqa: BLE001 — an unresolvable, endless or non-schema $ref leaves the default unjudged
+            valid = None
+        if valid is None:
             continue
         judged += 1
         if not valid:
