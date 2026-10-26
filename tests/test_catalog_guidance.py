@@ -88,6 +88,12 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
             "/inputSchema/properties/q/description",
             "expected format",
         ),
+        (
+            "output_properties_documented",
+            [tool(output_schema={"type": "object", "properties": {"total": {"type": "integer"}}})],
+            "/outputSchema/properties/total/description",
+            "what the field means",
+        ),
     ]
     for suffix, tools, path, action in tool_cases:
         cases.append((f"tools_{suffix}", AuditData(tools=tools, capabilities=ServerCapabilities()), path, action))
