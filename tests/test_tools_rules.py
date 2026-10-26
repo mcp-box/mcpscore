@@ -1148,6 +1148,8 @@ class TestToolsDescriptionsInformativeRule:
             ("getUser", "GETUSER", None),
             ("getUser", "getuser", None),
             ("get_user", "GetUser", None),
+            ("_", "_", None),
+            ("search", "🔍", "🔍"),
         ],
     )
     def test_descriptions_that_echo_the_name_fail(self, name: str, description: str, title: str | None) -> None:
@@ -1167,6 +1169,7 @@ class TestToolsDescriptionsInformativeRule:
             ("todo_list", "Todo list manager"),
             ("search", "Search the docs"),
             ("fetch", "Fetch a URL and return its text"),
+            ("_", "🔍"),
             ("describe", "Describe"[:0] + "Describe a dataset's columns"),
         ],
     )

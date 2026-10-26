@@ -866,9 +866,13 @@ def uninformative_description(tool: Tool) -> str | None:
         return None
     if normalized in _PLACEHOLDER_DESCRIPTIONS or _PLACEHOLDER_PREFIX.match(normalized):
         return "placeholder"
+    labels = [label for label in (tool.name, tool.title) if label]
+    # Exact first: symbol-only text such as "_" or an emoji has no words to compare.
+    if any(normalized == normalized_description(label) for label in labels):
+        return "echoes_name"
     # Joined, so a case-only change that moves camel-case word boundaries still matches (getUser / "GETUSER").
     letters = "".join(_words(description))
-    if letters and any(letters == "".join(_words(label)) for label in (tool.name, tool.title) if label):
+    if letters and any(letters == "".join(_words(label)) for label in labels):
         return "echoes_name"
     return None
 
