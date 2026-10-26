@@ -508,6 +508,12 @@ class _StreamDeadline(httpx2.ReadTimeout):
         super().__init__("no matching JSON-RPC response before the deadline", request=request)
 
 
+def _answered_status(exc: BaseException) -> int | None:
+    """Return the HTTP status of an answer whose headers arrived before *exc* ended the exchange, if any."""
+    status = getattr(exc, "answered_status", None)
+    return status if isinstance(status, int) else None
+
+
 class _ReadCapReached(Exception):  # noqa: N818 — a signal, not an error condition
     """The answer exceeded ``_RPC_READ_LIMIT`` before the response was found."""
 
@@ -812,7 +818,12 @@ class _HttpTarget:
                     unobservable="unfinished",
                 )
             if isinstance(exc, TimeoutError):
-                raise _StreamDeadline(request) from exc
+                deadline = _StreamDeadline(request)
+                if response is not None:
+                    deadline.answered_status = response.status_code  # type: ignore[attr-defined]
+                raise deadline from exc
+            if response is not None and isinstance(exc, httpx2.HTTPError):
+                exc.answered_status = response.status_code  # type: ignore[attr-defined]
             raise
         finally:
             if response is not None:
@@ -2630,7 +2641,7 @@ async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: 
 
     The request keeps its shape, so a listener is credited only with the exact
     request the audited server accepted ("served"). A timeout, rate limit,
-    server error or unreadable body is "inconclusive"; any other HTTP answer
+    server error, unreadable or unfinished body is "inconclusive"; any other HTTP answer
     is "refused". A session it issues is closed. A refused connection is
     "closed"; a connection with no HTTP answer is "unknown".
     """
@@ -2646,6 +2657,9 @@ async def _replay_control(target: _HttpTarget, control: _AcceptedControl, host: 
             read_limit=CONTROL_READ_LIMIT,
         )
     except httpx2.HTTPError as exc:
+        if _answered_status(exc) is not None:
+            # The headers arrived, so something listens there; the body never finished.
+            return "inconclusive"
         if _connection_refused(exc):
             return "closed"
         # Connected, no complete HTTP answer: a host firewall can accept a connection and drop the request.

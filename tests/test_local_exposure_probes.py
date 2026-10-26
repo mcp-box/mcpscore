@@ -1033,3 +1033,24 @@ async def test_injected_client_inconclusive_answer_confirms_a_listener(monkeypat
     assert result.outcome is ProbeOutcome.ERROR
     assert result.details["interfaces_listening"] == 1
     assert result.details["interfaces_unknown"] == 1
+
+
+async def test_injected_client_stalled_stream_confirms_a_listener(monkeypatch: pytest.MonkeyPatch):
+    class Stalled(httpx2.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.sleep(3600)
+            yield b""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "192.168.1.20":
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=Stalled())
+        return _discover_result(json.loads(request.content).get("id"))
+
+    monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(probes, "_non_loopback_addresses", lambda: ["192.168.1.20"])
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as injected:
+        result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
+
+    assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_listening"] == 1
+    assert result.details["interfaces_unknown"] == 1
