@@ -756,6 +756,38 @@ class TestServerInstructionsToolReferencesRule:
         assert result.suggested_fix is not None
         assert "tools/list" in result.suggested_fix
 
+    @pytest.mark.parametrize(
+        "instructions",
+        [
+            "Call\n`lookup` first.",
+            "The `lookup`\ntool finds pages.",
+            "Call **`lookup`** first.",
+            "The *`lookup`* tool finds pages.",
+            "Call  \n`lookup` first.",
+        ],
+        ids=["softbreak-before", "softbreak-after", "strong", "emphasis-after", "hardbreak"],
+    )
+    def test_cues_cross_line_breaks_and_emphasis(self, instructions: str) -> None:
+        assert self.rule.check(self._data(instructions, "search")).details["unknown_tool_references"] == ["lookup"]
+
+    @pytest.mark.parametrize(
+        "instructions",
+        ["Call `search` `lookup` together.", "Call [the docs](https://example.com) `lookup` value."],
+        ids=["code-span", "link"],
+    )
+    def test_cues_do_not_cross_other_tokens(self, instructions: str) -> None:
+        result = self.rule.check(self._data(instructions, "search"))
+        assert result.details["unknown_tool_references"] == []
+
+    def test_lone_surrogate_is_measured_not_raised(self) -> None:
+        data = self._data("Call `lookup` first. \ud800", "search")
+        assert self.rule.skip_reason(data) is None
+        assert self.rule.check(data).details["unknown_tool_references"] == ["lookup"]
+
+    def test_recovered_tool_catalog_is_insufficient_data(self) -> None:
+        data = self._data("Call `lookup` first.", "search", catalog_versions={"tools": "2026-07-28"})
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
     def test_server_without_tools_capability_fails_its_references(self) -> None:
         data = AuditData(instructions="Call `search` first.", tools=None, capabilities=ServerCapabilities())
         assert self.rule.skip_reason(data) is None

@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from mcp_types import Implementation
 
 from mcpscore.diagnostics import quoted_preview
@@ -300,15 +301,46 @@ _TOOL_NAME = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
 _CUE_BEFORE = re.compile(r"\b(?:call|calling|invoke|invoking|tool|tools)\s*$", re.IGNORECASE)
 _CUE_AFTER = re.compile(r"^\s*tools?\b", re.IGNORECASE)
 _CUE_WINDOW = 32
+# Tokens a cue may cross: emphasis markers add no text, line breaks read as a space.
+_CUE_TRANSPARENT = frozenset({"em_open", "em_close", "strong_open", "strong_close"})
+_CUE_BREAKS = frozenset({"softbreak", "hardbreak"})
+
+
+def _cue_text(children: list[Token], index: int, step: int) -> str:
+    """Return up to the cue window of visible text beside ``children[index]``, in reading order.
+
+    Walks away from the code span over text, line breaks and emphasis, and stops at any other
+    token (code, links, HTML), so a cue never reaches past a neighbouring span.
+    """
+    parts: list[str] = []
+    length = 0
+    position = index + step
+    while 0 <= position < len(children) and length < _CUE_WINDOW:
+        child = children[position]
+        if child.type == "text":
+            part = child.content[-_CUE_WINDOW:] if step < 0 else child.content[:_CUE_WINDOW]
+        elif child.type in _CUE_BREAKS:
+            part = " "
+        elif child.type in _CUE_TRANSPARENT:
+            part = ""
+        else:
+            break
+        parts.append(part)
+        length += len(part)
+        position += step
+    if step < 0:
+        return "".join(reversed(parts))[-_CUE_WINDOW:]
+    return "".join(parts)[:_CUE_WINDOW]
 
 
 def instruction_tool_references(instructions: str) -> list[str] | None:
     """Return the names *instructions* present as tools, in order, or None when too large to parse.
 
-    A name counts only as an inline code span with a tool cue in the text right beside it,
+    A name counts only as an inline code span with a tool cue in the visible text beside it,
     as CommonMark parses it, so parameters and field names in backticks are not read as tools.
     """
-    if len(instructions.encode("utf-8")) > _MAX_INSTRUCTIONS_BYTES:
+    # surrogatepass: a lone surrogate from a server's JSON must be measured, not raise.
+    if len(instructions.encode("utf-8", "surrogatepass")) > _MAX_INSTRUCTIONS_BYTES:
         return None
     references: list[str] = []
     for token in _INSTRUCTIONS_MARKDOWN.parse(instructions):
@@ -321,14 +353,11 @@ def instruction_tool_references(instructions: str) -> list[str] | None:
             name = text[:-2] if called else text
             if not _TOOL_NAME.fullmatch(name):
                 continue
-            before = children[index - 1].content[-_CUE_WINDOW:] if index and children[index - 1].type == "text" else ""
-            after_index = index + 1
-            after = (
-                children[after_index].content[:_CUE_WINDOW]
-                if after_index < len(children) and children[after_index].type == "text"
-                else ""
-            )
-            if called or _CUE_BEFORE.search(before) or _CUE_AFTER.match(after):
+            if (
+                called
+                or _CUE_BEFORE.search(_cue_text(children, index, -1))
+                or _CUE_AFTER.match(_cue_text(children, index, 1))
+            ):
                 references.append(name)
     return references
 
@@ -367,7 +396,9 @@ class ServerInstructionsToolReferencesRule(BaseRule):
             return SKIP_REASON_NOT_APPLICABLE
         declares_tools = getattr(audit_data.capabilities, "tools", None) is not None
         unavailable = audit_data.tools is None and (declares_tools or "tools" in audit_data.listings_attempted)
-        if unavailable or "tools" in audit_data.incomplete_listings:
+        # Tools recovered from the stateless lifecycle may differ from the ones the session's instructions describe.
+        recovered = "tools" in audit_data.catalog_versions
+        if unavailable or recovered or "tools" in audit_data.incomplete_listings:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
