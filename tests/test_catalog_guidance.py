@@ -94,6 +94,7 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
             "/outputSchema/properties/total/description",
             "what the field means",
         ),
+        ("descriptions_informative", [tool(name="get_user", description="Get user")], "/description", "when to use it"),
         (
             "input_defaults_match_type",
             [tool(input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": None}}})],
