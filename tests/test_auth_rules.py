@@ -19,6 +19,7 @@ from mcpscore.rules.auth import (
     AuthChallengeReferencesMetadataRule,
     AuthClientRegistrationAdvertisedRule,
     AuthInvalidTokenRejectedRule,
+    AuthIssParameterSupportedRule,
     AuthMetadataHttpsRule,
     AuthProtectedResourceMetadataRule,
     AuthScopesAdvertisedRule,
@@ -71,6 +72,7 @@ def _full_metadata(**extra: object) -> ProbeResult:
         "auth_server_pkce_s256": True,
         "auth_server_cimd_supported": True,
         "auth_server_registration_endpoint": True,
+        "auth_server_iss_parameter_supported": True,
     }
     base |= extra
     return _metadata(**base)
@@ -494,6 +496,49 @@ class TestAuthClientRegistrationAdvertised:
     def test_skips_for_open_servers(self):
         rule = AuthClientRegistrationAdvertisedRule()
         assert rule.skip_reason(_data(_unauth(status=200), _full_metadata())) == SKIP_REASON_NOT_APPLICABLE
+
+
+class TestAuthIssParameterSupported:
+    rule = AuthIssParameterSupportedRule()
+
+    @staticmethod
+    def _data(version: str | None = "2026-07-28", **flags: object) -> AuditData:
+        data = _data(_unauth(), _full_metadata(**flags))
+        data.protocol_version = version
+        return data
+
+    def test_passes_when_advertised(self):
+        result = self.rule.check(self._data())
+        assert result.passed is True
+        assert result.suggested_fix is None
+
+    @pytest.mark.parametrize("version", ["2026-07-28", None])
+    def test_fails_when_not_advertised(self, version: str | None):
+        result = self.rule.check(self._data(version, auth_server_iss_parameter_supported=False))
+        assert result.passed is False
+        assert result.severity is RuleSeverity.LOW
+        assert "authorization_response_iss_parameter_supported" in result.message
+        assert "mix-up" not in result.message
+        assert result.suggested_fix is not None
+        assert "authorization_response_iss_parameter_supported: true" in result.suggested_fix
+        assert "RFC 9207" in result.details["basis"]
+
+    def test_fails_when_field_missing(self):
+        meta = _full_metadata()
+        del meta.details["auth_server_iss_parameter_supported"]
+        data = _data(_unauth(), meta)
+        assert self.rule.check(data).passed is False
+
+    @pytest.mark.parametrize(("version", "applies"), [("2025-11-25", False), ("2026-07-28", True), (None, True)])
+    def test_applies_from_2026_07_28(self, version: str | None, applies: bool):
+        assert self.rule.applies_to(version) is applies
+
+    def test_skips_when_no_as_metadata(self):
+        data = self._data(auth_server_metadata_present=False)
+        assert self.rule.skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_skips_for_open_servers(self):
+        assert self.rule.skip_reason(_data(_unauth(status=200), _full_metadata())) == SKIP_REASON_NOT_APPLICABLE
 
 
 class TestInvalidTokenRejected:

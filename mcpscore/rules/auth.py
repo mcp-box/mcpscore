@@ -14,9 +14,10 @@ the probe follows them in the order a client does. RFC 9728 metadata has a
 ``resource`` value matching the server, and it MUST list at least one
 authorization server. The deeper rules follow the discovery chain to the
 authorization server's own metadata, validate its issuer, and check it
-advertises PKCE (S256), per the OAuth security BCP (RFC 9700), and a way for
-a client with no prior relationship to register. One rule sends a fabricated
-bearer token, which the server must refuse with 401.
+advertises PKCE (S256), per the OAuth security BCP (RFC 9700), a way for
+a client with no prior relationship to register, and the RFC 9207 ``iss``
+response parameter. One rule sends a fabricated bearer token, which the
+server must refuse with 401.
 """
 
 from typing import ClassVar
@@ -829,6 +830,83 @@ class AuthClientRegistrationAdvertisedRule(AuthMetadataBaseRule):
                 "Fetch HTTPS client_id metadata documents and set client_id_metadata_document_supported: true in "
                 "the authorization server metadata, or expose an RFC 7591 registration_endpoint. An allowlist of "
                 "trusted client domains still works with either."
+            )
+            if not passed
+            else None,
+            audit_data=audit_data,
+        )
+
+
+ISS_PARAMETER_SINCE = "2026-07-28"
+"""First revision asking authorization servers for the RFC 9207 ``iss`` authorization response parameter."""
+
+
+@register_rule
+class AuthIssParameterSupportedRule(AuthMetadataBaseRule):
+    """Low check: the authorization server advertises the ``iss`` authorization response parameter."""
+
+    rule_id = "auth_iss_parameter_supported"
+    rule_order = 12
+    min_spec_version = ISS_PARAMETER_SINCE
+
+    @property
+    def rule_name(self) -> str:
+        return "Auth - Authorization Server Identifies Itself in Responses"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip when there is no reachable AS metadata to inspect (that rule's finding)."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        if self._metadata(audit_data).get("auth_server_metadata_present") is not True:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Low check: the metadata sets `authorization_response_iss_parameter_supported` to true.
+
+        An authorization server SHOULD send `iss` in its authorization responses, and one that does MUST
+        say so in its metadata. A client checks `iss` against the issuer it started the flow with, which
+        stops a mix-up attack: a malicious authorization server getting the code another one issued.
+        Without the advertisement a client accepts a response with no `iss`. Only the advertisement is
+        observable without signing in, so a server that sends `iss` without advertising it also fails.
+
+        Args:
+            audit_data: The collected server data for this audit
+
+        Returns:
+            RuleResult with the check outcome
+
+        """
+        details = self._metadata(audit_data)
+        passed = details.get("auth_server_iss_parameter_supported") is True
+        message = (
+            "✅ The authorization server advertises the iss parameter in authorization responses"
+            if passed
+            else (
+                "❌ The authorization server does not advertise the iss parameter in authorization responses "
+                "(authorization_response_iss_parameter_supported), so clients cannot require it"
+            )
+        )
+        return diagnostic_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={
+                "basis": (
+                    "MCP Authorization 2026-07-28 §Authorization Response Validation (SHOULD include iss; "
+                    "MUST advertise it); RFC 9207 §2, §2.3"
+                ),
+                "issuer": details.get("auth_server_issuer"),
+            },
+            suggested_fix=(
+                "Add iss (the issuer identifier) to every authorization response, errors included, and set "
+                "authorization_response_iss_parameter_supported: true in the authorization server metadata."
             )
             if not passed
             else None,

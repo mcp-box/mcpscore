@@ -69,6 +69,7 @@ def data_for(rule_id: str, *, failure: bool) -> AuditData:
         "auth_server_has_endpoints": True,
         "auth_server_pkce_s256": True,
         "auth_server_cimd_supported": True,
+        "auth_server_iss_parameter_supported": True,
         "auth_server_registration_endpoint": False,
         "challenge_metadata_url": "https://example.com/.well-known/oauth-protected-resource",
         "challenge_metadata_http_status": 200,
@@ -162,6 +163,7 @@ def _fail_auth(rule_id, probes, metadata):
             "auth_server_metadata_present": ("auth_server_has_endpoints", False),
             "auth_server_metadata_pkce": ("auth_server_pkce_s256", False),
             "auth_client_registration_advertised": ("auth_server_cimd_supported", False),
+            "auth_iss_parameter_supported": ("auth_server_iss_parameter_supported", False),
         }[rule_id]
         metadata[field] = value
 
@@ -185,10 +187,10 @@ def test_each_rule_guidance_contract(rule_id, failure, monkeypatch):
         assert "suggested_fix" not in wire
 
 
-def test_inventory_covers_all_56_rules():
-    assert len(RULES) == 56
+def test_inventory_covers_all_57_rules():
+    assert len(RULES) == 57
     assert sum(r.group_name == "readiness" for r in RULES.values()) == 21
-    assert sum(r.group_name == "security" for r in RULES.values()) == 17
+    assert sum(r.group_name == "security" for r in RULES.values()) == 18
 
 
 @pytest.mark.parametrize("outcome", [ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE])

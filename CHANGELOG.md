@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target that is not `localhost`, `127.0.0.0/8` or `::1`, so no remote or
   web audit changes; an audit of a local HTTP server gains up to 4 points of
   maximum score.
+- **`auth_iss_parameter_supported` (LOW): the authorization server
+  advertises the `iss` authorization response parameter.** The 2026-07-28
+  revision asks authorization servers to send `iss` (RFC 9207) so a client
+  can detect a mix-up attack, and to set
+  `authorization_response_iss_parameter_supported` when they do. The rule
+  reads that flag from the authorization server metadata the auth rules
+  already fetch, for a server behind a login on 2026-07-28 or an unknown
+  revision. Such an audit gains 1 point of maximum score; a server whose
+  metadata lacks the flag scores it as a miss.
 - **`mcpscore.url_credentials`**: `credential_query_params` and
   `without_credential_params` decide which query parameters carry a
   credential. Names match exactly after normalising (`apiKey`, `api-key`,
