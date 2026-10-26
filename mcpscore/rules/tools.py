@@ -1275,11 +1275,11 @@ class ToolsMcpHeadersNotSensitiveRule(ToolsMcpHeadersBaseRule):
         )
 
 
-def _undocumented_input_properties(tool: Tool) -> list[dict[str, Any]]:
-    """Find undocumented properties reachable through direct properties chains."""
+def _undocumented_properties(tool: Tool, schema: dict[str, Any], root: str) -> list[dict[str, Any]]:
+    """Find undocumented properties of *schema*, at JSON pointer *root*, reachable through direct properties chains."""
     failures: list[dict[str, Any]] = []
 
-    # walk is entered only with dicts: the model validates input_schema, and
+    # walk is entered only with dicts: the model validates both schemas, and
     # recursion below descends only into property schemas that are dicts.
     def walk(schema: dict[str, Any], path: str, pointer: str) -> None:
         properties = schema.get("properties")
@@ -1295,7 +1295,7 @@ def _undocumented_input_properties(tool: Tool) -> list[dict[str, Any]]:
                 failures.append({"tool": tool.name, "path": property_path, "_pointer": property_pointer})
             walk(property_schema, property_path, property_pointer)
 
-    walk(tool.input_schema, "$", "/inputSchema")
+    walk(schema, "$", root)
     return failures
 
 
@@ -1323,7 +1323,7 @@ class ToolsInputPropertiesDocumentedRule(ToolsBaseRule):
         undocumented_properties: list[dict[str, Any]] = [
             {**failure, "_entity_index": index}
             for index, tool in enumerate(tools)
-            for failure in _undocumented_input_properties(tool)
+            for failure in _undocumented_properties(tool, tool.input_schema, "/inputSchema")
         ]
         passed = not undocumented_properties
         message = (
@@ -1340,6 +1340,74 @@ class ToolsInputPropertiesDocumentedRule(ToolsBaseRule):
             suggested_fix=(
                 "Add a description to each reported input property explaining its purpose, expected "
                 "format and important constraints. This check covers direct properties chains only."
+            ),
+            recommendation=True,
+            issues=(
+                field_issue(
+                    "tool",
+                    failure["_entity_index"],
+                    failure["_pointer"] + "/description",
+                    "missing_property_description",
+                    "a nonblank property description",
+                )
+                for failure in undocumented_properties
+            ),
+        )
+
+
+@register_rule
+class ToolsOutputPropertiesDocumentedRule(ToolsBaseRule):
+    """Low check: Encourage descriptions for statically reachable output properties."""
+
+    rule_id = "tools_output_properties_documented"
+    # Quality recommendation, not a spec mandate, like the input rule: an agent
+    # reads an undocumented result field without an error and has to guess its meaning.
+    basis = "MCP 2026-07-28 Tools §Tool (outputSchema; property descriptions per the spec's examples)"
+    min_spec_version = "2025-06-18"
+    rule_order = 22
+
+    @property
+    def rule_name(self) -> str:
+        return "Tools - Output properties should be documented"
+
+    @property
+    def severity(self) -> RuleSeverity:
+        # LOW: only servers that publish an outputSchema are judged, so a heavier
+        # penalty would reward dropping the schema instead of describing it.
+        return RuleSeverity.LOW
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip unless at least one tool declares an ``outputSchema``."""
+        reason = super().skip_reason(audit_data)
+        if reason is not None:
+            return reason
+        if not any(isinstance(tool.output_schema, dict) for tool in audit_data.tools or []):
+            return SKIP_REASON_NOT_APPLICABLE
+        return None
+
+    def _check_tools(self, tools: list[Tool]) -> RuleResult:
+        """Find statically reachable output properties without descriptions."""
+        undocumented_properties: list[dict[str, Any]] = [
+            {**failure, "_entity_index": index}
+            for index, tool in enumerate(tools)
+            if isinstance(tool.output_schema, dict)
+            for failure in _undocumented_properties(tool, tool.output_schema, "/outputSchema")
+        ]
+        passed = not undocumented_properties
+        message = (
+            "✅ All statically reachable tool outputs are documented"
+            if passed
+            else f"❌ Number of undocumented tool output properties: {len(undocumented_properties)}"
+        )
+        return catalog_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=message,
+            details={"undocumented_properties": _legacy_locations(undocumented_properties)},
+            suggested_fix=(
+                "Add a description to each reported output property saying what the field means, not a "
+                "sample value. This check covers direct properties chains only."
             ),
             recommendation=True,
             issues=(

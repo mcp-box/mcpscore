@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already fetch, for a server behind a login on 2026-07-28 or an unknown
   revision. Such an audit gains 1 point of maximum score; a server whose
   metadata lacks the flag scores it as a miss.
+- **`tools_output_properties_documented` (LOW): output schema properties
+  carry a description.** The output twin of
+  `tools_input_properties_documented`: for every tool with an
+  `outputSchema`, each property reached through direct `properties` chains
+  needs a nonblank description, because an agent reads an undocumented
+  result field without any error and still has to guess what it means. The
+  rule judges servers on 2025-06-18 or later where at least one tool
+  declares an `outputSchema`; others skip as not applicable. Such an audit
+  gains 1 point of maximum score.
 - **`mcpscore.url_credentials`**: `credential_query_params` and
   `without_credential_params` decide which query parameters carry a
   credential. Names match exactly after normalising (`apiKey`, `api-key`,

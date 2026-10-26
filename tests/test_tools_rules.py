@@ -38,6 +38,7 @@ from mcpscore.rules.tools import (
     ToolsNamePresentRule,
     ToolsNamesUniqueRule,
     ToolsNamesValidFormatRule,
+    ToolsOutputPropertiesDocumentedRule,
     ToolsOutputSchemaRootObjectRule,
     ToolsOutputSchemaValidRule,
     ToolsTitlePresentRule,
@@ -1026,6 +1027,85 @@ class TestToolsInputPropertiesDocumentedRule:
         result = ToolsInputPropertiesDocumentedRule().check(AuditData(tools=[tool]))
         assert result.passed is True
         assert result.details == {"undocumented_properties": []}
+
+
+class TestToolsOutputPropertiesDocumentedRule:
+    """Test documentation of statically reachable output properties."""
+
+    rule = ToolsOutputPropertiesDocumentedRule()
+
+    @staticmethod
+    def _tool(output_schema: dict | None, name: str = "search") -> Tool:
+        return Tool(
+            name=name,
+            input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+            output_schema=output_schema,
+        )
+
+    def test_rule_properties(self) -> None:
+        assert self.rule.rule_id == "tools_output_properties_documented"
+        assert self.rule.severity is RuleSeverity.LOW
+        assert self.rule.applies_to("2025-03-26") is False
+        assert self.rule.applies_to("2025-06-18") is True
+
+    def test_not_applicable_without_any_output_schema(self) -> None:
+        data = AuditData(tools=[self._tool(None)])
+        assert self.rule.skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
+
+    def test_applies_when_one_tool_declares_an_output_schema(self) -> None:
+        data = AuditData(tools=[self._tool(None, "plain"), self._tool({"type": "object"})])
+        assert self.rule.skip_reason(data) is None
+
+    def test_documented_nested_properties_pass(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "total": {"type": "integer", "description": "Number of matches"},
+                "meta": {
+                    "type": "object",
+                    "description": "Paging details",
+                    "properties": {"page": {"type": "integer", "description": "Current page"}},
+                },
+            },
+        }
+        result = self.rule.check(AuditData(tools=[self._tool(schema)]))
+        assert result.passed is True
+        assert result.details == {"undocumented_properties": []}
+        assert result.suggested_fix is None
+
+    def test_undocumented_nested_properties_report_output_paths(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "total": {"type": "integer"},
+                "meta": {"type": "object", "description": " ", "properties": {"page": {"type": "integer"}}},
+            },
+        }
+        tools = [self._tool(None, "plain"), self._tool(schema)]
+        result = self.rule.check(AuditData(tools=tools))
+        assert result.passed is False
+        assert result.severity is RuleSeverity.LOW
+        assert "output properties: 3" in result.message
+        assert result.details["undocumented_properties"] == [
+            {"tool": "search", "path": "$.properties.total"},
+            {"tool": "search", "path": "$.properties.meta"},
+            {"tool": "search", "path": "$.properties.meta.properties.page"},
+        ]
+        assert [(issue["entity_index"], issue["path"]) for issue in result.details["issues"]] == [
+            (1, "/outputSchema/properties/total/description"),
+            (1, "/outputSchema/properties/meta/description"),
+            (1, "/outputSchema/properties/meta/properties/page/description"),
+        ]
+        assert result.suggested_fix is not None
+        assert "not a sample value" in result.suggested_fix
+
+    def test_undocumented_inputs_do_not_count(self) -> None:
+        tool = Tool(
+            name="search",
+            input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+            output_schema={"type": "object", "properties": {"n": {"type": "integer", "description": "Count"}}},
+        )
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
 
 
 # ============================================================================
