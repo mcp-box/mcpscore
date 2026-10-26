@@ -95,7 +95,7 @@ def failure_cases() -> list[tuple[str, AuditData, str, str]]:
             "what the field means",
         ),
         (
-            "input_defaults_valid",
+            "input_defaults_match_type",
             [tool(input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": None}}})],
             "/inputSchema/properties/limit/default",
             "T | None",

@@ -3,11 +3,8 @@ from collections import Counter
 import re
 from typing import Any, NamedTuple, cast
 
-from jsonschema.exceptions import SchemaError
-from jsonschema.validators import Draft202012Validator, validator_for
 from mcp_types import Tool
-from referencing import Registry
-from referencing.jsonschema import specification_with
+from referencing.jsonschema import UnknownDialect, specification_with
 
 from mcpscore.diagnostics import quoted_preview
 
@@ -1427,9 +1424,12 @@ class ToolsOutputPropertiesDocumentedRule(ToolsBaseRule):
         )
 
 
-# jsonschema validates recursively; a schema nested deeper than this could exhaust Python's stack.
+# Deeper schemas are left unjudged; it bounds the recursive comparison of default values.
 _MAX_SCHEMA_NESTING = 128
 _JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
+_JSON_TYPES = frozenset({"null", "boolean", "integer", "number", "string", "array", "object"})
+# Before 2019-09, keywords beside a $ref are ignored.
+_REF_OVERRIDES_SIBLINGS = frozenset({"draft-03", "draft-04", "draft-06", "draft-07"})
 
 
 def _nesting_exceeds(value: Any, limit: int) -> bool:
@@ -1446,17 +1446,13 @@ def _nesting_exceeds(value: Any, limit: int) -> bool:
     return False
 
 
-# Keywords whose validation runs a regex taken from the schema.
-_REGEX_KEYWORDS = frozenset({"pattern", "patternProperties"})
-
-
-def _mentions_key(value: Any, keys: frozenset[str]) -> bool:
-    """Return whether any object in JSON *value* has one of *keys*, whatever keyword holds it."""
+def _mentions_default(value: Any) -> bool:
+    """Return whether any object in JSON *value* has a ``default`` key, whatever keyword holds it."""
     stack = [value]
     while stack:
         item = stack.pop()
         if isinstance(item, dict):
-            if not keys.isdisjoint(item):
+            if "default" in item:
                 return True
             stack.extend(item.values())
         elif isinstance(item, list):
@@ -1495,89 +1491,111 @@ def _json_type(value: Any) -> str:
     return "array" if isinstance(value, list) else "object"
 
 
+def _has_type(value: Any, declared: str) -> bool:
+    """Return whether *value* is an instance of JSON Schema type *declared*."""
+    actual = _json_type(value)
+    if declared == "number":
+        return actual in ("integer", "number")
+    if declared == "integer":
+        return actual == "integer" or (actual == "number" and float(value).is_integer())
+    return actual == declared
+
+
+def _json_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values the way ``enum`` and ``const`` do: ``true`` is not ``1``, ``1`` is ``1.0``."""
+    left_type, right_type = _json_type(left), _json_type(right)
+    if {left_type, right_type} <= {"integer", "number"}:
+        return left == right
+    if left_type != right_type:
+        return False
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_json_equal(a, b) for a, b in zip(left, right, strict=True))
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(_json_equal(value, right[key]) for key, value in left.items())
+    return bool(left == right)
+
+
+def _default_mismatch(subschema: dict[str, Any], default: Any) -> str | None:
+    """Name the ``type``, ``enum`` or ``const`` keyword of *subschema* that rejects *default*, if any."""
+    declared = subschema.get("type")
+    names = [declared] if isinstance(declared, str) else declared if isinstance(declared, list) else []
+    known = names and all(isinstance(name, str) and name in _JSON_TYPES for name in names)
+    if known and not any(_has_type(default, name) for name in names):
+        return "type"
+    enum = subschema.get("enum")
+    if isinstance(enum, list) and not any(_json_equal(default, member) for member in enum):
+        return "enum"
+    if "const" in subschema and not _json_equal(default, subschema["const"]):
+        return "const"
+    return None
+
+
 class _DefaultsCheck(NamedTuple):
     failures: list[dict[str, Any]]
     found: bool
-    judged: int
+    judged: bool
 
 
 def _check_defaults(tool: Tool) -> _DefaultsCheck:
-    """Validate each input-schema default against the subschema declaring it.
+    """Compare each input-schema default with the ``type``, ``enum`` and ``const`` beside it.
 
+    Only those sibling keywords are read: no ``$ref`` is followed and no other
+    assertion is evaluated, so the check stays linear in the schema's size.
     Subschemas are found with the dialect's own keyword rules (``referencing``),
-    so data keywords such as ``examples`` are never read as schemas. A schema in
-    an unknown dialect, invalid in its dialect, nested too deeply, or holding an
-    embedded resource (``$id``) is left unjudged, as is a default whose ``$ref``
-    cannot be resolved locally, recurses without end or lands on a non-schema
-    value, or a string or container default in a schema that uses regexes.
-    Remote references are never fetched: the registry is empty.
+    so data such as ``examples`` is never read as a schema. A schema in an
+    unknown dialect, nested too deeply, or malformed is left unjudged.
     """
     schema = tool.input_schema
-    unjudged = _DefaultsCheck([], _mentions_key(schema, frozenset({"default"})), 0)
-    if _nesting_exceeds(schema, _MAX_SCHEMA_NESTING):
-        return unjudged
+    unjudged = _DefaultsCheck([], found=_mentions_default(schema), judged=False)
     dialect = schema.get("$schema", _JSON_SCHEMA_2020_12)
-    if not isinstance(dialect, str):
-        return unjudged
-    # validator_for falls back to the default for an unknown URI; only a known dialect is judged.
-    validator_class = validator_for(schema, default=Draft202012Validator)
-    meta_schema_uri = str(validator_class.META_SCHEMA.get("$schema"))
-    if meta_schema_uri.rstrip("#") != dialect.rstrip("#"):
+    if not isinstance(dialect, str) or _nesting_exceeds(schema, _MAX_SCHEMA_NESTING):
         return unjudged
     try:
-        validator_class.check_schema(schema)
-    except SchemaError:
+        specification = specification_with(dialect)
+    except UnknownDialect:
         return unjudged
-    specification = specification_with(meta_schema_uri)
     subschemas: list[dict[str, Any]] = []
     stack: list[Any] = [schema]
     while stack:
         subschema = stack.pop()
         if isinstance(subschema, dict):
-            if subschemas and specification.id_of(subschema) is not None:
-                return unjudged
             subschemas.append(subschema)
-            stack.extend(specification.subresources_of(subschema))
+            try:
+                stack.extend(specification.subresources_of(subschema))
+            except (AttributeError, TypeError):
+                return unjudged
     pointers = _json_pointers(schema)
     subschemas.sort(key=lambda subschema: pointers[id(subschema)][0])
-    validator = validator_class(schema, registry=Registry())
-    # Python's re can backtrack without bound on a server-supplied pattern, so a default
-    # that could reach one (a string, or a container of strings) is not validated.
-    regexes = _mentions_key(schema, _REGEX_KEYWORDS)
     failures: list[dict[str, Any]] = []
-    found = judged = 0
+    found = False
     for subschema in subschemas:
         if "default" not in subschema:
             continue
-        found += 1
+        found = True
+        if "$ref" in subschema and specification.name in _REF_OVERRIDES_SIBLINGS:
+            continue
         default = subschema["default"]
-        if regexes and isinstance(default, (str, list, dict)):
-            continue
-        valid: bool | None
-        try:
-            valid = validator.evolve(schema=subschema).is_valid(default)
-        except Exception:  # noqa: BLE001 — an unresolvable, endless or non-schema $ref leaves the default unjudged
-            valid = None
-        if valid is None:
-            continue
-        judged += 1
-        if not valid:
+        mismatch = _default_mismatch(subschema, default)
+        if mismatch is not None:
             pointer = pointers[id(subschema)][1]
-            failure: dict[str, Any] = {"tool": tool.name, "path": pointer or "/", "default_type": _json_type(default)}
+            failure: dict[str, Any] = {
+                "tool": tool.name,
+                "path": pointer or "/",
+                "default_type": _json_type(default),
+                "mismatch": mismatch,
+            }
             declared = subschema.get("type")
-            if isinstance(declared, str) or (
-                isinstance(declared, list) and all(isinstance(item, str) for item in declared)
-            ):
+            if mismatch == "type":
                 failure["declared_type"] = declared
             failures.append({**failure, "_pointer": "/inputSchema" + pointer})
-    return _DefaultsCheck(failures, found > 0, judged)
+    return _DefaultsCheck(failures, found, found)
 
 
 @register_rule
-class ToolsInputDefaultsValidRule(ToolsBaseRule):
-    """Medium check: Each input default must be valid against the schema declaring it."""
+class ToolsInputDefaultsMatchTypeRule(ToolsBaseRule):
+    """Medium check: Each input default must match the type, enum or const declared beside it."""
 
-    rule_id = "tools_input_defaults_valid"
+    rule_id = "tools_input_defaults_match_type"
     basis = (
         "JSON Schema 2020-12 Validation §9.2 (default SHOULD be valid against its schema); "
         "MCP 2025-11-25 Tools §Tool (inputSchema is a JSON Schema, 2020-12 default)"
@@ -1586,7 +1604,7 @@ class ToolsInputDefaultsValidRule(ToolsBaseRule):
 
     @property
     def rule_name(self) -> str:
-        return "Tools - Input defaults should match their own schema"
+        return "Tools - Input defaults should match their declared type"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -1594,7 +1612,7 @@ class ToolsInputDefaultsValidRule(ToolsBaseRule):
         return RuleSeverity.MEDIUM
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when no tool declares a ``default``, or when none of the defaults can be judged."""
+        """Skip when no tool declares a ``default``, or when no declaring schema can be read."""
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
@@ -1606,28 +1624,28 @@ class ToolsInputDefaultsValidRule(ToolsBaseRule):
         return None
 
     def _check_tools(self, tools: list[Tool]) -> RuleResult:
-        """Find input defaults that the subschema declaring them rejects."""
-        invalid_defaults: list[dict[str, Any]] = [
+        """Find input defaults that the type, enum or const beside them rejects."""
+        mismatched_defaults: list[dict[str, Any]] = [
             {**failure, "_entity_index": index}
             for index, tool in enumerate(tools)
             for failure in _check_defaults(tool).failures
         ]
-        passed = not invalid_defaults
+        passed = not mismatched_defaults
         message = (
-            "✅ All tool input defaults are valid against their own schema"
+            "✅ All tool input defaults match their declared type"
             if passed
-            else f"❌ Number of tool input defaults their own schema rejects: {len(invalid_defaults)}"
+            else f"❌ Number of tool input defaults that contradict their declared type: {len(mismatched_defaults)}"
         )
         return catalog_result(
             rule_name=self.rule_name,
             severity=self.severity,
             passed=passed,
             message=message,
-            details={"invalid_defaults": _legacy_locations(invalid_defaults)},
+            details={"mismatched_defaults": _legacy_locations(mismatched_defaults)},
             suggested_fix=(
-                "Make each reported default valid for its field, or remove it: a client that sends the "
-                "advertised default gets a validation error. In Python, type an optional parameter as "
-                "`T | None`; in Zod, add `.nullable()` or drop the default."
+                "Make each reported default match its field's type, enum or const, or remove it: a client "
+                "that sends the advertised default gets a validation error. In Python, type an optional "
+                "parameter as `T | None`; in Zod, add `.nullable()` or drop the default."
             ),
             recommendation=True,
             issues=(
@@ -1635,10 +1653,10 @@ class ToolsInputDefaultsValidRule(ToolsBaseRule):
                     "tool",
                     failure["_entity_index"],
                     failure["_pointer"] + "/default",
-                    "invalid_default",
-                    "a default valid against its own schema",
+                    "default_type_mismatch",
+                    "a default matching the declared type, enum or const",
                 )
-                for failure in invalid_defaults
+                for failure in mismatched_defaults
             ),
         )
 

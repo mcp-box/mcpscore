@@ -49,19 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule judges servers on 2025-06-18 or later where at least one tool
   declares an `outputSchema`; others skip as not applicable. Such an audit
   gains 1 point of maximum score.
-- **`tools_input_defaults_valid` (MEDIUM): each input `default` is valid
-  against the schema that declares it.** A Python parameter written
-  `limit: int = None` advertises `{"type": "integer", "default": null}`, so
-  a client that sends the advertised default gets a validation error
-  instead of the default. JSON Schema 2020-12 Validation §9.2 recommends
-  that a default be valid against its schema; the rule checks every
-  `default` in each tool's `inputSchema` with the schema's own dialect,
-  resolving local `$ref`s and never fetching remote ones. Schema regexes
-  are never run: in a schema that uses `pattern` or `patternProperties`,
-  only `null`, boolean and number defaults are judged. Servers whose tools
-  declare no default skip as not applicable, and servers none of whose
-  defaults can be judged skip as insufficient data; others gain 2 points of
-  maximum score.
+- **`tools_input_defaults_match_type` (MEDIUM): each input `default` matches
+  the `type`, `enum` or `const` declared beside it.** A Python parameter
+  written `limit: int = None` advertises `{"type": "integer", "default":
+  null}`, so a client that sends the advertised default gets a validation
+  error instead of the default. JSON Schema 2020-12 Validation §9.2
+  recommends that a default be valid against its schema; the rule checks
+  every `default` in each tool's `inputSchema` against those three sibling
+  keywords only, without following `$ref`s or running patterns, so a hostile
+  schema cannot stall the audit. Servers whose tools declare no default skip
+  as not applicable, and servers whose schemas can't be read skip as
+  insufficient data; others gain 2 points of maximum score.
 - **`mcpscore.url_credentials`**: `credential_query_params` and
   `without_credential_params` decide which query parameters carry a
   credential. Names match exactly after normalising (`apiKey`, `api-key`,

@@ -28,7 +28,7 @@ from mcpscore.rules.tools import (
     ToolsDescriptionPresentRule,
     ToolsDescriptionsUniqueRule,
     ToolsExecutionConsistentRule,
-    ToolsInputDefaultsValidRule,
+    ToolsInputDefaultsMatchTypeRule,
     ToolsInputPropertiesDocumentedRule,
     ToolsInputSchemaValidRule,
     ToolsMcpHeadersNotSensitiveRule,
@@ -1109,17 +1109,22 @@ class TestToolsOutputPropertiesDocumentedRule:
         assert self.rule.check(AuditData(tools=[tool])).passed is True
 
 
-class TestToolsInputDefaultsValidRule:
-    """Test that input defaults are valid against the subschema declaring them."""
+class TestToolsInputDefaultsMatchTypeRule:
+    """Test that input defaults match the type, enum or const declared beside them."""
 
-    rule = ToolsInputDefaultsValidRule()
+    rule = ToolsInputDefaultsMatchTypeRule()
 
     @staticmethod
     def _tool(properties: dict[str, Any], name: str = "search", **extra: Any) -> Tool:
         return Tool(name=name, input_schema={"type": "object", "properties": properties, **extra})
 
+    def _paths(self, *tools: Tool) -> list[str]:
+        return [
+            failure["path"] for failure in self.rule.check(AuditData(tools=list(tools))).details["mismatched_defaults"]
+        ]
+
     def test_rule_properties(self) -> None:
-        assert self.rule.rule_id == "tools_input_defaults_valid"
+        assert self.rule.rule_id == "tools_input_defaults_match_type"
         assert self.rule.severity is RuleSeverity.MEDIUM
         assert self.rule.applies_to("2024-11-05") is True
 
@@ -1136,17 +1141,33 @@ class TestToolsInputDefaultsValidRule:
         "schema",
         [
             {"type": "integer", "default": 10},
+            {"type": "integer", "default": 2.0},
+            {"type": "number", "default": 3},
             {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
             {"type": ["integer", "null"], "default": None},
             {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
-            {"type": "string", "format": "date", "default": "not a date"},
+            {"enum": [1.0, "x"], "default": 1},
+            {"const": {"a": [1, True]}, "default": {"a": [1.0, True]}},
+            {"type": "string", "minLength": 5, "format": "date", "default": "x"},
+            {"type": "custom", "default": 1},
         ],
-        ids=["typed", "nullable-anyof", "nullable-type-list", "enum", "format-not-asserted"],
+        ids=[
+            "typed",
+            "integral-float",
+            "integer-as-number",
+            "nullable-anyof",
+            "nullable-type-list",
+            "enum",
+            "enum-numeric-equality",
+            "const-nested",
+            "other-assertions-not-checked",
+            "unknown-type-name",
+        ],
     )
-    def test_valid_defaults_pass(self, schema: dict[str, Any]) -> None:
+    def test_matching_defaults_pass(self, schema: dict[str, Any]) -> None:
         result = self.rule.check(AuditData(tools=[self._tool({"limit": schema})]))
         assert result.passed is True
-        assert result.details == {"invalid_defaults": []}
+        assert result.details == {"mismatched_defaults": []}
         assert result.suggested_fix is None
 
     def test_null_default_on_integer_fails_with_locations(self) -> None:
@@ -1157,9 +1178,15 @@ class TestToolsInputDefaultsValidRule:
         result = self.rule.check(AuditData(tools=tools))
         assert result.passed is False
         assert result.severity is RuleSeverity.MEDIUM
-        assert "rejects: 1" in result.message
-        assert result.details["invalid_defaults"] == [
-            {"tool": "search", "path": "/properties/limit", "default_type": "null", "declared_type": "integer"}
+        assert "contradict their declared type: 1" in result.message
+        assert result.details["mismatched_defaults"] == [
+            {
+                "tool": "search",
+                "path": "/properties/limit",
+                "default_type": "null",
+                "mismatch": "type",
+                "declared_type": "integer",
+            }
         ]
         assert [(issue["entity_index"], issue["path"]) for issue in result.details["issues"]] == [
             (1, "/inputSchema/properties/limit/default")
@@ -1167,170 +1194,124 @@ class TestToolsInputDefaultsValidRule:
         assert result.suggested_fix is not None
         assert "T | None" in result.suggested_fix
 
+    @pytest.mark.parametrize(
+        ("schema", "mismatch"),
+        [
+            ({"type": "integer", "default": True}, "type"),
+            ({"type": "integer", "default": 1.5}, "type"),
+            ({"type": ["string", "null"], "default": 0}, "type"),
+            ({"enum": [1, 2], "default": True}, "enum"),
+            ({"enum": ["asc", "desc"], "default": "up"}, "enum"),
+            ({"const": [1, 2], "default": [1]}, "const"),
+            ({"const": {"a": 1}, "default": {"b": 1}}, "const"),
+        ],
+    )
+    def test_mismatches_are_named(self, schema: dict[str, Any], mismatch: str) -> None:
+        result = self.rule.check(AuditData(tools=[self._tool({"x": schema})]))
+        assert [failure["mismatch"] for failure in result.details["mismatched_defaults"]] == [mismatch]
+
     def test_nested_and_combinator_defaults_are_checked(self) -> None:
         properties = {
             "rows": {
                 "type": "array",
                 "items": {"type": "object", "properties": {"n": {"type": "integer", "default": "x"}}},
             },
-            "mode": {"anyOf": [{"type": "string", "minLength": 2, "default": "a"}, {"type": "null"}]},
+            "mode": {"anyOf": [{"type": "string", "default": 1}, {"type": "null"}]},
         }
-        result = self.rule.check(AuditData(tools=[self._tool(properties)]))
-        assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
+        assert self._paths(self._tool(properties)) == [
             "/properties/rows/items/properties/n",
             "/properties/mode/anyOf/0",
         ]
 
-    def test_local_refs_resolve_against_the_tool_schema(self) -> None:
+    def test_refs_are_not_followed(self) -> None:
         tool = self._tool(
-            {"good": {"$ref": "#/$defs/Order", "default": "asc"}, "bad": {"$ref": "#/$defs/Order", "default": "up"}},
-            **{"$defs": {"Order": {"enum": ["asc", "desc"]}}},
+            {"order": {"$ref": "#/$defs/Order", "default": "up"}}, **{"$defs": {"Order": {"enum": ["asc"]}}}
         )
-        result = self.rule.check(AuditData(tools=[tool]))
-        assert [failure["path"] for failure in result.details["invalid_defaults"]] == ["/properties/bad"]
-        assert "declared_type" not in result.details["invalid_defaults"][0]
+        assert self._paths(tool) == []
 
-    def test_remote_refs_are_not_fetched(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def no_network(*args: Any, **kwargs: Any) -> None:
-            raise AssertionError("remote $ref fetched")
-
-        monkeypatch.setattr("urllib.request.urlopen", no_network)
-        tool = self._tool({"x": {"$ref": "https://example.com/schema.json", "default": 1}})
+    def test_exponential_ref_graph_is_not_expanded(self) -> None:
+        defs: dict[str, Any] = {"n0": {"type": "integer"}}
+        for level in range(1, 41):
+            defs[f"n{level}"] = {"allOf": [{"$ref": f"#/$defs/n{level - 1}"}, {"$ref": f"#/$defs/n{level - 1}"}]}
+        tool = self._tool({"x": {"$ref": "#/$defs/n40", "default": 1}}, **{"$defs": defs})
         assert self.rule.check(AuditData(tools=[tool])).passed is True
 
-    @pytest.mark.parametrize(
-        "extra",
-        [{"$schema": "https://example.com/custom-dialect"}, {"$schema": 5}, {"minLength": "two"}],
-        ids=["unknown-dialect", "non-string-dialect", "invalid-schema"],
-    )
-    def test_schemas_the_validator_cannot_judge_are_insufficient_data(self, extra: dict[str, Any]) -> None:
-        tool = self._tool({"limit": {"type": "integer", "default": None}}, **extra)
-        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
-        assert self.rule.check(AuditData(tools=[tool])).passed is True
-
-    def test_findings_from_judgeable_tools_survive_an_unjudgeable_one(self) -> None:
-        unjudgeable = self._tool({"limit": {"type": "integer", "default": None}}, "custom", **{"$schema": 5})
-        judgeable = self._tool({"limit": {"type": "integer", "default": None}})
-        data = AuditData(tools=[unjudgeable, judgeable])
-        assert self.rule.skip_reason(data) is None
-        assert [f["tool"] for f in self.rule.check(data).details["invalid_defaults"]] == ["search"]
-
-    def test_self_referencing_ref_is_unjudged_not_raised(self) -> None:
-        tool = self._tool({"x": {"$ref": "#/properties/x", "default": 1}})
-        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
-        assert self.rule.check(AuditData(tools=[tool])).passed is True
-
-    @pytest.mark.parametrize("target", [7, [1], "s", None, 1.5])
-    def test_non_schema_ref_target_is_unjudged_not_raised(self, target: Any) -> None:
-        tool = self._tool({"x": {"$ref": "#/examples/0", "default": 1}}, examples=[target])
-        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
-        assert self.rule.check(AuditData(tools=[tool])).passed is True
-
-    def test_schema_regexes_are_not_run(self) -> None:
-        # Exponential under Python's re: matching would not finish within the test run.
-        tool = self._tool({"x": {"type": "string", "pattern": "^(a+)+$", "default": "a" * 64 + "!"}})
-        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
-        assert self.rule.check(AuditData(tools=[tool])).passed is True
-
-    def test_explicit_dialect_root_object_default_does_not_run_regexes(self) -> None:
-        tool = Tool(
-            name="search",
-            input_schema={
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {"x": {"type": "string", "pattern": "^(a+)+$"}},
-                "default": {"x": "a" * 64 + "!"},
+    def test_schema_regexes_are_never_run(self) -> None:
+        # Exponential under Python's re, and an overflowing quantifier: neither is compiled or matched.
+        tool = self._tool(
+            {
+                "x": {"type": "string", "pattern": "^(a+)+$", "default": "a" * 64 + "!"},
+                "y": {"type": "integer", "pattern": "a{4294967296}", "default": "ten"},
             },
+            **{"$schema": "http://json-schema.org/draft-07/schema#"},
         )
-        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+        assert self._paths(tool) == ["/properties/y"]
 
-    def test_negated_pattern_default_is_not_reported(self) -> None:
-        tool = self._tool({"x": {"not": {"pattern": "^a$"}, "default": "b"}})
-        assert self.rule.check(AuditData(tools=[tool])).passed is True
-
-    def test_scalar_defaults_are_judged_beside_regexes(self) -> None:
-        tool = self._tool(
-            {
-                "code": {"type": "string", "pattern": "^[A-Z]+$", "default": "abc"},
-                "tags": {"type": "object", "patternProperties": {"^x-": {"type": "string"}}, "default": {"x-a": 1}},
-                "limit": {"type": "integer", "default": None},
-                "ratio": {"type": "integer", "default": 0.5},
-            }
-        )
-        result = self.rule.check(AuditData(tools=[tool]))
-        assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
-            "/properties/limit",
-            "/properties/ratio",
-        ]
-
-    def test_container_defaults_are_judged_without_regexes(self) -> None:
-        tool = self._tool(
-            {
-                "meta": {"type": "object", "properties": {"a": {"type": "integer"}}, "default": {"a": "1"}},
-                "strict": {"type": "object", "additionalProperties": False, "default": {"extra": 1}},
-                "ids": {"type": "array", "items": {"type": "integer"}, "default": ["1"]},
-            }
-        )
-        result = self.rule.check(AuditData(tools=[tool]))
-        assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
-            "/properties/meta",
-            "/properties/strict",
-            "/properties/ids",
-        ]
-
-    def test_embedded_resource_scope_is_unjudged(self) -> None:
-        tool = self._tool(
-            {
-                "inner": {
-                    "$id": "https://example.com/inner",
-                    "$defs": {"T": {"type": "string"}},
-                    "$ref": "#/$defs/T",
-                    "default": "ok",
-                }
-            },
-            **{"$defs": {"T": {"type": "integer"}}},
-        )
-        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+    def test_property_named_pattern_does_not_hide_findings(self) -> None:
+        tool = self._tool({"pattern": {"type": "string"}, "limit": {"type": "integer", "default": "ten"}})
+        assert self._paths(tool) == ["/properties/limit"]
 
     def test_draft_07_tuple_items_and_dependencies_are_walked(self) -> None:
         tool = self._tool(
-            {
-                "pair": {"type": "array", "items": [{"type": "string", "default": 1}]},
-                "a": {"type": "string"},
-            },
+            {"pair": {"type": "array", "items": [{"type": "string", "default": 1}]}, "a": {"type": "string"}},
             dependencies={"a": {"properties": {"b": {"type": "integer", "default": "x"}}}},
             **{"$schema": "http://json-schema.org/draft-07/schema#"},
         )
-        result = self.rule.check(AuditData(tools=[tool]))
-        assert [failure["path"] for failure in result.details["invalid_defaults"]] == [
-            "/properties/pair/items/0",
-            "/dependencies/a/properties/b",
-        ]
+        assert self._paths(tool) == ["/properties/pair/items/0", "/dependencies/a/properties/b"]
 
     def test_draft_07_prefix_items_are_data(self) -> None:
         tool = self._tool(
             {"pair": {"type": "array", "prefixItems": [{"type": "string", "default": 1}]}},
             **{"$schema": "http://json-schema.org/draft-07/schema#"},
         )
-        result = self.rule.check(AuditData(tools=[tool]))
-        assert result.passed is True
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
 
-    def test_declared_draft_07_dialect_is_used(self) -> None:
+    def test_draft_07_ref_siblings_are_ignored(self) -> None:
         tool = self._tool(
-            {"pair": {"type": "array", "items": [{"type": "string"}], "default": [1]}},
+            {"x": {"$ref": "#/definitions/X", "type": "integer", "default": "s"}},
+            definitions={"X": {"type": "string"}},
             **{"$schema": "http://json-schema.org/draft-07/schema#"},
         )
-        result = self.rule.check(AuditData(tools=[tool]))
-        assert [failure["path"] for failure in result.details["invalid_defaults"]] == ["/properties/pair"]
+        assert self.rule.skip_reason(AuditData(tools=[tool])) is None
+        assert self._paths(tool) == []
 
     def test_data_keywords_are_not_walked(self) -> None:
         tool = self._tool({"q": {"type": "object", "examples": [{"default": None, "type": "integer"}]}})
         assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_NOT_APPLICABLE
 
+    @pytest.mark.parametrize(
+        "extra",
+        [{"$schema": "https://example.com/custom-dialect"}, {"$schema": 5}, {"$defs": "not a map"}],
+        ids=["unknown-dialect", "non-string-dialect", "malformed"],
+    )
+    def test_schemas_that_cannot_be_read_are_insufficient_data(self, extra: dict[str, Any]) -> None:
+        tool = self._tool({"limit": {"type": "integer", "default": None}}, **extra)
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+    def test_findings_from_readable_tools_survive_an_unreadable_one(self) -> None:
+        unreadable = self._tool({"limit": {"type": "integer", "default": None}}, "custom", **{"$schema": 5})
+        readable = self._tool({"limit": {"type": "integer", "default": None}})
+        data = AuditData(tools=[unreadable, readable])
+        assert self.rule.skip_reason(data) is None
+        assert [f["tool"] for f in self.rule.check(data).details["mismatched_defaults"]] == ["search"]
+
+    def test_too_deep_schema_with_defaults_is_insufficient_data(self) -> None:
+        schema: dict[str, Any] = {"type": "string", "default": 1}
+        for _ in range(100):
+            schema = {"type": "object", "properties": {"n": schema}}
+        tool = self._tool({"root": schema})
+        assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+        assert self.rule.check(AuditData(tools=[tool])).passed is True
+
+    def test_boolean_subschemas_are_skipped(self) -> None:
+        properties = {"any": True, "mode": {"anyOf": [False, {"type": "string", "default": 0}]}}
+        assert self._paths(self._tool(properties)) == ["/properties/mode/anyOf/1"]
+
     def test_pointer_tokens_are_escaped(self) -> None:
         result = self.rule.check(AuditData(tools=[self._tool({"a/b~c": {"type": "string", "default": 3}})]))
-        assert result.details["invalid_defaults"][0]["path"] == "/properties/a~1b~0c"
-        assert result.details["invalid_defaults"][0]["default_type"] == "integer"
+        assert result.details["mismatched_defaults"][0]["path"] == "/properties/a~1b~0c"
+        assert result.details["mismatched_defaults"][0]["default_type"] == "integer"
 
     @pytest.mark.parametrize(
         ("default", "expected"),
@@ -1338,25 +1319,7 @@ class TestToolsInputDefaultsValidRule:
     )
     def test_default_types_are_named(self, default: Any, expected: str) -> None:
         result = self.rule.check(AuditData(tools=[self._tool({"q": {"type": "string", "default": default}})]))
-        assert result.details["invalid_defaults"][0]["default_type"] == expected
-
-    def test_deep_nesting_is_bounded(self) -> None:
-        schema: dict[str, Any] = {"type": "string", "default": 1}
-        for _ in range(200):
-            schema = {"type": "object", "properties": {"n": schema}}
-        result = self.rule.check(AuditData(tools=[self._tool({"root": schema})]))
-        assert result.passed is True
-
-    def test_too_deep_schema_with_defaults_is_insufficient_data(self) -> None:
-        schema: dict[str, Any] = {"type": "string", "default": 1}
-        for _ in range(100):
-            schema = {"type": "object", "properties": {"n": schema}}
-        assert self.rule.skip_reason(AuditData(tools=[self._tool({"root": schema})])) == SKIP_REASON_INSUFFICIENT_DATA
-
-    def test_boolean_subschemas_are_skipped(self) -> None:
-        properties = {"any": True, "mode": {"anyOf": [False, {"type": "string", "default": 0}]}}
-        result = self.rule.check(AuditData(tools=[self._tool(properties)]))
-        assert [failure["path"] for failure in result.details["invalid_defaults"]] == ["/properties/mode/anyOf/1"]
+        assert result.details["mismatched_defaults"][0]["default_type"] == expected
 
 
 # ============================================================================
