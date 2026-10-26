@@ -1336,6 +1336,7 @@ class TestAuthMetadataProbe:
         assert d["auth_server_issuer"] == "https://auth.example"
         assert d["auth_server_cimd_supported"] is False
         assert d["auth_server_registration_endpoint"] is False
+        assert d["auth_server_iss_parameter_supported"] is False
 
     @pytest.mark.parametrize(
         ("extra", "cimd", "registration"),
@@ -1374,6 +1375,29 @@ class TestAuthMetadataProbe:
         d = (await _run(handler))[PROBE_AUTH_METADATA].details
         assert d["auth_server_cimd_supported"] is cimd
         assert d["auth_server_registration_endpoint"] is registration
+
+    @pytest.mark.parametrize(("value", "supported"), [(True, True), (False, False), ("true", False), (1, False)])
+    async def test_authorization_server_iss_parameter(self, value: object, supported: bool):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            if request.url.host == "auth.example" and path == "/.well-known/oauth-authorization-server":
+                return httpx2.Response(
+                    200,
+                    json={
+                        "issuer": "https://auth.example",
+                        "authorization_endpoint": "https://auth.example/authorize",
+                        "token_endpoint": "https://auth.example/token",
+                        "authorization_response_iss_parameter_supported": value,
+                    },
+                )
+            return httpx2.Response(404)
+
+        d = (await _run(handler))[PROBE_AUTH_METADATA].details
+        assert d["auth_server_iss_parameter_supported"] is supported
 
     async def test_authorization_server_without_pkce(self):
         def handler(request: httpx2.Request) -> httpx2.Response:

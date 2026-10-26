@@ -2189,6 +2189,9 @@ async def _fetch_auth_server_metadata(
         details["auth_server_pkce_s256"] = isinstance(methods, list) and "S256" in methods
         details["auth_server_cimd_supported"] = metadata.get("client_id_metadata_document_supported") is True
         details["auth_server_registration_endpoint"] = _is_https_url(metadata.get("registration_endpoint"))
+        details["auth_server_iss_parameter_supported"] = (
+            metadata.get("authorization_response_iss_parameter_supported") is True
+        )
         return
     if not reached:
         details["auth_server_metadata_error"] = last_error
