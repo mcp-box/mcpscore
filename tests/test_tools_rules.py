@@ -1145,6 +1145,9 @@ class TestToolsDescriptionsInformativeRule:
             ("search", "Search", None),
             ("s", "Search docs", "Search docs"),
             ("指南", "指南", None),
+            ("getUser", "GETUSER", None),
+            ("getUser", "getuser", None),
+            ("get_user", "GetUser", None),
         ],
     )
     def test_descriptions_that_echo_the_name_fail(self, name: str, description: str, title: str | None) -> None:
