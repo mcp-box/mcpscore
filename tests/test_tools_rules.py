@@ -23,6 +23,7 @@ import pytest
 from mcpscore.rules import AuditData, RuleSeverity
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from mcpscore.rules.registry import create_all_rules
+import mcpscore.rules.tools as tools_rules
 from mcpscore.rules.tools import (
     ToolsAnnotationsPresentRule,
     ToolsBaseRule,
@@ -1317,6 +1318,21 @@ class TestToolsInputDefaultsMatchTypeRule:
         [issue] = result.details["issues"]
         assert issue["path_omitted"] is True
         assert "path" not in issue
+
+    def test_oversized_ancestor_names_are_not_escaped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        escaped: list[int] = []
+
+        def counting_pointer_token(value: str) -> str:
+            escaped.append(len(value))
+            return value
+
+        monkeypatch.setattr(tools_rules, "pointer_token", counting_pointer_token)
+        children = {f"p{index}": {"type": "integer", "default": None} for index in range(200)}
+        tool = self._tool({"k" * 100_000: {"type": "object", "properties": children}})
+        result = self.rule.check(AuditData(tools=[tool]))
+        assert result.details["issues_total"] == 200
+        assert all(failure["path_omitted"] for failure in result.details["mismatched_defaults"])
+        assert max(escaped, default=0) < 100_000
 
     def test_large_data_does_not_build_paths(self) -> None:
         name = "k" * 16384

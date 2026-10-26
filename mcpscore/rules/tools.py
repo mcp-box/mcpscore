@@ -1497,6 +1497,9 @@ def _json_pointer(origins: dict[int, _Origin], node: int, limit: int) -> str | N
     length = 0
     origin = origins[node]
     while origin.parent is not None:
+        # Escaping only lengthens a token, so an oversized raw token is rejected before it is scanned.
+        if length + len(origin.token) + 1 > limit:
+            return None
         token = pointer_token(origin.token)
         length += len(token) + 1
         if length > limit:
