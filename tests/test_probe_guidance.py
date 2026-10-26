@@ -185,10 +185,10 @@ def test_each_rule_guidance_contract(rule_id, failure, monkeypatch):
         assert "suggested_fix" not in wire
 
 
-def test_inventory_covers_all_54_rules():
-    assert len(RULES) == 54
+def test_inventory_covers_all_56_rules():
+    assert len(RULES) == 56
     assert sum(r.group_name == "readiness" for r in RULES.values()) == 21
-    assert sum(r.group_name == "security" for r in RULES.values()) == 15
+    assert sum(r.group_name == "security" for r in RULES.values()) == 17
 
 
 @pytest.mark.parametrize("outcome", [ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE])

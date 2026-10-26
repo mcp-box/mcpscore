@@ -23,8 +23,10 @@ from mcpscore.probes import (
     PROBE_GET_STREAM,
     PROBE_GET_STREAM_REMOVED,
     PROBE_HEADER_MISMATCH,
+    PROBE_HOST_VALIDATION,
     PROBE_IDS,
     PROBE_INVALID_TOKEN,
+    PROBE_LOCAL_BIND,
     PROBE_MALFORMED_JSON,
     PROBE_MALFORMED_META,
     PROBE_MISSING_METHOD_HEADER,
@@ -225,6 +227,9 @@ async def test_modern_server_supports_all_probed_behaviors():
         PROBE_INVALID_TOKEN,
         # The audited URL carries no credential in its query.
         PROBE_QUERY_CREDENTIAL,
+        # A public host: Host routing and interface binds are judged only on loopback targets.
+        PROBE_HOST_VALIDATION,
+        PROBE_LOCAL_BIND,
     }
     for probe_id in PROBE_IDS:
         expected = ProbeOutcome.NOT_APPLICABLE if probe_id in not_applicable else ProbeOutcome.SUPPORTED
@@ -1631,11 +1636,13 @@ async def test_network_failure_yields_error_outcomes_not_exceptions():
 
     results = await _run(handler)
 
-    # The query-credential probe sends nothing for a URL without a credential in its query.
-    for probe_id in set(PROBE_IDS) - {PROBE_QUERY_CREDENTIAL}:
+    # These send nothing for a public URL without a credential in its query.
+    unsent = {PROBE_QUERY_CREDENTIAL, PROBE_HOST_VALIDATION, PROBE_LOCAL_BIND}
+    for probe_id in set(PROBE_IDS) - unsent:
         assert results[probe_id].outcome is ProbeOutcome.ERROR, probe_id
         assert results[probe_id].details["exception"] == "ConnectError"
-    assert results[PROBE_QUERY_CREDENTIAL].outcome is ProbeOutcome.NOT_APPLICABLE
+    for probe_id in unsent:
+        assert results[probe_id].outcome is ProbeOutcome.NOT_APPLICABLE, probe_id
 
 
 async def test_non_mcp_endpoint_is_unsupported():

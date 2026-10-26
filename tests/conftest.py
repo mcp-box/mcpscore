@@ -98,6 +98,14 @@ def _no_dns(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_interface_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit tests hermetic: report no routable interface, so the bind probe never connects out."""
+    from mcpscore import probes
+
+    monkeypatch.setattr(probes, "_non_loopback_addresses", list)
+
+
+@pytest.fixture(autouse=True)
 def _no_network_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep unit tests hermetic: stub BOTH of the auditor's probe runners.
 

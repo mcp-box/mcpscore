@@ -126,6 +126,8 @@ from .resources import (
 )
 from .security import (
     ErrorDataLeakRule,
+    HostHeaderValidationRule,
+    LocalBindLoopbackRule,
     MalformedRequestHandlingRule,
     OriginHeaderValidationRule,
     TLSEnabledRule,
@@ -214,9 +216,11 @@ __all__ = (
     "GetStreamContractRule",
     "GetStreamRemovedReadinessRule",
     "HeaderValidationReadinessRule",
+    "HostHeaderValidationRule",
     "InvalidRequestErrorCodeRule",
     "InvalidRequestRejectedRule",
     "LatestVersionRule",
+    "LocalBindLoopbackRule",
     "MalformedRequestHandlingRule",
     "MetaValidationReadinessRule",
     "MissingMethodHeaderReadinessRule",

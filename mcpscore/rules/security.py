@@ -3,7 +3,13 @@ import re
 from typing import Any, ClassVar
 
 from ..enums import MCPTransportType
-from ..probes import PROBE_MALFORMED_JSON, PROBE_ORIGIN_VALIDATION, ProbeOutcome
+from ..probes import (
+    PROBE_HOST_VALIDATION,
+    PROBE_LOCAL_BIND,
+    PROBE_MALFORMED_JSON,
+    PROBE_ORIGIN_VALIDATION,
+    ProbeOutcome,
+)
 from ..spec import compare
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -567,4 +573,162 @@ class OriginHeaderValidationRule(BaseRule):
             ),
             audit_data=audit_data,
             expected=expected,
+        )
+
+
+_SECURITY_WARNING_REVISIONS = (
+    "Transports §Security Warning (2025-03-26, 2025-06-18, 2025-11-25) and Streamable HTTP §Security & Endpoint "
+    "(2026-07-28)"
+)
+
+
+_SECURITY_WARNING_URL = (
+    "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#security-&-endpoint"
+)
+
+
+class _LocalExposureRule(BaseRule):
+    """Shared skip logic for the rules judged only on a loopback HTTP target."""
+
+    group_name = "security"
+    group_order = 3
+    min_spec_version = "2025-03-26"  # Streamable HTTP, and its Security Warning, begin here
+    probe_id: ClassVar[str]
+
+    @property
+    def severity(self) -> RuleSeverity:
+        return RuleSeverity.MEDIUM
+
+    def skip_reason(self, audit_data: AuditData) -> str | None:
+        """Skip stdio and every target the probe could not judge (non-loopback, nothing to compare against)."""
+        if audit_data.transport_type == MCPTransportType.STDIO:
+            return SKIP_REASON_NOT_APPLICABLE
+        probe = (audit_data.probes or {}).get(self.probe_id)
+        if probe is not None and probe.outcome is ProbeOutcome.NOT_APPLICABLE:
+            return SKIP_REASON_NOT_APPLICABLE
+        if probe is None or probe.outcome is ProbeOutcome.ERROR:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        return None
+
+
+@register_rule
+class HostHeaderValidationRule(_LocalExposureRule):
+    """A server on a loopback address refuses a request carrying a foreign ``Host``.
+
+    DNS rebinding points an attacker's hostname at 127.0.0.1; the browser then
+    sends that hostname as ``Host``. The transport's Security Warning names DNS
+    rebinding against local servers as the threat, and both official SDKs check
+    ``Host`` on loopback binds by default. ``Origin`` validation (HIGH) is the
+    requirement; this is the second layer, so MEDIUM. Judged only on loopback
+    targets: behind virtual hosting a public server's ``Host`` routes, it does
+    not authorize. The observation comes from ``probe_host_validation``, which
+    requires its control request to be accepted first.
+
+    Scoring: 2 points (MEDIUM)
+    """
+
+    rule_id = "security_host_header_validation"
+    basis = (
+        f"{_SECURITY_WARNING_REVISIONS}: without these protections attackers could use DNS rebinding to "
+        "interact with local MCP servers from remote websites; the official SDKs validate Host on loopback binds"
+    )
+    rule_order = 15
+    probe_id: ClassVar[str] = PROBE_HOST_VALIDATION
+
+    @property
+    def rule_name(self) -> str:
+        return "Host Header Validated On A Local Server"
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Pass when the loopback server refused the foreign-Host twin of an accepted request."""
+        probe = (audit_data.probes or {})[self.probe_id]
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        details = {
+            "spec": _SECURITY_WARNING_URL,
+            "http_status": probe.details.get("http_status"),
+            "control_http_status": probe.details.get("control_http_status"),
+            "control_shape": probe.details.get("control_shape"),
+        }
+        return diagnostic_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ The local server refuses a request whose Host header names a foreign host"
+                if passed
+                else "❌ The local server serves a request whose Host header names a foreign host, "
+                "so a DNS-rebound website can reach it"
+            ),
+            details=details,
+            suggested_fix=(
+                None
+                if passed
+                else (
+                    "Accept only the Host values this server is served under (such as localhost:<port> and "
+                    "127.0.0.1:<port>) and refuse others with HTTP 421 or 403. The official SDKs do this by "
+                    "default when bound to localhost."
+                )
+            ),
+            audit_data=audit_data,
+            expected={"http_status": "4xx"},
+        )
+
+
+@register_rule
+class LocalBindLoopbackRule(_LocalExposureRule):
+    """A server audited on a loopback address does not also listen on this machine's network interfaces.
+
+    Every Streamable HTTP revision says a server running locally SHOULD bind
+    only to localhost rather than all network interfaces. The observation comes
+    from ``probe_local_bind``, which sends the audited server's accepted control
+    request to the same port on this machine's default-route addresses: served
+    there, the server listens on ``0.0.0.0``/``::`` and other machines on the
+    network can reach it. Judged only on loopback http targets, which the
+    hosted service never audits.
+
+    Scoring: 2 points (MEDIUM)
+    """
+
+    rule_id = "security_local_bind_loopback"
+    basis = (
+        f"{_SECURITY_WARNING_REVISIONS}: when running locally, servers SHOULD bind only to localhost "
+        "(127.0.0.1) rather than all network interfaces (0.0.0.0)"
+    )
+    rule_order = 16
+    probe_id: ClassVar[str] = PROBE_LOCAL_BIND
+
+    @property
+    def rule_name(self) -> str:
+        return "Local Server Bound To Loopback Only"
+
+    def check(self, audit_data: AuditData) -> RuleResult:
+        """Pass when no default-route address of this machine served the audited server's control request."""
+        probe = (audit_data.probes or {})[self.probe_id]
+        passed = probe.outcome is ProbeOutcome.SUPPORTED
+        details = {
+            "spec": _SECURITY_WARNING_URL,
+            "port": probe.details.get("port"),
+            "interfaces_checked": probe.details.get("interfaces_checked"),
+            "interfaces_listening": probe.details.get("interfaces_listening"),
+            "interfaces_serving": probe.details.get("interfaces_serving"),
+        }
+        return diagnostic_result(
+            rule_name=self.rule_name,
+            severity=self.severity,
+            passed=passed,
+            message=(
+                "✅ The local server does not answer MCP requests on this machine's network addresses"
+                if passed
+                else "❌ The local server also answers MCP requests on this machine's network address, "
+                "so other machines on the network can reach it"
+            ),
+            details=details,
+            suggested_fix=(
+                None
+                if passed
+                else "Bind the server to 127.0.0.1 (or ::1), not 0.0.0.0 or ::. Expose it beyond this machine "
+                "only behind authentication."
+            ),
+            audit_data=audit_data,
+            expected={"interfaces_serving": 0},
         )
