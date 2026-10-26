@@ -1000,6 +1000,7 @@ async def test_injected_client_refusal_proves_an_address_closed(monkeypatch: pyt
         result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
 
     assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["interfaces_listening"] == 0
     assert result.details["interfaces_serving"] == 0
     assert result.details["interfaces_unknown"] == 0
 
@@ -1015,4 +1016,5 @@ async def test_injected_client_connect_failure_without_refusal_stays_unknown(mon
         result = await _probe_local_bind(_HttpTarget(injected, LOCAL_URL, injected=True))
 
     assert result.outcome is ProbeOutcome.ERROR
+    assert result.details["interfaces_listening"] == 0
     assert result.details["interfaces_unknown"] == 1
