@@ -23,7 +23,6 @@ import pytest
 from mcpscore.rules import AuditData, RuleSeverity
 from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE
 from mcpscore.rules.registry import create_all_rules
-import mcpscore.rules.tools as tools_rules
 from mcpscore.rules.tools import (
     ToolsAnnotationsPresentRule,
     ToolsBaseRule,
@@ -1326,13 +1325,17 @@ class TestToolsInputDefaultsMatchTypeRule:
             escaped.append(len(value))
             return value
 
-        monkeypatch.setattr(tools_rules, "pointer_token", counting_pointer_token)
+        monkeypatch.setattr("mcpscore.rules.tools.pointer_token", counting_pointer_token)
         children = {f"p{index}": {"type": "integer", "default": None} for index in range(200)}
         tool = self._tool({"k" * 100_000: {"type": "object", "properties": children}})
         result = self.rule.check(AuditData(tools=[tool]))
         assert result.details["issues_total"] == 200
         assert all(failure["path_omitted"] for failure in result.details["mismatched_defaults"])
         assert max(escaped, default=0) < 100_000
+
+    def test_paths_that_outgrow_the_limit_when_escaped_are_omitted(self) -> None:
+        result = self.rule.check(AuditData(tools=[self._tool({"/" * 130: {"type": "integer", "default": None}})]))
+        assert result.details["mismatched_defaults"][0]["path_omitted"] is True
 
     def test_large_data_does_not_build_paths(self) -> None:
         name = "k" * 16384
@@ -1357,6 +1360,13 @@ class TestToolsInputDefaultsMatchTypeRule:
             }
         )
         assert self.rule.skip_reason(AuditData(tools=[tool])) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_integral_floats_are_not_integers_before_draft_06(self) -> None:
+        draft_04 = {"$schema": "http://json-schema.org/draft-04/schema#"}
+        tool = self._tool(
+            {"x": {"type": "integer", "default": 2.0}, "y": {"type": "number", "default": 2.0}}, **draft_04
+        )
+        assert self._paths(tool) == ["/properties/x"]
 
     def test_const_is_ignored_before_draft_06(self) -> None:
         tool = self._tool(

@@ -1430,8 +1430,8 @@ _JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 _JSON_TYPES = frozenset({"null", "boolean", "integer", "number", "string", "array", "object"})
 # Before 2019-09, keywords beside a $ref are ignored.
 _REF_OVERRIDES_SIBLINGS = frozenset({"draft-03", "draft-04", "draft-06", "draft-07"})
-# const arrived in draft-06.
-_WITHOUT_CONST = frozenset({"draft-03", "draft-04"})
+# Before draft-06 there is no const, and 2.0 is not an integer.
+_LEGACY_DRAFTS = frozenset({"draft-03", "draft-04"})
 _MAX_POINTER_LENGTH = 255
 
 
@@ -1523,13 +1523,13 @@ def _json_type(value: Any) -> str:
     return "array" if isinstance(value, list) else "object"
 
 
-def _has_type(value: Any, declared: str) -> bool:
+def _has_type(value: Any, declared: str, *, integral_floats: bool) -> bool:
     """Return whether *value* is an instance of JSON Schema type *declared*."""
     actual = _json_type(value)
     if declared == "number":
         return actual in ("integer", "number")
     if declared == "integer":
-        return actual == "integer" or (actual == "number" and float(value).is_integer())
+        return actual == "integer" or (integral_floats and actual == "number" and float(value).is_integer())
     return actual == declared
 
 
@@ -1547,17 +1547,17 @@ def _json_equal(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
-def _default_mismatch(subschema: dict[str, Any], default: Any, *, const: bool) -> str | None:
+def _default_mismatch(subschema: dict[str, Any], default: Any, *, legacy: bool) -> str | None:
     """Name the ``type``, ``enum`` or ``const`` keyword of *subschema* that rejects *default*, if any."""
     declared = subschema.get("type")
     names = [declared] if isinstance(declared, str) else declared if isinstance(declared, list) else []
     known = names and all(isinstance(name, str) and name in _JSON_TYPES for name in names)
-    if known and not any(_has_type(default, name) for name in names):
+    if known and not any(_has_type(default, name, integral_floats=not legacy) for name in names):
         return "type"
     enum = subschema.get("enum")
     if isinstance(enum, list) and not any(_json_equal(default, member) for member in enum):
         return "enum"
-    if const and "const" in subschema and not _json_equal(default, subschema["const"]):
+    if not legacy and "const" in subschema and not _json_equal(default, subschema["const"]):
         return "const"
     return None
 
@@ -1610,7 +1610,7 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
         if "$ref" in subschema and specification.name in _REF_OVERRIDES_SIBLINGS:
             continue
         default = subschema["default"]
-        mismatch = _default_mismatch(subschema, default, const=specification.name not in _WITHOUT_CONST)
+        mismatch = _default_mismatch(subschema, default, legacy=specification.name in _LEGACY_DRAFTS)
         if mismatch is not None:
             pointer = _json_pointer(origins, id(subschema), _MAX_POINTER_LENGTH)
             failure: dict[str, Any] = {"tool": tool.name, "default_type": _json_type(default), "mismatch": mismatch}
