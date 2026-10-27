@@ -104,9 +104,9 @@ Without a gate flag or a configured `[gate]`, a completed audit exits `0`
 whatever the score. A failing gate names itself on the last line:
 
 ```text
-Audit finished. Final score: 95/112
+Audit finished. Final score: 96/114
 ...
-Gate failed — --fail-under 90: score 95/112 (85%) is below the required 90%
+Gate failed — --fail-under 90: score 96/114 (84%) is below the required 90%
 ```
 
 A `2` that says the URL was redirected means mcpscore follows a redirect only
@@ -148,8 +148,8 @@ mcpscore https://mcp.deepwiki.com/mcp --json --sarif mcpscore.sarif > report.jso
 
 ```text
 ...
-Audit finished. Final score: 95/112
-SARIF written to mcpscore.sarif (13 findings)
+Audit finished. Final score: 96/114
+SARIF written to mcpscore.sarif (15 findings)
 ```
 
 | mcpscore severity | SARIF `level` | Security tab |

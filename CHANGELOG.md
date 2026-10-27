@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-10-26
+
+Eight new rules, 150 in all. Security & Auth gains four: a credential read
+from the URL query string (HIGH), `Host` validation and a loopback-only bind
+on local servers (MEDIUM), and the RFC 9207 `iss` parameter on 2026-07-28
+authorization servers (LOW). Four judge the catalog: input defaults that
+their own type rejects (MEDIUM), undocumented output-schema properties,
+instructions that name a tool the server doesn't list, and descriptions that
+only repeat the tool's name (LOW). Each rule judges only the servers it
+applies to, so maximum scores rise by the rules a server qualifies for. Most
+servers that publish output schemas lose a point for undocumented
+properties, and local servers that accept a foreign `Host` or listen on
+every interface score lower. DeepWiki moves from 95/112 to 96/114.
+
 ### Added
 
 - **`auth_token_not_in_query` (HIGH): the server does not take its credential
@@ -94,6 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   namespace), so an AWS action such as `` `iam:CreateRole` `` or a URL after
   "call" is code, not an unlisted tool. Servers whose catalog text only
   named such code now pass.
+
+### Changed
+
+- **Dependencies refreshed**: `sse-starlette` 3.6.0 (through the MCP SDK).
+  The `mcp==2.3.0` pin is unchanged and is the latest SDK release.
 
 ## [1.28.0] - 2026-10-25
 
@@ -2413,7 +2432,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.28.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.29.0...HEAD
+[1.29.0]: https://github.com/mcp-box/mcpscore/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/mcp-box/mcpscore/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/mcp-box/mcpscore/compare/v1.26.1...v1.27.0
 [1.26.1]: https://github.com/mcp-box/mcpscore/compare/v1.26.0...v1.26.1

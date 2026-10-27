@@ -24,16 +24,16 @@ mcpscore https://mcp.deepwiki.com/mcp
 ❌ Streamable HTTP does not reject an invalid foreign Origin with HTTP 403, risking DNS rebinding. Observed HTTP status: 200.
   Fix: Validate supplied Origin headers against the origins allowed for this endpoint. Return HTTP 403 for invalid origins; do not allow every origin to satisfy browser requests.
 ...
-Audit finished. Final score: 95/112
+Audit finished. Final score: 96/114
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
 Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 21 checks assessed)
 ```
 
-That run gives you three numbers: the main score (`95/112`), the spec revision
+That run gives you three numbers: the main score (`96/114`), the spec revision
 the server speaks (`2025-11-25`, legacy), and a separate readiness score for
 the newest revision (`3/13`). The rest of this page explains each one.
 
-## How 95/112 adds up
+## How 96/114 adds up
 
 A rule is one check against your server, such as `security_origin_validation`.
 Each rule has a severity, and the severity sets its weight. A passing rule
@@ -51,12 +51,12 @@ The same DeepWiki audit, grouped by category:
 
 | Category | Earned | Available | Failed rules |
 |---|---|---|---|
-| Protocol | 40 | 47 | `protocol_version_latest` (2), `server_title_present` (2), `server_websiteurl_present` (1), `server_icons_present` (1), `transport_invalid_request_error_code` (1) |
-| Primitives | 36 | 43 | `tools_annotations_present` (2), `tools_title_present_in_all` (1), four `pagination_*_invalid_cursor` rules (1 each) |
-| Security & Auth | 19 | 22 | `security_origin_validation` (3) |
-| **Total** | **95** | **112** | 12 failed, 33 passed, 69 skipped |
+| Protocol | 42 | 49 | `protocol_version_latest` (2), `server_title_present` (2), `server_websiteurl_present` (1), `server_icons_present` (1), `transport_invalid_request_error_code` (1) |
+| Primitives | 32 | 40 | `tools_annotations_present` (2), `tools_title_present_in_all` (1), `tools_output_properties_documented` (1), four `pagination_*_invalid_cursor` rules (1 each) |
+| Security & Auth | 22 | 25 | `security_origin_validation` (3) |
+| **Total** | **96** | **114** | 13 failed, 35 passed, 75 skipped |
 
-Fixing the one Security & Auth failure moves the score to 98/112. The
+Fixing the one Security & Auth failure moves the score to 99/114. The
 `--json` report carries the same arithmetic per rule in `results[].severity_value`
 and `results[].passed`, so you can recompute any score from the report alone.
 
@@ -64,7 +64,7 @@ and `results[].passed`, so you can recompute any score from the report alone.
 
 Only rules that ran count toward the maximum. A rule that has nothing to
 judge is skipped and left out of both numbers, never failed. That is why
-DeepWiki is scored out of 112 and a server with prompts and resources is
+DeepWiki is scored out of 114 and a server with prompts and resources is
 scored out of more. DeepWiki serves no prompts or resources, so the 24 rules
 about them were skipped.
 
@@ -91,15 +91,15 @@ was fetched whole and came back empty. No single primitive is required.
 The main score always includes three categories. Readiness is the fourth:
 it has its own score, and it also counts in the main score on a full audit
 of a modern or dual-era server. Legacy servers and partial audits leave it
-out. The server audit has 136 rules today. The
+out. The server audit has 144 rules today. The
 [rules reference](/rules) lists each one with its weight and the spec
 revisions it applies to.
 
 | Category | Rules | What it covers |
 |---|---|---|
-| Protocol | 23 | Protocol version, server name, title and version, whether the server exposes anything, advertised capabilities, transport and its HTTP envelope |
-| Primitives | 70 | Tools, prompts, resources, resource templates and [skills](#skills-servers-that-publish-agent-skills): names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination, skill integrity |
-| Security & Auth | 22 | The server's security posture, detailed below |
+| Protocol | 24 | Protocol version, server name, title and version, whether the server exposes anything, advertised capabilities, transport and its HTTP envelope |
+| Primitives | 73 | Tools, prompts, resources, resource templates and [skills](#skills-servers-that-publish-agent-skills): names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination, skill integrity |
+| Security & Auth | 26 | The server's security posture, detailed below |
 | Readiness | 21 | How ready the server is for the 2026-07-28 revision, [scored on its own axis](#the-readiness-score-separate-informative) and in the main score for modern and dual-era full audits |
 
 A separate set of six packaging rules scores a published npm or PyPI package
@@ -129,8 +129,8 @@ in Primitives. Session-ID handling on the stateless lifecycle is
 `readiness_2026_no_session_id`, in Readiness.
 
 A server that serves anonymous requests has no authorization posture to
-grade, so the eleven `auth_*` rules skip as `not-applicable`. That is the case
-for DeepWiki above. To score the authorization flow behind the gate, see
+grade, so the eleven authorization-posture `auth_*` rules skip as
+`not-applicable`. That is the case for DeepWiki above. To score the authorization flow behind the gate, see
 [authenticated servers](/authenticated-servers).
 
 ### Skills: servers that publish Agent Skills
