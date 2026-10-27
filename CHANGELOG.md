@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs:** "Improve your score" is re-run on 1.29.0. The example tool
+  documents its output property, the Origin step also passes the new `Host`
+  check, and the remaining-points table explains the loopback-bind rule and
+  the SDK's `-32602` answer to an invalid request.
+
 ## [1.29.0] - 2026-10-26
 
 Eight new rules, 150 in all. Security & Auth gains four: a credential read
