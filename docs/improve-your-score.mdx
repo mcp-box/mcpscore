@@ -255,7 +255,8 @@ doesn't protect, read
   gets no credit for refusing the probe. The `Host` rule,
   `security_host_header_validation`, is judged the same way, and only on a
   loopback URL: behind virtual hosting, a public endpoint routes a foreign
-  `Host` elsewhere instead of validating it. Any 4xx counts as a refusal.
+  `Host` elsewhere instead of validating it. Any 4xx except 408 and 429
+  counts as a refusal; those two leave the rule unjudged.
   Neither rule applies to stdio servers.
 </Accordion>
 
