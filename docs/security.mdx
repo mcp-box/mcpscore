@@ -32,7 +32,7 @@ mcpscore https://mcp.deepwiki.com/mcp
 ✅ Catalog text contains no credential-shaped strings.
 ✅ Catalog text contains no prompt-injection phrasing.
 ...
-Audit finished. Final score: 95/112
+Audit finished. Final score: 96/114
 ```
 
 Every rule line above is a Security & Auth rule. The `auth_*` rules skip because
@@ -254,8 +254,8 @@ mcpscore https://mcp.deepwiki.com/mcp --json --sarif mcpscore.sarif
 
 ```text
 ...
-Audit finished. Final score: 95/112
-SARIF written to mcpscore.sarif (13 findings)
+Audit finished. Final score: 96/114
+SARIF written to mcpscore.sarif (15 findings)
 ```
 
 In that file, the `security_origin_validation` finding has level `error` and
