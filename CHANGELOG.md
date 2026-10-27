@@ -7,12 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.29.1] - 2026-10-27
+
+Documentation-site release: no change to the CLI, the engine or any score.
+The "Improve your score" tutorial now matches 1.29.0's output step by step.
+
 ### Changed
 
 - **Docs:** "Improve your score" is re-run on 1.29.0. The example tool
   documents its output property, the Origin step also passes the new `Host`
   check, and the remaining-points table explains the loopback-bind rule and
   the SDK's `-32602` answer to an invalid request.
+- **Dependencies refreshed.** No runtime package moved; the `mcp==2.3.0` pin
+  is the latest SDK release.
 
 ## [1.29.0] - 2026-10-26
 
@@ -2439,7 +2446,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.29.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.29.1...HEAD
+[1.29.1]: https://github.com/mcp-box/mcpscore/compare/v1.29.0...v1.29.1
 [1.29.0]: https://github.com/mcp-box/mcpscore/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/mcp-box/mcpscore/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/mcp-box/mcpscore/compare/v1.26.1...v1.27.0
