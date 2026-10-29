@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs:** Troubleshooting explains which certificates mcpscore trusts: the
   operating system's trust store, or the bundle `SSL_CERT_FILE` /
   `SSL_CERT_DIR` names.
+- **Docs:** copy-paste examples pin mcpscore 1.29.1 instead of 1.20.0, and the
+  JSON report example on Stability is re-run on 1.29.1. A test now fails when
+  a docs example pins a version older than the previous minor release, or
+  names a superseded spec revision as the latest.
 
 ## [1.29.1] - 2026-10-27
 
