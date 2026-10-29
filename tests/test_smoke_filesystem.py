@@ -19,7 +19,7 @@ import pytest
 
 from mcpscore import MCPClient, StdioCommand
 from mcpscore.mcp_client import RawRequest, RawResult
-from mcpscore.smoke import SmokeVerdict
+from mcpscore.smoke import SmokeReport, SmokeVerdict
 from mcpscore.smoke_filesystem import (
     CANARY_MARKER,
     CHECK_FILESYSTEM_BOUNDARY,
@@ -281,6 +281,14 @@ class TestCallOutcomes:
         assert attempted
         assert all(r.verdict is SmokeVerdict.SKIP and message in r.message for r in attempted)
         assert all(r.details["called"] is called for r in attempted)
+
+    async def test_a_tool_that_answered_its_control_counts_as_called(self, fixture: FilesystemFixture) -> None:
+        results = await self._read(fixture, MCPError(CONNECTION_CLOSED, "closed"))
+
+        report = SmokeReport(executed=True, checks=results)
+        assert report.tools_called == 1
+        assert all(r.details["control_called"] is True for r in results)
+        assert all(r.details.get("called") is not True for r in results)
 
     async def test_protocol_error_is_a_rejection(self, fixture: FilesystemFixture) -> None:
         results = await self._read(fixture, MCPError(INTERNAL_ERROR, "boom"))
