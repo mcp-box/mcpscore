@@ -29,8 +29,12 @@ _LATEST_SPEC = re.compile(
     r"""latest(?::|\s+is|"\s*:|_version"\s*:)\s*\\?["']?(\d{4}-\d{2}-\d{2})""",
 )
 _ENGINE_PIN = re.compile(
-    r"""(?:mcpscore==|@mcp-box/mcpscore@|"mcpscore_version":\s*"|\bversion:\s*["']?)(\d+)\.(\d+)\.(\d+)""",
+    r"""(?:mcpscore==|@mcp-box/mcpscore@|"mcpscore_version":\s*")(\d+)\.(\d+)\.(\d+)""",
 )
+# The action's `version` input; only read inside a block that uses the action,
+# so a server's or package's own `version:` is never taken for an engine pin.
+_ACTION = "mcp-box/mcpscore-action"
+_ACTION_VERSION = re.compile(r"""^\s*version:\s*["']?(\d+)\.(\d+)\.(\d+)""")
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
@@ -84,9 +88,11 @@ def check_text(path: PurePath, text: str, current: tuple[int, int, int]) -> list
     oldest = (major, max(minor - 1, 0))
     findings: list[Finding] = []
     opener: str | None = None
+    uses_action = False
     for number, line in enumerate(text.splitlines(), start=1):
         is_fence, opener = _fence_change(line, opener)
         if is_fence:
+            uses_action = False
             continue
         findings.extend(
             Finding(path, number, f"latest spec revision is {LATEST.version}, not {match.group(1)}")
@@ -95,7 +101,11 @@ def check_text(path: PurePath, text: str, current: tuple[int, int, int]) -> list
         )
         if opener is None:
             continue
-        for match in _ENGINE_PIN.finditer(line):
+        uses_action = uses_action or _ACTION in line
+        pins = list(_ENGINE_PIN.finditer(line))
+        if uses_action:
+            pins.extend(_ACTION_VERSION.finditer(line))
+        for match in pins:
             pinned = tuple(int(part) for part in match.groups())
             if pinned[:2] < oldest:
                 findings.append(

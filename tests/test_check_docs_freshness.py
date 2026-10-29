@@ -43,7 +43,6 @@ def test_current_latest_revision_passes():
     "line",
     [
         '    - pip install "mcpscore==1.20.0"',
-        '    version: "1.20.0"',
         '  "mcpscore_version": "1.20.0",',
         "npx @mcp-box/mcpscore@1.20.0 https://example.com/mcp",
     ],
@@ -52,9 +51,29 @@ def test_old_engine_pin_in_a_code_block_is_flagged(line: str):
     assert messages(f"```yaml\n{line}\n```") == ["pins mcpscore 1.20.0; use 1.29 or 1.28"]
 
 
+def action_block(version: str) -> str:
+    return f'```yaml\n- uses: mcp-box/mcpscore-action@v1\n  with:\n    version: "{version}"\n```'
+
+
+def test_old_action_version_input_is_flagged():
+    assert messages(action_block("1.20.0")) == ["pins mcpscore 1.20.0; use 1.29 or 1.28"]
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "```text\nResolved version: 1.0.0\n```",
+        '```yaml\nname: notes\nversion: "1.4.0"\n```',
+        '```yaml\n- uses: mcp-box/mcpscore-action@v1\n```\n\n```yaml\nversion: "1.4.0"\n```',
+    ],
+)
+def test_version_key_outside_an_action_block_is_not_an_engine_pin(block: str):
+    assert messages(block) == []
+
+
 @pytest.mark.parametrize("pin", ["1.28.0", "1.29.1", "1.30.0"])
 def test_pin_from_the_previous_minor_or_newer_passes(pin: str):
-    assert messages(f'```yaml\nversion: "{pin}"\n```') == []
+    assert messages(action_block(pin)) == []
 
 
 def test_pin_in_prose_is_not_checked():
@@ -91,12 +110,12 @@ def test_server_version_kwarg_is_not_an_engine_pin():
 
 
 def test_first_minor_of_a_major_accepts_its_own_minor():
-    assert messages('```yaml\nversion: "2.0.0"\n```', current=(2, 0, 0)) == []
-    assert messages('```yaml\nversion: "1.29.1"\n```', current=(2, 0, 0)) == ["pins mcpscore 1.29.1; use 2.0 or 2.0"]
+    assert messages(action_block("2.0.0"), current=(2, 0, 0)) == []
+    assert messages(action_block("1.29.1"), current=(2, 0, 0)) == ["pins mcpscore 1.29.1; use 2.0 or 2.0"]
 
 
 def test_finding_reports_the_repo_relative_line():
-    [finding] = freshness.check_text(PAGE, "intro\n```\nversion: 0.8.0\n```", CURRENT)
+    [finding] = freshness.check_text(PAGE, "intro\n```\npip install mcpscore==0.8.0\n```", CURRENT)
     assert str(finding) == "docs/page.mdx:3: pins mcpscore 0.8.0; use 1.29 or 1.28"
 
 
