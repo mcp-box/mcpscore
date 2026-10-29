@@ -71,6 +71,37 @@ def test_version_key_outside_an_action_block_is_not_an_engine_pin(block: str):
     assert messages(block) == []
 
 
+def test_action_version_is_tied_to_its_own_step():
+    block = (
+        "```yaml\nsteps:\n  - uses: mcp-box/mcpscore-action@v1\n    with:\n      target: https://x.example/mcp\n"
+        '  - uses: actions/setup-node@v4\n    with:\n      version: "1.4.0"\n```'
+    )
+    assert messages(block) == []
+
+
+def test_action_version_before_uses_is_checked():
+    block = '```yaml\n- with:\n    version: "1.20.0"\n  uses: mcp-box/mcpscore-action@v1\n```'
+    assert messages(block) == ["pins mcpscore 1.20.0; use 1.29 or 1.28"]
+
+
+def test_action_version_reports_its_own_line():
+    [finding] = freshness.check_text(PAGE, "intro\n" + action_block("1.20.0"), CURRENT)
+    assert finding.line == 5
+
+
+def test_unparsable_yaml_block_with_the_action_is_flagged():
+    block = "```yaml\n- uses: mcp-box/mcpscore-action@v1\n  with: [unclosed\n```"
+    assert messages(block) == ["YAML block that uses the action does not parse"]
+
+
+def test_unclosed_yaml_block_at_end_of_page_is_still_checked():
+    assert messages(action_block("1.20.0").removesuffix("\n```")) == ["pins mcpscore 1.20.0; use 1.29 or 1.28"]
+
+
+def test_action_in_a_non_yaml_block_is_not_parsed():
+    assert messages('```text\nuses: mcp-box/mcpscore-action@v1\nversion: "1.20.0"\n```') == []
+
+
 @pytest.mark.parametrize("pin", ["1.28.0", "1.29.1", "1.30.0"])
 def test_pin_from_the_previous_minor_or_newer_passes(pin: str):
     assert messages(action_block(pin)) == []
