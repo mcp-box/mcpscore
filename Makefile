@@ -60,7 +60,7 @@ release-dry-run: ## Run all release checks without creating anything
 all: lint typecheck testcov test-npm ## Run all checks (mirrors CI)
 
 .PHONY: test-npm
-test-npm: ## Test the npm launcher (requires Node.js 18+)
+test-npm: ## Test the npm launcher (requires Node.js 22+)
 	npm --prefix npm test
 
 .PHONY: clean

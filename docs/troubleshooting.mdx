@@ -117,6 +117,27 @@ If curl fails the same way, the problem is the network or the certificate,
 not mcpscore. A certificate error is a real finding: MCP clients refuse that
 server too.
 
+### Which certificates does mcpscore trust?
+
+mcpscore checks certificates against your operating system's trust store. It
+doesn't ship a CA bundle of its own, and it doesn't use `certifi`:
+
+| Platform | Trust store |
+|---|---|
+| macOS | the system Keychain, through the native verification API |
+| Windows | the Windows certificate store, through the native verification API |
+| Linux | the system CA bundle, for example `/etc/ssl/certs/ca-certificates.crt` on Debian and Ubuntu |
+
+To use a different bundle on any platform, set `SSL_CERT_FILE` to a PEM file or
+`SSL_CERT_DIR` to a hashed certificate directory. If both are set,
+`SSL_CERT_FILE` wins.
+
+OS updates change what mcpscore trusts. When a certificate authority is added
+or distrusted, mcpscore picks up the change once your system updates it. On
+Linux, that comes through your distribution's `ca-certificates` package. The
+npm package works the same way: it starts the Python engine, which does the
+checking, so Node.js's built-in certificates are never used for an audit.
+
 ## The server answered with an HTTP error
 
 **Symptom:**
