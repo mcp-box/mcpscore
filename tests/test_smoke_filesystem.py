@@ -246,6 +246,17 @@ class TestCallOutcomes:
         assert all(r.message == f"rejected with JSON-RPC error {INTERNAL_ERROR}" for r in attempted)
         assert all(r.details["error_code"] == INTERNAL_ERROR for r in attempted)
 
+    @pytest.mark.parametrize(
+        "error",
+        [MCPError(INTERNAL_ERROR, f"cannot parse: {CANARY_MARKER}"), MCPError(-32602, "bad", {"x": CANARY_MARKER})],
+    )
+    async def test_canary_in_a_protocol_error_fails(self, fixture: FilesystemFixture, error: MCPError) -> None:
+        results = await self._read(fixture, error)
+
+        attempted = [r for r in results if "attempted_path" in r.details]
+        assert attempted
+        assert all(r.verdict is SmokeVerdict.FAIL for r in attempted)
+
     async def test_success_without_the_canary_passes(self, fixture: FilesystemFixture) -> None:
         results = await self._read(fixture, _text_result("no such file"))
 
@@ -289,6 +300,19 @@ class TestCallOutcomes:
         results = await run_filesystem_checks(session, [_tool("write")], config, fixture)
 
         assert all("did not create it" in r.message for r in results)
+
+    async def test_write_control_in_another_encoding_is_a_mismatch(self, fixture: FilesystemFixture) -> None:
+        async def call_tool(_name: str, arguments: dict[str, Any], **_kwargs: Any) -> object:
+            Path(arguments["path"]).write_bytes(arguments["content"].encode("utf-16"))  # noqa: ASYNC240 — stands in for a server
+            return _text_result("ok")
+
+        session = MagicMock()
+        session.call_tool = call_tool
+        config = FilesystemProbeConfig(write_tool="write")
+
+        results = await run_filesystem_checks(session, [_tool("write")], config, fixture)
+
+        assert all(r.verdict is SmokeVerdict.SKIP and "did not create it" in r.message for r in results)
 
     async def test_write_skips_and_passes_by_outcome(self, fixture: FilesystemFixture) -> None:
         answers: list[object] = []

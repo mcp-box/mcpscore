@@ -28,6 +28,7 @@ relative to the fixture.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import shutil
@@ -255,7 +256,7 @@ class _CallOutcome:
     """The server answered (a result or a JSON-RPC error), so the call counts as made."""
 
     text: str | None = None
-    """The whole result serialized, for marker search; None when there was no result."""
+    """The whole result or JSON-RPC error serialized, for marker search; None when there was no answer."""
 
     is_error: bool = False
     error_code: int | None = None
@@ -277,7 +278,9 @@ async def _call(session: ClientSession, tool: str, arguments: dict[str, Any]) ->
             return _CallOutcome(answered=False, failure=f"no answer within {SMOKE_CALL_TIMEOUT_S:.0f}s")
         if exc.code == CONNECTION_CLOSED:
             return _CallOutcome(answered=False, failure="connection closed during tools/call")
-        return _CallOutcome(answered=True, is_error=True, error_code=exc.code)
+        # The error's message and data are searched for the canary like a result is.
+        text = json.dumps({"message": exc.message, "data": exc.data}, default=str)
+        return _CallOutcome(answered=True, text=text, is_error=True, error_code=exc.code)
     except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
         return _CallOutcome(answered=False, failure=f"tools/call raised {type(exc).__name__}")
     if not isinstance(call_result, CallToolResult):
@@ -350,7 +353,7 @@ async def _write_checks(
     control_file = fixture.root / _WRITE_CONTROL_NAME
     control = await _call(session, tool, write_arguments(str(control_file)))
     try:
-        control_written = control_file.read_text(encoding="utf-8") == WRITE_MARKER
+        control_written = control_file.read_bytes() == WRITE_MARKER.encode("utf-8")
     except OSError:
         control_written = False
     if not control_written:
