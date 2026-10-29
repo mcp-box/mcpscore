@@ -565,11 +565,11 @@ def _log_refused_redirect(status: int | None, refused: RefusedRedirect, server_u
     )
 
 
-class _RawRequest(Request[dict[str, Any], str]):
+class RawRequest(Request[dict[str, Any], str]):
     """A request whose params pass through as given; the generic model drops fields it does not declare."""
 
 
-class _RawResult(BaseModel):
+class RawResult(BaseModel):
     """A result object kept as sent: every field passes through as an extra."""
 
     model_config = ConfigDict(extra="allow")
@@ -1428,7 +1428,7 @@ class MCPClient:
         """
         if not self.session:
             raise RuntimeError(ERROR_NO_ACTIVE_SESSION)
-        result = await self.session.send_request(_RawRequest(method=method, params=params), _RawResult)
+        result = await self.session.send_request(RawRequest(method=method, params=params), RawResult)
         return dict(result.model_extra or {})
 
     async def read_resource_contents(self, uri: str) -> list[dict[str, Any]]:

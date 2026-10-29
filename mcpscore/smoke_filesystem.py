@@ -36,8 +36,9 @@ import tempfile
 from typing import TYPE_CHECKING, Any
 
 from mcp.shared.exceptions import MCPError
-from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT, CallToolResult
+from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
+from .mcp_client import RawRequest, RawResult
 from .smoke import SMOKE_CALL_TIMEOUT_S, SmokeCheckResult, SmokeVerdict
 
 if TYPE_CHECKING:
@@ -266,14 +267,11 @@ class _CallOutcome:
 
 
 async def _call(session: ClientSession, tool: str, arguments: dict[str, Any]) -> _CallOutcome:
+    # A raw tools/call, not session.call_tool: the SDK validates a result against the
+    # tool's outputSchema and raises on a mismatch, which would discard a leaked canary.
+    request = RawRequest(method="tools/call", params={"name": tool, "arguments": arguments})
     try:
-        call_result = await session.call_tool(
-            tool,
-            arguments,
-            read_timeout_seconds=SMOKE_CALL_TIMEOUT_S,
-            allow_input_required=True,
-            allow_claimed=True,
-        )
+        raw = await session.send_request(request, RawResult, request_read_timeout_seconds=SMOKE_CALL_TIMEOUT_S)
     except MCPError as exc:
         if exc.code == REQUEST_TIMEOUT:
             return _CallOutcome(answered=False, failure=f"no answer within {SMOKE_CALL_TIMEOUT_S:.0f}s")
@@ -284,9 +282,11 @@ async def _call(session: ClientSession, tool: str, arguments: dict[str, Any]) ->
         return _CallOutcome(answered=True, text=text, is_error=True, error_code=exc.code)
     except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
         return _CallOutcome(answered=False, failure=f"tools/call raised {type(exc).__name__}")
-    if not isinstance(call_result, CallToolResult):
-        return _CallOutcome(answered=False, failure="tool requested interactive input")
-    return _CallOutcome(answered=True, text=call_result.model_dump_json(), is_error=bool(call_result.is_error))
+    result = dict(raw.model_extra or {})
+    text = json.dumps(result, default=str)
+    if "content" not in result and "structuredContent" not in result:
+        return _CallOutcome(answered=True, text=text, failure="the answer is not a tool result")
+    return _CallOutcome(answered=True, text=text, is_error=result.get("isError") is True)
 
 
 def _observed(outcome: _CallOutcome) -> dict[str, Any]:

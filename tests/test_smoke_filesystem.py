@@ -11,13 +11,14 @@ from __future__ import annotations
 from pathlib import Path, PureWindowsPath
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from mcp.shared.exceptions import MCPError
 from mcp_types import CONNECTION_CLOSED, INTERNAL_ERROR, REQUEST_TIMEOUT, CallToolResult, TextContent, Tool
 import pytest
 
 from mcpscore import MCPClient, StdioCommand
+from mcpscore.mcp_client import RawRequest, RawResult
 from mcpscore.smoke import SmokeVerdict
 from mcpscore.smoke_filesystem import (
     CANARY_MARKER,
@@ -32,7 +33,7 @@ from mcpscore.smoke_filesystem import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from mcpscore.smoke import SmokeCheckResult
 
@@ -127,6 +128,13 @@ class TestAgainstRealServers:
         read = next(r for r in results if r.details["operation"] == "read")
         assert "rejected with an isError tool result" in read.message
 
+    async def test_a_leak_that_breaks_the_output_schema_still_fails(self, fixture: FilesystemFixture) -> None:
+        results = await _run("open_schema", fixture, FilesystemProbeConfig(read_tool="read_text_file"))
+
+        read = _verdicts(results, "read")
+        assert read["absolute_path"] is SmokeVerdict.FAIL
+        assert read["sibling_prefix"] is SmokeVerdict.FAIL
+
     async def test_unlisted_tool_is_skipped(self, fixture: FilesystemFixture) -> None:
         config = FilesystemProbeConfig(read_tool="cat", write_tool=None)
 
@@ -212,40 +220,67 @@ def _text_result(text: str, *, is_error: bool = False) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], is_error=is_error)
 
 
+def _scripted_session(answer_for: Callable[[dict[str, Any]], object]) -> MagicMock:
+    """Build a session whose raw ``tools/call`` answers come from ``answer_for(arguments)``.
+
+    An exception is raised, a ``CallToolResult`` is sent as its wire form, and
+    anything else is returned as given.
+    """
+
+    async def send_request(request: RawRequest, *_args: Any, **_kwargs: Any) -> object:
+        answer = answer_for(request.params["arguments"])
+        if isinstance(answer, BaseException):
+            raise answer
+        if isinstance(answer, CallToolResult):
+            return RawResult(**answer.model_dump(by_alias=True, mode="json", exclude_none=True))
+        return answer
+
+    session = MagicMock()
+    session.send_request = send_request
+    return session
+
+
 class TestCallOutcomes:
     """Outcomes a real server rarely produces, driven through a scripted session."""
 
     async def _read(self, fixture: FilesystemFixture, vector_answer: object) -> list[SmokeCheckResult]:
         """Answer the control correctly, then every vector with ``vector_answer``."""
-        answers: list[object] = [_text_result(INSIDE_MARKER)]
 
-        async def call_tool(*_args: Any, **_kwargs: Any) -> object:
-            answer = answers.pop(0) if answers else vector_answer
-            if isinstance(answer, BaseException):
-                raise answer
-            return answer
+        def answer_for(arguments: dict[str, Any]) -> object:
+            return _text_result(INSIDE_MARKER) if arguments["path"].endswith("inside.txt") else vector_answer
 
-        session = MagicMock()
-        session.call_tool = call_tool
         config = FilesystemProbeConfig(read_tool="read")
-        return await run_filesystem_checks(session, [_tool("read")], config, fixture)
+        return await run_filesystem_checks(_scripted_session(answer_for), [_tool("read")], config, fixture)
+
+    async def _write(
+        self, fixture: FilesystemFixture, control: Callable[[Path, str], object]
+    ) -> list[SmokeCheckResult]:
+        """Answer the write control with ``control(path, content)``; no vector is reached in these tests."""
+
+        def answer_for(arguments: dict[str, Any]) -> object:
+            return control(Path(arguments["path"]), arguments["content"])
+
+        config = FilesystemProbeConfig(write_tool="write")
+        return await run_filesystem_checks(_scripted_session(answer_for), [_tool("write")], config, fixture)
 
     @pytest.mark.parametrize(
-        ("answer", "message"),
+        ("answer", "message", "called"),
         [
-            (MCPError(REQUEST_TIMEOUT, "timeout"), "no answer within 30s — the boundary was not exercised"),
-            (MCPError(CONNECTION_CLOSED, "closed"), "connection closed during tools/call"),
-            (RuntimeError("schema"), "tools/call raised RuntimeError"),
-            (object(), "tool requested interactive input"),
+            (MCPError(REQUEST_TIMEOUT, "timeout"), "no answer within 30s — the boundary was not exercised", False),
+            (MCPError(CONNECTION_CLOSED, "closed"), "connection closed during tools/call", False),
+            (RuntimeError("transport"), "tools/call raised RuntimeError", False),
+            (RawResult(inputRequests={}), "the answer is not a tool result", True),
         ],
     )
-    async def test_unjudgeable_calls_skip(self, fixture: FilesystemFixture, answer: object, message: str) -> None:
+    async def test_unjudgeable_calls_skip(
+        self, fixture: FilesystemFixture, answer: object, message: str, *, called: bool
+    ) -> None:
         results = await self._read(fixture, answer)
 
         attempted = [r for r in results if "attempted_path" in r.details]
         assert attempted
         assert all(r.verdict is SmokeVerdict.SKIP and message in r.message for r in attempted)
-        assert all(r.details["called"] is False for r in attempted)
+        assert all(r.details["called"] is called for r in attempted)
 
     async def test_protocol_error_is_a_rejection(self, fixture: FilesystemFixture) -> None:
         results = await self._read(fixture, MCPError(INTERNAL_ERROR, "boom"))
@@ -282,8 +317,7 @@ class TestCallOutcomes:
         assert all(r.verdict is SmokeVerdict.FAIL for r in attempted)
 
     async def test_read_control_without_content_explains_itself(self, fixture: FilesystemFixture) -> None:
-        session = MagicMock()
-        session.call_tool = AsyncMock(return_value=_text_result("ok"))
+        session = _scripted_session(lambda _arguments: _text_result("ok"))
 
         results = await run_filesystem_checks(
             session, [_tool("read")], FilesystemProbeConfig(read_tool="read"), fixture
@@ -292,57 +326,36 @@ class TestCallOutcomes:
         assert all("did not return its content" in r.message for r in results)
 
     async def test_write_control_protocol_error_explains_itself(self, fixture: FilesystemFixture) -> None:
-        session = MagicMock()
-        session.call_tool = AsyncMock(side_effect=MCPError(-32602, "bad"))
-        config = FilesystemProbeConfig(write_tool="write")
-
-        results = await run_filesystem_checks(session, [_tool("write")], config, fixture)
+        results = await self._write(fixture, lambda _path, _content: MCPError(-32602, "bad"))
 
         assert all(r.verdict is SmokeVerdict.SKIP for r in results)
         assert all("rejected with JSON-RPC error -32602" in r.message for r in results)
 
     async def test_write_control_success_without_a_file_explains_itself(self, fixture: FilesystemFixture) -> None:
-        session = MagicMock()
-        session.call_tool = AsyncMock(return_value=_text_result("ok"))
-        config = FilesystemProbeConfig(write_tool="write")
-
-        results = await run_filesystem_checks(session, [_tool("write")], config, fixture)
+        results = await self._write(fixture, lambda _path, _content: _text_result("ok"))
 
         assert all("did not create it" in r.message for r in results)
 
     async def test_write_control_in_another_encoding_is_a_mismatch(self, fixture: FilesystemFixture) -> None:
-        async def call_tool(_name: str, arguments: dict[str, Any], **_kwargs: Any) -> object:
-            Path(arguments["path"]).write_bytes(arguments["content"].encode("utf-16"))  # noqa: ASYNC240 — stands in for a server
+        def write_utf16(path: Path, content: str) -> object:
+            path.write_bytes(content.encode("utf-16"))
             return _text_result("ok")
 
-        session = MagicMock()
-        session.call_tool = call_tool
-        config = FilesystemProbeConfig(write_tool="write")
-
-        results = await run_filesystem_checks(session, [_tool("write")], config, fixture)
+        results = await self._write(fixture, write_utf16)
 
         assert all(r.verdict is SmokeVerdict.SKIP and "did not create it" in r.message for r in results)
 
     async def test_write_skips_and_passes_by_outcome(self, fixture: FilesystemFixture) -> None:
-        answers: list[object] = []
+        answers: list[object] = [MCPError(REQUEST_TIMEOUT, "t"), MCPError(-32602, "no")]
 
-        async def call_tool(_name: str, arguments: dict[str, Any], **_kwargs: Any) -> object:
+        def answer_for(arguments: dict[str, Any]) -> object:
             if arguments["path"].endswith("write-control.txt"):
-                Path(arguments["path"]).write_text(WRITE_MARKER, encoding="utf-8")  # noqa: ASYNC240 — stands in for a server
+                Path(arguments["path"]).write_text(WRITE_MARKER, encoding="utf-8")
                 return _text_result("ok")
-            answer = answers.pop(0)
-            if isinstance(answer, BaseException):
-                raise answer
-            return answer
+            return answers.pop(0) if answers else _text_result("ok")
 
-        session = MagicMock()
-        session.call_tool = call_tool
-        answers += [MCPError(REQUEST_TIMEOUT, "t"), MCPError(-32602, "no"), _text_result("ok")]
-        answers += [_text_result("ok")] * 10
-
-        results = await run_filesystem_checks(
-            session, [_tool("write")], FilesystemProbeConfig(write_tool="write"), fixture
-        )
+        config = FilesystemProbeConfig(write_tool="write")
+        results = await run_filesystem_checks(_scripted_session(answer_for), [_tool("write")], config, fixture)
 
         by_vector = {r.details["vector"]: r for r in results}
         assert by_vector["parent_traversal"].verdict is SmokeVerdict.SKIP

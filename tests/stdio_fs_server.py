@@ -5,6 +5,8 @@ Usage: ``stdio_fs_server.py <mode> <root>``. It exposes ``read_text_file``
 ``root`` according to ``mode``:
 
 - ``open``      — no check at all: every escape works.
+- ``open_schema`` — ``open``, with an ``outputSchema`` on ``read_text_file``
+  that its results never honor.
 - ``naive``     — ``normpath(path).startswith(root)``: stops ``..`` and
   absolute paths, but not a sibling sharing the root's prefix or a symlink.
 - ``protected`` — resolves symlinks, then requires ``root`` as a common path.
@@ -41,8 +43,15 @@ TOOLS = [
 ]
 
 
+def _tools(mode: str) -> list[dict[str, Any]]:
+    if mode != "open_schema":
+        return TOOLS
+    schema = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+    return [{**TOOLS[0], "outputSchema": schema}, TOOLS[1]]
+
+
 def _allowed(mode: str, root: str, path: str) -> bool:
-    if mode == "open":
+    if mode in ("open", "open_schema"):
         return True
     if mode == "naive":
         return os.path.normpath(path).startswith(root)
@@ -93,7 +102,7 @@ def _handle(mode: str, root: str, message: dict[str, Any]) -> dict[str, Any] | N
         }
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": _tools(mode)}}
     if method == "tools/call":
         return _call(mode, root, request_id, params)
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}}

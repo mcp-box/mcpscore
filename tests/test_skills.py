@@ -14,7 +14,7 @@ import pytest
 from mcpscore import skills
 from mcpscore.enums import MCPTransportType
 from mcpscore.mcp_auditor import MCPAuditor
-from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient, _RawResult
+from mcpscore.mcp_client import ERROR_NO_ACTIVE_SESSION, MCPClient, RawResult
 from mcpscore.skills import (
     SKILLS_EXTENSION,
     collect_skills,
@@ -490,7 +490,7 @@ class TestClientCalls:
     async def test_raw_request_keeps_params_and_result_fields(self):
         client = MCPClient()
         client.session = AsyncMock()
-        client.session.send_request.return_value = _RawResult(skills=[{"uri": "u"}], nextCursor="c")
+        client.session.send_request.return_value = RawResult(skills=[{"uri": "u"}], nextCursor="c")
         result = await client.request_raw("skills/get", {"uri": "skill://a/SKILL.md"})
         assert result == {"skills": [{"uri": "u"}], "nextCursor": "c"}
         request = client.session.send_request.await_args.args[0]
