@@ -45,7 +45,8 @@ docs-serve: docs-rules ## Serve the documentation locally (Mintlify, needs Node)
 	cd docs && npx mint dev
 
 .PHONY: docs-check
-docs-check: docs-rules ## Validate the documentation (broken links)
+docs-check: docs-rules ## Validate the documentation (stale facts, broken links)
+	uv run python scripts/check_docs_freshness.py
 	cd docs && npx mint broken-links
 
 .PHONY: release

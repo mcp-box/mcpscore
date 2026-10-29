@@ -16,7 +16,7 @@ mcpscore:
   variables:
     MCP_SERVER_URL: "https://your-server.example/mcp"
   script:
-    - pip install "mcpscore==1.20.0"
+    - pip install "mcpscore==1.29.1"
     - mcpscore "$MCP_SERVER_URL" --fail-under 90 --json --sarif mcpscore.sarif > mcpscore.json
   artifacts:
     when: always
@@ -46,7 +46,7 @@ mcpscore:
   variables:
     MCP_SERVER_URL: "https://your-server.example/mcp"
   script:
-    - pip install "mcpscore==1.20.0"
+    - pip install "mcpscore==1.29.1"
     - mcpscore "$MCP_SERVER_URL" --fail-under 90
 ```
 
@@ -72,7 +72,7 @@ mcpscore:
   variables:
     MCP_SERVER_URL: "https://your-server.example/mcp"
   script:
-    - pip install "mcpscore==1.20.0"
+    - pip install "mcpscore==1.29.1"
     - mcpscore "$MCP_SERVER_URL" --fail-under 90 --json --sarif mcpscore.sarif > mcpscore.json
   artifacts:
     when: always
@@ -130,7 +130,7 @@ the line, so every mcpscore option goes before it.
 mcpscore:
   image: python:3.13-slim
   script:
-    - pip install "mcpscore==1.20.0" -r requirements.txt
+    - pip install "mcpscore==1.29.1" -r requirements.txt
     - mcpscore --fail-under 90 --json --stdio python server.py > mcpscore.json
   artifacts:
     when: always
@@ -155,7 +155,7 @@ mcpscore:
   variables:
     MCP_SERVER_URL: "https://your-server.example/mcp"
   script:
-    - pip install "mcpscore==1.20.0"
+    - pip install "mcpscore==1.29.1"
     - mcpscore "$MCP_SERVER_URL" --fail-under 90 --json > mcpscore.json
   allow_failure:
     exit_codes: [3]

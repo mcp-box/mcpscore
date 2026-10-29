@@ -330,7 +330,7 @@ mcpscore on PyPI. For reproducible runs, pin the action to a commit and
 - uses: mcp-box/mcpscore-action@<commit-sha>  # v1.x.y
   with:
     target: https://your-server.example/mcp
-    version: "1.20.0"
+    version: "1.29.1"
     min-score: 80
 ```
 
@@ -343,7 +343,7 @@ mcpscore on PyPI. For reproducible runs, pin the action to a commit and
 | `min-readiness` | no gate | Fail the job when the readiness percentage (0–100) is below this. Skipped when readiness was not assessed |
 | `comment` | `true` | Post or update the report comment on the pull request |
 | `args` | none | Extra arguments passed to the mcpscore CLI, split on whitespace. Write each as one token, for example `--header=X-Api-Key:$KEY` |
-| `version` | latest | mcpscore release to run, for example `1.20.0` |
+| `version` | latest | mcpscore release to run, for example `1.29.1` |
 | `report-path` | `mcpscore-report.json` | Where the JSON report is written |
 | `sarif-path` | off | Also write the failed rules as SARIF 2.1.0 to this path, for `upload-sarif`. Needs mcpscore 1.14.0 or later |
 | `github-token` | `github.token` | Token for the comment. Needs `pull-requests: write` |

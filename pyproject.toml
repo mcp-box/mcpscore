@@ -19,6 +19,7 @@ include = [
 ]
 exclude = [
     "/tests/test_generate_rules_doc.py",
+    "/tests/test_check_docs_freshness.py",
     "/tests/test_release_script.py",
 ]
 
