@@ -265,7 +265,14 @@ def _parse_smoke(smoke: object, source: str) -> FilesystemProbeConfig | None:
         values[key] = value
     if "read_tool" not in values and "write_tool" not in values:
         raise ConfigError(f"{source}: [smoke.filesystem] needs read_tool, write_tool, or both")
-    return FilesystemProbeConfig(**values)
+    probe = FilesystemProbeConfig(**values)
+    # One name for both would send the content as the path: a relative write in the server's working directory.
+    if probe.write_path_argument == probe.write_content_argument:
+        raise ConfigError(
+            f"{source}: [smoke.filesystem] write_path_argument and write_content_argument must differ "
+            f"(both are {probe.write_path_argument!r})"
+        )
+    return probe
 
 
 def _parse_rule_value(rule_id: str, value: object, source: str) -> RuleSeverity | None:

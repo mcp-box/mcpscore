@@ -168,6 +168,10 @@ def test_no_smoke_table_means_no_filesystem_probe():
         ('[smoke.filesystem]\nread_tool = ""\n', r"read_tool must be a non-empty string"),
         ("[smoke.filesystem]\nread_tool = 3\n", r"read_tool must be a non-empty string"),
         ('[smoke.filesystem]\nread_path_argument = "p"\n', r"needs read_tool, write_tool, or both"),
+        (
+            '[smoke.filesystem]\nwrite_tool = "w"\nwrite_content_argument = "path"\n',
+            r"write_path_argument and write_content_argument must differ \(both are 'path'\)",
+        ),
     ],
 )
 def test_smoke_table_errors(text: str, message: str):
