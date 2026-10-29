@@ -303,8 +303,9 @@ outside. A write fails it when a file appears or changes outside the root.
 What the tool says about its own call doesn't count either way.
 
 - **Naming a tool is consent to call it**, even a write tool without
-  `readOnlyHint: true`; `--call-all` isn't needed. Writes only target the
-  throwaway directory, which is removed after the run.
+  `readOnlyHint: true`; `--call-all` isn't needed, and the summary line names
+  these tools. Writes only target the throwaway directory, which is removed
+  after the run.
 - **Each tool must work inside the root first.** mcpscore reads a file it put
   in the root, or writes one there. If that fails, every attempt skips with
   the reason, because a misconfigured tool would otherwise refuse everything

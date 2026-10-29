@@ -22,7 +22,13 @@ from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
 from mcpscore.probes import observed_auth_status
 from mcpscore.sarif import build_sarif
 from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
-from mcpscore.smoke_filesystem import FS_ROOT_PLACEHOLDER, FilesystemFixture, not_runnable, run_filesystem_checks
+from mcpscore.smoke_filesystem import (
+    CHECK_FILESYSTEM_BOUNDARY,
+    FS_ROOT_PLACEHOLDER,
+    FilesystemFixture,
+    not_runnable,
+    run_filesystem_checks,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -852,12 +858,18 @@ def log_smoke_outcome(smoke: SmokeReport) -> None:
     if not smoke.executed:
         logger.warning("Smoke checks did not run: %s", smoke.reason)
         return
+    scope = (
+        "every tool called (--call-all)" if smoke.call_all else "only readOnlyHint: true tools called (see --call-all)"
+    )
+    consented = sorted({c.tool_name for c in smoke.checks if c.check_id == CHECK_FILESYSTEM_BOUNDARY and c.tool_name})
+    if consented and not smoke.call_all:
+        scope += f", plus the [smoke.filesystem] tools {', '.join(consented)}"
     logger.info(
         "Smoke checks (tools/call): %d passed, %d failed, %d skipped — %s. Never counted in the score.",
         smoke.passed,
         smoke.failed,
         smoke.skipped,
-        "every tool called (--call-all)" if smoke.call_all else "only readOnlyHint: true tools called (see --call-all)",
+        scope,
     )
     logger.info(
         "  Tools called: %d of %d (a tool counts as called once the server answered a tools/call for it)",

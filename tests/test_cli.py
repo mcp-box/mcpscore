@@ -2908,7 +2908,11 @@ class TestFilesystemSmokeCli:
         assert "{mcpscore_fs_root}" in check.message
 
     async def test_end_to_end_against_a_naive_server(
-        self, monkeypatch: MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        monkeypatch: MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        caplog: LogCaptureFixture,
     ) -> None:
         from mcpscore.smoke_filesystem import CHECK_FILESYSTEM_BOUNDARY, FilesystemFixture
 
@@ -2933,6 +2937,7 @@ class TestFilesystemSmokeCli:
             await async_main()
 
         assert exc_info.value.code == 4
+        assert "plus the [smoke.filesystem] tools read_text_file, write_file." in caplog.text
         report = json.loads(capsys.readouterr().out)
         assert report["target"].endswith("naive '{mcpscore_fs_root}'")
         failed = {
