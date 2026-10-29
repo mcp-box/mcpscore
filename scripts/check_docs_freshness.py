@@ -14,7 +14,7 @@ checked; only copy-pasteable examples are.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 import re
 import sys
 import tomllib
@@ -31,19 +31,19 @@ _LATEST_SPEC = re.compile(
 _ENGINE_PIN = re.compile(
     r"""(?:mcpscore==|@mcp-box/mcpscore@|"mcpscore_version":\s*"|\bversion:\s*["']?)(\d+)\.(\d+)\.(\d+)""",
 )
-_FENCE = re.compile(r"^\s*(```|~~~)")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
 @dataclass(frozen=True)
 class Finding:
     """One stale fact: where it is and what it should be."""
 
-    path: Path
+    path: PurePath
     line: int
     message: str
 
     def __str__(self) -> str:
-        return f"{self.path.relative_to(ROOT)}:{self.line}: {self.message}"
+        return f"{self.path.relative_to(ROOT).as_posix()}:{self.line}: {self.message}"
 
 
 def engine_version() -> tuple[int, int, int]:
@@ -58,22 +58,42 @@ def engine_version() -> tuple[int, int, int]:
     return major, minor, patch
 
 
-def check_text(path: Path, text: str, current: tuple[int, int, int]) -> list[Finding]:
+def _fence_change(line: str, opener: str | None) -> tuple[bool, str | None]:
+    """Return whether ``line`` opens or closes a code block, and the opener now in force.
+
+    CommonMark: a block closes only on a run of its own fence character at
+    least as long as the opener, with nothing after it, so a shorter fence
+    inside a longer block is content.
+    """
+    match = _FENCE.match(line)
+    if match is None:
+        return False, opener
+    run, rest = match.groups()
+    if opener is None:
+        if run[0] == "`" and "`" in rest:
+            return False, None
+        return True, run
+    if run[0] == opener[0] and len(run) >= len(opener) and not rest.strip():
+        return True, None
+    return False, opener
+
+
+def check_text(path: PurePath, text: str, current: tuple[int, int, int]) -> list[Finding]:
     """Return the stale facts in one page's text."""
     major, minor, _ = current
     oldest = (major, max(minor - 1, 0))
     findings: list[Finding] = []
-    in_fence = False
+    opener: str | None = None
     for number, line in enumerate(text.splitlines(), start=1):
-        if _FENCE.match(line):
-            in_fence = not in_fence
+        is_fence, opener = _fence_change(line, opener)
+        if is_fence:
             continue
         findings.extend(
             Finding(path, number, f"latest spec revision is {LATEST.version}, not {match.group(1)}")
             for match in _LATEST_SPEC.finditer(line)
             if match.group(1) != LATEST.version
         )
-        if not in_fence:
+        if opener is None:
             continue
         for match in _ENGINE_PIN.finditer(line):
             pinned = tuple(int(part) for part in match.groups())

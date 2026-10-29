@@ -1,6 +1,6 @@
 """Tests for scripts/check_docs_freshness.py — stale facts in the hand-written docs."""
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import sys
 
 import pytest
@@ -66,6 +66,26 @@ def test_fence_closes_and_later_prose_is_not_checked():
     assert messages(text) == []
 
 
+def test_shorter_fence_inside_a_longer_block_does_not_close_it():
+    text = '````markdown\n```bash\npip install "mcpscore==1.20.0"\n```\n````'
+    assert messages(text) == ["pins mcpscore 1.20.0; use 1.29 or 1.28"]
+
+
+@pytest.mark.parametrize("closer", ["```", "``` "])
+def test_tilde_block_closes_only_on_tildes(closer: str):
+    text = f'~~~\n{closer}\npip install "mcpscore==1.20.0"\n~~~'
+    assert messages(text) == ["pins mcpscore 1.20.0; use 1.29 or 1.28"]
+
+
+def test_fence_with_trailing_text_does_not_close():
+    text = '```\n``` not a closer\npip install "mcpscore==1.20.0"\n```'
+    assert messages(text) == ["pins mcpscore 1.20.0; use 1.29 or 1.28"]
+
+
+def test_backtick_info_string_with_a_backtick_is_not_a_fence():
+    assert messages('```foo`bar\npip install "mcpscore==1.20.0"') == []
+
+
 def test_server_version_kwarg_is_not_an_engine_pin():
     assert messages('```python\nmcp = FastMCP("notes", version="1.4.0")\n```') == []
 
@@ -78,6 +98,12 @@ def test_first_minor_of_a_major_accepts_its_own_minor():
 def test_finding_reports_the_repo_relative_line():
     [finding] = freshness.check_text(PAGE, "intro\n```\nversion: 0.8.0\n```", CURRENT)
     assert str(finding) == "docs/page.mdx:3: pins mcpscore 0.8.0; use 1.29 or 1.28"
+
+
+def test_finding_path_uses_forward_slashes_on_windows(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(freshness, "ROOT", PureWindowsPath("C:/repo"))
+    finding = freshness.Finding(PureWindowsPath("C:/repo/docs/guide.mdx"), 2, "stale")
+    assert str(finding) == "docs/guide.mdx:2: stale"
 
 
 def test_generated_rules_page_is_skipped(tmp_path: Path):
