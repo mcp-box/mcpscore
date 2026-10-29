@@ -28,6 +28,7 @@ from mcpscore.smoke_filesystem import (
     WRITE_MARKER,
     FilesystemFixture,
     FilesystemProbeConfig,
+    extended_length_path,
     not_runnable,
     run_filesystem_checks,
 )
@@ -164,6 +165,13 @@ class TestFixture:
         )
         assert fixture.redact("C:\\Temp\\mcpscore-fs-x\\outside") == "<fixture>\\outside"
 
+    def test_redaction_covers_the_extended_length_form_of_a_share(self, tmp_path: Path) -> None:
+        fixture = FilesystemFixture(tmp_path)
+        fixture.base = PureWindowsPath("\\\\server\\share\\mcpscore-fs-x")  # pyright: ignore[reportAttributeAccessIssue]
+
+        assert fixture.redact("\\\\?\\UNC\\server\\share\\mcpscore-fs-x\\outside") == "\\\\?\\<fixture>\\outside"
+        assert fixture.redact("\\\\server\\share\\mcpscore-fs-x\\outside") == "<fixture>\\outside"
+
     def test_cleanup_removes_everything(self) -> None:
         created = FilesystemFixture.create()
         created.cleanup()
@@ -187,6 +195,17 @@ class TestFixture:
         assert vectors["windows_forward_slash_traversal"].read_path.endswith("/../outside/canary.txt")
         assert vectors["windows_extended_length_path"].read_path is not None
         assert vectors["windows_extended_length_path"].read_path.startswith("\\\\?\\")
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("C:\\Temp\\outside", "\\\\?\\C:\\Temp\\outside"),
+            ("\\\\server\\share\\outside", "\\\\?\\UNC\\server\\share\\outside"),
+            ("\\\\?\\C:\\Temp\\outside", "\\\\?\\C:\\Temp\\outside"),
+        ],
+    )
+    def test_extended_length_form(self, path: str, expected: str) -> None:
+        assert extended_length_path(path) == expected
 
     def test_windows_vectors_skip_elsewhere(self, fixture: FilesystemFixture) -> None:
         vectors = {v.name: v for v in fixture.vectors(windows=False)}

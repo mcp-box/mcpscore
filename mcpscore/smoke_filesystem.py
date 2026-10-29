@@ -155,8 +155,10 @@ class FilesystemFixture:
 
     def redact(self, path: str) -> str:
         """Show a path relative to the fixture, so the report carries no temp-directory names."""
-        # The forward-slash spelling too: Windows vectors send C:/… as well as C:\….
-        return path.replace(str(self.base), "<fixture>").replace(self.base.as_posix(), "<fixture>")
+        # Every spelling the Windows vectors send: C:\…, C:/… and the extended-length form of a share.
+        base = str(self.base)
+        redacted = path.replace(extended_length_path(base), "\\\\?\\<fixture>").replace(base, "<fixture>")
+        return redacted.replace(self.base.as_posix(), "<fixture>")
 
     def outside_state(self) -> dict[str, bytes]:
         """Snapshot every file outside the allowed root, keyed by fixture-relative path."""
@@ -221,8 +223,8 @@ class FilesystemFixture:
                 ),
                 BoundaryVector(
                     "windows_extended_length_path",
-                    "\\\\?\\" + str(self.outside / _CANARY_NAME),
-                    "\\\\?\\" + str(written(self.outside, "windows_extended_length_path")),
+                    extended_length_path(str(self.outside / _CANARY_NAME)),
+                    extended_length_path(str(written(self.outside, "windows_extended_length_path"))),
                 ),
             ]
         else:
@@ -232,6 +234,18 @@ class FilesystemFixture:
                 BoundaryVector("windows_extended_length_path", None, None, reason),
             ]
         return vectors
+
+
+def extended_length_path(path: str) -> str:
+    r"""Spell a Windows path in extended-length form: ``\\?\C:\…``, or ``\\?\UNC\server\share\…`` for a share.
+
+    A path already in that form is returned unchanged.
+    """
+    if path.startswith("\\\\?\\"):
+        return path
+    if path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + path[2:]
+    return "\\\\?\\" + path
 
 
 def _result(
