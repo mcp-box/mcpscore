@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The npm package needs Node.js 22 or newer.** `engines.node` moves from
+  `>=18` to `>=22`; Node.js 18 is end of life. The Python CLI is unchanged.
+- **Docs:** Troubleshooting explains which certificates mcpscore trusts: the
+  operating system's trust store, or the bundle `SSL_CERT_FILE` /
+  `SSL_CERT_DIR` names.
+
 ## [1.29.1] - 2026-10-27
 
 Documentation-site release: no change to the CLI, the engine or any score.

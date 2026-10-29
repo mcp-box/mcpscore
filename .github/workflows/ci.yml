@@ -30,11 +30,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: ["22.23.3"]
-        include:
-          # Compatibility coverage for the declared minimum major version.
-          - os: ubuntu-latest
-            node-version: "18.20.8"
+        # The declared minimum major version (engines.node in npm/package.json).
+        node-version: ["22.23.4"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

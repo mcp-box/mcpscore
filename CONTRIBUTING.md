@@ -7,7 +7,7 @@ requests, and pull requests are all welcome.
 
 Requirements: Python 3.11+, [uv](https://docs.astral.sh/uv/), and
 [Node.js](https://nodejs.org/) with npm for the wrapper tests in `make all`.
-Use Node.js 22 or newer for development; the wrapper also supports Node.js 18.
+Use Node.js 22 or newer, the minimum the wrapper supports.
 
 ```bash
 git clone https://github.com/mcp-box/mcpscore.git
@@ -28,8 +28,8 @@ make all            # Everything CI runs
 ```
 
 `make all` must pass before a PR — CI runs the same checks on Linux, macOS,
-and Windows against Python 3.11–3.13. Wrapper tests run on Node.js 22 across
-all three operating systems, plus Node.js 18 on Linux for compatibility.
+and Windows against Python 3.11–3.13. Wrapper tests run on Node.js 22, the
+minimum supported version, across all three operating systems.
 
 ## Adding an audit rule
 

@@ -5,7 +5,7 @@ server and get a scored, actionable report in seconds.
 
 ## Requirements
 
-- Node.js 18 or newer.
+- Node.js 22 or newer.
 - **uv (which provides `uvx`) or pipx on your PATH.** Node.js alone is not
   enough: this package launches the Python engine, not a JavaScript port.
 - For local servers, their runtime and any required configuration.
