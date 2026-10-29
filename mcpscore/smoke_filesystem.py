@@ -154,7 +154,8 @@ class FilesystemFixture:
 
     def redact(self, path: str) -> str:
         """Show a path relative to the fixture, so the report carries no temp-directory names."""
-        return path.replace(str(self.base), "<fixture>")
+        # The forward-slash spelling too: Windows vectors send C:/… as well as C:\….
+        return path.replace(str(self.base), "<fixture>").replace(self.base.as_posix(), "<fixture>")
 
     def outside_state(self) -> dict[str, bytes]:
         """Snapshot every file outside the allowed root, keyed by fixture-relative path."""

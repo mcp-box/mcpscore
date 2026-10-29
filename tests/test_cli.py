@@ -2875,6 +2875,19 @@ class TestFilesystemSmokeCli:
         finally:
             fixture.cleanup()
 
+    async def test_fixture_is_removed_even_when_server_shutdown_fails(self) -> None:
+        from mcpscore.cli import cleanup_server
+        from mcpscore.smoke_filesystem import FilesystemFixture
+
+        fixture = FilesystemFixture.create()
+        client = MagicMock()
+        client.cleanup = AsyncMock(side_effect=RuntimeError("transport broke"))
+
+        with pytest.raises(RuntimeError, match="transport broke"):
+            await cleanup_server(client, fixture)
+
+        assert not fixture.base.exists()
+
     async def test_configured_check_without_a_fixture_reports_one_skip(self) -> None:
         import argparse
 

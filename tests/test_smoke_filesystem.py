@@ -8,7 +8,7 @@ and a properly protected server.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import sys
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -146,6 +146,15 @@ class TestFixture:
         assert fixture.redact(str(fixture.outside / "canary.txt")) == "<fixture>/outside/canary.txt".replace(
             "/", "/" if sys.platform != "win32" else "\\"
         )
+
+    def test_redaction_covers_the_forward_slash_spelling_of_a_windows_base(self, tmp_path: Path) -> None:
+        fixture = FilesystemFixture(tmp_path)
+        fixture.base = PureWindowsPath("C:\\Temp\\mcpscore-fs-x")  # pyright: ignore[reportAttributeAccessIssue]
+
+        assert fixture.redact("C:/Temp/mcpscore-fs-x/allowed/../outside/canary.txt") == (
+            "<fixture>/allowed/../outside/canary.txt"
+        )
+        assert fixture.redact("C:\\Temp\\mcpscore-fs-x\\outside") == "<fixture>\\outside"
 
     def test_cleanup_removes_everything(self) -> None:
         created = FilesystemFixture.create()

@@ -1049,9 +1049,11 @@ def _exit_if_redirected(failure: ConnectionFailure | None, target_display: str) 
 
 async def cleanup_server(client: MCPClient, fixture: FilesystemFixture | None) -> None:
     """Stop the server, then remove the filesystem fixture it was using."""
-    await client.cleanup()
-    if fixture is not None:
-        fixture.cleanup()
+    try:
+        await client.cleanup()
+    finally:
+        if fixture is not None:
+            fixture.cleanup()
 
 
 async def async_main() -> None:
