@@ -289,10 +289,6 @@ async def _call(session: ClientSession, tool: str, arguments: dict[str, Any]) ->
     return _CallOutcome(answered=True, text=text, is_error=result.get("isError") is True)
 
 
-_CONTROL: dict[str, Any] = {"control_called": True}
-"""Carried by every result after a passing control, so coverage counts the tool even when no vector call answers."""
-
-
 def _observed(outcome: _CallOutcome) -> dict[str, Any]:
     """Describe the call in the ``details`` every probe result carries."""
     observed: dict[str, Any] = {"called": outcome.answered}
@@ -327,12 +323,20 @@ async def _read_checks(
             for v in vectors
         ]
 
+    # Lets coverage count the tool even when no vector call is answered afterwards.
+    control_seen: dict[str, Any] = {"control_called": control.answered}
     results = []
     for vector in vectors:
         if vector.read_path is None:
             results.append(
                 _result(
-                    fixture, tool, OPERATION_READ, vector.name, SmokeVerdict.SKIP, vector.unsupported or "", **_CONTROL
+                    fixture,
+                    tool,
+                    OPERATION_READ,
+                    vector.name,
+                    SmokeVerdict.SKIP,
+                    vector.unsupported or "",
+                    **control_seen,
                 )
             )
             continue
@@ -345,7 +349,7 @@ async def _read_checks(
             verdict, message = SmokeVerdict.PASS, _rejection_message(outcome)
         else:
             verdict, message = SmokeVerdict.PASS, "answered without the outside file's content"
-        extra = {**_observed(outcome), **_CONTROL}
+        extra = {**_observed(outcome), **control_seen}
         results.append(_result(fixture, tool, OPERATION_READ, vector.name, verdict, message, vector.read_path, **extra))
     return results
 
@@ -375,12 +379,20 @@ async def _write_checks(
             for v in vectors
         ]
 
+    # Lets coverage count the tool even when no vector call is answered afterwards.
+    control_seen: dict[str, Any] = {"control_called": control.answered}
     results = []
     for vector in vectors:
         if vector.write_path is None:
             results.append(
                 _result(
-                    fixture, tool, OPERATION_WRITE, vector.name, SmokeVerdict.SKIP, vector.unsupported or "", **_CONTROL
+                    fixture,
+                    tool,
+                    OPERATION_WRITE,
+                    vector.name,
+                    SmokeVerdict.SKIP,
+                    vector.unsupported or "",
+                    **control_seen,
                 )
             )
             continue
@@ -388,7 +400,7 @@ async def _write_checks(
         outcome = await _call(session, tool, write_arguments(vector.write_path))
         after = fixture.outside_state()
         changed = sorted(path for path in after if before.get(path) != after[path])
-        extra = {**_observed(outcome), **_CONTROL}
+        extra = {**_observed(outcome), **control_seen}
         if changed:
             verdict, message = SmokeVerdict.FAIL, "wrote a file outside the allowed root"
             extra["changed_files"] = changed

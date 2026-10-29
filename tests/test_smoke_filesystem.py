@@ -255,7 +255,7 @@ class TestCallOutcomes:
     async def _write(
         self, fixture: FilesystemFixture, control: Callable[[Path, str], object]
     ) -> list[SmokeCheckResult]:
-        """Answer the write control with ``control(path, content)``; no vector is reached in these tests."""
+        """Answer every write call with ``control(path, content)``."""
 
         def answer_for(arguments: dict[str, Any]) -> object:
             return control(Path(arguments["path"]), arguments["content"])
@@ -289,6 +289,17 @@ class TestCallOutcomes:
         assert report.tools_called == 1
         assert all(r.details["control_called"] is True for r in results)
         assert all(r.details.get("called") is not True for r in results)
+
+    async def test_an_unanswered_write_control_is_not_counted_as_called(self, fixture: FilesystemFixture) -> None:
+        def write_then_time_out(path: Path, content: str) -> object:
+            if path.name == "write-control.txt":
+                path.write_text(content, encoding="utf-8")
+            return MCPError(REQUEST_TIMEOUT, "timeout")
+
+        results = await self._write(fixture, write_then_time_out)
+
+        assert SmokeReport(executed=True, checks=results).tools_called == 0
+        assert all(r.details["control_called"] is False for r in results)
 
     async def test_protocol_error_is_a_rejection(self, fixture: FilesystemFixture) -> None:
         results = await self._read(fixture, MCPError(INTERNAL_ERROR, "boom"))
