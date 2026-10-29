@@ -15,6 +15,7 @@ import contextlib
 from datetime import datetime
 import json
 import logging
+from pathlib import Path
 import sys
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,8 +44,6 @@ from mcpscore.packages import PackageCoordinate, PackageMetadata, PackageOutcome
 from mcpscore.smoke import CHECK_UNKNOWN_TOOL, SmokeCheckResult, SmokeReport, SmokeVerdict
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from _pytest.capture import CaptureFixture
     from _pytest.logging import LogCaptureFixture
     from _pytest.monkeypatch import MonkeyPatch
@@ -2846,3 +2845,89 @@ async def test_smoke_does_not_run_on_a_catalog_recovered_from_the_stateless_life
     run_checks.assert_not_awaited()
     assert report.executed is False
     assert "2026-07-28 stateless lifecycle" in (report.reason or "")
+
+
+class TestFilesystemSmokeCli:
+    """The [smoke.filesystem] check: placeholder substitution, fixture lifetime, and the skip without a fixture."""
+
+    def test_targets_without_the_placeholder_get_no_fixture(self) -> None:
+        from mcpscore.cli import prepare_filesystem_fixture
+
+        command = StdioCommand(command="srv", args=("--root", "/data"))
+
+        assert prepare_filesystem_fixture("https://example.com/mcp") == ("https://example.com/mcp", None)
+        assert prepare_filesystem_fixture(command) == (command, None)
+
+    def test_placeholder_is_replaced_with_the_fixture_root(self) -> None:
+        from mcpscore.cli import prepare_filesystem_fixture
+        from mcpscore.smoke_filesystem import FS_ROOT_PLACEHOLDER
+
+        command = StdioCommand(command="srv", args=(f"--root={FS_ROOT_PLACEHOLDER}",), env={"K": "v"})
+
+        substituted, fixture = prepare_filesystem_fixture(command)
+
+        assert fixture is not None
+        try:
+            assert isinstance(substituted, StdioCommand)
+            assert substituted.args == (f"--root={fixture.root}",)
+            assert substituted.command == "srv"
+            assert substituted.env == {"K": "v"}
+        finally:
+            fixture.cleanup()
+
+    async def test_configured_check_without_a_fixture_reports_one_skip(self) -> None:
+        import argparse
+
+        from mcpscore.cli import run_smoke_phase
+        from mcpscore.config import RuleConfig
+        from mcpscore.mcp_auditor import MCPAuditor
+        from mcpscore.smoke_filesystem import CHECK_FILESYSTEM_BOUNDARY
+
+        config = RuleConfig.parse('[smoke.filesystem]\nread_tool = "read"\n', source="mcpscore.toml")
+        client = MagicMock()
+        client.session = object()
+        with patch("mcpscore.cli.run_smoke_checks", new=AsyncMock(return_value=SmokeReport(executed=True))):
+            report = await run_smoke_phase(argparse.Namespace(call_all=False), client, MCPAuditor(), config)
+
+        (check,) = report.checks
+        assert check.check_id == CHECK_FILESYSTEM_BOUNDARY
+        assert check.verdict is SmokeVerdict.SKIP
+        assert "{mcpscore_fs_root}" in check.message
+
+    async def test_end_to_end_against_a_naive_server(
+        self, monkeypatch: MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mcpscore.smoke_filesystem import CHECK_FILESYSTEM_BOUNDARY, FilesystemFixture
+
+        server = str(Path(__file__).parent / "stdio_fs_server.py")
+        config = tmp_path / "mcpscore.toml"
+        config.write_text(
+            '[smoke.filesystem]\nread_tool = "read_text_file"\nwrite_tool = "write_file"\n', encoding="utf-8"
+        )
+        argv = ["mcpscore", "--config", str(config), "--smoke", "--json"]
+        monkeypatch.setattr(sys, "argv", [*argv, "--stdio", sys.executable, server, "naive", "{mcpscore_fs_root}"])
+        created: list[Path] = []
+        real_create = FilesystemFixture.create
+
+        def spy() -> FilesystemFixture:
+            fixture = real_create()
+            created.append(fixture.base)
+            return fixture
+
+        monkeypatch.setattr("mcpscore.cli.FilesystemFixture.create", spy)
+
+        with pytest.raises(SystemExit) as exc_info:
+            await async_main()
+
+        assert exc_info.value.code == 4
+        report = json.loads(capsys.readouterr().out)
+        assert report["target"].endswith("naive '{mcpscore_fs_root}'")
+        failed = {
+            (c["details"]["operation"], c["details"]["vector"])
+            for c in report["smoke"]["checks"]
+            if c["check_id"] == CHECK_FILESYSTEM_BOUNDARY and c["verdict"] == "fail"
+        }
+        assert {("read", "sibling_prefix"), ("write", "sibling_prefix")} <= failed
+        assert ("read", "parent_traversal") not in failed
+        (base,) = created
+        assert not base.exists()

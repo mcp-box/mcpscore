@@ -10,6 +10,9 @@ A team turns rules off and re-ranks the rest by severity name, keyed on
     [gate]
     fail_on = "high"  # any failed rule at or above HIGH fails the build
 
+    [smoke.filesystem]
+    read_tool = "read_text_file"  # --smoke probes this tool's root boundary
+
 The configuration changes the score for the run that used it and nothing
 else: the website and the badge never see one (the backend never constructs
 a ``RuleConfig``), and the JSON report records what was applied. The gate
@@ -23,7 +26,7 @@ configuration solely when handed one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 import hashlib
 from pathlib import Path
 import tomllib
@@ -35,6 +38,7 @@ if TYPE_CHECKING:
 from .rules.base import RuleSeverity
 from .rules.registry import all_rule_ids
 from .rules.retired import RETIRED_RULES
+from .smoke_filesystem import FilesystemProbeConfig
 
 CONFIG_FILENAME = "mcpscore.toml"
 PYPROJECT_FILENAME = "pyproject.toml"
@@ -50,6 +54,9 @@ SKIP_REASON_DISABLED_BY_CONFIG = "disabled-by-config"
 _SEVERITY_NAMES = tuple(s.name.lower() for s in sorted(RuleSeverity, key=int))
 _VALUE_HINT = ", ".join((OFF, *_SEVERITY_NAMES[:-1])) + f", or {_SEVERITY_NAMES[-1]}"
 _SEVERITY_HINT = ", ".join(_SEVERITY_NAMES[:-1]) + f", or {_SEVERITY_NAMES[-1]}"
+
+
+_FILESYSTEM_KEYS = tuple(f.name for f in fields(FilesystemProbeConfig))
 
 
 class ConfigError(ValueError):
@@ -73,6 +80,8 @@ class RuleConfig:
             configuration written for a newer engine still runs on an older one.
         retired: Unknown ids that ``rules/retired.py`` explains, as
             ``(rule_id, version)`` pairs, so the warning can say why.
+        smoke_filesystem: The ``[smoke.filesystem]`` table, or ``None``. It
+            configures a ``--smoke`` check and never changes the score.
 
     """
 
@@ -82,6 +91,7 @@ class RuleConfig:
     fail_on: RuleSeverity | None = None
     unknown: tuple[str, ...] = ()
     retired: tuple[tuple[str, str], ...] = ()
+    smoke_filesystem: FilesystemProbeConfig | None = None
 
     @property
     def disabled(self) -> tuple[str, ...]:
@@ -184,9 +194,11 @@ class RuleConfig:
 
     @classmethod
     def _from_tables(cls, data: Mapping[str, Any], *, source: str, sha256: str) -> RuleConfig:
-        unexpected = sorted(set(data) - {"rules", "gate"})
+        unexpected = sorted(set(data) - {"rules", "gate", "smoke"})
         if unexpected:
-            raise ConfigError(f"{source}: unexpected table(s) {', '.join(unexpected)}; expected [rules] and [gate]")
+            raise ConfigError(
+                f"{source}: unexpected table(s) {', '.join(unexpected)}; expected [rules], [gate] and [smoke]"
+            )
 
         rules = data.get("rules", {})
         if not isinstance(rules, dict):
@@ -224,7 +236,36 @@ class RuleConfig:
             fail_on=fail_on,
             unknown=tuple(unknown),
             retired=tuple(retired),
+            smoke_filesystem=_parse_smoke(data.get("smoke", {}), source),
         )
+
+
+def _parse_smoke(smoke: object, source: str) -> FilesystemProbeConfig | None:
+    """Validate the ``[smoke]`` table and return its ``filesystem`` probe configuration, if any."""
+    if not isinstance(smoke, dict):
+        raise ConfigError(f"{source}: [smoke] must be a table")
+    unexpected = sorted(set(smoke) - {"filesystem"})
+    if unexpected:
+        raise ConfigError(f"{source}: [smoke] has unexpected key(s) {', '.join(unexpected)}; expected filesystem")
+    table = smoke.get("filesystem")
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        raise ConfigError(f"{source}: [smoke.filesystem] must be a table")
+    unexpected = sorted(set(table) - set(_FILESYSTEM_KEYS))
+    if unexpected:
+        raise ConfigError(
+            f"{source}: [smoke.filesystem] has unexpected key(s) {', '.join(unexpected)}; "
+            f"expected {', '.join(_FILESYSTEM_KEYS)}"
+        )
+    values: dict[str, str] = {}
+    for key, value in table.items():
+        if not isinstance(value, str) or not value:
+            raise ConfigError(f"{source}: [smoke.filesystem] {key} must be a non-empty string")
+        values[key] = value
+    if "read_tool" not in values and "write_tool" not in values:
+        raise ConfigError(f"{source}: [smoke.filesystem] needs read_tool, write_tool, or both")
+    return FilesystemProbeConfig(**values)
 
 
 def _parse_rule_value(rule_id: str, value: object, source: str) -> RuleSeverity | None:

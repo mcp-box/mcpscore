@@ -94,7 +94,7 @@ def test_invalid_toml_is_a_config_error():
 
 def test_unexpected_tables_are_a_config_error():
     # A typo'd table name would otherwise silently do nothing.
-    with pytest.raises(ConfigError, match=r"unexpected table\(s\) rule; expected \[rules\] and \[gate\]"):
+    with pytest.raises(ConfigError, match=r"unexpected table\(s\) rule; expected \[rules\], \[gate\] and \[smoke\]"):
         parse(f'[rule]\n{KNOWN_A} = "off"\n')
 
 
@@ -125,6 +125,54 @@ def test_gate_rejects_unknown_keys():
 def test_gate_must_be_a_table():
     with pytest.raises(ConfigError, match=r"\[gate\] must be a table"):
         parse('gate = "high"\n')
+
+
+# --- smoke -------------------------------------------------------------------
+
+
+def test_smoke_filesystem_parses_with_defaults():
+    config = parse('[smoke.filesystem]\nread_tool = "read_text_file"\nwrite_tool = "write_file"\n')
+
+    probe = config.smoke_filesystem
+    assert probe is not None
+    assert (probe.read_tool, probe.read_path_argument) == ("read_text_file", "path")
+    assert (probe.write_tool, probe.write_path_argument, probe.write_content_argument) == (
+        "write_file",
+        "path",
+        "content",
+    )
+    assert config.summary() == "no overrides"
+
+
+def test_smoke_filesystem_argument_names_are_configurable():
+    probe = parse(
+        '[smoke.filesystem]\nwrite_tool = "save"\nwrite_path_argument = "file"\nwrite_content_argument = "body"\n'
+    ).smoke_filesystem
+
+    assert probe is not None
+    assert (probe.read_tool, probe.write_path_argument, probe.write_content_argument) == (None, "file", "body")
+
+
+def test_no_smoke_table_means_no_filesystem_probe():
+    assert parse(f'[rules]\n{KNOWN_A} = "off"\n').smoke_filesystem is None
+    assert parse("[smoke]\n").smoke_filesystem is None
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('smoke = "on"\n', r"\[smoke\] must be a table"),
+        ("[smoke.network]\n", r"\[smoke\] has unexpected key\(s\) network; expected filesystem"),
+        ('[smoke]\nfilesystem = "read"\n', r"\[smoke.filesystem\] must be a table"),
+        ('[smoke.filesystem]\nread_tool = "r"\ntool = "x"\n', r"unexpected key\(s\) tool; expected read_tool, "),
+        ('[smoke.filesystem]\nread_tool = ""\n', r"read_tool must be a non-empty string"),
+        ("[smoke.filesystem]\nread_tool = 3\n", r"read_tool must be a non-empty string"),
+        ('[smoke.filesystem]\nread_path_argument = "p"\n', r"needs read_tool, write_tool, or both"),
+    ],
+)
+def test_smoke_table_errors(text: str, message: str):
+    with pytest.raises(ConfigError, match=message):
+        parse(text)
 
 
 # --- summary and identity -----------------------------------------------------

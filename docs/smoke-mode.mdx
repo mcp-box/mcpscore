@@ -210,6 +210,7 @@ run. It never means the server failed it.
 |---|---|
 | `smoke_structured_content` | A handler no longer matches its declared [`outputSchema`](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#output-schema). Every callable tool that declares one is invoked, and the result must carry `structuredContent` that conforms to it, a spec MUST. An explicitly empty `{}` schema still requires the field to be present. |
 | `smoke_invalid_arguments` | Input validation stopped working ([Tools §Error Handling](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling)). Each callable tool is invoked with arguments that violate its schema and must reject them. A tool result flagged `isError` and a JSON-RPC error both count as rejection. Accepting the arguments, hanging, or crashing fails the check. |
+| `smoke_filesystem_boundary` | A file tool reads or writes outside the directory it was given ([Tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#security-considerations) and [Roots](https://modelcontextprotocol.io/specification/2025-11-25/client/roots#security-considerations) §Security Considerations). Runs only when you configure it; see [Check that file tools stay in their root](#check-that-file-tools-stay-in-their-root). |
 | `smoke_unknown_tool` | Routing broke. A `tools/call` for a name that cannot exist on your server must be rejected with a [JSON-RPC protocol error](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling). A result, an `isError` result, and an internal error all fail. |
 
 For the two rejection checks, any JSON-RPC error code counts as a rejection
@@ -252,6 +253,69 @@ Calls run one at a time, in catalog order: every structured-content call
 first, then every invalid-arguments call, then the unknown-tool call. A
 malformed schema fragment is tolerated rather than aborting the run.
 </Accordion>
+
+## Check that file tools stay in their root
+
+If your server reads or writes files, smoke mode can check that a path never
+escapes the directory the server was given. mcpscore builds a throwaway
+directory tree, starts your server with its `allowed` directory as the root,
+and asks your tools for files outside it.
+
+Name the tools in `mcpscore.toml` (or `[tool.mcpscore]` in `pyproject.toml`),
+then put `{mcpscore_fs_root}` where your `--stdio` command names the directory:
+
+```toml mcpscore.toml
+[smoke.filesystem]
+read_tool = "read_text_file"
+write_tool = "write_file"
+```
+
+```bash
+mcpscore --smoke --stdio npx -y @modelcontextprotocol/server-filesystem '{mcpscore_fs_root}'
+```
+
+```text
+Filesystem fixture: {mcpscore_fs_root} is /private/var/folders/…/mcpscore-fs-_qxxpo7y/allowed
+...
+  pass smoke_filesystem_boundary [read_text_file: parent_traversal]: rejected with an isError tool result
+  pass smoke_filesystem_boundary [read_text_file: absolute_path]: rejected with an isError tool result
+  pass smoke_filesystem_boundary [read_text_file: sibling_prefix]: rejected with an isError tool result
+  pass smoke_filesystem_boundary [read_text_file: symlink_directory]: rejected with an isError tool result
+  pass smoke_filesystem_boundary [read_text_file: symlink_file]: rejected with an isError tool result
+  skip smoke_filesystem_boundary [read_text_file: windows_forward_slash_traversal]: Windows path form; runs on Windows only
+  ...
+```
+
+That is the official reference filesystem server: every escape is refused.
+Each line is one attempt:
+
+| Vector | The path it sends |
+|---|---|
+| `parent_traversal` | `<root>/../outside/…` |
+| `absolute_path` | The absolute path of a file outside the root |
+| `sibling_prefix` | A file in `allowed-sibling`, which starts with the root's name. A plain string-prefix check lets it through |
+| `symlink_directory` | A file through a symlink inside the root that points to a directory outside |
+| `symlink_file` | A symlink inside the root that points to a file outside |
+| `windows_forward_slash_traversal`, `windows_extended_length_path` | `C:/…/../outside/…` and `\\?\C:\…\outside\…`, on Windows only |
+
+A read fails the check when the response contains the content of the file
+outside. A write fails it when a file appears or changes outside the root.
+What the tool says about its own call doesn't count either way.
+
+- **Naming a tool is consent to call it**, even a write tool without
+  `readOnlyHint: true`; `--call-all` isn't needed. Writes only target the
+  throwaway directory, which is removed after the run.
+- **Each tool must work inside the root first.** mcpscore reads a file it put
+  in the root, or writes one there. If that fails, every attempt skips with
+  the reason, because a misconfigured tool would otherwise refuse everything
+  and look safe.
+- **The argument names default to `path` and `content`.** Set
+  `read_path_argument`, `write_path_argument` or `write_content_argument` when
+  your tools use others.
+- **It needs a `--stdio` command with the placeholder.** Against a URL, or
+  without `{mcpscore_fs_root}`, the check reports one skip saying so.
+
+A pass means these paths were refused, not that the server is secure.
 
 ## Results stay out of the score
 
@@ -310,6 +374,8 @@ not list it.
 - Read each `FAIL` line as check, tool, and reason.
 - Gate CI with `--fail-under` and `--smoke`: exit `3` is the score, exit `4`
   is broken tools.
+- Add `[smoke.filesystem]` and `{mcpscore_fs_root}` to check that file tools
+  stay in their root.
 
 ## What's next
 

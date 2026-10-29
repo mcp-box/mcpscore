@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`smoke_filesystem_boundary`: check that file tools stay in their root.**
+  Name your read and write tools in a `[smoke.filesystem]` table and put
+  `{mcpscore_fs_root}` in the `--stdio` command. `--smoke` then builds a
+  throwaway directory, starts the server with it as the root, and tries
+  parent traversal, absolute paths, a sibling sharing the root's prefix,
+  symlinks and Windows path forms. A read fails when it returns an outside
+  file's content and a write fails when a file changes outside the root. A
+  tool that cannot work inside the root first skips every attempt. Never
+  counted in the score.
+
 ### Changed
 
 - **The npm package needs Node.js 22 or newer.** `engines.node` moves from

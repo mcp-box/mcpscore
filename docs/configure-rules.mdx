@@ -134,6 +134,7 @@ change, and the website score still counts it at its default weight.
 | `rule_id = "off"` | The rule does not run and counts toward neither the score nor the maximum. It appears in `skipped_rules` with reason `disabled-by-config`, unless the engine could not have judged it anyway, in which case the canonical reason (`not-applicable`, `insufficient-data`) is kept |
 | `rule_id = "low"` / `"medium"` / `"high"` / `"critical"` | The rule runs and counts at that severity, worth 1, 2, 3 or 5 points. The result records the rule's own severity as `details.severity_default` |
 | `[gate] fail_on = "high"` | Exit code `3` when any failed rule counted in the main score sits at or above that severity after re-ranking. Readiness rules count only when a modern-lifecycle server promotes them, matching `--fail-under` |
+| `[smoke.filesystem]` | Configures the [filesystem boundary smoke check](/smoke-mode#check-that-file-tools-stay-in-their-root). It runs only with `--smoke` and never changes the score |
 
 Values are case-insensitive. A `rule_id` that mcpscore doesn't know, including
 one it has retired, is warned about and ignored, so a file written for a newer
