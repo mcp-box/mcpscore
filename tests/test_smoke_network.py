@@ -59,6 +59,11 @@ ENCODED = {
 }
 
 
+@pytest.fixture(autouse=True)
+def short_late_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("mcpscore.smoke_network._LATE_GRACE_S", 0.05)
+
+
 @pytest.fixture
 def fixture() -> Iterator[NetworkFixture]:
     created = NetworkFixture.create()
@@ -230,6 +235,18 @@ class TestFixture:
 
                 assert listener.since(0) == ["connection without a complete HTTP request"]
                 late.join()
+        finally:
+            listener.server_close()
+
+    def test_settle_gives_up_when_nothing_accepts(self) -> None:
+        listener = _Listener(socket.AF_INET, "127.0.0.1", 0, NetworkFixture.__new__(NetworkFixture))
+        try:
+            with socket.create_connection(listener.server_address[:2], timeout=5):
+                started = time.monotonic()
+                listener.settle(timeout=0.2)
+
+                assert time.monotonic() - started >= 0.2
+                assert listener.since(0) == []
         finally:
             listener.server_close()
 
@@ -439,6 +456,32 @@ class TestCallOutcomes:
 
         redirect = next(r for r in deny if r.details["vector"] == "redirect")
         assert (redirect.verdict, redirect.details["denied_requests"]) == (SmokeVerdict.FAIL, ["GET /redirect"])
+
+    async def test_a_fetch_in_the_background_fails_after_the_last_vector(
+        self, fixture: NetworkFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("mcpscore.smoke_network._LATE_GRACE_S", 1.0)
+        background: list[threading.Timer] = []
+
+        def answer(url: str) -> object:
+            if url.endswith("/control"):
+                _get(url)
+            elif url.endswith("/redirect"):
+                denied = f"http://127.0.0.1:{fixture.denied_port}/v/redirect"
+                background.append(threading.Timer(0.2, _get, args=(denied,)))
+                background[-1].start()
+            return _ok("queued")
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], ALLOWLIST, fixture)
+        for timer in background:
+            timer.join()
+
+        assert _by_verdict(results, SmokeVerdict.FAIL) == {"late_request"}
+        late = results[-1]
+        assert late.details["denied_requests"] == ["GET /v/redirect"]
+        assert late.message.startswith(
+            "a request reached a destination the policy denies after the calls returned (GET /v/redirect)"
+        )
 
     async def test_a_hit_fails_even_when_the_tool_reports_an_error(self, fixture: NetworkFixture) -> None:
         def answer(url: str) -> object:

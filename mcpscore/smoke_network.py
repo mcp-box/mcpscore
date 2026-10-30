@@ -32,6 +32,7 @@ score. Ports are shown as ``<allowed-port>``/``<denied-port>`` in the report.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,6 +82,7 @@ _ACCEPTED = "connection without a complete HTTP request"
 _LISTENER_ATTEMPTS = 20
 _POLL_INTERVAL_S = 0.05
 _SETTLE_TIMEOUT_S = 2.0
+_LATE_GRACE_S = 1.0
 
 
 @dataclass(frozen=True)
@@ -166,9 +168,9 @@ class _Listener(ThreadingHTTPServer):
             self.requests.append(_ACCEPTED)
         return request, client_address
 
-    def settle(self) -> None:
+    def settle(self, timeout: float = _SETTLE_TIMEOUT_S) -> None:
         """Wait until no completed connection is still waiting to be accepted, so the log is up to date."""
-        deadline = time.monotonic() + _SETTLE_TIMEOUT_S
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self.lock:
                 waiting, _, _ = select.select([self.socket], [], [], 0)
@@ -179,11 +181,7 @@ class _Listener(ThreadingHTTPServer):
     def describe(self, request: object, entry: str) -> None:
         """Replace an accepted connection's log entry with what it turned out to send."""
         with self.lock:
-            slot = self.slots.get(request)
-            if slot is None:
-                self.slots[request] = slot = len(self.requests)
-                self.requests.append("")
-            self.requests[slot] = entry[:_MAX_LOGGED_PATH]
+            self.requests[self.slots[request]] = entry[:_MAX_LOGGED_PATH]
 
     def mark(self) -> int:
         """Return how many connections the log holds now, to slice off the ones that arrive later."""
@@ -467,7 +465,31 @@ async def run_network_checks(
         else:
             verdict, message = SmokeVerdict.PASS, f"answered; {_NOTHING_REACHED}"
         results.append(_result(tool, vector.name, verdict, message, **details))
+    results.extend(await _late_requests(fixture, config, include_allowed=config.policy == POLICY_DENY_PRIVATE))
     return results
+
+
+async def _late_requests(
+    fixture: NetworkFixture, config: NetworkProbeConfig, *, include_allowed: bool
+) -> list[SmokeCheckResult]:
+    """Fail on requests that reach a denied listener after the last call returned: a fetch in the background."""
+    after_last_call = fixture.mark()
+    await asyncio.sleep(_LATE_GRACE_S)
+    fixture.settle()
+    late = fixture.reached_since(after_last_call, include_allowed=include_allowed)
+    if not late:
+        return []
+    return [
+        _result(
+            config.tool,
+            "late_request",
+            SmokeVerdict.FAIL,
+            f"a request reached a destination the policy denies after the calls returned ({late[0]}); "
+            "the tool fetches in the background, so its answers do not show what it reached",
+            policy=config.policy,
+            denied_requests=late[:_MAX_LOGGED_REQUESTS],
+        )
+    ]
 
 
 def not_runnable(reason: str) -> list[SmokeCheckResult]:

@@ -377,6 +377,10 @@ one attempt:
   arrives, every attempt skips with the reason, because a misconfigured tool
   would otherwise refuse everything and look safe. The allowlist must match
   the origin's port: both listeners are on `127.0.0.1`.
+- **A fetch that arrives after its call returned still counts.** mcpscore
+  waits a second after the last attempt; a request that reaches a denied
+  listener by then is reported as `late_request`, because the tool fetches in
+  the background and its answers don't show what it reached.
 - **Naming the tool is consent to call it**, as for file tools. The argument
   name defaults to `url`; set `url_argument` when your tool uses another.
 - **Nothing outside this machine is contacted.** No cloud metadata endpoint,
