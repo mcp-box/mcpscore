@@ -36,6 +36,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import re
 import select
 import socket
 import socketserver
@@ -325,6 +326,11 @@ class NetworkFixture:
         """Fill a vector template with port labels, so the report is the same on every run."""
         return template.format(allowed="<allowed-port>", denied="<denied-port>")
 
+    def redact(self, entry: str) -> str:
+        """Replace the listener ports in a logged request line with their labels, as the vector URLs show them."""
+        labels = {str(self.allowed_port): "<allowed-port>", str(self.denied_port): "<denied-port>"}
+        return re.sub(r":(\d+)\b", lambda m: f":{labels.get(m.group(1), m.group(1))}", entry)
+
     def respond(self, listener: _Listener, path: str) -> tuple[int, dict[str, str], bytes]:
         """Choose the answer to one request on ``listener``."""
         if listener is not self.allowed:
@@ -366,7 +372,7 @@ class NetworkFixture:
             entries, end = listener.read_from(position)
             positions.append(end)
             if include_allowed or listener is not self.allowed:
-                reached.extend(entries)
+                reached.extend(self.redact(entry) for entry in entries)
         return reached, tuple(positions)
 
     def vectors(self) -> list[NetworkVector]:

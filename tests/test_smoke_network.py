@@ -270,6 +270,26 @@ class TestFixture:
         assert fixture.url(template) == f"http://127.0.0.1:{fixture.allowed_port}@127.0.0.1:{fixture.denied_port}/"
         assert fixture.display(template) == "http://127.0.0.1:<allowed-port>@127.0.0.1:<denied-port>/"
 
+    def test_redaction_labels_only_the_listener_ports(self, fixture: NetworkFixture) -> None:
+        allowed, denied = fixture.allowed_port, fixture.denied_port
+
+        assert fixture.redact(f"CONNECT 127.0.0.1:{denied} HTTP/1.1") == "CONNECT 127.0.0.1:<denied-port> HTTP/1.1"
+        assert fixture.redact(f"GET http://127.0.0.1:{allowed}/x") == "GET http://127.0.0.1:<allowed-port>/x"
+        assert fixture.redact(f"GET http://h:{denied}0/ and :1") == f"GET http://h:{denied}0/ and :1"
+
+    async def test_evidence_shows_port_labels(self, fixture: NetworkFixture) -> None:
+        def answer(url: str) -> object:
+            if "/v/direct" in url:
+                with socket.create_connection(("127.0.0.1", fixture.denied_port), timeout=5) as connection:
+                    connection.sendall(f"CONNECT 127.0.0.1:{fixture.denied_port} HTTP/1.0\r\n\r\n".encode())
+                    connection.recv(1024)
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], DENY_PRIVATE, fixture)
+
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert direct.details["denied_requests"] == ["CONNECT 127.0.0.1:<denied-port>"]
+
     def test_cleanup_closes_every_port(self) -> None:
         fixture = NetworkFixture.create()
         ports = (fixture.allowed_port, fixture.denied_port)
