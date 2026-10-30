@@ -29,12 +29,23 @@ from mcpscore.smoke_filesystem import (
     not_runnable,
     run_filesystem_checks,
 )
+from mcpscore.smoke_network import (
+    ALLOWED_ORIGIN_PLACEHOLDER,
+    CHECK_NETWORK_BOUNDARY,
+    POLICY_ALLOWLIST,
+    NetworkFixture,
+    not_runnable as network_not_runnable,
+    run_network_checks,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from mcp import ClientSession
+
     from mcpscore import MCPTransportType
     from mcpscore.mcp_client import ConnectionFailure
+    from mcpscore.smoke import SmokeCheckResult
 
 logger = logging.getLogger(__name__)
 
@@ -861,9 +872,11 @@ def log_smoke_outcome(smoke: SmokeReport) -> None:
     scope = (
         "every tool called (--call-all)" if smoke.call_all else "only readOnlyHint: true tools called (see --call-all)"
     )
-    consented = sorted({c.tool_name for c in smoke.checks if c.check_id == CHECK_FILESYSTEM_BOUNDARY and c.tool_name})
-    if consented and not smoke.call_all:
-        scope += f", plus the [smoke.filesystem] tools {', '.join(consented)}"
+    if not smoke.call_all:
+        for check_id, table in ((CHECK_FILESYSTEM_BOUNDARY, "filesystem"), (CHECK_NETWORK_BOUNDARY, "network")):
+            consented = sorted({c.tool_name for c in smoke.checks if c.check_id == check_id and c.tool_name})
+            if consented:
+                scope += f", plus the [smoke.{table}] tools {', '.join(consented)}"
     logger.info(
         "Smoke checks (tools/call): %d passed, %d failed, %d skipped — %s. Never counted in the score.",
         smoke.passed,
@@ -930,19 +943,77 @@ def prepare_filesystem_fixture(
     return command, fixture
 
 
+def prepare_network_fixture(
+    target: str | StdioCommand, *, configured: bool
+) -> tuple[str | StdioCommand, NetworkFixture | None]:
+    """Start the network fixture for a --stdio server that is probed or names the allowed-origin placeholder.
+
+    Returns the command with the placeholder replaced in its arguments and
+    --env values, and the fixture the caller must clean up; other targets are
+    returned unchanged with no fixture.
+    """
+    if not isinstance(target, StdioCommand) or not (configured or _uses_allowed_origin(target)):
+        return target, None
+    fixture = NetworkFixture.create()
+    logger.info("Network fixture: %s is %s", ALLOWED_ORIGIN_PLACEHOLDER, fixture.allowed_origin)
+    command = replace(
+        target,
+        command=fixture.substitute(target.command),
+        args=tuple(fixture.substitute(a) for a in target.args),
+        env={name: fixture.substitute(value) for name, value in target.env.items()} if target.env is not None else None,
+    )
+    return command, fixture
+
+
+def _uses_allowed_origin(target: str | StdioCommand) -> bool:
+    """Whether the server was given the allowed origin through the placeholder."""
+    if not isinstance(target, StdioCommand):
+        return False
+    values = (target.command, *target.args, *(target.env or {}).values())
+    return any(ALLOWED_ORIGIN_PLACEHOLDER in value for value in values)
+
+
+async def run_network_phase(
+    client_session: ClientSession,
+    auditor: MCPAuditor,
+    config: RuleConfig,
+    network_fixture: NetworkFixture | None,
+    *,
+    allowed_origin_given: bool,
+) -> list[SmokeCheckResult]:
+    """Run the [smoke.network] check, or the one skip that says why it cannot run."""
+    probe = config.smoke_network
+    if probe is None:
+        return []
+    if network_fixture is None:
+        return network_not_runnable(
+            "[smoke.network] is configured, but the target is not a --stdio server; the probes need a server "
+            "launched on this machine, next to the fixture's local listeners"
+        )
+    if probe.policy == POLICY_ALLOWLIST and not allowed_origin_given:
+        return network_not_runnable(
+            f"[smoke.network] declares policy allowlist, but the server was not given the allowed origin: put "
+            f"{ALLOWED_ORIGIN_PLACEHOLDER} in its --stdio command or an --env value where it takes its allowlist"
+        )
+    return await run_network_checks(client_session, auditor.audit_data.tools, probe, network_fixture)
+
+
 async def run_smoke_phase(
     args: argparse.Namespace,
     client: MCPClient,
     auditor: MCPAuditor,
     config: RuleConfig | None = None,
     fixture: FilesystemFixture | None = None,
+    network_fixture: NetworkFixture | None = None,
+    *,
+    allowed_origin_given: bool = False,
 ) -> SmokeReport:
     """Run the --smoke checks on the audit's still-open session.
 
     Runs after ``auditor.audit(client)`` and before cleanup — the auditor
     never closes the session, so the smoke calls reuse the exact connection
-    the audit observed. The filesystem boundary check runs when the
-    configuration has a ``[smoke.filesystem]`` table.
+    the audit observed. The filesystem and network boundary checks run when
+    the configuration has a ``[smoke.filesystem]`` or ``[smoke.network]`` table.
     """
     if client.session is None:  # pragma: no cover — audit() succeeded, so a session exists
         return SmokeReport.not_executed("no active session to call tools on")
@@ -976,6 +1047,12 @@ async def run_smoke_phase(
             report.checks.extend(
                 await run_filesystem_checks(client.session, auditor.audit_data.tools, probe_config, fixture)
             )
+    if config is not None:
+        report.checks.extend(
+            await run_network_phase(
+                client.session, auditor, config, network_fixture, allowed_origin_given=allowed_origin_given
+            )
+        )
     return report
 
 
@@ -1059,13 +1136,19 @@ def _exit_if_redirected(failure: ConnectionFailure | None, target_display: str) 
         sys.exit(2)
 
 
-async def cleanup_server(client: MCPClient, fixture: FilesystemFixture | None) -> None:
-    """Stop the server, then remove the filesystem fixture it was using."""
+async def cleanup_server(
+    client: MCPClient, fixture: FilesystemFixture | None, network_fixture: NetworkFixture | None = None
+) -> None:
+    """Stop the server, then remove the filesystem fixture and stop the network listeners it was using."""
     try:
         await client.cleanup()
     finally:
-        if fixture is not None:
-            fixture.cleanup()
+        try:
+            if fixture is not None:
+                fixture.cleanup()
+        finally:
+            if network_fixture is not None:
+                network_fixture.cleanup()
 
 
 async def async_main() -> None:
@@ -1132,12 +1215,16 @@ async def async_main() -> None:
     client: MCPClient = MCPClient(headers=headers or None)
     auditor: MCPAuditor = MCPAuditor(headers=headers or None, config=config)
     fixture: FilesystemFixture | None = None
+    network_fixture: NetworkFixture | None = None
+    allowed_origin_given = _uses_allowed_origin(target)
 
     # Everything below runs inside one try/finally: failed detection attempts
     # can leave resources on the client's exit stack, so every path out —
     # early returns, sys.exit(2), audit errors — must reach cleanup().
     try:
         target, fixture = prepare_filesystem_fixture(target)
+        network_configured = args.smoke and config is not None and config.smoke_network is not None
+        target, network_fixture = prepare_network_fixture(target, configured=network_configured)
         success, transport = await client.detect_and_connect(target)
 
         if not success:
@@ -1253,12 +1340,18 @@ async def async_main() -> None:
 
         logger.info("Starting the audit...")
         await auditor.audit(client)
-        smoke = await run_smoke_phase(args, client, auditor, config, fixture) if args.smoke else None
+        smoke = (
+            await run_smoke_phase(
+                args, client, auditor, config, fixture, network_fixture, allowed_origin_given=allowed_origin_given
+            )
+            if args.smoke
+            else None
+        )
         # A gate failure exits inside the try and still reaches cleanup() via
         # finally; the happy path returns normally (no SystemExit(0)).
         finish_server_audit(args, auditor, target_display, transport, smoke=smoke)
     finally:
-        await cleanup_server(client, fixture)
+        await cleanup_server(client, fixture, network_fixture)
 
 
 def configure_logging(*, verbose: bool = False) -> None:

@@ -9,6 +9,7 @@ from mcpscore import ConfigError, RuleConfig, RuleSeverity
 from mcpscore.config import CONFIG_FILENAME, PYPROJECT_FILENAME, SKIP_REASON_DISABLED_BY_CONFIG
 from mcpscore.rules.registry import all_rule_ids
 from mcpscore.rules.retired import RETIRED_RULES
+from mcpscore.smoke_network import NetworkProbeConfig
 
 KNOWN_A = "server_icons_present"
 KNOWN_B = "tools_title_present_in_all"
@@ -158,11 +159,29 @@ def test_no_smoke_table_means_no_filesystem_probe():
     assert parse("[smoke]\n").smoke_filesystem is None
 
 
+def test_smoke_network_parses_with_the_default_url_argument():
+    config = parse('[smoke.network]\ntool = "fetch"\npolicy = "allowlist"\n')
+
+    assert config.smoke_network == NetworkProbeConfig(tool="fetch", policy="allowlist", url_argument="url")
+    assert config.smoke_filesystem is None
+
+
+def test_smoke_network_url_argument_is_configurable():
+    probe = parse('[smoke.network]\ntool = "get"\npolicy = "deny-private"\nurl_argument = "target"\n').smoke_network
+
+    assert probe == NetworkProbeConfig(tool="get", policy="deny-private", url_argument="target")
+
+
+def test_no_smoke_table_means_no_network_probe():
+    assert parse("[smoke]\n").smoke_network is None
+    assert parse('[smoke.filesystem]\nread_tool = "r"\n').smoke_network is None
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
         ('smoke = "on"\n', r"\[smoke\] must be a table"),
-        ("[smoke.network]\n", r"\[smoke\] has unexpected key\(s\) network; expected filesystem"),
+        ("[smoke.http]\n", r"\[smoke\] has unexpected key\(s\) http; expected filesystem or network"),
         ('[smoke]\nfilesystem = "read"\n', r"\[smoke.filesystem\] must be a table"),
         ('[smoke.filesystem]\nread_tool = "r"\ntool = "x"\n', r"unexpected key\(s\) tool; expected read_tool, "),
         ('[smoke.filesystem]\nread_tool = ""\n', r"read_tool must be a non-empty string"),
@@ -172,6 +191,18 @@ def test_no_smoke_table_means_no_filesystem_probe():
             '[smoke.filesystem]\nwrite_tool = "w"\nwrite_content_argument = "path"\n',
             r"write_path_argument and write_content_argument must differ \(both are 'path'\)",
         ),
+        ('[smoke]\nnetwork = "fetch"\n', r"\[smoke.network\] must be a table"),
+        ('[smoke.network]\npolicy = "allowlist"\n', r"\[smoke.network\] needs tool$"),
+        ("[smoke.network]\n", r"\[smoke.network\] needs tool and policy"),
+        (
+            '[smoke.network]\ntool = "f"\npolicy = "deny"\n',
+            r"policy has value 'deny'; expected allowlist or deny-private",
+        ),
+        (
+            '[smoke.network]\ntool = "f"\npolicy = "allowlist"\nhost = "x"\n',
+            r"unexpected key\(s\) host; expected tool, ",
+        ),
+        ('[smoke.network]\ntool = 1\npolicy = "allowlist"\n', r"\[smoke.network\] tool must be a non-empty string"),
     ],
 )
 def test_smoke_table_errors(text: str, message: str):

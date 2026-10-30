@@ -1,0 +1,360 @@
+"""Tests for the network boundary smoke check.
+
+The real-process tests launch ``stdio_fetch_server.py`` with the allowed
+origin substituted into its command, the way ``--stdio … {mcpscore_allowed_origin}``
+does, and assert the verdict for every vector against open, naively checked
+and properly protected servers under both policies.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import socket
+import sys
+from typing import TYPE_CHECKING, Any
+import urllib.error
+import urllib.request
+
+from mcp.shared.exceptions import MCPError
+from mcp_types import REQUEST_TIMEOUT, CallToolResult, TextContent, Tool
+import pytest
+
+from mcpscore import MCPClient, StdioCommand
+from mcpscore.mcp_client import RawRequest, RawResult
+from mcpscore.smoke import SmokeVerdict
+import mcpscore.smoke_network as smoke_network
+from mcpscore.smoke_network import (
+    ALLOWED_ORIGIN_PLACEHOLDER,
+    CHECK_NETWORK_BOUNDARY,
+    CONTROL_MARKER,
+    DENIED_MARKER,
+    POLICY_ALLOWLIST,
+    POLICY_DENY_PRIVATE,
+    NetworkFixture,
+    NetworkProbeConfig,
+    not_runnable,
+    run_network_checks,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
+    from mcpscore.smoke import SmokeCheckResult
+
+SERVER = str(Path(__file__).parent / "stdio_fetch_server.py")
+ALLOWLIST = NetworkProbeConfig(tool="fetch", policy=POLICY_ALLOWLIST)
+DENY_PRIVATE = NetworkProbeConfig(tool="fetch", policy=POLICY_DENY_PRIVATE)
+# Other spellings of loopback; whether a given client resolves each one depends on the OS.
+ENCODED = {
+    "unspecified_address",
+    "ipv6_loopback",
+    "ipv4_mapped_ipv6",
+    "decimal_ipv4",
+    "hex_ipv4",
+    "octal_ipv4",
+    "short_ipv4",
+}
+
+
+@pytest.fixture
+def fixture() -> Iterator[NetworkFixture]:
+    created = NetworkFixture.create()
+    yield created
+    created.cleanup()
+
+
+async def _run(mode: str, fixture: NetworkFixture, config: NetworkProbeConfig) -> list[SmokeCheckResult]:
+    command = StdioCommand(command=sys.executable, args=(SERVER, mode, fixture.substitute(ALLOWED_ORIGIN_PLACEHOLDER)))
+    client = MCPClient()
+    try:
+        success, _transport = await client.detect_and_connect(command)
+        assert success
+        tools = await client.list_tools()
+        assert client.session is not None
+        return await run_network_checks(client.session, tools, config, fixture)
+    finally:
+        await client.cleanup()
+
+
+def _by_verdict(results: list[SmokeCheckResult], verdict: SmokeVerdict) -> set[str]:
+    return {r.details["vector"] for r in results if r.verdict is verdict}
+
+
+def _runnable(fixture: NetworkFixture) -> set[str]:
+    return {v.name for v in fixture.vectors() if v.template is not None}
+
+
+def _get(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=5) as response:
+        return response.read()
+
+
+class TestAgainstRealServers:
+    async def test_open_server_fails_under_allowlist(self, fixture: NetworkFixture) -> None:
+        results = await _run("open", fixture, ALLOWLIST)
+
+        assert {r.check_id for r in results} == {CHECK_NETWORK_BOUNDARY}
+        failed = _by_verdict(results, SmokeVerdict.FAIL)
+        assert {"direct", "localhost_name", "userinfo_confusion", "redirect"} <= failed
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert direct.details["denied_requests"] == ["GET /v/direct"]
+        assert direct.details["attempted_url"] == "http://127.0.0.1:<denied-port>/v/direct"
+        assert direct.message == "a request reached the denied destination (GET /v/direct)"
+
+    async def test_prefix_check_is_fooled_by_userinfo_and_a_redirect(self, fixture: NetworkFixture) -> None:
+        results = await _run("prefix", fixture, ALLOWLIST)
+
+        assert _by_verdict(results, SmokeVerdict.FAIL) == {"userinfo_confusion", "redirect"}
+        assert "direct" in _by_verdict(results, SmokeVerdict.PASS)
+
+    async def test_parsed_check_is_fooled_only_by_a_redirect(self, fixture: NetworkFixture) -> None:
+        results = await _run("parsed", fixture, ALLOWLIST)
+
+        assert _by_verdict(results, SmokeVerdict.FAIL) == {"redirect"}
+
+    async def test_protected_server_passes_every_runnable_vector(self, fixture: NetworkFixture) -> None:
+        results = await _run("protected", fixture, ALLOWLIST)
+
+        assert _by_verdict(results, SmokeVerdict.PASS) == _runnable(fixture)
+        assert _by_verdict(results, SmokeVerdict.SKIP) == {"dns_rebinding"} | (
+            {"ipv6_loopback"} if fixture.ipv6_error else set()
+        )
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert direct.message == "rejected with an isError tool result; no request reached the denied destination"
+        assert direct.details["control_called"] is True
+        assert fixture.denied_requests() == []
+
+    async def test_failed_positive_control_skips_every_vector(self, fixture: NetworkFixture) -> None:
+        results = await _run("broken", fixture, ALLOWLIST)
+
+        assert {r.verdict for r in results} == {SmokeVerdict.SKIP}
+        assert len(results) == len(fixture.vectors())
+        assert all(r.message.startswith("positive control failed: fetching the allowed origin") for r in results)
+        assert all(r.details["called"] is True for r in results)
+
+    async def test_open_server_fails_under_deny_private(self, fixture: NetworkFixture) -> None:
+        results = await _run("open", fixture, DENY_PRIVATE)
+
+        assert {"direct", "localhost_name", "redirect"} <= _by_verdict(results, SmokeVerdict.FAIL)
+
+    async def test_deny_list_of_host_strings_misses_other_spellings(self, fixture: NetworkFixture) -> None:
+        results = await _run("deny_naive", fixture, DENY_PRIVATE)
+
+        failed = _by_verdict(results, SmokeVerdict.FAIL)
+        assert failed
+        assert failed <= ENCODED
+        assert {"direct", "localhost_name"} <= _by_verdict(results, SmokeVerdict.SKIP)
+
+    async def test_deny_private_without_a_hit_is_never_a_pass(self, fixture: NetworkFixture) -> None:
+        results = await _run("deny_resolved", fixture, DENY_PRIVATE)
+
+        assert {r.verdict for r in results} == {SmokeVerdict.SKIP}
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert direct.message.endswith("not assessed")
+        assert "control_called" not in direct.details
+
+    async def test_unlisted_tool_is_skipped(self, fixture: NetworkFixture) -> None:
+        results = await _run("open", fixture, NetworkProbeConfig(tool="download", policy=POLICY_ALLOWLIST))
+
+        (result,) = results
+        assert result.verdict is SmokeVerdict.SKIP
+        assert result.message == "'download' is named in [smoke.network] but is not in the server's tool catalog"
+        assert fixture.allowed_requests() == []
+
+
+class TestFixture:
+    def test_listeners_answer_and_record(self, fixture: NetworkFixture) -> None:
+        assert _get(fixture.allowed_origin + "/control") == CONTROL_MARKER.encode()
+        assert _get(f"http://127.0.0.1:{fixture.denied_port}/x") == DENIED_MARKER.encode()
+        with pytest.raises(urllib.error.HTTPError) as not_found:
+            _get(fixture.allowed_origin + "/robots.txt")
+        assert not_found.value.code == 404
+        not_found.value.close()
+        assert _get(fixture.allowed_origin + "/redirect") == DENIED_MARKER.encode()
+
+        assert fixture.allowed_requests() == ["GET /control", "GET /robots.txt", "GET /redirect"]
+        assert fixture.denied_requests() == ["GET /x", "GET /v/redirect"]
+
+    def test_head_requests_get_no_body(self, fixture: NetworkFixture) -> None:
+        request = urllib.request.Request(fixture.allowed_origin + "/control", method="HEAD")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert response.read() == b""
+        assert fixture.allowed_requests() == ["HEAD /control"]
+
+    def test_denied_listener_answers_on_ipv6_loopback_too(self, fixture: NetworkFixture) -> None:
+        if fixture.ipv6_error is not None:
+            pytest.skip(fixture.ipv6_error)
+        assert _get(f"http://[::1]:{fixture.denied_port}/six") == DENIED_MARKER.encode()
+
+    def test_substitution_and_display(self, fixture: NetworkFixture) -> None:
+        assert fixture.substitute(f"--allow={ALLOWED_ORIGIN_PLACEHOLDER}") == f"--allow={fixture.allowed_origin}"
+        assert fixture.allowed_origin == f"http://127.0.0.1:{fixture.allowed_port}"
+        template = "http://127.0.0.1:{allowed}@127.0.0.1:{denied}/"
+        assert fixture.url(template) == f"http://127.0.0.1:{fixture.allowed_port}@127.0.0.1:{fixture.denied_port}/"
+        assert fixture.display(template) == "http://127.0.0.1:<allowed-port>@127.0.0.1:<denied-port>/"
+
+    def test_cleanup_closes_every_port(self) -> None:
+        fixture = NetworkFixture.create()
+        ports = (fixture.allowed_port, fixture.denied_port)
+        fixture.cleanup()
+
+        for port in ports:
+            with socket.socket() as probe, pytest.raises((ConnectionRefusedError, TimeoutError)):
+                probe.settimeout(1)
+                probe.connect(("127.0.0.1", port))
+
+    def test_without_ipv6_the_ipv6_vector_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(smoke_network.socket, "has_ipv6", False)
+        fixture = NetworkFixture.create()
+        try:
+            assert fixture.ipv6_error == "no IPv6 loopback on this machine"
+            assert len(fixture.denied) == 1
+            ipv6 = next(v for v in fixture.vectors() if v.name == "ipv6_loopback")
+            assert (ipv6.template, ipv6.unsupported) == (None, "no IPv6 loopback on this machine")
+        finally:
+            fixture.cleanup()
+
+    def test_unbindable_ipv6_loopback_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real = smoke_network._Listener
+
+        def no_ipv6(family: socket.AddressFamily, host: str, port: int, owner: NetworkFixture) -> object:
+            if family == socket.AF_INET6:
+                raise OSError("unavailable")
+            return real(family, host, port, owner)
+
+        monkeypatch.setattr(smoke_network, "_Listener", no_ipv6)
+        fixture = NetworkFixture.create()
+        try:
+            assert fixture.ipv6_error == "no IPv6 loopback on this machine"
+        finally:
+            fixture.cleanup()
+
+    def test_a_port_never_free_on_both_addresses_falls_back_to_ipv4(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real = smoke_network._Listener
+
+        def busy_ipv6_port(family: socket.AddressFamily, host: str, port: int, owner: NetworkFixture) -> object:
+            if family == socket.AF_INET6 and port != 0:
+                raise OSError("in use")
+            return real(family, host, port, owner)
+
+        monkeypatch.setattr(smoke_network, "_Listener", busy_ipv6_port)
+        monkeypatch.setattr(smoke_network.socket, "has_ipv6", True)
+        fixture = NetworkFixture.create()
+        try:
+            if fixture.ipv6_error == "no IPv6 loopback on this machine":
+                pytest.skip(fixture.ipv6_error)
+            assert fixture.ipv6_error == "could not bind the same port on 127.0.0.1 and ::1"
+            assert len(fixture.denied) == 1
+        finally:
+            fixture.cleanup()
+
+    def test_a_failed_bind_releases_the_allowed_listener(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        closed: list[int] = []
+        real_close = smoke_network._Listener.server_close
+
+        def record_close(listener: Any) -> None:
+            closed.append(listener.server_address[1])
+            real_close(listener)
+
+        def refuse(_fixture: NetworkFixture) -> None:
+            raise OSError("no ports")
+
+        monkeypatch.setattr(smoke_network._Listener, "server_close", record_close)
+        monkeypatch.setattr(NetworkFixture, "_bind_denied", refuse)
+
+        with pytest.raises(OSError, match="no ports"):
+            NetworkFixture.create()
+        assert len(closed) == 1
+
+
+def _tool(name: str) -> Tool:
+    return Tool(name=name, input_schema={"type": "object"})
+
+
+def _scripted_session(answer_for: Callable[[str], object]) -> Any:
+    """Build a session whose raw ``tools/call`` answers come from ``answer_for(url)``."""
+
+    class Session:
+        async def send_request(self, request: RawRequest, *_args: Any, **_kwargs: Any) -> object:
+            answer = answer_for(request.params["arguments"]["url"])
+            if isinstance(answer, BaseException):
+                raise answer
+            if isinstance(answer, CallToolResult):
+                return RawResult(**answer.model_dump(by_alias=True, mode="json", exclude_none=True))
+            return answer
+
+    return Session()
+
+
+def _ok(text: str = "fetched") -> CallToolResult:
+    return CallToolResult(content=[TextContent(type="text", text=text)])
+
+
+class TestCallOutcomes:
+    async def test_control_that_answers_without_fetching_explains_itself(self, fixture: NetworkFixture) -> None:
+        results = await run_network_checks(_scripted_session(lambda _url: _ok()), [_tool("fetch")], ALLOWLIST, fixture)
+
+        assert {r.verdict for r in results} == {SmokeVerdict.SKIP}
+        assert results[0].message.startswith(
+            "positive control failed: fetching the allowed origin /control did not reach the allowed origin"
+        )
+
+    async def test_control_that_times_out_is_not_counted_as_called(self, fixture: NetworkFixture) -> None:
+        timeout = MCPError(REQUEST_TIMEOUT, "timed out")
+        results = await run_network_checks(
+            _scripted_session(lambda _url: timeout), [_tool("fetch")], ALLOWLIST, fixture
+        )
+
+        assert "no answer within" in results[0].message
+        assert results[0].details["called"] is False
+
+    async def test_unjudgeable_vector_skips_after_a_good_control(self, fixture: NetworkFixture) -> None:
+        def answer(url: str) -> object:
+            if url.endswith("/control"):
+                _get(url)
+                return _ok()
+            return MCPError(REQUEST_TIMEOUT, "timed out")
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], ALLOWLIST, fixture)
+
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert direct.verdict is SmokeVerdict.SKIP
+        assert direct.message.endswith("— the boundary was not exercised")
+        assert direct.details["control_called"] is True
+
+    async def test_answer_without_a_request_passes_under_allowlist(self, fixture: NetworkFixture) -> None:
+        def answer(url: str) -> object:
+            if url.endswith("/control"):
+                _get(url)
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], ALLOWLIST, fixture)
+
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert (direct.verdict, direct.message) == (
+            SmokeVerdict.PASS,
+            "answered; no request reached the denied destination",
+        )
+
+    async def test_a_hit_fails_even_when_the_tool_reports_an_error(self, fixture: NetworkFixture) -> None:
+        def answer(url: str) -> object:
+            if "/v/direct" in url:
+                _get(url)
+                return CallToolResult(content=[TextContent(type="text", text="blocked")], is_error=True)
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], DENY_PRIVATE, fixture)
+
+        assert _by_verdict(results, SmokeVerdict.FAIL) == {"direct"}
+
+
+def test_not_runnable_is_one_skip() -> None:
+    (result,) = not_runnable("why")
+
+    assert (result.check_id, result.verdict, result.message, result.tool_name) == (
+        CHECK_NETWORK_BOUNDARY,
+        SmokeVerdict.SKIP,
+        "why",
+        None,
+    )
+    assert "vector" not in result.details

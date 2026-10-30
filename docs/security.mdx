@@ -94,8 +94,10 @@ below follows from one of those limits.
 - **MCP05**: injection happens when a tool runs with untrusted input. The
   audit never sends `tools/call`. [Smoke mode](/smoke-mode) calls your own
   read-only tools with inputs derived from their schemas, not attack payloads.
-  The one exception is opt-in: the [filesystem boundary check](/smoke-mode#check-that-file-tools-stay-in-their-root)
-  sends file tools paths that try to escape their root.
+  The exceptions are opt-in: the [filesystem boundary check](/smoke-mode#check-that-file-tools-stay-in-their-root)
+  sends file tools paths that try to escape their root, and the
+  [network boundary check](/smoke-mode#check-that-fetch-tools-reach-only-what-they-should)
+  sends fetch tools URLs that try to reach a local listener their policy denies.
 - **MCP07**: mcpscore checks the authorization discovery chain and that a
   made-up bearer token is refused. Whether each tool enforces authorization,
   and whether the server rejects a real token issued for another service,

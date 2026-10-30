@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file's content and a write fails when a file changes outside the root. A
   tool that cannot work inside the root first skips every attempt. Never
   counted in the score.
+- **`smoke_network_boundary`: check that fetch tools reach only what they
+  should.** Name your URL-fetching tool and its policy (`allowlist` or
+  `deny-private`) in a `[smoke.network]` table. `--smoke` then starts two
+  local HTTP listeners and asks the tool for the denied one directly, as
+  `localhost`, `[::1]` and `0.0.0.0`, through encoded IPv4 forms, URL-parser
+  confusion and a redirect from the allowed one. A request that reaches the
+  denied listener fails the attempt. With `allowlist`, put
+  `{mcpscore_allowed_origin}` in the `--stdio` command or an `--env` value,
+  and the tool must fetch it first; `deny-private` has no such control, so
+  it reports failures only. Nothing outside the machine is contacted. Never
+  counted in the score.
 
 ### Changed
 
