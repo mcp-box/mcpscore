@@ -143,8 +143,14 @@ _DNS_REBINDING_REASON = (
 
 
 def _route(target: str) -> str:
-    """Return the path of a request target, ignoring its query, fragment and any absolute-form origin."""
-    return urlsplit(target).path
+    """Return the path of a request target, ignoring its query, fragment and any absolute-form origin.
+
+    A target too malformed to split (``http://[broken``) is returned as is, so it matches no route.
+    """
+    try:
+        return urlsplit(target).path
+    except ValueError:
+        return target
 
 
 class _Listener(ThreadingHTTPServer):

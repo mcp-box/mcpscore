@@ -418,6 +418,21 @@ class TestCallOutcomes:
         direct = next(r for r in results if r.details["vector"] == "direct")
         assert direct.verdict is SmokeVerdict.PASS
 
+    async def test_a_malformed_request_before_the_control_is_ignored(self, fixture: NetworkFixture) -> None:
+        def answer(url: str) -> object:
+            if url.endswith("/control"):
+                with socket.create_connection(("127.0.0.1", fixture.allowed_port), timeout=5) as connection:
+                    connection.sendall(b"GET http://[broken HTTP/1.0\r\n\r\n")
+                    connection.recv(1024)
+                _get(url)
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], ALLOWLIST, fixture)
+
+        assert "GET http://[broken" in fixture.allowed_requests()
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert direct.verdict is SmokeVerdict.PASS
+
     async def test_control_that_times_out_is_not_counted_as_called(self, fixture: NetworkFixture) -> None:
         timeout = MCPError(REQUEST_TIMEOUT, "timed out")
         results = await run_network_checks(
