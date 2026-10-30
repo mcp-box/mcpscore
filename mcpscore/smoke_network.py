@@ -160,14 +160,38 @@ class _Listener(ThreadingHTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    """Answers any method: records it, then serves the control, the redirect, or the denied canary."""
+    """Records every connection before dispatch, then serves the control, the redirect, or the denied canary.
+
+    Recording happens before the method is looked up, so a request the
+    handler has no ``do_*`` method for (TRACE, CONNECT, garbage) still
+    counts as having reached the listener.
+    """
 
     protocol_version = "HTTP/1.0"
+    _recorded = False
+
+    def _record(self, entry: str) -> None:
+        listener = cast("_Listener", self.server)
+        with listener.lock:
+            listener.requests.append(entry[:_MAX_LOGGED_PATH])
+        self._recorded = True
+
+    def parse_request(self) -> bool:
+        """Parse the request line and headers, recording the request whatever its method or validity."""
+        parsed = super().parse_request()
+        self._record(f"{self.command} {self.path}" if parsed else self.requestline or "unparsable request")
+        return parsed
+
+    def handle(self) -> None:
+        """Serve the connection; a connection that never sent a request line is recorded too."""
+        try:
+            super().handle()
+        finally:
+            if not self._recorded:
+                self._record("connection without an HTTP request")
 
     def _answer(self) -> None:
         listener = cast("_Listener", self.server)
-        with listener.lock:
-            listener.requests.append(f"{self.command} {self.path[:_MAX_LOGGED_PATH]}")
         status, headers, body = listener.owner.respond(listener, self.path)
         self.send_response(status)
         for name, value in headers.items():

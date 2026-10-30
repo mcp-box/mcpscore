@@ -8,9 +8,11 @@ and properly protected servers under both policies.
 
 from __future__ import annotations
 
+import http.client
 from pathlib import Path
 import socket
 import sys
+import time
 from typing import TYPE_CHECKING, Any
 import urllib.error
 import urllib.request
@@ -22,7 +24,6 @@ import pytest
 from mcpscore import MCPClient, StdioCommand
 from mcpscore.mcp_client import RawRequest, RawResult
 from mcpscore.smoke import SmokeVerdict
-import mcpscore.smoke_network as smoke_network
 from mcpscore.smoke_network import (
     ALLOWED_ORIGIN_PLACEHOLDER,
     CHECK_NETWORK_BOUNDARY,
@@ -32,6 +33,7 @@ from mcpscore.smoke_network import (
     POLICY_DENY_PRIVATE,
     NetworkFixture,
     NetworkProbeConfig,
+    _Listener,
     not_runnable,
     run_network_checks,
 )
@@ -175,6 +177,29 @@ class TestFixture:
         assert fixture.allowed_requests() == ["GET /control", "GET /robots.txt", "GET /redirect"]
         assert fixture.denied_requests() == ["GET /x", "GET /v/redirect"]
 
+    @pytest.mark.parametrize(
+        ("sent", "recorded"),
+        [
+            (b"TRACE /t HTTP/1.0\r\n\r\n", "TRACE /t"),
+            (b"CONNECT 127.0.0.1:1 HTTP/1.0\r\n\r\n", "CONNECT 127.0.0.1:1"),
+            (b"\x16\x03\x01 not http\r\n\r\n", "\x16\x03\x01 not http"),
+            (b"", "connection without an HTTP request"),
+        ],
+    )
+    def test_every_connection_is_recorded_whatever_it_sends(
+        self, fixture: NetworkFixture, sent: bytes, recorded: str
+    ) -> None:
+        with socket.create_connection(("127.0.0.1", fixture.denied_port), timeout=5) as connection:
+            connection.sendall(sent)
+            connection.shutdown(socket.SHUT_WR)
+            connection.recv(1024)
+
+        deadline = 50
+        while not fixture.denied_requests() and deadline:
+            time.sleep(0.05)
+            deadline -= 1
+        assert fixture.denied_requests() == [recorded]
+
     def test_head_requests_get_no_body(self, fixture: NetworkFixture) -> None:
         request = urllib.request.Request(fixture.allowed_origin + "/control", method="HEAD")
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -204,7 +229,7 @@ class TestFixture:
                 probe.connect(("127.0.0.1", port))
 
     def test_without_ipv6_the_ipv6_vector_skips(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(smoke_network.socket, "has_ipv6", False)
+        monkeypatch.setattr(socket, "has_ipv6", False)
         fixture = NetworkFixture.create()
         try:
             assert fixture.ipv6_error == "no IPv6 loopback on this machine"
@@ -215,14 +240,14 @@ class TestFixture:
             fixture.cleanup()
 
     def test_unbindable_ipv6_loopback_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        real = smoke_network._Listener
+        real = _Listener
 
         def no_ipv6(family: socket.AddressFamily, host: str, port: int, owner: NetworkFixture) -> object:
             if family == socket.AF_INET6:
                 raise OSError("unavailable")
             return real(family, host, port, owner)
 
-        monkeypatch.setattr(smoke_network, "_Listener", no_ipv6)
+        monkeypatch.setattr("mcpscore.smoke_network._Listener", no_ipv6)
         fixture = NetworkFixture.create()
         try:
             assert fixture.ipv6_error == "no IPv6 loopback on this machine"
@@ -230,15 +255,15 @@ class TestFixture:
             fixture.cleanup()
 
     def test_a_port_never_free_on_both_addresses_falls_back_to_ipv4(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        real = smoke_network._Listener
+        real = _Listener
 
         def busy_ipv6_port(family: socket.AddressFamily, host: str, port: int, owner: NetworkFixture) -> object:
             if family == socket.AF_INET6 and port != 0:
                 raise OSError("in use")
             return real(family, host, port, owner)
 
-        monkeypatch.setattr(smoke_network, "_Listener", busy_ipv6_port)
-        monkeypatch.setattr(smoke_network.socket, "has_ipv6", True)
+        monkeypatch.setattr("mcpscore.smoke_network._Listener", busy_ipv6_port)
+        monkeypatch.setattr(socket, "has_ipv6", True)
         fixture = NetworkFixture.create()
         try:
             if fixture.ipv6_error == "no IPv6 loopback on this machine":
@@ -250,7 +275,7 @@ class TestFixture:
 
     def test_a_failed_bind_releases_the_allowed_listener(self, monkeypatch: pytest.MonkeyPatch) -> None:
         closed: list[int] = []
-        real_close = smoke_network._Listener.server_close
+        real_close = _Listener.server_close
 
         def record_close(listener: Any) -> None:
             closed.append(listener.server_address[1])
@@ -259,7 +284,7 @@ class TestFixture:
         def refuse(_fixture: NetworkFixture) -> None:
             raise OSError("no ports")
 
-        monkeypatch.setattr(smoke_network._Listener, "server_close", record_close)
+        monkeypatch.setattr(_Listener, "server_close", record_close)
         monkeypatch.setattr(NetworkFixture, "_bind_denied", refuse)
 
         with pytest.raises(OSError, match="no ports"):
@@ -335,6 +360,20 @@ class TestCallOutcomes:
             SmokeVerdict.PASS,
             "answered; no request reached the denied destination",
         )
+
+    async def test_a_method_the_listener_does_not_serve_still_fails(self, fixture: NetworkFixture) -> None:
+        def answer(url: str) -> object:
+            if "/v/direct" in url:
+                connection = http.client.HTTPConnection("127.0.0.1", fixture.denied_port, timeout=5)
+                connection.request("TRACE", "/v/direct")
+                connection.getresponse().read()
+                connection.close()
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], DENY_PRIVATE, fixture)
+
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert (direct.verdict, direct.details["denied_requests"]) == (SmokeVerdict.FAIL, ["TRACE /v/direct"])
 
     async def test_a_hit_fails_even_when_the_tool_reports_an_error(self, fixture: NetworkFixture) -> None:
         def answer(url: str) -> object:
