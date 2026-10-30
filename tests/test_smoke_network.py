@@ -483,6 +483,31 @@ class TestCallOutcomes:
             "a request reached a destination the policy denies after the calls returned (GET /v/redirect)"
         )
 
+    async def test_a_request_between_two_windows_is_still_attributed(
+        self, fixture: NetworkFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = fixture.reached_since
+        injected: list[str] = []
+
+        def then_a_request_arrives(*args: Any, **kwargs: Any) -> Any:
+            observed = real(*args, **kwargs)
+            if not injected:
+                injected.append(url := f"http://127.0.0.1:{fixture.denied_port}/v/between")
+                _get(url)
+            return observed
+
+        monkeypatch.setattr(fixture, "reached_since", then_a_request_arrives)
+
+        def answer(url: str) -> object:
+            if url.endswith("/control"):
+                _get(url)
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], ALLOWLIST, fixture)
+
+        failed = [r for r in results if r.verdict is SmokeVerdict.FAIL]
+        assert [r.details["denied_requests"] for r in failed] == [["GET /v/between"]]
+
     async def test_a_hit_fails_even_when_the_tool_reports_an_error(self, fixture: NetworkFixture) -> None:
         def answer(url: str) -> object:
             if "/v/direct" in url:

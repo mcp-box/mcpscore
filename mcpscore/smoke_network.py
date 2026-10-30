@@ -190,8 +190,12 @@ class _Listener(ThreadingHTTPServer):
 
     def since(self, mark: int) -> list[str]:
         """Return the log entries of connections accepted after ``mark``."""
+        return self.read_from(mark)[0]
+
+    def read_from(self, mark: int) -> tuple[list[str], int]:
+        """Return the entries after ``mark`` and the position after them, read in one step."""
         with self.lock:
-            return self.requests[mark:]
+            return self.requests[mark:], len(self.requests)
 
     def stop(self) -> None:
         """Stop serving and close the socket."""
@@ -348,15 +352,21 @@ class NetworkFixture:
         """Return a position in every listener's log, for ``reached_since``."""
         return tuple(listener.mark() for listener in (self.allowed, *self.denied))
 
-    def reached_since(self, mark: tuple[int, ...], *, include_allowed: bool) -> list[str]:
-        """Return the connections accepted after ``mark``: the denied listener's, and the allowed one's if asked."""
-        listeners = (self.allowed, *self.denied)
-        return [
-            entry
-            for listener, position in zip(listeners, mark, strict=True)
-            if include_allowed or listener is not self.allowed
-            for entry in listener.since(position)
-        ]
+    def reached_since(self, mark: tuple[int, ...], *, include_allowed: bool) -> tuple[list[str], tuple[int, ...]]:
+        """Return the connections accepted after ``mark`` and the mark that follows them.
+
+        Includes the denied listener's connections, and the allowed one's if
+        asked. Passing the returned mark to the next call leaves no gap
+        between windows: every connection lands in exactly one of them.
+        """
+        reached: list[str] = []
+        positions: list[int] = []
+        for listener, position in zip((self.allowed, *self.denied), mark, strict=True):
+            entries, end = listener.read_from(position)
+            positions.append(end)
+            if include_allowed or listener is not self.allowed:
+                reached.extend(entries)
+        return reached, tuple(positions)
 
     def vectors(self) -> list[NetworkVector]:
         """Every attempt, in a fixed order; IPv6 loopback only where it exists."""
@@ -422,6 +432,8 @@ async def run_network_checks(
             )
         ]
     vectors = fixture.vectors()
+    include_allowed = config.policy == POLICY_DENY_PRIVATE  # then the allowed listener is a denied loopback too
+    cursor = fixture.mark()
     control_seen: dict[str, Any] = {}
     if config.policy == POLICY_ALLOWLIST:
         reached, why, answered = await _control(session, fixture, config)
@@ -442,11 +454,9 @@ async def run_network_checks(
             message = vector.unsupported or ""
             results.append(_result(tool, vector.name, SmokeVerdict.SKIP, message, policy=config.policy, **control_seen))
             continue
-        before = fixture.mark()
         outcome = await call_tool_raw(session, tool, {config.url_argument: fixture.url(vector.template)})
         fixture.settle()
-        # Under deny-private the allowed listener is a loopback destination too.
-        reached = fixture.reached_since(before, include_allowed=config.policy == POLICY_DENY_PRIVATE)
+        reached, cursor = fixture.reached_since(cursor, include_allowed=include_allowed)
         details: dict[str, Any] = {
             "policy": config.policy,
             "attempted_url": fixture.display(vector.template),
@@ -465,18 +475,17 @@ async def run_network_checks(
         else:
             verdict, message = SmokeVerdict.PASS, f"answered; {_NOTHING_REACHED}"
         results.append(_result(tool, vector.name, verdict, message, **details))
-    results.extend(await _late_requests(fixture, config, include_allowed=config.policy == POLICY_DENY_PRIVATE))
+    results.extend(await _late_requests(fixture, config, cursor, include_allowed=include_allowed))
     return results
 
 
 async def _late_requests(
-    fixture: NetworkFixture, config: NetworkProbeConfig, *, include_allowed: bool
+    fixture: NetworkFixture, config: NetworkProbeConfig, cursor: tuple[int, ...], *, include_allowed: bool
 ) -> list[SmokeCheckResult]:
     """Fail on requests that reach a denied listener after the last call returned: a fetch in the background."""
-    after_last_call = fixture.mark()
     await asyncio.sleep(_LATE_GRACE_S)
     fixture.settle()
-    late = fixture.reached_since(after_last_call, include_allowed=include_allowed)
+    late, _ = fixture.reached_since(cursor, include_allowed=include_allowed)
     if not late:
         return []
     return [
