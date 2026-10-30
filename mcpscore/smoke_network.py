@@ -262,6 +262,8 @@ class NetworkFixture:
         self.allowed = _Listener(socket.AF_INET, "127.0.0.1", 0, self)
         self.denied: list[_Listener] = []
         self.ipv6_error: str | None = None
+        self.server_proxy_env: tuple[str, ...] = ()
+        """Proxy variables the server was given with --env; the CLI refuses to probe through them."""
         try:
             self._bind_denied()
         except BaseException:

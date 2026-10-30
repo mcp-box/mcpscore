@@ -388,8 +388,10 @@ one attempt:
   internal service or callback service: every destination is one of the two
   listeners, and the report shows their ports as `<allowed-port>` and
   `<denied-port>`.
-- **It needs a `--stdio` server.** Against a URL, or with `allowlist` and no
-  placeholder, the check reports one skip saying so.
+- **It needs a `--stdio` server without a proxy.** Against a URL, with
+  `allowlist` and no placeholder, or when `--env` gives the server
+  `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`, the check reports one skip
+  saying so: through a proxy the probe URLs could leave this machine.
 
 A pass means these requests didn't arrive, not that the server is safe from
 request forgery.

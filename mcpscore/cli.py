@@ -955,6 +955,7 @@ def prepare_network_fixture(
     if not isinstance(target, StdioCommand) or not (configured or _uses_allowed_origin(target)):
         return target, None
     fixture = NetworkFixture.create()
+    fixture.server_proxy_env = tuple(sorted(name for name in target.env or {} if name.lower() in _PROXY_VARIABLES))
     logger.info("Network fixture: %s is %s", ALLOWED_ORIGIN_PLACEHOLDER, fixture.allowed_origin)
     command = replace(
         target,
@@ -963,6 +964,9 @@ def prepare_network_fixture(
         env={name: fixture.substitute(value) for name, value in target.env.items()} if target.env is not None else None,
     )
     return command, fixture
+
+
+_PROXY_VARIABLES = frozenset({"http_proxy", "https_proxy", "all_proxy"})
 
 
 def _uses_allowed_origin(target: str | StdioCommand) -> bool:
@@ -989,6 +993,12 @@ async def run_network_phase(
         return network_not_runnable(
             "[smoke.network] is configured, but the target is not a --stdio server; the probes need a server "
             "launched on this machine, next to the fixture's local listeners"
+        )
+    if network_fixture.server_proxy_env:
+        return network_not_runnable(
+            f"[smoke.network] does not run while the server is given a proxy "
+            f"({', '.join(network_fixture.server_proxy_env)} in --env): the probe URLs would go to the proxy, "
+            "which may be on another machine, instead of to the local listeners"
         )
     if probe.policy == POLICY_ALLOWLIST and not allowed_origin_given:
         return network_not_runnable(

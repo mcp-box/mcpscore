@@ -3025,6 +3025,28 @@ class TestNetworkSmokeCli:
         assert (check.check_id, check.verdict) == (CHECK_NETWORK_BOUNDARY, SmokeVerdict.SKIP)
         assert expected in check.message
 
+    async def test_a_server_given_a_proxy_is_not_probed(self) -> None:
+        from mcpscore.cli import prepare_network_fixture, run_network_phase
+        from mcpscore.config import RuleConfig
+        from mcpscore.mcp_auditor import MCPAuditor
+
+        config = RuleConfig.parse('[smoke.network]\ntool = "fetch"\npolicy = "deny-private"\n', source="t")
+        command = StdioCommand(command="srv", env={"https_proxy": "http://proxy:3128", "HTTP_PROXY": "x", "KEY": "k"})
+        _, fixture = prepare_network_fixture(command, configured=True)
+        assert fixture is not None
+        try:
+            with patch("mcpscore.cli.run_network_checks", new=AsyncMock()) as run:
+                (check,) = await run_network_phase(
+                    MagicMock(), MCPAuditor(), config, fixture, allowed_origin_given=False
+                )
+        finally:
+            fixture.cleanup()
+
+        assert fixture.server_proxy_env == ("HTTP_PROXY", "https_proxy")
+        assert check.verdict is SmokeVerdict.SKIP
+        assert "(HTTP_PROXY, https_proxy in --env)" in check.message
+        run.assert_not_awaited()
+
     async def test_deny_private_runs_without_the_placeholder(self) -> None:
         from mcpscore.cli import run_network_phase
         from mcpscore.config import RuleConfig
