@@ -3031,7 +3031,8 @@ class TestNetworkSmokeCli:
         from mcpscore.mcp_auditor import MCPAuditor
 
         config = RuleConfig.parse('[smoke.network]\ntool = "fetch"\npolicy = "deny-private"\n', source="t")
-        command = StdioCommand(command="srv", env={"https_proxy": "http://proxy:3128", "HTTP_PROXY": "x", "KEY": "k"})
+        env = {"https_proxy": "http://proxy:3128", "HTTP_PROXY": "x", "ALL_PROXY": "", "KEY": "k"}
+        command = StdioCommand(command="srv", env=env)
         _, fixture = prepare_network_fixture(command, configured=True)
         assert fixture is not None
         try:

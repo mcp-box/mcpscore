@@ -955,7 +955,11 @@ def prepare_network_fixture(
     if not isinstance(target, StdioCommand) or not (configured or _uses_allowed_origin(target)):
         return target, None
     fixture = NetworkFixture.create()
-    fixture.server_proxy_env = tuple(sorted(name for name in target.env or {} if name.lower() in _PROXY_VARIABLES))
+    # An empty value switches the proxy off, so only a set one diverts the probes.
+    env = target.env or {}
+    fixture.server_proxy_env = tuple(
+        sorted(name for name, value in env.items() if name.lower() in _PROXY_VARIABLES and value)
+    )
     logger.info("Network fixture: %s is %s", ALLOWED_ORIGIN_PLACEHOLDER, fixture.allowed_origin)
     command = replace(
         target,

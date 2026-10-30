@@ -43,6 +43,7 @@ import socketserver
 import threading
 import time
 from typing import TYPE_CHECKING, Any, ClassVar, cast
+from urllib.parse import urlsplit
 
 from .smoke import SmokeCheckResult, SmokeVerdict
 from .smoke_probe import call_tool_raw, observed_call, rejection_message
@@ -139,6 +140,11 @@ _UNASSESSED = (
 _DNS_REBINDING_REASON = (
     "needs control of the server's DNS resolver to change an answer between check and use; not assessed"
 )
+
+
+def _route(target: str) -> str:
+    """Return the path of a request target, ignoring its query, fragment and any absolute-form origin."""
+    return urlsplit(target).path
 
 
 class _Listener(ThreadingHTTPServer):
@@ -337,6 +343,7 @@ class NetworkFixture:
         """Choose the answer to one request on ``listener``."""
         if listener is not self.allowed:
             return 200, {}, DENIED_MARKER.encode("utf-8")
+        path = _route(path)
         if path == CONTROL_PATH:
             return 200, {}, CONTROL_MARKER.encode("utf-8")
         if path == REDIRECT_PATH:
@@ -413,7 +420,7 @@ async def _control(
     before = len(fixture.allowed_requests())
     outcome = await call_tool_raw(session, config.tool, {config.url_argument: fixture.allowed_origin + CONTROL_PATH})
     fixture.settle()
-    reached = any(r.endswith(" " + CONTROL_PATH) for r in fixture.allowed_requests()[before:])
+    reached = any(_route(r.partition(" ")[2]) == CONTROL_PATH for r in fixture.allowed_requests()[before:])
     if reached and outcome.answered:
         return True, "", True
     why = outcome.failure or (rejection_message(outcome) if outcome.is_error else "did not reach the allowed origin")

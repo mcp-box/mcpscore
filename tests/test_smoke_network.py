@@ -252,6 +252,10 @@ class TestFixture:
         finally:
             listener.server_close()
 
+    def test_routes_ignore_query_strings(self, fixture: NetworkFixture) -> None:
+        assert _get(fixture.allowed_origin + "/control?source=mcp") == CONTROL_MARKER.encode()
+        assert _get(fixture.allowed_origin + "/redirect?source=mcp") == DENIED_MARKER.encode()
+
     def test_head_requests_get_no_body(self, fixture: NetworkFixture) -> None:
         request = urllib.request.Request(fixture.allowed_origin + "/control", method="HEAD")
         with _DIRECT.open(request, timeout=5) as response:
@@ -402,6 +406,17 @@ class TestCallOutcomes:
         assert results[0].message.startswith(
             "positive control failed: fetching the allowed origin /control did not reach the allowed origin"
         )
+
+    async def test_a_control_with_a_query_string_counts(self, fixture: NetworkFixture) -> None:
+        def answer(url: str) -> object:
+            if url.endswith("/control"):
+                _get(url + "?utm_source=mcp")
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], ALLOWLIST, fixture)
+
+        direct = next(r for r in results if r.details["vector"] == "direct")
+        assert direct.verdict is SmokeVerdict.PASS
 
     async def test_control_that_times_out_is_not_counted_as_called(self, fixture: NetworkFixture) -> None:
         timeout = MCPError(REQUEST_TIMEOUT, "timed out")
