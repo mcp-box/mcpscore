@@ -375,8 +375,9 @@ one attempt:
 - **With `allowlist`, the tool must reach the allowed origin first.**
   mcpscore fetches `{mcpscore_allowed_origin}/control`. If that request never
   arrives, every attempt skips with the reason, because a misconfigured tool
-  would otherwise refuse everything and look safe. The allowlist must match
-  the origin's port: both listeners are on `127.0.0.1`.
+  would otherwise refuse everything and look safe. A request the control
+  sends to the denied listener still fails, as `positive_control`. The
+  allowlist must match the origin's port: both listeners are on `127.0.0.1`.
 - **A fetch that arrives after its call returned still counts.** mcpscore
   waits a second after the last attempt; a request that reaches a denied
   listener by then is reported as `late_request`, because the tool fetches in

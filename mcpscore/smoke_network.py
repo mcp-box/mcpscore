@@ -435,20 +435,36 @@ async def run_network_checks(
     include_allowed = config.policy == POLICY_DENY_PRIVATE  # then the allowed listener is a denied loopback too
     cursor = fixture.mark()
     control_seen: dict[str, Any] = {}
+    results: list[SmokeCheckResult] = []
     if config.policy == POLICY_ALLOWLIST:
         reached, why, answered = await _control(session, fixture, config)
+        # The control only fetches the allowed origin; anything it sent to the denied listener is a violation.
+        stray, cursor = fixture.reached_since(cursor, include_allowed=False)
+        if stray:
+            results.append(
+                _result(
+                    tool,
+                    "positive_control",
+                    SmokeVerdict.FAIL,
+                    f"fetching the allowed origin also reached a destination the policy denies ({stray[0]})",
+                    policy=config.policy,
+                    called=answered,
+                    denied_requests=stray[:_MAX_LOGGED_REQUESTS],
+                )
+            )
         if not reached:
             reason = (
                 f"positive control failed: fetching the allowed origin {CONTROL_PATH} {why} — check that the server "
                 f"was given {ALLOWED_ORIGIN_PLACEHOLDER} as an allowed origin and that tool and url_argument are right"
             )
-            return [
+            results += [
                 _result(tool, v.name, SmokeVerdict.SKIP, reason, policy=config.policy, called=answered) for v in vectors
             ]
+            results.extend(await _late_requests(fixture, config, cursor, include_allowed=False))
+            return results
         # Lets coverage count the tool even when no vector call is answered afterwards.
         control_seen = {"control_called": True}
 
-    results = []
     for vector in vectors:
         if vector.template is None:
             message = vector.unsupported or ""

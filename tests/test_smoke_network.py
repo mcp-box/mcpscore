@@ -508,6 +508,47 @@ class TestCallOutcomes:
         failed = [r for r in results if r.verdict is SmokeVerdict.FAIL]
         assert [r.details["denied_requests"] for r in failed] == [["GET /v/between"]]
 
+    @pytest.mark.parametrize("control_works", [True, False])
+    async def test_a_control_that_also_reaches_the_denied_listener_fails(
+        self, fixture: NetworkFixture, control_works: bool
+    ) -> None:
+        def answer(url: str) -> object:
+            if url.endswith("/control"):
+                if control_works:
+                    _get(url)
+                _get(f"http://127.0.0.1:{fixture.denied_port}/v/during-control")
+                return _ok() if control_works else MCPError(REQUEST_TIMEOUT, "timed out")
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], ALLOWLIST, fixture)
+
+        failed = [r for r in results if r.verdict is SmokeVerdict.FAIL]
+        assert [(r.details["vector"], r.details["denied_requests"]) for r in failed] == [
+            ("positive_control", ["GET /v/during-control"])
+        ]
+        assert failed[0].message == (
+            "fetching the allowed origin also reached a destination the policy denies (GET /v/during-control)"
+        )
+        assert (results[1].verdict is SmokeVerdict.SKIP) is not control_works
+
+    async def test_a_background_fetch_after_a_failed_control_still_fails(
+        self, fixture: NetworkFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("mcpscore.smoke_network._LATE_GRACE_S", 1.0)
+        background: list[threading.Timer] = []
+
+        def answer(url: str) -> object:
+            denied = f"http://127.0.0.1:{fixture.denied_port}/v/after-control"
+            background.append(threading.Timer(0.2, _get, args=(denied,)))
+            background[-1].start()
+            return _ok("queued")
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], ALLOWLIST, fixture)
+        for timer in background:
+            timer.join()
+
+        assert [r.details["vector"] for r in results if r.verdict is SmokeVerdict.FAIL] == ["late_request"]
+
     async def test_a_hit_fails_even_when_the_tool_reports_an_error(self, fixture: NetworkFixture) -> None:
         def answer(url: str) -> object:
             if "/v/direct" in url:
