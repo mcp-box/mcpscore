@@ -75,6 +75,7 @@ REDIRECT_PATH = "/redirect"
 
 _MAX_LOGGED_REQUESTS = 5
 _MAX_LOGGED_PATH = 120
+_ACCEPTED = "connection without a complete HTTP request"
 _LISTENER_ATTEMPTS = 20
 _POLL_INTERVAL_S = 0.05
 
@@ -144,6 +145,7 @@ class _Listener(ThreadingHTTPServer):
         self.address_family = family
         self.owner = owner
         self.requests: list[str] = []
+        self.slots: dict[object, int] = {}
         self.lock = threading.Lock()
         super().__init__((host, port), _Handler)
         self.thread = threading.Thread(target=self.serve_forever, args=(_POLL_INTERVAL_S,), daemon=True)
@@ -153,6 +155,32 @@ class _Listener(ThreadingHTTPServer):
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = str(self.server_address[0]), int(self.server_address[1])
 
+    def process_request(self, request: Any, client_address: Any) -> None:
+        """Record the connection as soon as it is accepted, before a handler thread reads anything from it."""
+        with self.lock:
+            self.slots[request] = len(self.requests)
+            self.requests.append(_ACCEPTED)
+        super().process_request(request, client_address)
+
+    def describe(self, request: object, entry: str) -> None:
+        """Replace an accepted connection's log entry with what it turned out to send."""
+        with self.lock:
+            slot = self.slots.get(request)
+            if slot is None:
+                self.slots[request] = slot = len(self.requests)
+                self.requests.append("")
+            self.requests[slot] = entry[:_MAX_LOGGED_PATH]
+
+    def mark(self) -> int:
+        """Return how many connections the log holds now, to slice off the ones that arrive later."""
+        with self.lock:
+            return len(self.requests)
+
+    def since(self, mark: int) -> list[str]:
+        """Return the log entries of connections accepted after ``mark``."""
+        with self.lock:
+            return self.requests[mark:]
+
     def stop(self) -> None:
         """Stop serving and close the socket."""
         self.shutdown()
@@ -160,35 +188,26 @@ class _Listener(ThreadingHTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    """Records every connection before dispatch, then serves the control, the redirect, or the denied canary.
+    """Serves the control, the redirect, or the denied canary, and names each request in the listener's log.
 
-    Recording happens before the method is looked up, so a request the
-    handler has no ``do_*`` method for (TRACE, CONNECT, garbage) still
-    counts as having reached the listener.
+    The listener logs every connection when it is accepted; the handler only
+    refines that entry, first with the raw request line, then with the parsed
+    method and path. A request that never completes, or that has no ``do_*``
+    method (TRACE, CONNECT, garbage), stays in the log either way.
     """
 
     protocol_version = "HTTP/1.0"
-    _recorded = False
-
-    def _record(self, entry: str) -> None:
-        listener = cast("_Listener", self.server)
-        with listener.lock:
-            listener.requests.append(entry[:_MAX_LOGGED_PATH])
-        self._recorded = True
 
     def parse_request(self) -> bool:
-        """Parse the request line and headers, recording the request whatever its method or validity."""
+        """Name the request in the log from its request line, before and after parsing it."""
+        listener = cast("_Listener", self.server)
+        raw_line: bytes = getattr(self, "raw_requestline", b"")  # set by handle_one_request
+        raw = raw_line.decode("iso-8859-1").rstrip("\r\n")
+        listener.describe(self.request, raw or _ACCEPTED)
         parsed = super().parse_request()
-        self._record(f"{self.command} {self.path}" if parsed else self.requestline or "unparsable request")
+        if parsed:
+            listener.describe(self.request, f"{self.command} {self.path}")
         return parsed
-
-    def handle(self) -> None:
-        """Serve the connection; a connection that never sent a request line is recorded too."""
-        try:
-            super().handle()
-        finally:
-            if not self._recorded:
-                self._record("connection without an HTTP request")
 
     def _answer(self) -> None:
         listener = cast("_Listener", self.server)
@@ -305,11 +324,18 @@ class NetworkFixture:
             return list(self.allowed.requests)
 
     def denied_requests(self) -> list[str]:
-        """Every request the denied listener has seen on either address."""
+        """Every connection the denied listener has seen on either address."""
+        return self.denied_since(tuple(0 for _ in self.denied))
+
+    def denied_mark(self) -> tuple[int, ...]:
+        """Return a per-address position in the denied log, for ``denied_since``."""
+        return tuple(listener.mark() for listener in self.denied)
+
+    def denied_since(self, mark: tuple[int, ...]) -> list[str]:
+        """Return the connections the denied listener accepted after ``mark``, on either address."""
         seen: list[str] = []
-        for listener in self.denied:
-            with listener.lock:
-                seen.extend(listener.requests)
+        for listener, position in zip(self.denied, mark, strict=True):
+            seen.extend(listener.since(position))
         return seen
 
     def vectors(self) -> list[NetworkVector]:
@@ -395,9 +421,9 @@ async def run_network_checks(
             message = vector.unsupported or ""
             results.append(_result(tool, vector.name, SmokeVerdict.SKIP, message, policy=config.policy, **control_seen))
             continue
-        before = len(fixture.denied_requests())
+        before = fixture.denied_mark()
         outcome = await call_tool_raw(session, tool, {config.url_argument: fixture.url(vector.template)})
-        reached = fixture.denied_requests()[before:]
+        reached = fixture.denied_since(before)
         details: dict[str, Any] = {
             "policy": config.policy,
             "attempted_url": fixture.display(vector.template),

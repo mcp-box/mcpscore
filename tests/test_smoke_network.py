@@ -183,7 +183,7 @@ class TestFixture:
             (b"TRACE /t HTTP/1.0\r\n\r\n", "TRACE /t"),
             (b"CONNECT 127.0.0.1:1 HTTP/1.0\r\n\r\n", "CONNECT 127.0.0.1:1"),
             (b"\x16\x03\x01 not http\r\n\r\n", "\x16\x03\x01 not http"),
-            (b"", "connection without an HTTP request"),
+            (b"", "connection without a complete HTTP request"),
         ],
     )
     def test_every_connection_is_recorded_whatever_it_sends(
@@ -199,6 +199,25 @@ class TestFixture:
             time.sleep(0.05)
             deadline -= 1
         assert fixture.denied_requests() == [recorded]
+
+    def test_an_unfinished_request_is_logged_while_the_connection_stays_open(self, fixture: NetworkFixture) -> None:
+        with socket.create_connection(("127.0.0.1", fixture.denied_port), timeout=5) as connection:
+            connection.sendall(b"GET /half HTTP/1.0\r\nHost: x\r\n")
+            deadline = 50
+            while fixture.denied_requests() != ["GET /half HTTP/1.0"] and deadline:
+                time.sleep(0.05)
+                deadline -= 1
+
+            assert fixture.denied_requests() == ["GET /half HTTP/1.0"]
+
+    def test_a_connection_is_logged_before_it_sends_anything(self, fixture: NetworkFixture) -> None:
+        with socket.create_connection(("127.0.0.1", fixture.denied_port), timeout=5):
+            deadline = 50
+            while not fixture.denied_requests() and deadline:
+                time.sleep(0.05)
+                deadline -= 1
+
+            assert fixture.denied_requests() == ["connection without a complete HTTP request"]
 
     def test_head_requests_get_no_body(self, fixture: NetworkFixture) -> None:
         request = urllib.request.Request(fixture.allowed_origin + "/control", method="HEAD")
@@ -374,6 +393,23 @@ class TestCallOutcomes:
 
         direct = next(r for r in results if r.details["vector"] == "direct")
         assert (direct.verdict, direct.details["denied_requests"]) == (SmokeVerdict.FAIL, ["TRACE /v/direct"])
+
+    async def test_evidence_is_the_current_vector_s_even_across_both_addresses(self, fixture: NetworkFixture) -> None:
+        if fixture.ipv6_error is not None:
+            pytest.skip(fixture.ipv6_error)
+
+        def answer(url: str) -> object:
+            if "/v/ipv6_loopback" in url:
+                _get(url)
+            if "/v/ipv4_mapped_ipv6" in url:
+                _get(f"http://127.0.0.1:{fixture.denied_port}/v/ipv4_mapped_ipv6")
+            return _ok()
+
+        results = await run_network_checks(_scripted_session(answer), [_tool("fetch")], DENY_PRIVATE, fixture)
+
+        evidence = {r.details["vector"]: r.details.get("denied_requests") for r in results}
+        assert evidence["ipv6_loopback"] == ["GET /v/ipv6_loopback"]
+        assert evidence["ipv4_mapped_ipv6"] == ["GET /v/ipv4_mapped_ipv6"]
 
     async def test_a_hit_fails_even_when_the_tool_reports_an_error(self, fixture: NetworkFixture) -> None:
         def answer(url: str) -> object:
