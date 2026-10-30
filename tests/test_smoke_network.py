@@ -92,8 +92,12 @@ def _runnable(fixture: NetworkFixture) -> set[str]:
     return {v.name for v in fixture.vectors() if v.template is not None}
 
 
+# Never through a proxy from the environment: every request here is meant for a local listener.
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _get(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=5) as response:
+    with _DIRECT.open(url, timeout=5) as response:
         return response.read()
 
 
@@ -124,9 +128,7 @@ class TestAgainstRealServers:
         results = await _run("protected", fixture, ALLOWLIST)
 
         assert _by_verdict(results, SmokeVerdict.PASS) == _runnable(fixture)
-        assert _by_verdict(results, SmokeVerdict.SKIP) == {"dns_rebinding"} | (
-            {"ipv6_loopback"} if fixture.ipv6_error else set()
-        )
+        assert _by_verdict(results, SmokeVerdict.SKIP) == {v.name for v in fixture.vectors() if v.template is None}
         direct = next(r for r in results if r.details["vector"] == "direct")
         assert direct.message == "rejected with an isError tool result; no request reached the denied destination"
         assert direct.details["control_called"] is True
@@ -252,7 +254,7 @@ class TestFixture:
 
     def test_head_requests_get_no_body(self, fixture: NetworkFixture) -> None:
         request = urllib.request.Request(fixture.allowed_origin + "/control", method="HEAD")
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with _DIRECT.open(request, timeout=5) as response:
             assert response.read() == b""
         assert fixture.allowed_requests() == ["HEAD /control"]
 
@@ -286,6 +288,8 @@ class TestFixture:
             assert len(fixture.denied) == 1
             ipv6 = next(v for v in fixture.vectors() if v.name == "ipv6_loopback")
             assert (ipv6.template, ipv6.unsupported) == (None, "no IPv6 loopback on this machine")
+            localhost = next(v for v in fixture.vectors() if v.name == "localhost_name")
+            assert localhost.template is not None
         finally:
             fixture.cleanup()
 
@@ -320,6 +324,11 @@ class TestFixture:
                 pytest.skip(fixture.ipv6_error)
             assert fixture.ipv6_error == "could not bind the same port on 127.0.0.1 and ::1"
             assert len(fixture.denied) == 1
+            skipped = {v.name: v.unsupported for v in fixture.vectors() if v.template is None}
+            assert skipped["localhost_name"] == (
+                "could not bind the same port on 127.0.0.1 and ::1, and localhost may resolve to ::1"
+            )
+            assert "ipv6_loopback" in skipped
         finally:
             fixture.cleanup()
 

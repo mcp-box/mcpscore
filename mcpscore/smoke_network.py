@@ -253,6 +253,7 @@ class NetworkFixture:
     """
 
     _IPV6_UNAVAILABLE: ClassVar[str] = "no IPv6 loopback on this machine"
+    _IPV6_PORT_TAKEN: ClassVar[str] = "could not bind the same port on 127.0.0.1 and ::1"
 
     def __init__(self) -> None:
         """Bind and start both listeners."""
@@ -293,7 +294,7 @@ class NetworkFixture:
                 continue
             self.denied = [ipv4, ipv6]
             return
-        self.ipv6_error = "could not bind the same port on 127.0.0.1 and ::1"
+        self.ipv6_error = self._IPV6_PORT_TAKEN
         self.denied = [_Listener(socket.AF_INET, "127.0.0.1", 0, self)]
 
     @property
@@ -369,11 +370,13 @@ class NetworkFixture:
         return reached, tuple(positions)
 
     def vectors(self) -> list[NetworkVector]:
-        """Every attempt, in a fixed order; IPv6 loopback only where it exists."""
+        """Every attempt, in a fixed order; those that could miss the denied listener on IPv6 skip instead."""
+        unsupported = {"ipv6_loopback": self.ipv6_error} if self.ipv6_error is not None else {}
+        if self.ipv6_error == self._IPV6_PORT_TAKEN:
+            # IPv6 exists but ::1 has no denied listener, so a client resolving localhost to ::1 would reach nothing.
+            unsupported["localhost_name"] = f"{self._IPV6_PORT_TAKEN}, and localhost may resolve to ::1"
         vectors = [
-            NetworkVector(name, None, self.ipv6_error)
-            if name == "ipv6_loopback" and self.ipv6_error is not None
-            else NetworkVector(name, template)
+            NetworkVector(name, None, unsupported[name]) if name in unsupported else NetworkVector(name, template)
             for name, template in _VECTORS
         ]
         vectors.append(NetworkVector("dns_rebinding", None, _DNS_REBINDING_REASON))
