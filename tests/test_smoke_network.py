@@ -12,6 +12,7 @@ import http.client
 from pathlib import Path
 import socket
 import sys
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 import urllib.error
@@ -101,7 +102,7 @@ class TestAgainstRealServers:
         direct = next(r for r in results if r.details["vector"] == "direct")
         assert direct.details["denied_requests"] == ["GET /v/direct"]
         assert direct.details["attempted_url"] == "http://127.0.0.1:<denied-port>/v/direct"
-        assert direct.message == "a request reached the denied destination (GET /v/direct)"
+        assert direct.message == "a request reached a destination the policy denies (GET /v/direct)"
 
     async def test_prefix_check_is_fooled_by_userinfo_and_a_redirect(self, fixture: NetworkFixture) -> None:
         results = await _run("prefix", fixture, ALLOWLIST)
@@ -218,6 +219,19 @@ class TestFixture:
                 deadline -= 1
 
             assert fixture.denied_requests() == ["connection without a complete HTTP request"]
+
+    def test_settle_waits_for_a_connection_not_yet_accepted(self) -> None:
+        listener = _Listener(socket.AF_INET, "127.0.0.1", 0, NetworkFixture.__new__(NetworkFixture))
+        try:
+            with socket.create_connection(listener.server_address[:2], timeout=5):
+                late = threading.Timer(0.3, listener.handle_request)
+                late.start()
+                listener.settle()
+
+                assert listener.since(0) == ["connection without a complete HTTP request"]
+                late.join()
+        finally:
+            listener.server_close()
 
     def test_head_requests_get_no_body(self, fixture: NetworkFixture) -> None:
         request = urllib.request.Request(fixture.allowed_origin + "/control", method="HEAD")
@@ -410,6 +424,21 @@ class TestCallOutcomes:
         evidence = {r.details["vector"]: r.details.get("denied_requests") for r in results}
         assert evidence["ipv6_loopback"] == ["GET /v/ipv6_loopback"]
         assert evidence["ipv4_mapped_ipv6"] == ["GET /v/ipv4_mapped_ipv6"]
+
+    async def test_under_deny_private_the_allowed_listener_is_denied_too(self, fixture: NetworkFixture) -> None:
+        def answer(url: str) -> object:
+            if url.endswith("/redirect"):
+                connection = http.client.HTTPConnection("127.0.0.1", fixture.allowed_port, timeout=5)
+                connection.request("GET", "/redirect")
+                connection.getresponse().read()
+                connection.close()
+                return CallToolResult(content=[TextContent(type="text", text="not following")], is_error=True)
+            return CallToolResult(content=[TextContent(type="text", text="blocked")], is_error=True)
+
+        deny = await run_network_checks(_scripted_session(answer), [_tool("fetch")], DENY_PRIVATE, fixture)
+
+        redirect = next(r for r in deny if r.details["vector"] == "redirect")
+        assert (redirect.verdict, redirect.details["denied_requests"]) == (SmokeVerdict.FAIL, ["GET /redirect"])
 
     async def test_a_hit_fails_even_when_the_tool_reports_an_error(self, fixture: NetworkFixture) -> None:
         def answer(url: str) -> object:

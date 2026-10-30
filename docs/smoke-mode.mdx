@@ -349,7 +349,7 @@ Network fixture: {mcpscore_allowed_origin} is http://127.0.0.1:49452
   pass smoke_network_boundary [fetch: localhost_name]: rejected with an isError tool result; no request reached the denied destination
   ...
   pass smoke_network_boundary [fetch: userinfo_confusion]: rejected with an isError tool result; no request reached the denied destination
-  FAIL smoke_network_boundary [fetch: redirect]: a request reached the denied destination (GET /v/redirect)
+  FAIL smoke_network_boundary [fetch: redirect]: a request reached a destination the policy denies (GET /v/redirect)
   skip smoke_network_boundary [fetch: dns_rebinding]: needs control of the server's DNS resolver to change an answer between check and use; not assessed
 ```
 
@@ -370,8 +370,8 @@ one attempt:
 
 - **`policy = "deny-private"`** is for a server that refuses loopback and
   private addresses. It can't fetch the local allowed listener either, so
-  there is no positive control: a request that reaches the denied listener
-  still fails, and a refusal is reported as not assessed, never as a pass.
+  there is no positive control: a request that reaches either listener, both
+  loopback, fails, and a refusal is reported as not assessed, never as a pass.
 - **With `allowlist`, the tool must reach the allowed origin first.**
   mcpscore fetches `{mcpscore_allowed_origin}/control`. If that request never
   arrives, every attempt skips with the reason, because a misconfigured tool

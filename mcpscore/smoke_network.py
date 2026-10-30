@@ -21,8 +21,8 @@ vector fails when a request reached it during the call. Two policies:
   afterwards a vector passes when nothing reached the denied listener.
 - ``deny-private`` — the server refuses loopback and private addresses, so
   it cannot fetch the local allowed origin either and no positive control is
-  possible. A request reaching the denied listener still fails; no request
-  is reported as not assessed, never as a pass.
+  possible. Both listeners are loopback, so a request reaching either one
+  fails; no request is reported as not assessed, never as a pass.
 
 No real cloud metadata endpoint, internal service or third-party callback
 is ever contacted: every destination is a listener on this machine. Results
@@ -35,9 +35,11 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import select
 import socket
 import socketserver
 import threading
+import time
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from .smoke import SmokeCheckResult, SmokeVerdict
@@ -78,6 +80,7 @@ _MAX_LOGGED_PATH = 120
 _ACCEPTED = "connection without a complete HTTP request"
 _LISTENER_ATTEMPTS = 20
 _POLL_INTERVAL_S = 0.05
+_SETTLE_TIMEOUT_S = 2.0
 
 
 @dataclass(frozen=True)
@@ -155,12 +158,23 @@ class _Listener(ThreadingHTTPServer):
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = str(self.server_address[0]), int(self.server_address[1])
 
-    def process_request(self, request: Any, client_address: Any) -> None:
-        """Record the connection as soon as it is accepted, before a handler thread reads anything from it."""
+    def get_request(self) -> tuple[Any, Any]:
+        """Accept a connection and log it in one step under the lock, so ``settle`` never sees it half-done."""
         with self.lock:
+            request, client_address = super().get_request()
             self.slots[request] = len(self.requests)
             self.requests.append(_ACCEPTED)
-        super().process_request(request, client_address)
+        return request, client_address
+
+    def settle(self) -> None:
+        """Wait until no completed connection is still waiting to be accepted, so the log is up to date."""
+        deadline = time.monotonic() + _SETTLE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            with self.lock:
+                waiting, _, _ = select.select([self.socket], [], [], 0)
+            if not waiting:
+                return
+            time.sleep(0.01)
 
     def describe(self, request: object, entry: str) -> None:
         """Replace an accepted connection's log entry with what it turned out to send."""
@@ -325,18 +339,26 @@ class NetworkFixture:
 
     def denied_requests(self) -> list[str]:
         """Every connection the denied listener has seen on either address."""
-        return self.denied_since(tuple(0 for _ in self.denied))
+        return [entry for listener in self.denied for entry in listener.since(0)]
 
-    def denied_mark(self) -> tuple[int, ...]:
-        """Return a per-address position in the denied log, for ``denied_since``."""
-        return tuple(listener.mark() for listener in self.denied)
+    def settle(self) -> None:
+        """Let every listener accept and log the connections already made to it."""
+        for listener in (self.allowed, *self.denied):
+            listener.settle()
 
-    def denied_since(self, mark: tuple[int, ...]) -> list[str]:
-        """Return the connections the denied listener accepted after ``mark``, on either address."""
-        seen: list[str] = []
-        for listener, position in zip(self.denied, mark, strict=True):
-            seen.extend(listener.since(position))
-        return seen
+    def mark(self) -> tuple[int, ...]:
+        """Return a position in every listener's log, for ``reached_since``."""
+        return tuple(listener.mark() for listener in (self.allowed, *self.denied))
+
+    def reached_since(self, mark: tuple[int, ...], *, include_allowed: bool) -> list[str]:
+        """Return the connections accepted after ``mark``: the denied listener's, and the allowed one's if asked."""
+        listeners = (self.allowed, *self.denied)
+        return [
+            entry
+            for listener, position in zip(listeners, mark, strict=True)
+            if include_allowed or listener is not self.allowed
+            for entry in listener.since(position)
+        ]
 
     def vectors(self) -> list[NetworkVector]:
         """Every attempt, in a fixed order; IPv6 loopback only where it exists."""
@@ -371,6 +393,7 @@ async def _control(
     """Fetch the allowed origin; return whether it was reached, why not, and whether the server answered."""
     before = len(fixture.allowed_requests())
     outcome = await call_tool_raw(session, config.tool, {config.url_argument: fixture.allowed_origin + CONTROL_PATH})
+    fixture.settle()
     reached = any(r.endswith(" " + CONTROL_PATH) for r in fixture.allowed_requests()[before:])
     if reached and outcome.answered:
         return True, "", True
@@ -421,9 +444,11 @@ async def run_network_checks(
             message = vector.unsupported or ""
             results.append(_result(tool, vector.name, SmokeVerdict.SKIP, message, policy=config.policy, **control_seen))
             continue
-        before = fixture.denied_mark()
+        before = fixture.mark()
         outcome = await call_tool_raw(session, tool, {config.url_argument: fixture.url(vector.template)})
-        reached = fixture.denied_since(before)
+        fixture.settle()
+        # Under deny-private the allowed listener is a loopback destination too.
+        reached = fixture.reached_since(before, include_allowed=config.policy == POLICY_DENY_PRIVATE)
         details: dict[str, Any] = {
             "policy": config.policy,
             "attempted_url": fixture.display(vector.template),
@@ -431,7 +456,7 @@ async def run_network_checks(
             **control_seen,
         }
         if reached:
-            verdict, message = SmokeVerdict.FAIL, f"a request reached the denied destination ({reached[0]})"
+            verdict, message = SmokeVerdict.FAIL, f"a request reached a destination the policy denies ({reached[0]})"
             details["denied_requests"] = reached[:_MAX_LOGGED_REQUESTS]
         elif outcome.failure is not None:
             verdict, message = SmokeVerdict.SKIP, f"{outcome.failure} — the boundary was not exercised"

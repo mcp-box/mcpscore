@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   denied listener fails the attempt. With `allowlist`, put
   `{mcpscore_allowed_origin}` in the `--stdio` command or an `--env` value,
   and the tool must fetch it first; `deny-private` has no such control, so
-  it reports failures only. Nothing outside the machine is contacted. Never
+  it reports failures only, and a request to either listener counts. Nothing outside the machine is contacted. Never
   counted in the score.
 
 ### Changed
