@@ -180,8 +180,16 @@ class SmokeReport:
         JSON-RPC error — so the reader can tell "the tool was never invoked"
         (skipped under the safety default) apart from "the tool was invoked
         and this is what it did". Timeouts and transport crashes do not count.
+        A filesystem boundary result also counts its tool through
+        ``control_called``: the positive control answered before the vector ran.
         """
-        return len({check.tool_name for check in self.checks if check.tool_name and check.details.get("called")})
+        return len(
+            {
+                check.tool_name
+                for check in self.checks
+                if check.tool_name and (check.details.get("called") or check.details.get("control_called"))
+            }
+        )
 
     def to_dict(self) -> dict:
         """Serialize the smoke section for the machine-readable report."""

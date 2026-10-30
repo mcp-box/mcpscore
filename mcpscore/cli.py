@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 import json
@@ -21,6 +22,13 @@ from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
 from mcpscore.probes import observed_auth_status
 from mcpscore.sarif import build_sarif
 from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
+from mcpscore.smoke_filesystem import (
+    CHECK_FILESYSTEM_BOUNDARY,
+    FS_ROOT_PLACEHOLDER,
+    FilesystemFixture,
+    not_runnable,
+    run_filesystem_checks,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -850,12 +858,18 @@ def log_smoke_outcome(smoke: SmokeReport) -> None:
     if not smoke.executed:
         logger.warning("Smoke checks did not run: %s", smoke.reason)
         return
+    scope = (
+        "every tool called (--call-all)" if smoke.call_all else "only readOnlyHint: true tools called (see --call-all)"
+    )
+    consented = sorted({c.tool_name for c in smoke.checks if c.check_id == CHECK_FILESYSTEM_BOUNDARY and c.tool_name})
+    if consented and not smoke.call_all:
+        scope += f", plus the [smoke.filesystem] tools {', '.join(consented)}"
     logger.info(
         "Smoke checks (tools/call): %d passed, %d failed, %d skipped — %s. Never counted in the score.",
         smoke.passed,
         smoke.failed,
         smoke.skipped,
-        "every tool called (--call-all)" if smoke.call_all else "only readOnlyHint: true tools called (see --call-all)",
+        scope,
     )
     logger.info(
         "  Tools called: %d of %d (a tool counts as called once the server answered a tools/call for it)",
@@ -863,7 +877,8 @@ def log_smoke_outcome(smoke: SmokeReport) -> None:
         smoke.tools_total,
     )
     for check in smoke.checks:
-        subject = f" [{check.tool_name}]" if check.tool_name else ""
+        vector = check.details.get("vector")
+        subject = f" [{check.tool_name}{f': {vector}' if vector else ''}]" if check.tool_name else ""
         if check.verdict is SmokeVerdict.FAIL:
             logger.error("  FAIL %s%s: %s", check.check_id, subject, check.message)
         elif check.verdict is SmokeVerdict.SKIP:
@@ -894,12 +909,40 @@ def describe_smoke_response(response: dict) -> str:
     return "; ".join(parts)
 
 
-async def run_smoke_phase(args: argparse.Namespace, client: MCPClient, auditor: MCPAuditor) -> SmokeReport:
+def prepare_filesystem_fixture(
+    target: str | StdioCommand,
+) -> tuple[str | StdioCommand, FilesystemFixture | None]:
+    """Create the filesystem fixture when the --stdio command carries the root placeholder.
+
+    Returns the command with the placeholder replaced by the fixture's allowed
+    directory, and the fixture the caller must clean up; other targets are
+    returned unchanged with no fixture.
+    """
+    if not isinstance(target, StdioCommand) or not any(
+        FS_ROOT_PLACEHOLDER in token for token in (target.command, *target.args)
+    ):
+        return target, None
+    fixture = FilesystemFixture.create()
+    logger.info("Filesystem fixture: %s is %s", FS_ROOT_PLACEHOLDER, fixture.root)
+    command = replace(
+        target, command=fixture.substitute(target.command), args=tuple(fixture.substitute(a) for a in target.args)
+    )
+    return command, fixture
+
+
+async def run_smoke_phase(
+    args: argparse.Namespace,
+    client: MCPClient,
+    auditor: MCPAuditor,
+    config: RuleConfig | None = None,
+    fixture: FilesystemFixture | None = None,
+) -> SmokeReport:
     """Run the --smoke checks on the audit's still-open session.
 
     Runs after ``auditor.audit(client)`` and before cleanup — the auditor
     never closes the session, so the smoke calls reuse the exact connection
-    the audit observed.
+    the audit observed. The filesystem boundary check runs when the
+    configuration has a ``[smoke.filesystem]`` table.
     """
     if client.session is None:  # pragma: no cover — audit() succeeded, so a session exists
         return SmokeReport.not_executed("no active session to call tools on")
@@ -914,12 +957,26 @@ async def run_smoke_phase(args: argparse.Namespace, client: MCPClient, auditor: 
         )
     logger.info("")
     logger.info("Running smoke checks — invoking tools/call, as requested with --smoke...")
-    return await run_smoke_checks(
+    report = await run_smoke_checks(
         client.session,
         auditor.audit_data.tools,
         call_all=args.call_all,
         catalog_complete="tools" not in auditor.audit_data.incomplete_listings,
     )
+    probe_config = config.smoke_filesystem if config is not None else None
+    if probe_config is not None:
+        if fixture is None:
+            report.checks.extend(
+                not_runnable(
+                    f"[smoke.filesystem] is configured, but the server was not given the fixture root: put "
+                    f"{FS_ROOT_PLACEHOLDER} where its --stdio command names the directory it may access"
+                )
+            )
+        else:
+            report.checks.extend(
+                await run_filesystem_checks(client.session, auditor.audit_data.tools, probe_config, fixture)
+            )
+    return report
 
 
 def build_report(target: str, transport: MCPTransportType | None, auditor: MCPAuditor) -> dict:
@@ -1002,6 +1059,15 @@ def _exit_if_redirected(failure: ConnectionFailure | None, target_display: str) 
         sys.exit(2)
 
 
+async def cleanup_server(client: MCPClient, fixture: FilesystemFixture | None) -> None:
+    """Stop the server, then remove the filesystem fixture it was using."""
+    try:
+        await client.cleanup()
+    finally:
+        if fixture is not None:
+            fixture.cleanup()
+
+
 async def async_main() -> None:
     """Execute the main entry point for the mcpscore CLI application.
 
@@ -1065,11 +1131,13 @@ async def async_main() -> None:
 
     client: MCPClient = MCPClient(headers=headers or None)
     auditor: MCPAuditor = MCPAuditor(headers=headers or None, config=config)
+    fixture: FilesystemFixture | None = None
 
     # Everything below runs inside one try/finally: failed detection attempts
     # can leave resources on the client's exit stack, so every path out —
     # early returns, sys.exit(2), audit errors — must reach cleanup().
     try:
+        target, fixture = prepare_filesystem_fixture(target)
         success, transport = await client.detect_and_connect(target)
 
         if not success:
@@ -1185,12 +1253,12 @@ async def async_main() -> None:
 
         logger.info("Starting the audit...")
         await auditor.audit(client)
-        smoke = await run_smoke_phase(args, client, auditor) if args.smoke else None
+        smoke = await run_smoke_phase(args, client, auditor, config, fixture) if args.smoke else None
         # A gate failure exits inside the try and still reaches cleanup() via
         # finally; the happy path returns normally (no SystemExit(0)).
         finish_server_audit(args, auditor, target_display, transport, smoke=smoke)
     finally:
-        await client.cleanup()
+        await cleanup_server(client, fixture)
 
 
 def configure_logging(*, verbose: bool = False) -> None:
