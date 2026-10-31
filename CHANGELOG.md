@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-10-31
+
+Two new security checks for `--smoke`: one tests that file tools stay inside
+their root, the other that fetch tools reach only the URLs their policy
+allows. Both are opt-in, run only against your own server, and never count in
+the score, so no score moves. The npm package now needs Node.js 22 or newer.
+
 ### Added
 
 - **`smoke_filesystem_boundary`: check that file tools stay in their root.**
@@ -27,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   denied listener fails the attempt. With `allowlist`, put
   `{mcpscore_allowed_origin}` in the `--stdio` command or an `--env` value,
   and the tool must fetch it first; `deny-private` has no such control, so
-  it reports failures only, and a request to either listener counts. Nothing outside the machine is contacted. Never
-  counted in the score.
+  it reports failures only, and a request to either listener counts.
+  Nothing outside the machine is contacted. Never counted in the score.
 
 ### Changed
 
@@ -41,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON report example on Stability is re-run on 1.29.1. A test now fails when
   a docs example pins a version older than the previous minor release, or
   names a superseded spec revision as the latest.
+- **Dependencies refreshed**: `pydantic` 2.14.2, `pydantic-core` 2.50.2 and
+  `opentelemetry-api` 1.45.2 (through the MCP SDK). The `mcp==2.3.0` pin is
+  the latest SDK release.
 
 ## [1.29.1] - 2026-10-27
 
@@ -2481,7 +2491,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.29.1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.30.0...HEAD
+[1.30.0]: https://github.com/mcp-box/mcpscore/compare/v1.29.1...v1.30.0
 [1.29.1]: https://github.com/mcp-box/mcpscore/compare/v1.29.0...v1.29.1
 [1.29.0]: https://github.com/mcp-box/mcpscore/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/mcp-box/mcpscore/compare/v1.27.0...v1.28.0
