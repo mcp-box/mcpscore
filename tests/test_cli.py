@@ -16,6 +16,7 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
+import socket
 import sys
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2949,3 +2950,187 @@ class TestFilesystemSmokeCli:
         assert ("read", "parent_traversal") not in failed
         (base,) = created
         assert not base.exists()
+
+
+class TestNetworkSmokeCli:
+    """The [smoke.network] check: listener lifetime, placeholder substitution, and the skips that explain themselves."""
+
+    def test_unprobed_targets_get_no_fixture(self) -> None:
+        from mcpscore.cli import prepare_network_fixture
+
+        command = StdioCommand(command="srv", args=("--allow", "https://example.com"))
+
+        assert prepare_network_fixture("https://example.com/mcp", configured=True) == ("https://example.com/mcp", None)
+        assert prepare_network_fixture(command, configured=False) == (command, None)
+
+    def test_a_configured_check_starts_the_listeners_without_a_placeholder(self) -> None:
+        from mcpscore.cli import prepare_network_fixture
+
+        command = StdioCommand(command="srv", args=("--deny-private",))
+
+        substituted, fixture = prepare_network_fixture(command, configured=True)
+
+        assert fixture is not None
+        try:
+            assert substituted == command
+        finally:
+            fixture.cleanup()
+
+    def test_placeholder_is_replaced_in_arguments_and_env_values(self) -> None:
+        from mcpscore.cli import prepare_network_fixture
+        from mcpscore.smoke_network import ALLOWED_ORIGIN_PLACEHOLDER
+
+        command = StdioCommand(
+            command="srv",
+            args=(f"--allow={ALLOWED_ORIGIN_PLACEHOLDER}",),
+            env={"ALLOW": ALLOWED_ORIGIN_PLACEHOLDER, "KEY": "secret"},
+        )
+
+        substituted, fixture = prepare_network_fixture(command, configured=False)
+
+        assert fixture is not None
+        try:
+            assert isinstance(substituted, StdioCommand)
+            assert substituted.args == (f"--allow={fixture.allowed_origin}",)
+            assert substituted.env == {"ALLOW": fixture.allowed_origin, "KEY": "secret"}
+        finally:
+            fixture.cleanup()
+
+    @pytest.mark.parametrize(
+        ("table", "with_fixture", "allowed_origin_given", "expected"),
+        [
+            ('policy = "deny-private"', False, False, "the target is not a --stdio server"),
+            ('policy = "allowlist"', True, False, "put {mcpscore_allowed_origin} in its --stdio command"),
+        ],
+    )
+    async def test_a_check_that_cannot_run_reports_one_skip(
+        self, table: str, with_fixture: bool, allowed_origin_given: bool, expected: str
+    ) -> None:
+        from mcpscore.cli import run_network_phase
+        from mcpscore.config import RuleConfig
+        from mcpscore.mcp_auditor import MCPAuditor
+        from mcpscore.smoke_network import CHECK_NETWORK_BOUNDARY, NetworkFixture
+
+        config = RuleConfig.parse(f'[smoke.network]\ntool = "fetch"\n{table}\n', source="mcpscore.toml")
+        fixture = NetworkFixture.create() if with_fixture else None
+        try:
+            checks = await run_network_phase(
+                MagicMock(), MCPAuditor(), config, fixture, allowed_origin_given=allowed_origin_given
+            )
+        finally:
+            if fixture is not None:
+                fixture.cleanup()
+
+        (check,) = checks
+        assert (check.check_id, check.verdict) == (CHECK_NETWORK_BOUNDARY, SmokeVerdict.SKIP)
+        assert expected in check.message
+
+    async def test_a_server_given_a_proxy_is_not_probed(self) -> None:
+        from mcpscore.cli import prepare_network_fixture, run_network_phase
+        from mcpscore.config import RuleConfig
+        from mcpscore.mcp_auditor import MCPAuditor
+
+        config = RuleConfig.parse('[smoke.network]\ntool = "fetch"\npolicy = "deny-private"\n', source="t")
+        env = {"https_proxy": "http://proxy:3128", "HTTP_PROXY": "x", "ALL_PROXY": "", "KEY": "k"}
+        command = StdioCommand(command="srv", env=env)
+        _, fixture = prepare_network_fixture(command, configured=True)
+        assert fixture is not None
+        try:
+            with patch("mcpscore.cli.run_network_checks", new=AsyncMock()) as run:
+                (check,) = await run_network_phase(
+                    MagicMock(), MCPAuditor(), config, fixture, allowed_origin_given=False
+                )
+        finally:
+            fixture.cleanup()
+
+        assert fixture.server_proxy_env == ("HTTP_PROXY", "https_proxy")
+        assert check.verdict is SmokeVerdict.SKIP
+        assert "(HTTP_PROXY, https_proxy in --env)" in check.message
+        run.assert_not_awaited()
+
+    async def test_deny_private_runs_without_the_placeholder(self) -> None:
+        from mcpscore.cli import run_network_phase
+        from mcpscore.config import RuleConfig
+        from mcpscore.mcp_auditor import MCPAuditor
+        from mcpscore.smoke_network import NetworkFixture
+
+        config = RuleConfig.parse('[smoke.network]\ntool = "fetch"\npolicy = "deny-private"\n', source="t")
+        fixture = NetworkFixture.create()
+        try:
+            with patch("mcpscore.cli.run_network_checks", new=AsyncMock(return_value=["ran"])) as run:
+                checks = await run_network_phase(MagicMock(), MCPAuditor(), config, fixture, allowed_origin_given=False)
+        finally:
+            fixture.cleanup()
+
+        assert checks == ["ran"]
+        run.assert_awaited_once()
+
+    async def test_no_network_table_runs_nothing(self) -> None:
+        from mcpscore.cli import run_network_phase
+        from mcpscore.config import RuleConfig
+        from mcpscore.mcp_auditor import MCPAuditor
+
+        config = RuleConfig.parse('[smoke.filesystem]\nread_tool = "r"\n', source="t")
+
+        assert await run_network_phase(MagicMock(), MCPAuditor(), config, None, allowed_origin_given=False) == []
+
+    async def test_listeners_stop_even_when_the_filesystem_cleanup_fails(self) -> None:
+        from mcpscore.cli import cleanup_server
+        from mcpscore.smoke_network import NetworkFixture
+
+        network = NetworkFixture.create()
+        filesystem = MagicMock()
+        filesystem.cleanup.side_effect = RuntimeError("rmtree broke")
+        client = MagicMock()
+        client.cleanup = AsyncMock(side_effect=RuntimeError("transport broke"))
+
+        with pytest.raises(RuntimeError, match="rmtree broke"):
+            await cleanup_server(client, filesystem, network)
+
+        with contextlib.closing(socket.socket()) as probe, pytest.raises((ConnectionRefusedError, TimeoutError)):
+            probe.settimeout(1)
+            probe.connect(("127.0.0.1", network.allowed_port))
+
+    async def test_end_to_end_against_a_prefix_checking_server(
+        self,
+        monkeypatch: MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        caplog: LogCaptureFixture,
+    ) -> None:
+        from mcpscore.smoke_network import CHECK_NETWORK_BOUNDARY, NetworkFixture
+
+        server = str(Path(__file__).parent / "stdio_fetch_server.py")
+        config = tmp_path / "mcpscore.toml"
+        config.write_text('[smoke.network]\ntool = "fetch"\npolicy = "allowlist"\n', encoding="utf-8")
+        argv = ["mcpscore", "--config", str(config), "--smoke", "--json"]
+        argv += ["--env", "MCPSCORE_TEST_ALLOWED={mcpscore_allowed_origin}"]
+        argv += ["--stdio", sys.executable, server, "prefix", "env:MCPSCORE_TEST_ALLOWED"]
+        monkeypatch.setattr(sys, "argv", argv)
+        created: list[NetworkFixture] = []
+        real_create = NetworkFixture.create
+
+        def spy() -> NetworkFixture:
+            fixture = real_create()
+            created.append(fixture)
+            return fixture
+
+        monkeypatch.setattr("mcpscore.cli.NetworkFixture.create", spy)
+
+        with pytest.raises(SystemExit) as exc_info:
+            await async_main()
+
+        assert exc_info.value.code == 4
+        assert "plus the [smoke.network] tools fetch." in caplog.text
+        assert "FAIL smoke_network_boundary [fetch: redirect]" in caplog.text
+        report = json.loads(capsys.readouterr().out)
+        failed = {
+            c["details"]["vector"]
+            for c in report["smoke"]["checks"]
+            if c["check_id"] == CHECK_NETWORK_BOUNDARY and c["verdict"] == "fail"
+        }
+        assert failed == {"userinfo_confusion", "redirect"}
+        (fixture,) = created
+        with contextlib.closing(socket.socket()) as probe, pytest.raises((ConnectionRefusedError, TimeoutError)):
+            probe.settimeout(1)
+            probe.connect(("127.0.0.1", fixture.allowed_port))

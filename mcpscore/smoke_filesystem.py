@@ -28,18 +28,14 @@ relative to the fixture.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
 from typing import TYPE_CHECKING, Any
 
-from mcp.shared.exceptions import MCPError
-from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
-
-from .mcp_client import RawRequest, RawResult
-from .smoke import SMOKE_CALL_TIMEOUT_S, SmokeCheckResult, SmokeVerdict
+from .smoke import SmokeCheckResult, SmokeVerdict
+from .smoke_probe import call_tool_raw, observed_call, rejection_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -264,59 +260,6 @@ def _result(
     return SmokeCheckResult(CHECK_FILESYSTEM_BOUNDARY, verdict, message, tool, {**details, **extra})
 
 
-@dataclass(frozen=True)
-class _CallOutcome:
-    """What one probe call produced, reduced to what the verdicts need."""
-
-    answered: bool
-    """The server answered (a result or a JSON-RPC error), so the call counts as made."""
-
-    text: str | None = None
-    """The whole result or JSON-RPC error serialized, for marker search; None when there was no answer."""
-
-    is_error: bool = False
-    error_code: int | None = None
-    failure: str | None = None
-    """Why the call could not be judged (timeout, closed connection, client-side error)."""
-
-
-async def _call(session: ClientSession, tool: str, arguments: dict[str, Any]) -> _CallOutcome:
-    # A raw tools/call, not session.call_tool: the SDK validates a result against the
-    # tool's outputSchema and raises on a mismatch, which would discard a leaked canary.
-    request = RawRequest(method="tools/call", params={"name": tool, "arguments": arguments})
-    try:
-        raw = await session.send_request(request, RawResult, request_read_timeout_seconds=SMOKE_CALL_TIMEOUT_S)
-    except MCPError as exc:
-        if exc.code == REQUEST_TIMEOUT:
-            return _CallOutcome(answered=False, failure=f"no answer within {SMOKE_CALL_TIMEOUT_S:.0f}s")
-        if exc.code == CONNECTION_CLOSED:
-            return _CallOutcome(answered=False, failure="connection closed during tools/call")
-        # The error's message and data are searched for the canary like a result is.
-        text = json.dumps({"message": exc.message, "data": exc.data}, default=str)
-        return _CallOutcome(answered=True, text=text, is_error=True, error_code=exc.code)
-    except Exception as exc:  # noqa: BLE001 — a smoke check never aborts the run
-        return _CallOutcome(answered=False, failure=f"tools/call raised {type(exc).__name__}")
-    result = dict(raw.model_extra or {})
-    text = json.dumps(result, default=str)
-    if "content" not in result and "structuredContent" not in result:
-        return _CallOutcome(answered=True, text=text, failure="the answer is not a tool result")
-    return _CallOutcome(answered=True, text=text, is_error=result.get("isError") is True)
-
-
-def _observed(outcome: _CallOutcome) -> dict[str, Any]:
-    """Describe the call in the ``details`` every probe result carries."""
-    observed: dict[str, Any] = {"called": outcome.answered}
-    if outcome.error_code is not None:
-        observed["error_code"] = outcome.error_code
-    return observed
-
-
-def _rejection_message(outcome: _CallOutcome) -> str:
-    if outcome.error_code is not None:
-        return f"rejected with JSON-RPC error {outcome.error_code}"
-    return "rejected with an isError tool result"
-
-
 async def _read_checks(
     session: ClientSession, fixture: FilesystemFixture, config: FilesystemProbeConfig, tool: str
 ) -> list[SmokeCheckResult]:
@@ -325,9 +268,9 @@ async def _read_checks(
 
     vectors = fixture.vectors()
     control_path = str(fixture.root / _INSIDE_NAME)
-    control = await _call(session, tool, read_arguments(control_path))
+    control = await call_tool_raw(session, tool, read_arguments(control_path))
     if control.text is None or control.is_error or INSIDE_MARKER not in control.text:
-        why = control.failure or (_rejection_message(control) if control.is_error else "did not return its content")
+        why = control.failure or (rejection_message(control) if control.is_error else "did not return its content")
         reason = (
             f"positive control failed: reading <fixture>/{_ROOT_NAME}/{_INSIDE_NAME} {why} — check that the server "
             f"was given {FS_ROOT_PLACEHOLDER} as its root and that read_tool and read_path_argument are right"
@@ -354,16 +297,16 @@ async def _read_checks(
                 )
             )
             continue
-        outcome = await _call(session, tool, read_arguments(vector.read_path))
+        outcome = await call_tool_raw(session, tool, read_arguments(vector.read_path))
         if outcome.text is not None and CANARY_MARKER in outcome.text:
             verdict, message = SmokeVerdict.FAIL, "returned the content of a file outside the allowed root"
         elif outcome.failure is not None:
             verdict, message = SmokeVerdict.SKIP, f"{outcome.failure} — the boundary was not exercised"
         elif outcome.is_error:
-            verdict, message = SmokeVerdict.PASS, _rejection_message(outcome)
+            verdict, message = SmokeVerdict.PASS, rejection_message(outcome)
         else:
             verdict, message = SmokeVerdict.PASS, "answered without the outside file's content"
-        extra = {**_observed(outcome), **control_seen}
+        extra = {**observed_call(outcome), **control_seen}
         results.append(_result(fixture, tool, OPERATION_READ, vector.name, verdict, message, vector.read_path, **extra))
     return results
 
@@ -376,13 +319,13 @@ async def _write_checks(
 
     vectors = fixture.vectors()
     control_file = fixture.root / _WRITE_CONTROL_NAME
-    control = await _call(session, tool, write_arguments(str(control_file)))
+    control = await call_tool_raw(session, tool, write_arguments(str(control_file)))
     try:
         control_written = control_file.read_bytes() == WRITE_MARKER.encode("utf-8")
     except OSError:
         control_written = False
     if not control_written:
-        why = control.failure or (_rejection_message(control) if control.is_error else "did not create it")
+        why = control.failure or (rejection_message(control) if control.is_error else "did not create it")
         reason = (
             f"positive control failed: writing <fixture>/{_ROOT_NAME}/{_WRITE_CONTROL_NAME} {why} — check that the "
             f"server was given {FS_ROOT_PLACEHOLDER} as its root and that write_tool, write_path_argument and "
@@ -411,17 +354,17 @@ async def _write_checks(
             )
             continue
         before = fixture.outside_state()
-        outcome = await _call(session, tool, write_arguments(vector.write_path))
+        outcome = await call_tool_raw(session, tool, write_arguments(vector.write_path))
         after = fixture.outside_state()
         changed = sorted(path for path in after if before.get(path) != after[path])
-        extra = {**_observed(outcome), **control_seen}
+        extra = {**observed_call(outcome), **control_seen}
         if changed:
             verdict, message = SmokeVerdict.FAIL, "wrote a file outside the allowed root"
             extra["changed_files"] = changed
         elif outcome.failure is not None:
             verdict, message = SmokeVerdict.SKIP, f"{outcome.failure} — the boundary was not exercised"
         elif outcome.is_error:
-            verdict, message = SmokeVerdict.PASS, _rejection_message(outcome)
+            verdict, message = SmokeVerdict.PASS, rejection_message(outcome)
         else:
             verdict, message = SmokeVerdict.PASS, "answered without writing outside the allowed root"
         results.append(

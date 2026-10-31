@@ -211,6 +211,7 @@ run. It never means the server failed it.
 | `smoke_structured_content` | A handler no longer matches its declared [`outputSchema`](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#output-schema). Every callable tool that declares one is invoked, and the result must carry `structuredContent` that conforms to it, a spec MUST. An explicitly empty `{}` schema still requires the field to be present. |
 | `smoke_invalid_arguments` | Input validation stopped working ([Tools §Error Handling](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling)). Each callable tool is invoked with arguments that violate its schema and must reject them. A tool result flagged `isError` and a JSON-RPC error both count as rejection. Accepting the arguments, hanging, or crashing fails the check. |
 | `smoke_filesystem_boundary` | A file tool reads or writes outside the directory it was given ([Tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#security-considerations) and [Roots](https://modelcontextprotocol.io/specification/2025-11-25/client/roots#security-considerations) §Security Considerations). Runs only when you configure it; see [Check that file tools stay in their root](#check-that-file-tools-stay-in-their-root). |
+| `smoke_network_boundary` | A URL-fetching tool reaches a destination its policy denies ([Tools §Security Considerations](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#security-considerations); the [SSRF mitigations](https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#server-side-request-forgery-ssrf) in Security Best Practices). Runs only when you configure it; see [Check that fetch tools reach only what they should](#check-that-fetch-tools-reach-only-what-they-should). |
 | `smoke_unknown_tool` | Routing broke. A `tools/call` for a name that cannot exist on your server must be rejected with a [JSON-RPC protocol error](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling). A result, an `isError` result, and an internal error all fail. |
 
 For the two rejection checks, any JSON-RPC error code counts as a rejection
@@ -318,6 +319,83 @@ What the tool says about its own call doesn't count either way.
 
 A pass means these paths were refused, not that the server is secure.
 
+## Check that fetch tools reach only what they should
+
+If a tool fetches URLs, smoke mode can check that it can't be steered to a
+destination it should refuse: server-side request forgery. mcpscore starts
+two HTTP listeners on this machine, one your server may fetch and one it must
+not, and asks your tool for the second one in a dozen ways. The verdict comes
+from the denied listener's request log: a request that arrives there fails
+the attempt, whatever the tool answered.
+
+Name the tool and the policy it enforces. With `policy = "allowlist"`, put
+`{mcpscore_allowed_origin}` where your `--stdio` command, or an `--env` value,
+takes the origins the server may fetch:
+
+```toml mcpscore.toml
+[smoke.network]
+tool = "fetch"
+policy = "allowlist"
+```
+
+```bash
+mcpscore --smoke --stdio python my_server.py --allow-origin '{mcpscore_allowed_origin}'
+```
+
+```text
+Network fixture: {mcpscore_allowed_origin} is http://127.0.0.1:49452
+...
+  pass smoke_network_boundary [fetch: direct]: rejected with an isError tool result; no request reached the denied destination
+  pass smoke_network_boundary [fetch: localhost_name]: rejected with an isError tool result; no request reached the denied destination
+  ...
+  pass smoke_network_boundary [fetch: userinfo_confusion]: rejected with an isError tool result; no request reached the denied destination
+  FAIL smoke_network_boundary [fetch: redirect]: a request reached a destination the policy denies (GET /v/redirect)
+  skip smoke_network_boundary [fetch: dns_rebinding]: needs control of the server's DNS resolver to change an answer between check and use; not assessed
+```
+
+This server compares the URL's host and port with its allowlist, but then
+follows redirects without checking them again: a URL on the allowed origin
+answers `302` to the denied listener, and the server goes there. Each line is
+one attempt:
+
+| Vector | What it sends |
+|---|---|
+| `direct` | `http://127.0.0.1:<denied-port>/…` |
+| `localhost_name`, `ipv6_loopback`, `unspecified_address` | The same listener as `localhost`, `[::1]` and `0.0.0.0` |
+| `ipv4_mapped_ipv6`, `decimal_ipv4`, `hex_ipv4`, `octal_ipv4`, `short_ipv4` | `127.0.0.1` spelled `[::ffff:127.0.0.1]`, `2130706433`, `0x7f000001`, `017700000001` and `127.1`. A deny list of host strings misses them |
+| `userinfo_confusion` | `http://127.0.0.1:<allowed-port>@127.0.0.1:<denied-port>/`. A string-prefix check sees the allowed origin |
+| `backslash_confusion`, `fragment_confusion` | The allowed origin after `\@` or `#@`. Parsers disagree about which host such a URL names |
+| `redirect` | A URL on the allowed origin that redirects to the denied listener |
+| `dns_rebinding` | Always skipped: it needs control of the server's DNS resolver |
+
+- **`policy = "deny-private"`** is for a server that refuses loopback and
+  private addresses. It can't fetch the local allowed listener either, so
+  there is no positive control: a request that reaches either listener, both
+  loopback, fails, and a refusal is reported as not assessed, never as a pass.
+- **With `allowlist`, the tool must reach the allowed origin first.**
+  mcpscore fetches `{mcpscore_allowed_origin}/control`. If that request never
+  arrives, every attempt skips with the reason, because a misconfigured tool
+  would otherwise refuse everything and look safe. A request the control
+  sends to the denied listener still fails, as `positive_control`. The
+  allowlist must match the origin's port: both listeners are on `127.0.0.1`.
+- **A fetch that arrives after its call returned still counts.** mcpscore
+  waits a second after the last attempt; a request that reaches a denied
+  listener by then is reported as `late_request`, because the tool fetches in
+  the background and its answers don't show what it reached.
+- **Naming the tool is consent to call it**, as for file tools. The argument
+  name defaults to `url`; set `url_argument` when your tool uses another.
+- **Nothing outside this machine is contacted.** No cloud metadata endpoint,
+  internal service or callback service: every destination is one of the two
+  listeners, and the report shows their ports as `<allowed-port>` and
+  `<denied-port>`.
+- **It needs a `--stdio` server without a proxy.** Against a URL, with
+  `allowlist` and no placeholder, or when `--env` gives the server
+  `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`, the check reports one skip
+  saying so: through a proxy the probe URLs could leave this machine.
+
+A pass means these requests didn't arrive, not that the server is safe from
+request forgery.
+
 ## Results stay out of the score
 
 The score is deterministic: the same server gets the same score. Tool calls
@@ -377,6 +455,8 @@ not list it.
   is broken tools.
 - Add `[smoke.filesystem]` and `{mcpscore_fs_root}` to check that file tools
   stay in their root.
+- Add `[smoke.network]` and `{mcpscore_allowed_origin}` to check that fetch
+  tools reach only what their policy allows.
 
 ## What's next
 

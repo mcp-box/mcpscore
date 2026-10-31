@@ -13,6 +13,10 @@ A team turns rules off and re-ranks the rest by severity name, keyed on
     [smoke.filesystem]
     read_tool = "read_text_file"  # --smoke probes this tool's root boundary
 
+    [smoke.network]
+    tool = "fetch"  # --smoke probes which destinations this tool reaches
+    policy = "allowlist"
+
 The configuration changes the score for the run that used it and nothing
 else: the website and the badge never see one (the backend never constructs
 a ``RuleConfig``), and the JSON report records what was applied. The gate
@@ -39,6 +43,7 @@ from .rules.base import RuleSeverity
 from .rules.registry import all_rule_ids
 from .rules.retired import RETIRED_RULES
 from .smoke_filesystem import FilesystemProbeConfig
+from .smoke_network import POLICIES, NetworkProbeConfig
 
 CONFIG_FILENAME = "mcpscore.toml"
 PYPROJECT_FILENAME = "pyproject.toml"
@@ -57,6 +62,8 @@ _SEVERITY_HINT = ", ".join(_SEVERITY_NAMES[:-1]) + f", or {_SEVERITY_NAMES[-1]}"
 
 
 _FILESYSTEM_KEYS = tuple(f.name for f in fields(FilesystemProbeConfig))
+_NETWORK_KEYS = tuple(f.name for f in fields(NetworkProbeConfig))
+_SMOKE_TABLES = ("filesystem", "network")
 
 
 class ConfigError(ValueError):
@@ -82,6 +89,7 @@ class RuleConfig:
             ``(rule_id, version)`` pairs, so the warning can say why.
         smoke_filesystem: The ``[smoke.filesystem]`` table, or ``None``. It
             configures a ``--smoke`` check and never changes the score.
+        smoke_network: The ``[smoke.network]`` table, or ``None``; likewise.
 
     """
 
@@ -92,6 +100,7 @@ class RuleConfig:
     unknown: tuple[str, ...] = ()
     retired: tuple[tuple[str, str], ...] = ()
     smoke_filesystem: FilesystemProbeConfig | None = None
+    smoke_network: NetworkProbeConfig | None = None
 
     @property
     def disabled(self) -> tuple[str, ...]:
@@ -229,6 +238,7 @@ class RuleConfig:
             if fail_on is None:
                 raise ConfigError(f"{source}: [gate] fail_on has value {gate['fail_on']!r}; expected {_SEVERITY_HINT}")
 
+        smoke = _smoke_tables(data.get("smoke", {}), source)
         return cls(
             source=source,
             sha256=sha256,
@@ -236,33 +246,60 @@ class RuleConfig:
             fail_on=fail_on,
             unknown=tuple(unknown),
             retired=tuple(retired),
-            smoke_filesystem=_parse_smoke(data.get("smoke", {}), source),
+            smoke_filesystem=_parse_filesystem(smoke.get("filesystem"), source),
+            smoke_network=_parse_network(smoke.get("network"), source),
         )
 
 
-def _parse_smoke(smoke: object, source: str) -> FilesystemProbeConfig | None:
-    """Validate the ``[smoke]`` table and return its ``filesystem`` probe configuration, if any."""
+def _smoke_tables(smoke: object, source: str) -> dict[str, Any]:
+    """Validate the ``[smoke]`` table itself and return its sub-tables by name."""
     if not isinstance(smoke, dict):
         raise ConfigError(f"{source}: [smoke] must be a table")
-    unexpected = sorted(set(smoke) - {"filesystem"})
-    if unexpected:
-        raise ConfigError(f"{source}: [smoke] has unexpected key(s) {', '.join(unexpected)}; expected filesystem")
-    table = smoke.get("filesystem")
-    if table is None:
-        return None
-    if not isinstance(table, dict):
-        raise ConfigError(f"{source}: [smoke.filesystem] must be a table")
-    unexpected = sorted(set(table) - set(_FILESYSTEM_KEYS))
+    unexpected = sorted(set(smoke) - set(_SMOKE_TABLES))
     if unexpected:
         raise ConfigError(
-            f"{source}: [smoke.filesystem] has unexpected key(s) {', '.join(unexpected)}; "
-            f"expected {', '.join(_FILESYSTEM_KEYS)}"
+            f"{source}: [smoke] has unexpected key(s) {', '.join(unexpected)}; expected {' or '.join(_SMOKE_TABLES)}"
+        )
+    return smoke
+
+
+def _string_table(table: object, name: str, keys: tuple[str, ...], source: str) -> dict[str, str]:
+    """Validate a ``[smoke.<name>]`` table whose values are all non-empty strings."""
+    if not isinstance(table, dict):
+        raise ConfigError(f"{source}: [smoke.{name}] must be a table")
+    unexpected = sorted(set(table) - set(keys))
+    if unexpected:
+        raise ConfigError(
+            f"{source}: [smoke.{name}] has unexpected key(s) {', '.join(unexpected)}; expected {', '.join(keys)}"
         )
     values: dict[str, str] = {}
     for key, value in table.items():
         if not isinstance(value, str) or not value:
-            raise ConfigError(f"{source}: [smoke.filesystem] {key} must be a non-empty string")
+            raise ConfigError(f"{source}: [smoke.{name}] {key} must be a non-empty string")
         values[key] = value
+    return values
+
+
+def _parse_network(table: object, source: str) -> NetworkProbeConfig | None:
+    """Validate ``[smoke.network]``: a tool, its declared policy, and optionally its URL argument."""
+    if table is None:
+        return None
+    values = _string_table(table, "network", _NETWORK_KEYS, source)
+    missing = [key for key in ("tool", "policy") if key not in values]
+    if missing:
+        raise ConfigError(f"{source}: [smoke.network] needs {' and '.join(missing)}")
+    if values["policy"] not in POLICIES:
+        raise ConfigError(
+            f"{source}: [smoke.network] policy has value {values['policy']!r}; expected {' or '.join(POLICIES)}"
+        )
+    return NetworkProbeConfig(**values)
+
+
+def _parse_filesystem(table: object, source: str) -> FilesystemProbeConfig | None:
+    """Validate ``[smoke.filesystem]``: the read and/or write tool and their argument names."""
+    if table is None:
+        return None
+    values = _string_table(table, "filesystem", _FILESYSTEM_KEYS, source)
     if "read_tool" not in values and "write_tool" not in values:
         raise ConfigError(f"{source}: [smoke.filesystem] needs read_tool, write_tool, or both")
     probe = FilesystemProbeConfig(**values)
