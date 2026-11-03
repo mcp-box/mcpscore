@@ -192,7 +192,10 @@ def is_html_document(text: str, *, truncated: bool = False) -> bool | None:
     text = text.removeprefix("\ufeff")
     truncated = truncated or len(text) > DOCUMENT_PREFIX_BYTES
     parser = _DocumentStart()
-    parser.feed(text[:DOCUMENT_PREFIX_BYTES])
+    try:
+        parser.feed(text[:DOCUMENT_PREFIX_BYTES])
+    except AssertionError:  # html.parser's markup base asserts on an unknown marked section (<![foo[)
+        truncated = False  # judge what was parsed before the error; nothing decisive is not a document
     if parser.text_before_root:
         return False
     if parser.doctype is not None:

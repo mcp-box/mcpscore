@@ -2130,3 +2130,9 @@ def test_wrapped_line_prefixes_come_from_the_parsed_content(
     text: str, line_starts: list[int], last: int, content: str, expected: list[tuple[int, int]]
 ) -> None:
     assert list(_wrapped_line_prefixes(text, line_starts, 0, last, content)) == expected
+
+
+def test_unknown_marked_section_is_unchecked_markup_not_a_crash() -> None:
+    from mcpscore.rules.catalog_security import _document_urls
+
+    assert _document_urls("<![foo[bar]]>", "https://example.com/", 0) == ([], True)

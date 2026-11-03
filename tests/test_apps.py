@@ -629,3 +629,17 @@ class TestRoundSixRegressions:
         broken = UiContent("text/html", has_text=True, has_blob=False, html_document=False)
         found = issues(rule_id, data([ui_tool()], [read(URI, other, broken)]))
         assert [i["path"].split("/")[2] for i in found] == ["1"]
+
+
+class TestRoundSevenRegressions:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [("<![foo[bar]]><html>", False), ("<!DOCTYPE html><![foo[bar]]>", True)],
+    )
+    def test_parser_error_does_not_escape(self, text: str, expected: bool) -> None:
+        assert is_html_document(text) is expected
+
+    async def test_parser_error_does_not_abort_collection(self) -> None:
+        session = FakeSession({URI: [{"uri": URI, "mimeType": UI_MIME_TYPE, "text": "<![foo[bar]]>"}]})
+        evidence = await collect_apps(session, [ui_tool()])  # type: ignore[arg-type]
+        assert evidence.reads[URI].contents[0].html_document is False
