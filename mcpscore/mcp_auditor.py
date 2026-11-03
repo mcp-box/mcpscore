@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from mcp import StdioServerParameters
 from pydantic import ValidationError
 
+from .apps import collect_apps, pointer_targets
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
 from .diagnostics import entity_label, validation_diagnostics
 from .enums import MCPTransportType
@@ -186,6 +187,7 @@ class MCPAuditor:
         await self._collect_probes()
         await self._collect_session_cursor_probes()
         self._recover_tools_from_stateless_probe()
+        await self._collect_apps()
         self.era = detect_era(self.audit_data.protocol_version, self.audit_data.probes)
         await self._collect_discover_declared_skills()
         await self._collect_stateless_skills_listing()
@@ -313,6 +315,7 @@ class MCPAuditor:
         self._populate_from_probe_payloads()
         self.era = detect_era(None, probes)
         await self._collect_skills_stateless(target)
+        await self._collect_apps_stateless(target)
         self._run_all_rules()
         return True
 
@@ -988,6 +991,22 @@ class MCPAuditor:
             logger.error("No resource templates to audit")
             return
         self.audit_data.resource_templates = templates
+
+    async def _collect_apps(self) -> None:
+        """Read the ``ui://`` resources the server's tools point at (MCP Apps), over the audit session."""
+        if self.mcp_client is None or not pointer_targets(self.audit_data.tools):
+            return
+        self.audit_data.apps = await collect_apps(self.mcp_client, self.audit_data.tools)
+
+    async def _collect_apps_stateless(self, target: str | StdioServerParameters) -> None:
+        """Read the tools' ``ui://`` resources on the stateless lifecycle, for a server with no session to call."""
+        if not pointer_targets(self.audit_data.tools):
+            return
+        try:
+            async with stateless_session(target, self.headers) as session:
+                self.audit_data.apps = await collect_apps(session, self.audit_data.tools)
+        except Exception as exc:  # noqa: BLE001 — a lost connection leaves the apps rules without data
+            logger.warning("Could not read MCP Apps UI resources on the stateless lifecycle (%s)", type(exc).__name__)
 
     async def _collect_skills(self) -> None:
         """Collect Skills extension evidence when the server declares the extension (SEP-2640)."""

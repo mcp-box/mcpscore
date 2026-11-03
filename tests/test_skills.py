@@ -520,7 +520,7 @@ class TestClientCalls:
             transport.return_value.__aenter__.return_value = (AsyncMock(), AsyncMock(), MagicMock())
             session.__aenter__.return_value = session
             assert await client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, "https://example.com/mcp")
-        assert constructor.call_args.kwargs["extensions"] == {SKILLS_EXTENSION: {}}
+        assert constructor.call_args.kwargs["extensions"][SKILLS_EXTENSION] == {}
 
 
 class SkillsClient(MCPClient):

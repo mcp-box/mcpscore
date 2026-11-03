@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP Apps rules: six checks for servers that deliver interactive UIs.**
+  A server whose tools point at a `ui://` resource (`_meta.ui.resourceUri`)
+  now gets a new `apps` group: the UI metadata is well-formed, each pointer
+  names a `ui://` URI that `resources/read` returns, and the content is an
+  HTML document served as `text/html;profile=mcp-app`. A LOW check flags
+  tools that use only the deprecated `_meta["ui/resourceUri"]` key; sending
+  both keys passes. Servers without UI metadata skip the group as
+  `not-applicable`, so their scores do not move.
+
+### Changed
+
+- **mcpscore now declares the MCP Apps extension** (`io.modelcontextprotocol/ui`)
+  in `initialize`, as hosts do. A server that registers UI tools only for
+  supporting clients now shows them to the audit.
+
 ## [1.30.0] - 2026-10-31
 
 Two new security checks for `--smoke`: one tests that file tools stay inside

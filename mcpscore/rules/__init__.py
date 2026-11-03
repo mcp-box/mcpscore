@@ -13,6 +13,15 @@ The rule system is designed to be extensible, allowing easy addition of new
 audit checks by implementing the BaseRule interface.
 """
 
+from .apps import (
+    APPS_GROUP,
+    AppsToolUiMetaWellFormedRule,
+    AppsToolUiPointerNestedRule,
+    AppsUiResourceHtmlDocumentRule,
+    AppsUiResourceMimeTypeRule,
+    AppsUiResourceResolvesRule,
+    AppsUiResourceUriSchemeRule,
+)
 from .auth import (
     AuthAuthorizationServersHttpsRule,
     AuthChallengeReferencesMetadataRule,
@@ -189,8 +198,15 @@ from .transport import (
 )
 
 __all__ = (
+    "APPS_GROUP",
     "PACKAGING_GROUP",
     "AllowedVersionRule",
+    "AppsToolUiMetaWellFormedRule",
+    "AppsToolUiPointerNestedRule",
+    "AppsUiResourceHtmlDocumentRule",
+    "AppsUiResourceMimeTypeRule",
+    "AppsUiResourceResolvesRule",
+    "AppsUiResourceUriSchemeRule",
     "AuditData",
     "AuthAuthorizationServersHttpsRule",
     "AuthChallengeReferencesMetadataRule",

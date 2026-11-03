@@ -91,14 +91,14 @@ was fetched whole and came back empty. No single primitive is required.
 The main score always includes three categories. Readiness is the fourth:
 it has its own score, and it also counts in the main score on a full audit
 of a modern or dual-era server. Legacy servers and partial audits leave it
-out. The server audit has 144 rules today. The
+out. The server audit has 150 rules today. The
 [rules reference](/rules) lists each one with its weight and the spec
 revisions it applies to.
 
 | Category | Rules | What it covers |
 |---|---|---|
 | Protocol | 24 | Protocol version, server name, title and version, whether the server exposes anything, advertised capabilities, transport and its HTTP envelope |
-| Primitives | 73 | Tools, prompts, resources, resource templates and [skills](#skills-servers-that-publish-agent-skills): names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination, skill integrity |
+| Primitives | 79 | Tools, prompts, resources, resource templates, [skills](#skills-servers-that-publish-agent-skills) and [MCP Apps](#mcp-apps-servers-that-deliver-interactive-uis): names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination, skill integrity, UI resources |
 | Security & Auth | 26 | The server's security posture, detailed below |
 | Readiness | 21 | How ready the server is for the 2026-07-28 revision, [scored on its own axis](#the-readiness-score-separate-informative) and in the main score for modern and dual-era full audits |
 
@@ -167,6 +167,31 @@ one OpenAI import, are reported under `skills` in the JSON report and on one
 CLI line, and never scored. The skills calls run in the audit's own session.
 A modern-only server, which has no `initialize` handshake, is asked the same
 calls on the stateless lifecycle, each declaring the Skills extension.
+
+### MCP Apps: servers that deliver interactive UIs
+
+A server can render an interactive HTML interface in the host through the
+[MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
+(`io.modelcontextprotocol/ui`). A tool points at a `ui://` resource in
+`_meta.ui.resourceUri`, and the host reads that resource with
+`resources/read`. mcpscore declares the extension in `initialize`, as hosts
+do, so a server that registers its UI tools only for supporting clients
+shows them. It then reads each `ui://` resource the tools point at, up to
+16. Servers whose tools carry no UI metadata skip these rules as
+`not-applicable`. The extension defines no server-side declaration, so none
+is required.
+
+| What is checked | Rules |
+|---|---|
+| A tool's `_meta.ui` is an object, `resourceUri` a string and `visibility` an array of `"model"` and `"app"` ([§Resource Discovery](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx#resource-discovery)) | `apps_tool_ui_meta_well_formed` (MEDIUM) |
+| Every UI pointer names a `ui://` URI, and `resources/read` returns the resource ([§UI Resource Format](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx#ui-resource-format), [§Resource Discovery](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx#resource-discovery)) | `apps_ui_resource_uri_scheme`, `apps_ui_resource_resolves` (MEDIUM) |
+| The content is served as `text/html;profile=mcp-app`, as `text` or a base64 `blob`, and opens as an HTML document | `apps_ui_resource_mime_type`, `apps_ui_resource_html_document` (MEDIUM) |
+| The tool uses `_meta.ui.resourceUri`, not only the deprecated `_meta["ui/resourceUri"]`. Sending both passes | `apps_tool_ui_pointer_nested` (LOW) |
+
+The HTML check reads the document's opening (its doctype and root element),
+not full HTML5 validity. mcpscore never renders the UI or runs its scripts,
+and it never calls a tool, so the text fallback a UI tool should still
+return is not checked.
 
 ## How an audit runs
 
