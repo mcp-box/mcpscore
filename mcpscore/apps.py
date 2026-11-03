@@ -63,9 +63,15 @@ class UiContent:
     has_blob: bool
     blob_valid: bool = True
     html_document: bool | None = None
-    """Whether the content opens as an HTML document; None when it has no text or decodable blob."""
+    """Whether the content opens as an HTML document; None when it has no text or decodable blob, or when its
+    parsed prefix ended before anything decisive (only whitespace or comments)."""
     uri: Any = None
     """The content item's ``uri`` as served."""
+
+    @property
+    def judgeable(self) -> bool:
+        """Whether the HTML-document rule can judge this item: it is missing, malformed or decided."""
+        return not (self.has_text or self.has_blob) or not self.blob_valid or self.html_document is not None
 
 
 @dataclass
@@ -174,17 +180,22 @@ class _DocumentStart(HTMLParser):
             self.text_before_root = True
 
 
-def is_html_document(text: str) -> bool:
+def is_html_document(text: str, *, truncated: bool = False) -> bool | None:
     """Whether *text* opens as an HTML document: an ``html`` doctype or an ``html`` root, before any content.
 
-    Only the prefix is parsed. A fragment (``<div>…``) or plain text is not a document.
+    Only the prefix is parsed. A fragment (``<div>…``) or plain text is not a document. None when *text* is a
+    *truncated* prefix that holds nothing decisive, such as only whitespace or comments.
     """
+    text = text.removeprefix("\ufeff")
+    truncated = truncated or len(text) > DOCUMENT_PREFIX_BYTES
     parser = _DocumentStart()
-    parser.feed(text.removeprefix("﻿")[:DOCUMENT_PREFIX_BYTES])
+    parser.feed(text[:DOCUMENT_PREFIX_BYTES])
     if parser.text_before_root:
         return False
     if parser.doctype is not None:
         return parser.doctype.lower().split()[:2] == ["doctype", "html"]
+    if parser.first_tag is None and truncated:
+        return None
     return parser.first_tag == "html"
 
 
@@ -198,8 +209,11 @@ def _content(item: dict[str, Any]) -> UiContent:
             content.blob_valid = False
         else:
             # Base64 expands 3 bytes to 4 characters; decode just enough for the document prefix.
-            raw = base64.b64decode(blob[: (DOCUMENT_PREFIX_BYTES // 3 + 1) * 4])
-            content.html_document = is_html_document(raw.decode("utf-8", errors="replace"))
+            head = blob[: (DOCUMENT_PREFIX_BYTES // 3 + 1) * 4]
+            raw = base64.b64decode(head)
+            content.html_document = is_html_document(
+                raw.decode("utf-8", errors="replace"), truncated=len(head) < len(blob)
+            )
     return content
 
 

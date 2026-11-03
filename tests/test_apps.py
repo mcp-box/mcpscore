@@ -90,7 +90,7 @@ class TestHelpers:
         ("text", "expected"),
         [
             (HTML, True),
-            ("﻿<!doctype html><title>t</title>", True),
+            ("\ufeff<!doctype html><title>t</title>", True),
             ("<!-- built --> <!DOCTYPE HTML>", True),
             ("<html><body></body></html>", True),
             ("  \n<html>", True),
@@ -595,3 +595,26 @@ class TestRoundThreeRegressions:
     def test_text_right_after_the_doctype_is_a_document(self) -> None:
         assert is_html_document("<!DOCTYPE html>Hello")
         assert not is_html_document("Hello<!DOCTYPE html>")
+
+
+class TestRoundFiveRegressions:
+    @pytest.mark.parametrize("padding", [" ", "<!-- c -->"])
+    def test_long_leading_whitespace_or_comments_is_indeterminate(self, padding: str) -> None:
+        page = padding * (apps.DOCUMENT_PREFIX_BYTES // len(padding) + 1) + HTML
+        assert is_html_document(page) is None
+        assert is_html_document(padding * 3) is False
+
+    async def test_blob_with_long_leading_whitespace_is_indeterminate(self) -> None:
+        page = (" " * (apps.DOCUMENT_PREFIX_BYTES + 3) + HTML).encode("utf-8")
+        blob = base64.b64encode(page).decode("ascii")
+        session = FakeSession({URI: [{"uri": URI, "mimeType": UI_MIME_TYPE, "blob": blob}]})
+        evidence = await collect_apps(session, [ui_tool()])  # type: ignore[arg-type]
+        assert evidence.reads[URI].contents[0].html_document is None
+
+    def test_indeterminate_content_is_not_judged(self) -> None:
+        rule_id = "apps_ui_resource_html_document"
+        unknown = UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, html_document=None)
+        assert outcome(rule_id, data([ui_tool()], [read(URI, unknown)])) == SKIP_REASON_INSUFFICIENT_DATA
+        fragment = UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, html_document=False)
+        found = issues(rule_id, data([ui_tool()], [read(URI, unknown, fragment)]))
+        assert [(i["path"], i["reason"]) for i in found] == [("/contents/1", "not_html_document")]

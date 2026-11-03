@@ -325,7 +325,7 @@ class AppsUiResourceHtmlDocumentRule(AppsBaseRule):
     needs_reads = True
 
     def _judged_reads(self, evidence: AppsEvidence) -> list[UiRead]:
-        return _successful(evidence)
+        return [read for read in _successful(evidence) if any(c.judgeable for c in read.contents)]
 
     @property
     def rule_name(self) -> str:
@@ -347,6 +347,8 @@ class AppsUiResourceHtmlDocumentRule(AppsBaseRule):
                     issues.append(_issue(index, path, "no_text_or_blob", "text or a base64 blob", "ui_resource"))
                 elif not content.blob_valid:
                     issues.append(_issue(index, f"{path}/blob", "invalid_base64", "base64-encoded HTML", "ui_resource"))
+                elif content.html_document is None:
+                    continue  # the parsed prefix held only whitespace or comments
                 elif not content.html_document:
                     issues.append(
                         _issue(index, path, "not_html_document", "an HTML document (<!DOCTYPE html>)", "ui_resource")
