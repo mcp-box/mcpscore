@@ -90,8 +90,11 @@ class UiRead:
     @property
     def returns_requested(self) -> bool:
         """Whether a content item carries the requested URI (compared in RFC 3986 normal form)."""
-        wanted = normalize_uri(self.uri)
-        return any(isinstance(c.uri, str) and normalize_uri(c.uri) == wanted for c in self.contents)
+        return any(self.is_requested(content) for content in self.contents)
+
+    def is_requested(self, content: UiContent) -> bool:
+        """Whether *content* carries the requested URI; other items in the reply are not the UI resource."""
+        return isinstance(content.uri, str) and normalize_uri(content.uri) == normalize_uri(self.uri)
 
 
 @dataclass

@@ -618,3 +618,14 @@ class TestRoundFiveRegressions:
         fragment = UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, html_document=False)
         found = issues(rule_id, data([ui_tool()], [read(URI, unknown, fragment)]))
         assert [(i["path"], i["reason"]) for i in found] == [("/contents/1", "not_html_document")]
+
+
+class TestRoundSixRegressions:
+    @pytest.mark.parametrize("rule_id", ["apps_ui_resource_mime_type", "apps_ui_resource_html_document"])
+    def test_other_resources_in_the_reply_are_not_judged(self, rule_id: str) -> None:
+        other = UiContent("image/png", has_text=False, has_blob=False, uri="ui://server/logo.png")
+        assert outcome(rule_id, data([ui_tool()], [read(URI, html_content(), other)])) is True
+        assert outcome(rule_id, data([ui_tool()], [read(URI, other)])) == SKIP_REASON_INSUFFICIENT_DATA
+        broken = UiContent("text/html", has_text=True, has_blob=False, html_document=False)
+        found = issues(rule_id, data([ui_tool()], [read(URI, other, broken)]))
+        assert [i["path"].split("/")[2] for i in found] == ["1"]

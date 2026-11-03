@@ -279,7 +279,7 @@ class AppsUiResourceMimeTypeRule(AppsBaseRule):
     needs_reads = True
 
     def _judged_reads(self, evidence: AppsEvidence) -> list[UiRead]:
-        return _successful(evidence)
+        return [read for read in _successful(evidence) if read.returns_requested]
 
     @property
     def rule_name(self) -> str:
@@ -296,6 +296,8 @@ class AppsUiResourceMimeTypeRule(AppsBaseRule):
             if read.error is not None:
                 continue
             for item, content in enumerate(read.contents):
+                if not read.is_requested(content):
+                    continue
                 if content.mime_type != UI_MIME_TYPE:
                     issues.append(
                         _issue(index, f"/contents/{item}/mimeType", "wrong_mime_type", UI_MIME_TYPE, "ui_resource")
@@ -325,7 +327,9 @@ class AppsUiResourceHtmlDocumentRule(AppsBaseRule):
     needs_reads = True
 
     def _judged_reads(self, evidence: AppsEvidence) -> list[UiRead]:
-        return [read for read in _successful(evidence) if any(c.judgeable for c in read.contents)]
+        return [
+            read for read in _successful(evidence) if any(read.is_requested(c) and c.judgeable for c in read.contents)
+        ]
 
     @property
     def rule_name(self) -> str:
@@ -342,6 +346,8 @@ class AppsUiResourceHtmlDocumentRule(AppsBaseRule):
             if read.error is not None:
                 continue
             for item, content in enumerate(read.contents):
+                if not read.is_requested(content):
+                    continue
                 path = f"/contents/{item}"
                 if not (content.has_text or content.has_blob):
                     issues.append(_issue(index, path, "no_text_or_blob", "text or a base64 blob", "ui_resource"))
