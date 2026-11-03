@@ -632,14 +632,24 @@ class TestRoundSixRegressions:
 
 
 class TestRoundSevenRegressions:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [("<![foo[bar]]><html>", False), ("<!DOCTYPE html><![foo[bar]]>", True)],
-    )
-    def test_parser_error_does_not_escape(self, text: str, expected: bool) -> None:
+    @pytest.mark.parametrize(("text", "expected"), [("<![foo[bar]]>", False), ("<!DOCTYPE html><![foo[bar]]>", True)])
+    def test_parser_error_does_not_escape(self, text: str, expected: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+        original = apps._DocumentStart.feed
+
+        def feed(self: Any, data: str) -> None:
+            original(self, data.split("<![foo")[0])
+            raise AssertionError("unknown status keyword 'foo' in marked section")
+
+        monkeypatch.setattr(apps._DocumentStart, "feed", feed)
         assert is_html_document(text) is expected
 
-    async def test_parser_error_does_not_abort_collection(self) -> None:
-        session = FakeSession({URI: [{"uri": URI, "mimeType": UI_MIME_TYPE, "text": "<![foo[bar]]>"}]})
+    def test_unknown_marked_section_never_raises(self) -> None:
+        assert isinstance(is_html_document("<![foo[bar]]><html>"), bool)
+
+    async def test_oversized_character_reference_does_not_abort_collection(self) -> None:
+        huge = "&#" + "9" * 5000 + ";"
+        assert is_html_document(f"<!DOCTYPE html><p>{huge}</p>") is True
+        assert is_html_document(f"{huge}<html>") is False
+        session = FakeSession({URI: [{"uri": URI, "mimeType": UI_MIME_TYPE, "text": f"{huge}<html>"}]})
         evidence = await collect_apps(session, [ui_tool()])  # type: ignore[arg-type]
         assert evidence.reads[URI].contents[0].html_document is False

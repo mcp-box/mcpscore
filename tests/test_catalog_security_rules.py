@@ -2132,7 +2132,11 @@ def test_wrapped_line_prefixes_come_from_the_parsed_content(
     assert list(_wrapped_line_prefixes(text, line_starts, 0, last, content)) == expected
 
 
-def test_unknown_marked_section_is_unchecked_markup_not_a_crash() -> None:
-    from mcpscore.rules.catalog_security import _document_urls
+def test_parser_assertion_is_unchecked_markup_not_a_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mcpscore.rules import catalog_security
 
-    assert _document_urls("<![foo[bar]]>", "https://example.com/", 0) == ([], True)
+    def feed(self: object, data: str) -> None:
+        raise AssertionError("unknown status keyword 'foo' in marked section")
+
+    monkeypatch.setattr(catalog_security._HtmlUrls, "feed", feed)
+    assert catalog_security._document_urls("<![foo[bar]]>", "https://example.com/", 0) == ([], True)

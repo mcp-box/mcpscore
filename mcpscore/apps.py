@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 from mcp_types import Resource, Tool
 
+from .html_text import bound_charrefs
 from .probes import UI_EXTENSION_ID, UI_EXTENSION_SETTINGS as _PROBE_UI_SETTINGS
 from .skills import UNOBSERVED_OUTCOMES, normalize_uri, rpc_error
 
@@ -193,8 +194,9 @@ def is_html_document(text: str, *, truncated: bool = False) -> bool | None:
     truncated = truncated or len(text) > DOCUMENT_PREFIX_BYTES
     parser = _DocumentStart()
     try:
-        parser.feed(text[:DOCUMENT_PREFIX_BYTES])
-    except AssertionError:  # html.parser's markup base asserts on an unknown marked section (<![foo[)
+        # Numeric references are shortened first: decoding a huge one exceeds Python's integer-conversion limit.
+        parser.feed(bound_charrefs(text[:DOCUMENT_PREFIX_BYTES]))
+    except (AssertionError, ValueError):  # some Python versions assert on an unknown marked section (<![foo[)
         truncated = False  # judge what was parsed before the error; nothing decisive is not a document
     if parser.text_before_root:
         return False
