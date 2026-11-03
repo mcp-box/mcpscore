@@ -15,17 +15,18 @@ from typing import Any, Protocol
 
 from mcp_types import Resource, Tool
 
-from .skills import rpc_error
+from .probes import UI_EXTENSION_ID, UI_EXTENSION_SETTINGS as _PROBE_UI_SETTINGS
+from .skills import UNOBSERVED_OUTCOMES, rpc_error
 
 logger = logging.getLogger(__name__)
 
-UI_EXTENSION = "io.modelcontextprotocol/ui"
+UI_EXTENSION = UI_EXTENSION_ID
 """Extension identifier a client declares under ``capabilities.extensions``."""
 
 UI_MIME_TYPE = "text/html;profile=mcp-app"
 """The one MIME type the 2026-01-26 specification allows for UI resource content."""
 
-UI_EXTENSION_SETTINGS: dict[str, Any] = {"mimeTypes": [UI_MIME_TYPE]}
+UI_EXTENSION_SETTINGS: dict[str, Any] = _PROBE_UI_SETTINGS
 """What mcpscore declares, so a server that registers UI tools only for supporting hosts shows them."""
 
 UI_SCHEME = "ui://"
@@ -41,6 +42,8 @@ READ_TIMEOUT_S = 20.0
 COLLECTION_TIMEOUT_S = 60.0
 DOCUMENT_PREFIX_BYTES = 64 * 1024
 """How much of a UI document is parsed: its doctype and root element come first."""
+BASE64_CHUNK = 64 * 1024
+"""Characters of a blob validated at a time; a multiple of 4, so chunks align with base64 quanta."""
 
 
 class AppsSession(Protocol):
@@ -71,6 +74,11 @@ class UiRead:
     contents: list[UiContent] = field(default_factory=list)
     error: dict[str, Any] | None = None
 
+    @property
+    def answered(self) -> bool:
+        """Whether the server answered: content, or an error it returned (not a timeout or lost connection)."""
+        return self.error is None or self.error.get("outcome") not in UNOBSERVED_OUTCOMES
+
 
 @dataclass
 class AppsEvidence:
@@ -92,6 +100,12 @@ def ui_meta(tool: Tool) -> Any:
     return tool_meta(tool).get("ui")
 
 
+def has_ui_meta(tool: Tool) -> bool:
+    """Whether the tool sends ``_meta.ui`` or the deprecated flat pointer key, whatever their values."""
+    meta = tool_meta(tool)
+    return "ui" in meta or FLAT_POINTER_KEY in meta
+
+
 def nested_pointer(tool: Tool) -> Any:
     """Return ``_meta.ui.resourceUri`` as served, or None."""
     ui = ui_meta(tool)
@@ -111,11 +125,7 @@ def pointer(tool: Tool) -> Any:
 
 def ui_tools(tools: list[Tool] | None) -> list[tuple[int, Tool]]:
     """Return the tools carrying any MCP Apps metadata, with their listing index."""
-    return [
-        (index, tool)
-        for index, tool in enumerate(tools or [])
-        if ui_meta(tool) is not None or flat_pointer(tool) is not None
-    ]
+    return [(index, tool) for index, tool in enumerate(tools or []) if has_ui_meta(tool)]
 
 
 def uses_apps(tools: list[Tool] | None, resources: list[Resource] | None) -> bool:
@@ -175,15 +185,29 @@ def _content(item: dict[str, Any]) -> UiContent:
     if isinstance(text, str):
         content.html_document = is_html_document(text)
     elif isinstance(blob, str):
-        # Base64 expands 3 bytes to 4 characters; decode just enough for the document prefix.
-        head = blob[: (DOCUMENT_PREFIX_BYTES // 3 + 1) * 4]
-        try:
-            raw = base64.b64decode(head, validate=True)
-        except (binascii.Error, ValueError):
+        if not is_valid_base64(blob):
             content.blob_valid = False
         else:
+            # Base64 expands 3 bytes to 4 characters; decode just enough for the document prefix.
+            raw = base64.b64decode(blob[: (DOCUMENT_PREFIX_BYTES // 3 + 1) * 4])
             content.html_document = is_html_document(raw.decode("utf-8", errors="replace"))
     return content
+
+
+def is_valid_base64(blob: str) -> bool:
+    """Whether the whole of *blob* is strict base64 (RFC 4648 §4), checked in chunks without keeping the bytes."""
+    if len(blob) % 4:
+        return False
+    for start in range(0, len(blob), BASE64_CHUNK):
+        chunk = blob[start : start + BASE64_CHUNK]
+        # Padding may only end the encoding; strict mode accepts it at the end of any chunk.
+        if start + BASE64_CHUNK < len(blob) and "=" in chunk:
+            return False
+        try:
+            binascii.a2b_base64(chunk, strict_mode=True)
+        except binascii.Error:
+            return False
+    return True
 
 
 async def _read(session: AppsSession, uri: str) -> UiRead:

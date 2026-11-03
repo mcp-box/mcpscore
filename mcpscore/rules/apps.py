@@ -20,6 +20,7 @@ from ..apps import (
     flat_pointer,
     nested_pointer,
     pointer_targets,
+    tool_meta,
     ui_meta,
     ui_tools,
     uses_apps,
@@ -101,6 +102,10 @@ def _evidence(audit_data: AuditData) -> AppsEvidence:
     return audit_data.apps
 
 
+def _answered(evidence: AppsEvidence) -> list[UiRead]:
+    return [read for read in evidence.reads.values() if read.answered]
+
+
 def _successful(evidence: AppsEvidence) -> list[UiRead]:
     return [read for read in evidence.reads.values() if read.error is None and read.contents]
 
@@ -126,7 +131,7 @@ class AppsToolUiMetaWellFormedRule(AppsBaseRule):
         issues: list[dict[str, Any]] = []
         for index, tool in _ui_tools(audit_data):
             ui = ui_meta(tool)
-            if ui is not None and not isinstance(ui, dict):
+            if "ui" in tool_meta(tool) and not isinstance(ui, dict):
                 issues.append(_issue(index, "/_meta/ui", "not_an_object", "an object"))
                 continue
             if isinstance(ui, dict):
@@ -141,7 +146,7 @@ class AppsToolUiMetaWellFormedRule(AppsBaseRule):
                         issues.append(
                             _issue(index, "/_meta/ui/visibility", "invalid_visibility", 'an array of "model", "app"')
                         )
-            if FLAT_POINTER_KEY in (tool.meta or {}) and not isinstance(flat_pointer(tool), str):
+            if FLAT_POINTER_KEY in tool_meta(tool) and not isinstance(flat_pointer(tool), str):
                 issues.append(_issue(index, "/_meta/ui~1resourceUri", "not_a_string", "a ui:// URI string"))
         passed = not issues
         return self._result(
@@ -218,6 +223,9 @@ class AppsUiResourceResolvesRule(AppsBaseRule):
     rule_order = 3
     needs_reads = True
 
+    def _judged_reads(self, evidence: AppsEvidence) -> list[UiRead]:
+        return _answered(evidence)
+
     @property
     def rule_name(self) -> str:
         return "Apps - UI Resources Resolve"
@@ -230,8 +238,11 @@ class AppsUiResourceResolvesRule(AppsBaseRule):
         """Medium check: ``resources/read`` of each pointer target returns content."""
         evidence = _evidence(audit_data)
         issues: list[dict[str, Any]] = []
-        for index, uri in enumerate(evidence.reads):
-            read = evidence.reads[uri]
+        judged = 0
+        for index, read in enumerate(evidence.reads.values()):
+            if not read.answered:
+                continue
+            judged += 1
             if read.error is not None:
                 issues.append(
                     {
@@ -245,10 +256,10 @@ class AppsUiResourceResolvesRule(AppsBaseRule):
         passed = not issues
         return self._result(
             passed=passed,
-            message=f"✅ Every UI resource the tools point at can be read ({len(evidence.reads)} read)"
+            message=f"✅ Every UI resource the tools point at can be read ({judged} read)"
             if passed
             else f"❌ Number of UI resources that could not be read: {len(issues)}",
-            details={"read": len(evidence.reads), "unread": evidence.unread},
+            details={"read": judged, "unanswered": len(evidence.reads) - judged, "unread": evidence.unread},
             fix="Serve each `ui://` resource a tool points at from `resources/read`, with its HTML as content.",
             issues=issues,
         )

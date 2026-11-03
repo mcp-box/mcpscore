@@ -65,9 +65,7 @@ class TestStatelessSession:
         assert await session.request_raw("skills/list", {}) == {"skills": []}
         body = json.loads(seen[0].content)
         meta = body["params"]["_meta"]
-        assert meta["io.modelcontextprotocol/clientCapabilities"] == {
-            "extensions": {"io.modelcontextprotocol/skills": {}}
-        }
+        assert meta["io.modelcontextprotocol/clientCapabilities"]["extensions"]["io.modelcontextprotocol/skills"] == {}
         assert seen[0].headers["Mcp-Method"] == "skills/list"
         assert "Mcp-Name" not in seen[0].headers
 
@@ -109,9 +107,7 @@ class TestStatelessSession:
         seen: list[httpx2.Request] = []
         await probes._probe_discover(_HttpTarget(_http_session({"jsonrpc": "2.0", "id": 1}, seen)._target.client, URL))
         meta = json.loads(seen[0].content)["params"]["_meta"]
-        assert meta["io.modelcontextprotocol/clientCapabilities"] == {
-            "extensions": {"io.modelcontextprotocol/skills": {}}
-        }
+        assert meta["io.modelcontextprotocol/clientCapabilities"]["extensions"]["io.modelcontextprotocol/skills"] == {}
 
     async def test_reply_without_result_is_no_answer(self):
         session = _http_session({"jsonrpc": "2.0", "id": 1001})

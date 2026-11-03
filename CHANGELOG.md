@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **mcpscore now declares the MCP Apps extension** (`io.modelcontextprotocol/ui`)
-  in `initialize`, as hosts do. A server that registers UI tools only for
+  in `initialize` and in its stateless `server/discover`, `tools/list` and
+  extension requests, as hosts do. A server that registers UI tools only for
   supporting clients now shows them to the audit.
 
 ## [1.30.0] - 2026-10-31

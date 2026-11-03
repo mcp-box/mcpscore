@@ -174,8 +174,8 @@ A server can render an interactive HTML interface in the host through the
 [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
 (`io.modelcontextprotocol/ui`). A tool points at a `ui://` resource in
 `_meta.ui.resourceUri`, and the host reads that resource with
-`resources/read`. mcpscore declares the extension in `initialize`, as hosts
-do, so a server that registers its UI tools only for supporting clients
+`resources/read`. mcpscore declares the extension in `initialize` and in its
+stateless requests, as hosts do, so a server that registers its UI tools only for supporting clients
 shows them. It then reads each `ui://` resource the tools point at, up to
 16. Servers whose tools carry no UI metadata skip these rules as
 `not-applicable`. The extension defines no server-side declaration, so none
@@ -189,7 +189,8 @@ is required.
 | The tool uses `_meta.ui.resourceUri`, not only the deprecated `_meta["ui/resourceUri"]`. Sending both passes | `apps_tool_ui_pointer_nested` (LOW) |
 
 The HTML check reads the document's opening (its doctype and root element),
-not full HTML5 validity. mcpscore never renders the UI or runs its scripts,
+not full HTML5 validity; a `blob` must be valid base64 throughout. A read
+that timed out or lost its connection is not judged. mcpscore never renders the UI or runs its scripts,
 and it never calls a tool, so the text fallback a UI tool should still
 return is not checked.
 

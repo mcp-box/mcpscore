@@ -2,9 +2,11 @@
 
 import asyncio
 import base64
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx2
 from mcp.shared.exceptions import MCPError
 from mcp_types import (
     Implementation,
@@ -15,7 +17,7 @@ from mcp_types import (
 )
 import pytest
 
-from mcpscore import apps
+from mcpscore import apps, probes
 from mcpscore.apps import (
     UI_EXTENSION,
     UI_EXTENSION_SETTINGS,
@@ -25,6 +27,7 @@ from mcpscore.apps import (
     UiRead,
     collect_apps,
     is_html_document,
+    is_valid_base64,
     pointer_targets,
     uses_apps,
 )
@@ -444,3 +447,79 @@ def test_failure_has_location_and_repair(rule_id: str, audit: AuditData, path: s
 
 def test_failure_inventory_covers_every_apps_rule() -> None:
     assert {case[0] for case in failure_cases()} == APPS_RULE_IDS
+
+
+class TestRoundOneRegressions:
+    def test_explicit_null_ui_metadata_is_reported(self) -> None:
+        rule_id = "apps_tool_ui_meta_well_formed"
+        audit_data = data([tool("a", {"ui": None}), tool("b", {"ui/resourceUri": None})])
+        assert [(i["entity_index"], i["reason"]) for i in issues(rule_id, audit_data)] == [
+            (0, "not_an_object"),
+            (1, "not_a_string"),
+        ]
+
+    @pytest.mark.parametrize(
+        ("blob", "valid"),
+        [
+            ("", True),
+            ("QUJD", True),
+            ("QQ==", True),
+            ("QUJ", False),
+            ("QUJD!!!!", False),
+            ("QQ==QUJD", False),
+            ("QU\nJD", False),
+        ],
+    )
+    def test_is_valid_base64(self, blob: str, valid: bool) -> None:
+        assert is_valid_base64(blob) is valid
+
+    def test_padding_at_a_chunk_boundary_is_invalid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(apps, "BASE64_CHUNK", 4)
+        assert not is_valid_base64("QQ==QUJD")
+        assert is_valid_base64("QUJDQQ==")
+
+    async def test_blob_broken_after_the_parsed_prefix_is_invalid(self) -> None:
+        page = HTML.encode("utf-8")
+        page += b" " * (-len(page) % 3)  # no padding, so only the tail is invalid
+        head = base64.b64encode(page).decode("ascii")
+        blob = head + "A" * (apps.DOCUMENT_PREFIX_BYTES * 2) + "!!!!"
+        session = FakeSession({URI: [{"uri": URI, "mimeType": UI_MIME_TYPE, "blob": blob}]})
+        evidence = await collect_apps(session, [ui_tool()])  # type: ignore[arg-type]
+        assert evidence.reads[URI].contents[0].blob_valid is False
+
+    def test_unanswered_reads_are_not_judged(self) -> None:
+        rule_id = "apps_ui_resource_resolves"
+        timeout = read(error={"outcome": "timeout"})
+        assert outcome(rule_id, data([ui_tool()], [timeout])) == SKIP_REASON_INSUFFICIENT_DATA
+        lost = read("ui://b", error={"outcome": "transport", "exception": "ConnectionError"})
+        result = RULES[rule_id].check(
+            data(
+                [ui_tool(), ui_tool("b", "ui://b"), ui_tool("c", "ui://c")],
+                [read("ui://c"), lost, read(error={"outcome": "timeout"})],
+            )
+        )
+        assert result.passed
+        assert result.details["read"] == 1
+        assert result.details["unanswered"] == 2
+
+    def test_stateless_constants_match(self) -> None:
+        assert probes.UI_EXTENSION_ID == UI_EXTENSION
+        assert probes.UI_EXTENSION_SETTINGS == {"mimeTypes": [UI_MIME_TYPE]}
+
+    async def test_stateless_requests_declare_the_ui_extension(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            body = json.loads(request.content)
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"contents": []}})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            target = probes._HttpTarget(client, "https://example.com/mcp")
+            await probes.StatelessSession(target).read_resource_contents(URI)
+            await probes._probe_stateless_list(target)
+            await probes._probe_discover(target)
+        for request in seen:
+            capabilities = json.loads(request.content)["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"]
+            assert capabilities["extensions"][UI_EXTENSION] == UI_EXTENSION_SETTINGS
+        assert [json.loads(r.content)["method"] for r in seen] == ["resources/read", "tools/list", "server/discover"]

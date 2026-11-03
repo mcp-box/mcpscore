@@ -423,15 +423,19 @@ def _modern_meta(protocol_version: str) -> dict[str, Any]:
 
 
 SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
+UI_EXTENSION_ID = "io.modelcontextprotocol/ui"
+UI_EXTENSION_SETTINGS: dict[str, Any] = {"mimeTypes": ["text/html;profile=mcp-app"]}
 
 
-def _skills_meta(protocol_version: str) -> dict[str, Any]:
-    """Build the modern ``_meta`` envelope declaring the Skills extension.
+def _extensions_meta(protocol_version: str) -> dict[str, Any]:
+    """Build the modern ``_meta`` envelope declaring the Skills and MCP Apps extensions.
 
-    A server may expose skills only to clients that declare it.
+    A server may expose skills or UI tools only to clients that declare the extension.
     """
     meta = _modern_meta(protocol_version)
-    meta[f"{META_PREFIX}clientCapabilities"] = {"extensions": {SKILLS_EXTENSION_ID: {}}}
+    meta[f"{META_PREFIX}clientCapabilities"] = {
+        "extensions": {SKILLS_EXTENSION_ID: {}, UI_EXTENSION_ID: UI_EXTENSION_SETTINGS}
+    }
     return meta
 
 
@@ -1063,7 +1067,7 @@ async def _probe_discover(target: _ProbeTarget) -> ProbeResult:
     """
     target_version = _target_version()
     response = await target.post(
-        _request_body("server/discover", 1, _skills_meta(target_version)),
+        _request_body("server/discover", 1, _extensions_meta(target_version)),
         _request_headers(target_version, "server/discover"),
     )
     details = _base_details(response)
@@ -1086,7 +1090,7 @@ async def _probe_stateless_list(target: _ProbeTarget) -> ProbeResult:
     """
     target_version = _target_version()
     response = await target.post(
-        _request_body("tools/list", 2, _modern_meta(target_version)),
+        _request_body("tools/list", 2, _extensions_meta(target_version)),
         _request_headers(target_version, "tools/list"),
     )
     details = _base_details(response)
@@ -3736,7 +3740,7 @@ class StatelessSession:
         """Send one stateless request and return its result object."""
         self._next_id += 1
         version = _target_version()
-        meta = _skills_meta(version)
+        meta = _extensions_meta(version)
         name = params.get("uri") if method == "resources/read" and isinstance(params.get("uri"), str) else None
         request_id = 1000 + self._next_id
         response = await self._post(
