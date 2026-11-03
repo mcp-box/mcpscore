@@ -184,7 +184,7 @@ is required.
 | What is checked | Rules |
 |---|---|
 | A tool's `_meta.ui` is an object, `resourceUri` a string and `visibility` an array of `"model"` and `"app"` ([§Resource Discovery](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx#resource-discovery)) | `apps_tool_ui_meta_well_formed` (MEDIUM) |
-| Every UI pointer names a `ui://` URI, and `resources/read` returns the resource ([§UI Resource Format](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx#ui-resource-format), [§Resource Discovery](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx#resource-discovery)) | `apps_ui_resource_uri_scheme`, `apps_ui_resource_resolves` (MEDIUM) |
+| Every UI pointer names a `ui://` URI, and `resources/read` returns that resource, under the requested URI ([§UI Resource Format](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx#ui-resource-format), [§Resource Discovery](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx#resource-discovery)) | `apps_ui_resource_uri_scheme`, `apps_ui_resource_resolves` (MEDIUM) |
 | The content is served as `text/html;profile=mcp-app`, as `text` or a base64 `blob`, and opens as an HTML document | `apps_ui_resource_mime_type`, `apps_ui_resource_html_document` (MEDIUM) |
 | The tool uses `_meta.ui.resourceUri`, not only the deprecated `_meta["ui/resourceUri"]`. Sending both passes | `apps_tool_ui_pointer_nested` (LOW) |
 

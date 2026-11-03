@@ -253,6 +253,10 @@ class AppsUiResourceResolvesRule(AppsBaseRule):
                 )
             elif not read.contents:
                 issues.append(_issue(index, "/contents", "empty", "at least one content item", "ui_resource"))
+            elif not read.returns_requested:
+                issues.append(
+                    _issue(index, "/contents", "other_resource", "a content item with the requested URI", "ui_resource")
+                )
         passed = not issues
         return self._result(
             passed=passed,
@@ -288,7 +292,9 @@ class AppsUiResourceMimeTypeRule(AppsBaseRule):
     def check(self, audit_data: AuditData) -> RuleResult:
         """Medium check: every content item of every UI resource read has ``mimeType`` exactly as specified."""
         issues: list[dict[str, Any]] = []
-        for index, read in enumerate(_successful(_evidence(audit_data))):
+        for index, read in enumerate(_evidence(audit_data).reads.values()):
+            if read.error is not None:
+                continue
             for item, content in enumerate(read.contents):
                 if content.mime_type != UI_MIME_TYPE:
                     issues.append(
@@ -332,7 +338,9 @@ class AppsUiResourceHtmlDocumentRule(AppsBaseRule):
     def check(self, audit_data: AuditData) -> RuleResult:
         """Medium check: content opens with an HTML doctype or ``html`` root; fragments and plain text fail."""
         issues: list[dict[str, Any]] = []
-        for index, read in enumerate(_successful(_evidence(audit_data))):
+        for index, read in enumerate(_evidence(audit_data).reads.values()):
+            if read.error is not None:
+                continue
             for item, content in enumerate(read.contents):
                 path = f"/contents/{item}"
                 if not (content.has_text or content.has_blob):

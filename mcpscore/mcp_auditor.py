@@ -993,9 +993,18 @@ class MCPAuditor:
         self.audit_data.resource_templates = templates
 
     async def _collect_apps(self) -> None:
-        """Read the ``ui://`` resources the server's tools point at (MCP Apps), over the audit session."""
+        """Read the ``ui://`` resources the server's tools point at (MCP Apps), on the lifecycle that listed them.
+
+        Tools recovered from the stateless catalog are read there too, so pointers and reads match.
+        """
         if self.mcp_client is None or not pointer_targets(self.audit_data.tools):
             return
+        if "tools" in self.audit_data.catalog_versions:
+            url = self.audit_data.url
+            target = url if url and url.startswith(("http://", "https://")) else self.mcp_client.stdio_params
+            if target is not None:
+                await self._collect_apps_stateless(target)
+                return
         self.audit_data.apps = await collect_apps(self.mcp_client, self.audit_data.tools)
 
     async def _collect_apps_stateless(self, target: str | StdioServerParameters) -> None:

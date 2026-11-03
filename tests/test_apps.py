@@ -52,7 +52,12 @@ def ui_tool(name: str = "show", uri: Any = URI, **ui: Any) -> Tool:
 
 
 def read(uri: str = URI, *contents: UiContent, error: dict[str, Any] | None = None) -> UiRead:
-    return UiRead(uri, list(contents) if contents else ([] if error else [html_content()]), error)
+    """Build a read of *uri*; content items without a URI carry the requested one."""
+    items = list(contents) if contents else ([] if error else [html_content()])
+    for item in items:
+        if item.uri is None:
+            item.uri = uri
+    return UiRead(uri, items, error)
 
 
 def html_content(mime_type: Any = UI_MIME_TYPE) -> UiContent:
@@ -142,15 +147,17 @@ class TestCollector:
         tools = [ui_tool(), ui_tool("b", "ui://b"), ui_tool("c", "ui://c"), ui_tool("d", "ui://d")]
         evidence = await collect_apps(session, tools)  # type: ignore[arg-type]
         assert evidence.reads[URI].contents == [
-            UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, html_document=True)
+            UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, html_document=True, uri=URI)
         ]
         assert evidence.reads["ui://b"].contents == [
-            UiContent(UI_MIME_TYPE, has_text=False, has_blob=True, html_document=True)
+            UiContent(UI_MIME_TYPE, has_text=False, has_blob=True, html_document=True, uri="ui://b")
         ]
         assert evidence.reads["ui://c"].contents == [
-            UiContent(UI_MIME_TYPE, has_text=False, has_blob=True, blob_valid=False)
+            UiContent(UI_MIME_TYPE, has_text=False, has_blob=True, blob_valid=False, uri="ui://c")
         ]
-        assert evidence.reads["ui://d"].contents == [UiContent(UI_MIME_TYPE, has_text=False, has_blob=False)]
+        assert evidence.reads["ui://d"].contents == [
+            UiContent(UI_MIME_TYPE, has_text=False, has_blob=False, uri="ui://d")
+        ]
         assert evidence.unread == 0
 
     async def test_failed_read_is_evidence(self) -> None:
@@ -523,3 +530,51 @@ class TestRoundOneRegressions:
             capabilities = json.loads(request.content)["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"]
             assert capabilities["extensions"][UI_EXTENSION] == UI_EXTENSION_SETTINGS
         assert [json.loads(r.content)["method"] for r in seen] == ["resources/read", "tools/list", "server/discover"]
+
+
+class TestRoundTwoRegressions:
+    async def test_non_ascii_blob_is_invalid_not_an_abort(self) -> None:
+        session = FakeSession({URI: [{"uri": URI, "mimeType": UI_MIME_TYPE, "blob": "指南=="}]})
+        evidence = await collect_apps(session, [ui_tool()])  # type: ignore[arg-type]
+        assert evidence.reads[URI].contents[0].blob_valid is False
+        assert not is_valid_base64("指南==")
+
+    def test_read_returning_another_resource_does_not_resolve(self) -> None:
+        rule_id = "apps_ui_resource_resolves"
+        other = UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, html_document=True, uri="file:///other.html")
+        found = issues(rule_id, data([ui_tool()], [read(URI, other)]))
+        assert [i["reason"] for i in found] == ["other_resource"]
+        respelled = UiContent(
+            UI_MIME_TYPE, has_text=True, has_blob=False, html_document=True, uri="UI://server/app.html"
+        )
+        assert outcome(rule_id, data([ui_tool()], [read(URI, respelled)])) is True
+
+    @pytest.mark.parametrize("rule_id", ["apps_ui_resource_mime_type", "apps_ui_resource_html_document"])
+    def test_issue_index_counts_failed_reads(self, rule_id: str) -> None:
+        broken = UiContent("text/html", has_text=True, has_blob=False, html_document=False)
+        audit_data = data(
+            [ui_tool(), ui_tool("b", "ui://b")],
+            [read(error={"outcome": "rpc_error", "error_code": -32002}), read("ui://b", broken)],
+        )
+        assert [i["entity_index"] for i in issues(rule_id, audit_data)] == [1]
+
+    async def test_recovered_tools_are_read_on_the_stateless_lifecycle(self) -> None:
+        auditor = MCPAuditor()
+        auditor.mcp_client = MagicMock(spec=MCPClient)
+        auditor.mcp_client.stdio_params = None
+        auditor.audit_data.url = "https://example.com/mcp"
+        auditor.audit_data.tools = [ui_tool()]
+        auditor.audit_data.catalog_versions = {"tools": "2026-07-28"}
+        with patch.object(auditor, "_collect_apps_stateless", AsyncMock()) as stateless:
+            await auditor._collect_apps()
+        stateless.assert_awaited_once_with("https://example.com/mcp")
+
+    async def test_recovered_tools_without_a_target_use_the_session(self) -> None:
+        session = FakeSession({URI: [{"uri": URI, "mimeType": UI_MIME_TYPE, "text": HTML}]})
+        client = AppsClient([ui_tool()], session)
+        auditor = MCPAuditor()
+        auditor.mcp_client = client
+        auditor.audit_data.tools = [ui_tool()]
+        auditor.audit_data.catalog_versions = {"tools": "2026-07-28"}
+        await auditor._collect_apps()
+        assert session.reads == [URI]

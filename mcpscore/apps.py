@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from mcp_types import Resource, Tool
 
 from .probes import UI_EXTENSION_ID, UI_EXTENSION_SETTINGS as _PROBE_UI_SETTINGS
-from .skills import UNOBSERVED_OUTCOMES, rpc_error
+from .skills import UNOBSERVED_OUTCOMES, normalize_uri, rpc_error
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,8 @@ class UiContent:
     blob_valid: bool = True
     html_document: bool | None = None
     """Whether the content opens as an HTML document; None when it has no text or decodable blob."""
+    uri: Any = None
+    """The content item's ``uri`` as served."""
 
 
 @dataclass
@@ -78,6 +80,12 @@ class UiRead:
     def answered(self) -> bool:
         """Whether the server answered: content, or an error it returned (not a timeout or lost connection)."""
         return self.error is None or self.error.get("outcome") not in UNOBSERVED_OUTCOMES
+
+    @property
+    def returns_requested(self) -> bool:
+        """Whether a content item carries the requested URI (compared in RFC 3986 normal form)."""
+        wanted = normalize_uri(self.uri)
+        return any(isinstance(c.uri, str) and normalize_uri(c.uri) == wanted for c in self.contents)
 
 
 @dataclass
@@ -181,7 +189,7 @@ def is_html_document(text: str) -> bool:
 
 def _content(item: dict[str, Any]) -> UiContent:
     text, blob = item.get("text"), item.get("blob")
-    content = UiContent(item.get("mimeType"), isinstance(text, str), isinstance(blob, str))
+    content = UiContent(item.get("mimeType"), isinstance(text, str), isinstance(blob, str), uri=item.get("uri"))
     if isinstance(text, str):
         content.html_document = is_html_document(text)
     elif isinstance(blob, str):
@@ -205,7 +213,7 @@ def is_valid_base64(blob: str) -> bool:
             return False
         try:
             binascii.a2b_base64(chunk, strict_mode=True)
-        except binascii.Error:
+        except (binascii.Error, ValueError):  # ValueError: a non-ASCII character
             return False
     return True
 
