@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extension requests, as hosts do. A server that registers UI tools only for
   supporting clients now shows them to the audit.
 
+### Fixed
+
+- **A lone surrogate in a skill URI no longer aborts the audit.** URI
+  comparison now encodes it as its UTF-8 bytes, so it matches only itself.
+
 ## [1.30.0] - 2026-10-31
 
 Two new security checks for `--smoke`: one tests that file tools stay inside

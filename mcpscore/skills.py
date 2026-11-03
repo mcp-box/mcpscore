@@ -520,9 +520,10 @@ def normalize_uri(uri: str) -> str:
 
     The scheme is lowercased; characters a URI cannot carry (non-ASCII, spaces) are percent-encoded as UTF-8,
     escapes are uppercased, and only escapes of unreserved characters are decoded: ``%2D`` equals ``-``, while
-    ``%3B``, ``%2F`` or ``%25`` stay distinct from ``;``, ``/`` or ``%``. The rest stays case-sensitive.
+    ``%3B``, ``%2F`` or ``%25`` stay distinct from ``;``, ``/`` or ``%``. The rest stays case-sensitive. A lone
+    surrogate is encoded as its UTF-8 bytes, so it matches only itself instead of raising.
     """
-    normal = _ESCAPE_RE.sub(_normal_escape, quote(uri, safe=_URI_SAFE))
+    normal = _ESCAPE_RE.sub(_normal_escape, quote(uri, safe=_URI_SAFE, errors="surrogatepass"))
     scheme = _SCHEME_RE.match(normal)
     return normal[: scheme.end()].lower() + normal[scheme.end() :] if scheme else normal
 

@@ -1053,3 +1053,14 @@ class TestSkillsReport:
     def test_skills_outside_a_skill_root_have_no_scripts(self):
         odd = {"uri": "skill://a/README.md", "resources": [{"uri": "skill://a/scripts/x.py", "size": 1}]}
         assert skills.skills_report(skills.SkillsEvidence(entries=[odd]))["skills"] == []
+
+
+def test_normalize_uri_encodes_a_lone_surrogate() -> None:
+    assert skills.normalize_uri("ui://a/\ud800") == "ui://a/%ED%A0%80"
+    assert skills.normalize_uri("ui://a/\ud800") != skills.normalize_uri("ui://a/\ud801")
+
+
+async def test_lone_surrogate_in_a_skill_uri_does_not_abort_collection() -> None:
+    lone = {"uri": "skill://a/\ud800/SKILL.md", "frontmatter": {"name": "a", "description": "d"}, "resources": []}
+    evidence = await collect_skills(FakeSession([{"skills": [lone]}]), {})
+    assert evidence.entries == [lone]

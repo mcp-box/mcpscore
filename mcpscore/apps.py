@@ -169,7 +169,8 @@ class _DocumentStart(HTMLParser):
             self.first_tag = tag
 
     def handle_data(self, data: str) -> None:
-        if self.first_tag is None and data.strip():
+        # After a doctype, text is body content: the html, head and body tags may be omitted.
+        if self.doctype is None and self.first_tag is None and data.strip():
             self.text_before_root = True
 
 

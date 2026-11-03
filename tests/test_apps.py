@@ -100,6 +100,7 @@ class TestHelpers:
             ('<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"><svg/>', False),
             ("", False),
             ("<!DOCTYPE html><!DOCTYPE other><html>", True),
+            ("<!DOCTYPE html>Hello", True),
         ],
     )
     def test_is_html_document(self, text: str, expected: bool) -> None:
@@ -578,3 +579,19 @@ class TestRoundTwoRegressions:
         auditor.audit_data.catalog_versions = {"tools": "2026-07-28"}
         await auditor._collect_apps()
         assert session.reads == [URI]
+
+
+class TestRoundThreeRegressions:
+    def test_lone_surrogate_uris_compare_without_aborting(self) -> None:
+        rule_id = "apps_ui_resource_resolves"
+        lone = "ui://server/\ud800"
+        content = UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, html_document=True, uri=lone)
+        assert [i["reason"] for i in issues(rule_id, data([ui_tool()], [read(URI, content)]))] == ["other_resource"]
+        requested = UiRead(lone, [UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, uri=lone)])
+        assert requested.returns_requested is True
+        later = UiContent(UI_MIME_TYPE, has_text=True, has_blob=False, html_document=True, uri=URI)
+        assert UiRead(URI, [content, later]).returns_requested is True
+
+    def test_text_right_after_the_doctype_is_a_document(self) -> None:
+        assert is_html_document("<!DOCTYPE html>Hello")
+        assert not is_html_document("Hello<!DOCTYPE html>")
