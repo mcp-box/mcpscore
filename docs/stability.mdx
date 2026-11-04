@@ -20,17 +20,17 @@ mcpscore https://mcp.deepwiki.com/mcp --json > report.json
 ```json
 {
   "schema_version": 1,
-  "mcpscore_version": "1.29.1",
-  "generated_at": "2026-10-29T07:43:39.905908+00:00",
+  "mcpscore_version": "1.31.0",
+  "generated_at": "2026-11-04T12:22:46.618488+00:00",
   "target": "https://mcp.deepwiki.com/mcp",
   "transport": "streamable-http",
-  "score": 96,
-  "max_score": 112,
+  "score": 153,
+  "max_score": 171,
   "authenticated": false,
   "partial": false,
-  "server_info": { "name": "DeepWiki", "version": "2.14.3" },
+  "server_info": { "name": "DeepWiki", "version": "4.0.2" },
   "package": null,
-  "summary": { "total": 46, "passed": 35, "failed": 11, "skipped": 77, ... },
+  "summary": { "total": 53, "passed": 41, "failed": 12, "skipped": 76, ... },
   "results": [
     {
       "rule_id": "tools_annotations_present",
@@ -60,15 +60,15 @@ mcpscore https://mcp.deepwiki.com/mcp --json > report.json
   ],
   "skipped_rules": [
     {
-      "rule_id": "protocol_version_supported_versions_include_negotiated",
-      "rule_name": "MCP Protocol Version - Supported Versions Include Negotiated",
+      "rule_id": "server_instructions_tool_references",
+      "rule_name": "Server Info - Instructions reference listed tools",
       "reason": "not-applicable",
-      "group_name": "protocol_version"
+      "group_name": "server_info"
     },
     ...
   ],
-  "spec": { "negotiated_version": "2025-11-25", "latest_version": "2026-07-28", "era": "legacy", ... },
-  "readiness": { "score": 3, "max_score": 13, "counted_in_main": false, "assessed": 4, "skipped": 17, "total": 21, ... }
+  "spec": { "negotiated_version": "2025-11-25", "latest_version": "2026-07-28", "era": "dual-era", ... },
+  "readiness": { "score": 43, "max_score": 45, "counted_in_main": true, "assessed": 18, "skipped": 3, "total": 21, ... }
 }
 ```
 
