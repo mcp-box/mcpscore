@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-11-04
+
+Servers that deliver interactive UIs through the MCP Apps extension now get
+six checks in a new `apps` group: well-formed UI metadata, `ui://` pointers
+that resolve, and HTML content served with the right MIME type. Servers
+without UI metadata skip the group, so their scores do not move. mcpscore
+now declares the MCP Apps extension, so servers that show UI tools only to
+supporting clients show them to the audit.
+
 ### Added
 
 - **MCP Apps rules: six checks for servers that deliver interactive UIs.**
@@ -24,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `initialize` and in its stateless `server/discover`, `tools/list` and
   extension requests, as hosts do. A server that registers UI tools only for
   supporting clients now shows them to the audit.
+- **Dependencies refreshed**: `anyio` 4.16.0 and `python-multipart` 0.0.33
+  (through the MCP SDK). The `mcp==2.3.0` pin is the latest SDK release.
 
 ### Fixed
 
@@ -2514,7 +2525,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.30.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.31.0...HEAD
+[1.31.0]: https://github.com/mcp-box/mcpscore/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/mcp-box/mcpscore/compare/v1.29.1...v1.30.0
 [1.29.1]: https://github.com/mcp-box/mcpscore/compare/v1.29.0...v1.29.1
 [1.29.0]: https://github.com/mcp-box/mcpscore/compare/v1.28.0...v1.29.0
