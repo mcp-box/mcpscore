@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
     from mcp_types import Implementation, Prompt, Resource, ResourceTemplate, ServerCapabilities, Tool
 
+    from mcpscore.apps import AppsEvidence
     from mcpscore.packages import PackageMetadata
     from mcpscore.skills import SkillsEvidence
 
@@ -160,6 +161,9 @@ class AuditData:
 
     skills: SkillsEvidence | None = None
     """Skills extension evidence (SEP-2640); None unless the server declared the extension and a session ran."""
+
+    apps: AppsEvidence | None = None
+    """MCP Apps UI resource reads; None unless a tool points at a ``ui://`` resource and a session ran."""
 
     # Partial audit: no server session was available (e.g. an auth-gated
     # server), so only probe-derived rules were scored and session-dependent

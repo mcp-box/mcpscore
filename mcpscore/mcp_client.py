@@ -44,6 +44,7 @@ from mcp_types import (
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from .apps import UI_EXTENSION, UI_EXTENSION_SETTINGS
 from .diagnostics import validation_diagnostics
 from .enums import ConnectionErrorReason, MCPTransportType
 from .probes import (
@@ -765,8 +766,8 @@ class MCPClient:
                     write_stream,
                     read_timeout_seconds=REQUEST_TIMEOUT_S,
                     client_info=Implementation(name=CLIENT_NAME, version=client_version()),
-                    # Some servers expose their skills only to a client that declares the extension.
-                    extensions={SKILLS_EXTENSION: {}},
+                    # Some servers expose skills or UI tools only to a client that declares the extension.
+                    extensions={SKILLS_EXTENSION: {}, UI_EXTENSION: UI_EXTENSION_SETTINGS},
                 )
             )
             init_result: InitializeResult = await asyncio.wait_for(

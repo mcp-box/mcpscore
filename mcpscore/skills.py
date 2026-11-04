@@ -520,9 +520,10 @@ def normalize_uri(uri: str) -> str:
 
     The scheme is lowercased; characters a URI cannot carry (non-ASCII, spaces) are percent-encoded as UTF-8,
     escapes are uppercased, and only escapes of unreserved characters are decoded: ``%2D`` equals ``-``, while
-    ``%3B``, ``%2F`` or ``%25`` stay distinct from ``;``, ``/`` or ``%``. The rest stays case-sensitive.
+    ``%3B``, ``%2F`` or ``%25`` stay distinct from ``;``, ``/`` or ``%``. The rest stays case-sensitive. A lone
+    surrogate is encoded as its UTF-8 bytes, so it matches only itself instead of raising.
     """
-    normal = _ESCAPE_RE.sub(_normal_escape, quote(uri, safe=_URI_SAFE))
+    normal = _ESCAPE_RE.sub(_normal_escape, quote(uri, safe=_URI_SAFE, errors="surrogatepass"))
     scheme = _SCHEME_RE.match(normal)
     return normal[: scheme.end()].lower() + normal[scheme.end() :] if scheme else normal
 
@@ -633,7 +634,7 @@ UNOBSERVED_OUTCOMES = frozenset({"timeout", "transport"})
 """Call outcomes with no answer from the server, so nothing about the method can be judged."""
 
 
-def _rpc_error(exc: Exception) -> dict[str, Any]:
+def rpc_error(exc: Exception) -> dict[str, Any]:
     """Classify a failed call: a JSON-RPC error, a reply that did not validate, a timeout, or no answer at all."""
     code = getattr(exc, "code", None)
     if isinstance(exc, TimeoutError) or code == REQUEST_TIMEOUT:
@@ -674,7 +675,7 @@ async def stateless_first_page(session: SkillsSession) -> tuple[dict[str, Any], 
     try:
         result = await session.request_raw("skills/list", {})
     except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
-        return {"error": _rpc_error(exc)}, None, False
+        return {"error": rpc_error(exc)}, None, False
     skills = result.get("skills") if isinstance(result, dict) else None
     if not isinstance(skills, list):
         return _list_hints(result), None, False
@@ -701,7 +702,7 @@ async def _list(session: SkillsSession, evidence: SkillsEvidence, *, stateless: 
             result = await session.request_raw("skills/list", {"cursor": cursor} if cursor is not None else {})
         except Exception as exc:  # noqa: BLE001 — a failed listing is evidence, not an audit abort
             if page == 0:
-                evidence.list_error = _rpc_error(exc)
+                evidence.list_error = rpc_error(exc)
                 if stateless:
                     evidence.stateless_list = {"error": evidence.list_error}
             else:
@@ -769,7 +770,7 @@ async def _get_one(session: SkillsSession, uri: str) -> SkillGet:
     try:
         result = await session.request_raw("skills/get", {"uri": uri})
     except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
-        return SkillGet(uri, error=_rpc_error(exc))
+        return SkillGet(uri, error=rpc_error(exc))
     return SkillGet(uri, result.get("skill") if isinstance(result, dict) else None)
 
 
@@ -806,7 +807,7 @@ async def _read_directory(session: SkillsSession, uri: str, kind: str, reads: li
         try:
             result = await session.request_raw("resources/directory/read", params)
         except Exception as exc:  # noqa: BLE001 — a failed call is evidence, not an audit abort
-            error = _rpc_error(exc)
+            error = rpc_error(exc)
             if page == 0:
                 read.error, read.incomplete = error, False
             elif error["outcome"] not in UNOBSERVED_OUTCOMES:
@@ -872,7 +873,7 @@ async def _read(session: SkillsSession, uri: str, keep_text: bool) -> SkillFile:
     try:
         contents = await session.read_resource_contents(uri)
     except Exception as exc:  # noqa: BLE001 — a failed read is evidence, not an audit abort
-        error = _rpc_error(exc)
+        error = rpc_error(exc)
         return SkillFile(uri, error=error["outcome"], error_code=error.get("error_code"))
     decoded = content_bytes(contents, uri)
     if decoded is None:

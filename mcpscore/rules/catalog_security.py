@@ -1366,7 +1366,7 @@ def _document_urls(
     try:
         parser.feed(bound_charrefs(html))
         parser.close()
-    except ValueError:  # malformed markup the standard parser rejects
+    except (ValueError, AssertionError):  # malformed markup the standard parser rejects or asserts on
         return [], True
     base, odd_base = _document_base(inherited_base, parser.base)
     urls: list[tuple[str, bool]] = []
