@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.31.1] - 2026-11-07
+
+Servers that rate-limit the audit, or ask for sign-in before serving a UI
+resource or a Skills call, no longer fail `apps_ui_resource_resolves` or
+the Skills rules for it. Those reads are now left out of the judgment, so
+the affected servers' scores rise. On stateless sessions, a read answered
+with another HTTP error, such as a 500, now fails the way it already did on
+a regular session, so a few modern-only servers can score lower.
+
+### Changed
+
+- Dependencies refreshed: click 8.5.1, pydantic 2.14.3 (pydantic-core
+  2.50.4), typing-inspection 0.4.5. The `mcp==2.3.0` pin is the latest SDK.
+
 ### Fixed
 
 - **A rate-limited or sign-in-gated read no longer fails a rule.** When a
@@ -15,9 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or the server's own rate-limit code), and `apps_ui_resource_resolves`
   (and the Skills rules) judged it as the server failing to serve the
   resource. The HTTP status now decides: those reads count as
-  unanswered: the rule judges the reads that did answer, or skips as
+  unanswered, so the rule judges the reads that did answer, or skips as
   `insufficient-data` when none did. Other HTTP errors still fail, and the
   report now carries their `http_status`.
+- On stateless sessions, an HTTP error with no JSON-RPC error in its body
+  counted as no answer at all. It is now classified like the same response
+  on a regular session: 401/403/429/503 as unanswered, anything else as a
+  failed call.
 - Failure messages of the MCP Apps resource rules name the `UI resource`
   instead of an empty `catalog item … ""` label.
 
@@ -2539,7 +2557,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.31.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.31.1...HEAD
+[1.31.1]: https://github.com/mcp-box/mcpscore/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/mcp-box/mcpscore/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/mcp-box/mcpscore/compare/v1.29.1...v1.30.0
 [1.29.1]: https://github.com/mcp-box/mcpscore/compare/v1.29.0...v1.29.1
