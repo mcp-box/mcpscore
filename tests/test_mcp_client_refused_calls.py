@@ -220,3 +220,35 @@ async def test_stateless_success_with_a_mismatched_id_is_no_answer() -> None:
         session = probes.StatelessSession(probes._HttpTarget(http, URL))
         with pytest.raises(ConnectionError):
             await session.read_resource_contents(URI)
+
+
+async def test_same_origin_redirect_still_connects_and_keeps_the_status() -> None:
+    inner = _server(httpx2.Response(429, text=""))
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/mcp":
+            return httpx2.Response(307, headers={"location": URL + "/"})
+        return inner.handler(request)  # type: ignore[attr-defined]
+
+    transport = httpx2.MockTransport(handler)
+    client = MCPClient()
+    with patch.object(mcp_client, "async_client", lambda **kwargs: async_client(transport=transport, **kwargs)):
+        assert await client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, URL)
+    try:
+        with pytest.raises(HTTPRefusedCallError) as caught:
+            await client.read_resource_contents(URI)
+        assert caught.value.http_status == 429
+    finally:
+        await client.cleanup()
+
+
+async def test_a_body_that_cannot_be_read_is_skipped() -> None:
+    class Unreadable(httpx2.Request):
+        async def aread(self) -> bytes:
+            raise httpx2.StreamConsumed
+
+    client = MCPClient()
+    request = Unreadable("POST", URL, content=b"{}")
+    await client._forget_refused_call(request)
+    await client._record_refused_call(httpx2.Response(429, request=request))
+    assert client._refused_calls == {}

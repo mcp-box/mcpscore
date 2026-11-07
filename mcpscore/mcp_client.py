@@ -1447,13 +1447,17 @@ class MCPClient:
         return dict(result.model_extra or {})
 
     @staticmethod
-    def _request_key(request: httpx2.Request) -> tuple[str, str | None] | None:
-        """Return the call key of a JSON-RPC request posted to the server, or None for anything else."""
+    async def _request_key(request: httpx2.Request) -> tuple[str, str | None] | None:
+        """Return the call key of a JSON-RPC request posted to the server, or None for anything else.
+
+        A followed redirect's request is stream-backed, so the body is read with ``aread()``, which caches it for
+        the send. The hooks only observe: any failure here returns None rather than breaking the request.
+        """
         if request.method != "POST":
             return None
         try:
-            body = json.loads(request.content)
-        except (ValueError, UnicodeDecodeError):
+            body = json.loads(await request.aread())
+        except Exception:  # noqa: BLE001
             return None
         if isinstance(body, dict) and isinstance(body.get("method"), str) and "id" in body:
             return _call_key(body["method"], body.get("params"))
@@ -1461,12 +1465,12 @@ class MCPClient:
 
     async def _forget_refused_call(self, request: httpx2.Request) -> None:
         """Drop an earlier attempt's status when the same call is sent again."""
-        if (key := self._request_key(request)) is not None:
+        if (key := await self._request_key(request)) is not None:
             self._refused_calls.pop(key, None)
 
     async def _record_refused_call(self, response: httpx2.Response) -> None:
         """Keep the HTTP error status of a JSON-RPC request, so the failed call can report it."""
-        if response.status_code >= 400 and (key := self._request_key(response.request)) is not None:
+        if response.status_code >= 400 and (key := await self._request_key(response.request)) is not None:
             self._refused_calls[key] = response.status_code
 
     def _with_http_status(self, exc: MCPError, method: str, params: Any) -> MCPError:
