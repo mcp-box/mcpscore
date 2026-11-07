@@ -249,6 +249,7 @@ class AppsUiResourceResolvesRule(AppsBaseRule):
                         **_issue(index, "", "read_failed", "resources/read returns the resource", "ui_resource"),
                         "outcome": read.error.get("outcome"),
                         **({"error_code": read.error["error_code"]} if "error_code" in read.error else {}),
+                        **({"http_status": read.error["http_status"]} if "http_status" in read.error else {}),
                     }
                 )
             elif not read.contents:

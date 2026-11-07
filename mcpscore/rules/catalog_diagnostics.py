@@ -59,10 +59,11 @@ def catalog_result(
             message += " This is an optional quality recommendation."
         if bounded:
             first = bounded[0]
-            location = entity_label(first.get("entity_kind")).lower()
+            label = entity_label(first.get("entity_kind"))
+            location = label if label[:2].isupper() else label.lower()  # keep an acronym such as "UI"
             if "entity_index" in first:
                 location += f" at index {first['entity_index']}"
-            if "path" in first:
+            if first.get("path"):
                 location += " " + json.dumps(first["path"], ensure_ascii=True)
             message += f" First affected field: {location}."
     return RuleResult(

@@ -24,6 +24,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
+from mcp.shared.exceptions import MCPError
 from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 from pydantic import ValidationError
 import yaml
@@ -630,13 +631,39 @@ def _declared_size(entries: list[Any], uri: str) -> int | None:
     return None
 
 
-UNOBSERVED_OUTCOMES = frozenset({"timeout", "transport"})
-"""Call outcomes with no answer from the server, so nothing about the method can be judged."""
+UNOBSERVED_OUTCOMES = frozenset({"timeout", "transport", "gated", "throttled"})
+"""Call outcomes that say nothing about the method: no answer, or an HTTP refusal for want of a credential or rate."""
+
+GATED_STATUSES = frozenset({401, 403})
+THROTTLED_STATUSES = frozenset({429, 503})
+
+
+class HTTPRefusedCallError(MCPError):
+    """A call answered with an HTTP error status, which a plain JSON-RPC error drops.
+
+    The error is the server's JSON-RPC error when the body held one, else the SDK's stand-in -32603.
+    """
+
+    def __init__(self, error: MCPError, http_status: int) -> None:
+        super().__init__(error.code, error.message, error.data)
+        self.http_status = http_status
 
 
 def rpc_error(exc: Exception) -> dict[str, Any]:
-    """Classify a failed call: a JSON-RPC error, a reply that did not validate, a timeout, or no answer at all."""
+    """Classify a failed call: a JSON-RPC error, a reply that did not validate, a timeout, or no answer at all.
+
+    A call answered with an HTTP error status carries ``http_status``. 401/403 is gated and 429/503 throttled, both
+    unobserved whatever the body said; any other status stays the server's answer.
+    """
     code = getattr(exc, "code", None)
+    status = getattr(exc, "http_status", None)
+    if isinstance(status, int):
+        # The server answered over HTTP, so no JSON-RPC code in its body can mean "no answer".
+        if status in GATED_STATUSES:
+            return {"outcome": "gated", "http_status": status}
+        if status in THROTTLED_STATUSES:
+            return {"outcome": "throttled", "http_status": status}
+        return {"outcome": "rpc_error", "error_code": code, "http_status": status}
     if isinstance(exc, TimeoutError) or code == REQUEST_TIMEOUT:
         return {"outcome": "timeout"}
     if code == CONNECTION_CLOSED:
