@@ -182,3 +182,23 @@ async def test_stateless_error_at_status_200_stays_a_plain_answer() -> None:
 def test_status_wins_over_a_no_answer_code(code: int) -> None:
     error = HTTPRefusedCallError(MCPError(code=code, message="server's own meaning"), 400)
     assert rpc_error(error) == {"outcome": "rpc_error", "error_code": code, "http_status": 400}
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (httpx2.Response(500, text="boom"), {"outcome": "rpc_error", "error_code": -32603, "http_status": 500}),
+        (httpx2.Response(404, text=""), {"outcome": "rpc_error", "error_code": -32601, "http_status": 404}),
+        (httpx2.Response(429, text=""), {"outcome": "throttled", "http_status": 429}),
+        (httpx2.Response(401, json={"error": "invalid_token"}), {"outcome": "gated", "http_status": 401}),
+    ],
+    ids=["500-text", "404-empty", "429-empty", "401-oauth-body"],
+)
+async def test_stateless_error_status_without_json_rpc_body(
+    response: httpx2.Response, expected: dict[str, Any]
+) -> None:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda _request: response)) as http:
+        session = probes.StatelessSession(probes._HttpTarget(http, URL))
+        with pytest.raises(HTTPRefusedCallError) as caught:
+            await session.read_resource_contents(URI)
+    assert rpc_error(caught.value) == expected

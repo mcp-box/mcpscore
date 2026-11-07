@@ -122,6 +122,9 @@ ERROR_LEGACY_RESOURCE_NOT_FOUND = -32002
 ERROR_METHOD_NOT_FOUND = -32601
 """Standard JSON-RPC Method not found — required (with HTTP 404) for unknown/removed methods."""
 
+ERROR_INTERNAL = -32603
+"""Standard JSON-RPC Internal error; stands in for an HTTP error status whose body held no JSON-RPC error."""
+
 SESSION_ID_PROBE_VALUE = "mcpscore-spurious-session-id"
 """Deliberately bogus session ID sent by the session-id-echo probe; modern servers
 must ignore it ("ignore it, and do not mint or echo session IDs")."""
@@ -3747,6 +3750,11 @@ class StatelessSession:
         response = await self._post(
             _request_body(method, request_id, meta, params), _request_headers(version, method, name)
         )
+        status = response.status_code
+        if status is not None and status >= 400 and response.error is None:
+            # No JSON-RPC error in the body: stand in for one as the SDK does, keeping the status.
+            code = ERROR_METHOD_NOT_FOUND if status == 404 else ERROR_INTERNAL
+            raise HTTPRefusedCallError(MCPError(code, f"HTTP {status}"), status)
         payload = response.payload if isinstance(response.payload, dict) else {}
         if payload.get("id") != request_id and not (payload.get("id") is None and "error" in payload):
             msg = f"{method} got no reply carrying its request ID"
@@ -3756,7 +3764,6 @@ class StatelessSession:
             code = response.error_code
             message = error.get("message")
             answer = MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
-            status = response.status_code
             raise HTTPRefusedCallError(answer, status) if status is not None and status >= 400 else answer
         if "result" in payload and not isinstance(payload["result"], dict):
             # An answer whose result is not an object is malformed, not missing: raise pydantic's ValidationError.
