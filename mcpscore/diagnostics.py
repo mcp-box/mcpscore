@@ -40,6 +40,7 @@ _ENTITY_LABELS = {
     "resource_template": "Resource template",
     "prompt": "Prompt",
     "skill": "Skill",
+    "ui_resource": "UI resource",
     "server": "Server",
     "catalog": "Catalog",
     "response": "Response",

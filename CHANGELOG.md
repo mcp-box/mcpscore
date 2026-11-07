@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A rate-limited or sign-in-gated read no longer fails a rule.** When a
+  server refused `resources/read` or a Skills call with HTTP 401, 403, 429
+  or 503, the audit saw only a JSON-RPC error (the SDK's generic `-32603`,
+  or the server's own rate-limit code), and `apps_ui_resource_resolves`
+  (and the Skills rules) judged it as the server failing to serve the
+  resource. The HTTP status now decides: those reads count as
+  unanswered: the rule judges the reads that did answer, or skips as
+  `insufficient-data` when none did. Other HTTP errors still fail, and the
+  report now carries their `http_status`.
+- Failure messages of the MCP Apps resource rules name the `UI resource`
+  instead of an empty `catalog item … ""` label.
+
 ## [1.31.0] - 2026-11-04
 
 Servers that deliver interactive UIs through the MCP Apps extension now get

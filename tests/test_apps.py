@@ -653,3 +653,33 @@ class TestRoundSevenRegressions:
         session = FakeSession({URI: [{"uri": URI, "mimeType": UI_MIME_TYPE, "text": f"{huge}<html>"}]})
         evidence = await collect_apps(session, [ui_tool()])  # type: ignore[arg-type]
         assert evidence.reads[URI].contents[0].html_document is False
+
+
+class TestHttpRefusedReads:
+    GATED = {"outcome": "gated", "http_status": 401}
+    THROTTLED = {"outcome": "throttled", "http_status": 429}
+
+    @pytest.mark.parametrize("error", [GATED, THROTTLED], ids=["gated", "throttled"])
+    def test_refused_read_alone_is_insufficient_data(self, error: dict[str, Any]) -> None:
+        audit_data = data([ui_tool()], [read(error=error)])
+        assert outcome("apps_ui_resource_resolves", audit_data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_refused_reads_are_left_out_of_the_judgment(self) -> None:
+        audit_data = data(
+            [ui_tool(), ui_tool("b", "ui://b"), ui_tool("c", "ui://c")],
+            [read(), read("ui://b", error=self.GATED), read("ui://c", error=self.THROTTLED)],
+        )
+        result = RULES["apps_ui_resource_resolves"].check(audit_data)
+        assert result.passed
+        assert result.details["read"] == 1
+        assert result.details["unanswered"] == 2
+
+    def test_http_status_of_an_answered_failure_is_evidence(self) -> None:
+        error = {"outcome": "rpc_error", "error_code": -32603, "http_status": 500}
+        found = issues("apps_ui_resource_resolves", data([ui_tool()], [read(error=error)]))
+        assert [(i["error_code"], i["http_status"]) for i in found] == [(-32603, 500)]
+
+    def test_failure_message_names_the_ui_resource(self) -> None:
+        error = {"outcome": "rpc_error", "error_code": -32002}
+        result = RULES["apps_ui_resource_resolves"].check(data([ui_tool()], [read(error=error)]))
+        assert result.message.endswith("First affected field: UI resource at index 0.")

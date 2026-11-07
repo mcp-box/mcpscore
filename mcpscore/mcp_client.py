@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 import errno
+import json
 import logging
 import os
 from pathlib import Path
@@ -485,6 +486,23 @@ class ConnectionFailure:
         return base
 
 
+class HTTPRefusedCallError(MCPError):
+    """A call answered with an HTTP error status, which the SDK's error drops.
+
+    The error is the server's JSON-RPC error when the body held one, else the SDK's stand-in -32603.
+    """
+
+    def __init__(self, error: MCPError, http_status: int) -> None:
+        super().__init__(error.code, error.message, error.data)
+        self.http_status = http_status
+
+
+def _call_key(method: str, params: Any) -> tuple[str, str | None]:
+    """Identify a call by its method and the ``uri`` or ``name`` it targets."""
+    target = params.get("uri", params.get("name")) if isinstance(params, dict) else None
+    return method, target if isinstance(target, str) else None
+
+
 def reason_for_status(status_code: int) -> ConnectionErrorReason:
     """Map an HTTP status code seen during connect to a failure reason."""
     if status_code == 401:
@@ -632,6 +650,8 @@ class MCPClient:
         # HTTP status recovered from a single attempt's buffered teardown error.
         self._pending_http_status: int | None = None
         self._pending_refused_redirect: RefusedRedirect | None = None
+        # HTTP error statuses of session calls, keyed by _call_key, until the failed call claims its own.
+        self._refused_calls: dict[tuple[str, str | None], int] = {}
 
     async def detect_and_connect(self, server_path_or_url: str | StdioCommand) -> tuple[bool, MCPTransportType | None]:
         """Automatically detect transport type and connect to MCP server.
@@ -1098,6 +1118,7 @@ class MCPClient:
                 # and ignores this client's setting (mcp 2.2.0, #3397).
                 headers=self.headers,
                 limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
+                event_hooks={"request": [self._forget_refused_call], "response": [self._record_refused_call]},
             )
 
             # Establish connection and verify the MCP handshake
@@ -1429,14 +1450,48 @@ class MCPClient:
         """
         if not self.session:
             raise RuntimeError(ERROR_NO_ACTIVE_SESSION)
-        result = await self.session.send_request(RawRequest(method=method, params=params), RawResult)
+        try:
+            result = await self.session.send_request(RawRequest(method=method, params=params), RawResult)
+        except MCPError as exc:
+            raise self._with_http_status(exc, method, params) from exc
         return dict(result.model_extra or {})
+
+    @staticmethod
+    def _request_key(request: httpx2.Request) -> tuple[str, str | None] | None:
+        """Return the call key of a JSON-RPC request posted to the server, or None for anything else."""
+        if request.method != "POST":
+            return None
+        try:
+            body = json.loads(request.content)
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if isinstance(body, dict) and isinstance(body.get("method"), str) and "id" in body:
+            return _call_key(body["method"], body.get("params"))
+        return None
+
+    async def _forget_refused_call(self, request: httpx2.Request) -> None:
+        """Drop an earlier attempt's status when the same call is sent again."""
+        if (key := self._request_key(request)) is not None:
+            self._refused_calls.pop(key, None)
+
+    async def _record_refused_call(self, response: httpx2.Response) -> None:
+        """Keep the HTTP error status of a JSON-RPC request, so the failed call can report it."""
+        if response.status_code >= 400 and (key := self._request_key(response.request)) is not None:
+            self._refused_calls[key] = response.status_code
+
+    def _with_http_status(self, exc: MCPError, method: str, params: Any) -> MCPError:
+        """Attach the HTTP error status of the failed call, if it got one, to its error."""
+        status = self._refused_calls.pop(_call_key(method, params), None)
+        return exc if status is None else HTTPRefusedCallError(exc, status)
 
     async def read_resource_contents(self, uri: str) -> list[dict[str, Any]]:
         """Read one resource and return its contents as wire-shaped dicts (``text`` or base64 ``blob``)."""
         if not self.session:
             raise RuntimeError(ERROR_NO_ACTIVE_SESSION)
-        result = await self.session.read_resource(uri)
+        try:
+            result = await self.session.read_resource(uri)
+        except MCPError as exc:
+            raise self._with_http_status(exc, "resources/read", {"uri": uri}) from exc
         return [item.model_dump(by_alias=True, mode="json", exclude_none=True) for item in result.contents]
 
     async def _list_all_pages(
