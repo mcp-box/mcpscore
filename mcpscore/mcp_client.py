@@ -639,7 +639,8 @@ class MCPClient:
         # HTTP status recovered from a single attempt's buffered teardown error.
         self._pending_http_status: int | None = None
         self._pending_refused_redirect: RefusedRedirect | None = None
-        # HTTP error statuses of session calls, keyed by _call_key, until the failed call claims its own.
+        # HTTP error statuses of session calls, keyed by _call_key, until the failed call claims its own. The key
+        # assumes no two identical calls are in flight at once; the Apps and Skills collectors read each URI once.
         self._refused_calls: dict[tuple[str, str | None], int] = {}
 
     async def detect_and_connect(self, server_path_or_url: str | StdioCommand) -> tuple[bool, MCPTransportType | None]:

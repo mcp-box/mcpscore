@@ -202,3 +202,21 @@ async def test_stateless_error_status_without_json_rpc_body(
         with pytest.raises(HTTPRefusedCallError) as caught:
             await session.read_resource_contents(URI)
     assert rpc_error(caught.value) == expected
+
+
+async def test_stateless_error_status_ignores_a_mismatched_id() -> None:
+    error = {"code": -32603, "message": "boom"}
+    response = httpx2.Response(500, json={"jsonrpc": "2.0", "id": 99999, "error": error})
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda _request: response)) as http:
+        session = probes.StatelessSession(probes._HttpTarget(http, URL))
+        with pytest.raises(HTTPRefusedCallError) as caught:
+            await session.read_resource_contents(URI)
+    assert rpc_error(caught.value) == {"outcome": "rpc_error", "error_code": -32603, "http_status": 500}
+
+
+async def test_stateless_success_with_a_mismatched_id_is_no_answer() -> None:
+    response = httpx2.Response(200, json={"jsonrpc": "2.0", "id": 99999, "result": {"contents": []}})
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda _request: response)) as http:
+        session = probes.StatelessSession(probes._HttpTarget(http, URL))
+        with pytest.raises(ConnectionError):
+            await session.read_resource_contents(URI)

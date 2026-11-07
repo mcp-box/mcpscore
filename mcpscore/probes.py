@@ -3715,6 +3715,18 @@ A 1 MiB file fits even when it is all control characters, each JSON-escaped in s
 """
 
 
+def _stateless_error(response: _ProbeResponse) -> MCPError:
+    """Return the JSON-RPC error a stateless reply carries."""
+    code = response.error_code
+    message = (response.error or {}).get("message")
+    return MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
+
+
+def _status_error(status: int) -> MCPError:
+    """Stand in for the JSON-RPC error an HTTP error status lacks, as the SDK does: 404 is method-not-found."""
+    return MCPError(ERROR_METHOD_NOT_FOUND if status == 404 else ERROR_INTERNAL, f"HTTP {status}")
+
+
 class StatelessSession:
     """Answer the skills collector's calls with one stateless request each (SEP-2575).
 
@@ -3751,20 +3763,18 @@ class StatelessSession:
             _request_body(method, request_id, meta, params), _request_headers(version, method, name)
         )
         status = response.status_code
-        if status is not None and status >= 400 and response.error is None:
-            # No JSON-RPC error in the body: stand in for one as the SDK does, keeping the status.
-            code = ERROR_METHOD_NOT_FOUND if status == 404 else ERROR_INTERNAL
-            raise HTTPRefusedCallError(MCPError(code, f"HTTP {status}"), status)
+        error = response.error
+        if status is not None and status >= 400:
+            # An HTTP error answers this request whatever ID its body carries; keep the status with the error.
+            raise HTTPRefusedCallError(
+                _stateless_error(response) if error is not None else _status_error(status), status
+            )
         payload = response.payload if isinstance(response.payload, dict) else {}
         if payload.get("id") != request_id and not (payload.get("id") is None and "error" in payload):
             msg = f"{method} got no reply carrying its request ID"
             raise ConnectionError(msg)
-        error = response.error
         if error is not None:
-            code = response.error_code
-            message = error.get("message")
-            answer = MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
-            raise HTTPRefusedCallError(answer, status) if status is not None and status >= 400 else answer
+            raise _stateless_error(response)
         if "result" in payload and not isinstance(payload["result"], dict):
             # An answer whose result is not an object is malformed, not missing: raise pydantic's ValidationError.
             TypeAdapter(dict[str, Any]).validate_python(payload["result"])
