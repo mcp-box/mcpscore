@@ -59,7 +59,7 @@ from .probes import (
     failure_cause,
 )
 from .redirects import REFUSED_DOWNGRADE, REFUSED_TOO_MANY, RefusedRedirect, send_within_origin, unfollowed_redirect
-from .skills import SKILLS_EXTENSION
+from .skills import SKILLS_EXTENSION, HTTPRefusedCallError
 from .tls import async_client
 
 if TYPE_CHECKING:
@@ -484,17 +484,6 @@ class ConnectionFailure:
         if self.detail is not None:
             return f"{base} Details: {self.detail}"
         return base
-
-
-class HTTPRefusedCallError(MCPError):
-    """A call answered with an HTTP error status, which the SDK's error drops.
-
-    The error is the server's JSON-RPC error when the body held one, else the SDK's stand-in -32603.
-    """
-
-    def __init__(self, error: MCPError, http_status: int) -> None:
-        super().__init__(error.code, error.message, error.data)
-        self.http_status = http_status
 
 
 def _call_key(method: str, params: Any) -> tuple[str, str | None]:

@@ -6,14 +6,14 @@ from unittest.mock import patch
 
 import httpx2
 from mcp.shared.exceptions import MCPError
-from mcp_types import Tool
+from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT, Tool
 import pytest
 
-from mcpscore import mcp_client
+from mcpscore import mcp_client, probes
 from mcpscore.apps import collect_apps
 from mcpscore.enums import MCPTransportType
-from mcpscore.mcp_client import HTTPRefusedCallError, MCPClient
-from mcpscore.skills import UNOBSERVED_OUTCOMES, rpc_error
+from mcpscore.mcp_client import MCPClient
+from mcpscore.skills import UNOBSERVED_OUTCOMES, HTTPRefusedCallError, rpc_error
 from mcpscore.tls import async_client
 
 URL = "https://example.com/mcp"
@@ -146,3 +146,39 @@ async def test_only_json_rpc_requests_are_recorded() -> None:
     ):
         await client._record_refused_call(httpx2.Response(429, request=request))
     assert client._refused_calls == {}
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (_rpc_error(429, -32029, "Request limit reached."), {"outcome": "throttled", "http_status": 429}),
+        (_rpc_error(403, -32001, "Forbidden"), {"outcome": "gated", "http_status": 403}),
+        (
+            _rpc_error(400, -32002, "Resource not found"),
+            {"outcome": "rpc_error", "error_code": -32002, "http_status": 400},
+        ),
+    ],
+    ids=["429", "403", "400"],
+)
+async def test_stateless_read_keeps_the_http_status(response: httpx2.Response, expected: dict[str, Any]) -> None:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda _request: response)) as http:
+        session = probes.StatelessSession(probes._HttpTarget(http, URL))
+        with pytest.raises(HTTPRefusedCallError) as caught:
+            await session.read_resource_contents(URI)
+    assert rpc_error(caught.value) == expected
+
+
+async def test_stateless_error_at_status_200_stays_a_plain_answer() -> None:
+    response = httpx2.Response(200, json={"jsonrpc": "2.0", "id": None, "error": {"code": -32002, "message": "nope"}})
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda _request: response)) as http:
+        session = probes.StatelessSession(probes._HttpTarget(http, URL))
+        with pytest.raises(MCPError) as caught:
+            await session.read_resource_contents(URI)
+    assert not isinstance(caught.value, HTTPRefusedCallError)
+    assert rpc_error(caught.value) == {"outcome": "rpc_error", "error_code": -32002}
+
+
+@pytest.mark.parametrize("code", [REQUEST_TIMEOUT, CONNECTION_CLOSED], ids=["request-timeout", "connection-closed"])
+def test_status_wins_over_a_no_answer_code(code: int) -> None:
+    error = HTTPRefusedCallError(MCPError(code=code, message="server's own meaning"), 400)
+    assert rpc_error(error) == {"outcome": "rpc_error", "error_code": code, "http_status": 400}

@@ -60,6 +60,7 @@ from pydantic import TypeAdapter
 
 from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
+from mcpscore.skills import HTTPRefusedCallError
 from mcpscore.spec import DRAFT, LATEST, SPEC_VERSIONS, Era, Lifecycle
 from mcpscore.tls import async_client, client_ssl_context
 from mcpscore.url_credentials import credential_query_params, without_credential_params
@@ -3754,7 +3755,9 @@ class StatelessSession:
         if error is not None:
             code = response.error_code
             message = error.get("message")
-            raise MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
+            answer = MCPError(code if code is not None else 0, message if isinstance(message, str) else "")
+            status = response.status_code
+            raise HTTPRefusedCallError(answer, status) if status is not None and status >= 400 else answer
         if "result" in payload and not isinstance(payload["result"], dict):
             # An answer whose result is not an object is malformed, not missing: raise pydantic's ValidationError.
             TypeAdapter(dict[str, Any]).validate_python(payload["result"])
