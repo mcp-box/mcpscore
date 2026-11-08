@@ -135,10 +135,10 @@ class ProbeBackedReadinessRule(ReadinessBaseRule):
         """
         probes = audit_data.probes or {}
         result = probes.get(self.probe_id)
-        if result is not None and result.outcome is ProbeOutcome.NOT_APPLICABLE:
-            return SKIP_REASON_NOT_APPLICABLE
         if result is None or result.outcome is ProbeOutcome.ERROR or auth_gate_status(result) is not None:
             return SKIP_REASON_INSUFFICIENT_DATA
+        if result.outcome is ProbeOutcome.NOT_APPLICABLE:
+            return SKIP_REASON_NOT_APPLICABLE
         if self.requires_modern_support and not has_modern_support(probes):
             return SKIP_REASON_REQUIRES_MODERN_SUPPORT
         return None

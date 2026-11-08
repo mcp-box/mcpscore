@@ -708,7 +708,14 @@ def _discover_open_gated_probe_results(status: int) -> dict[str, ProbeResult]:
     results[PROBE_DISCOVER] = ProbeResult(
         PROBE_DISCOVER,
         ProbeOutcome.SUPPORTED,
-        {"http_status": 200, "supported_versions": ["2026-07-28"]},
+        {
+            "http_status": 200,
+            "content_type": "application/json",
+            "result_type": "complete",
+            "ttl_ms": 60000,
+            "cache_scope": "public",
+            "supported_versions": ["2026-07-28"],
+        },
         payload={**DISCOVER_PAYLOAD, "supportedVersions": ["2026-07-28"]},
     )
     for probe_id in _GATED_BY_DISCOVER_OPEN:
@@ -740,7 +747,7 @@ async def test_partial_audit_of_a_discover_open_gated_server_fails_nothing_on_th
     assert await auditor.audit_partial(GATED_URL, reason="gated") is True
 
     assert auditor.audit_data.partial is True
-    failed = [r.rule_id for r in auditor.results if not r.passed]
+    failed = [r.rule_id for r in (*auditor.results, *auditor.readiness_results) if not r.passed]
     assert not [rule_id for rule_id in failed if rule_id.startswith(("readiness_", "capability_"))], failed
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
     for rule_id in (

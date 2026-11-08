@@ -232,6 +232,31 @@ class TestDetailProbeRules:
         for rule_cls in self.DETAIL_RULES:
             assert rule_cls().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA, rule_cls.rule_id
 
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_gated_probe_is_insufficient_data_even_when_marked_not_applicable(self, status: int):
+        gated = {"http_status": status}
+        probes = modern_probes(
+            **{
+                probe_id: ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, dict(gated))
+                for probe_id in (
+                    PROBE_UNKNOWN_METHOD,
+                    PROBE_MISSING_METHOD_HEADER,
+                    PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+                    PROBE_PROMPT_NAME_HEADER_MISMATCH,
+                    PROBE_GET_STREAM_REMOVED,
+                )
+            }
+        )
+        data = AuditData(probes=probes)
+        for rule_cls in (
+            UnknownMethodErrorRule,
+            MissingMethodHeaderReadinessRule,
+            ResourceNameHeaderMismatchReadinessRule,
+            PromptNameHeaderMismatchReadinessRule,
+            GetStreamRemovedReadinessRule,
+        ):
+            assert rule_cls().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA, rule_cls.rule_id
+
     def test_fail_when_behavior_missing_despite_modern_support(self):
         probes = modern_probes(
             probe_header_mismatch=ProbeResult(PROBE_HEADER_MISMATCH, ProbeOutcome.UNSUPPORTED, {"http_status": 200})
