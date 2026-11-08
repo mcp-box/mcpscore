@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **"Use from your coding agent" guide** (`docs/coding-agents.mdx`): install
+  the mcpscore plugin in Claude Code or Codex, allow
+  `Bash(uvx mcpscore@latest:*)`, and have the agent audit your server, fix the
+  findings in your code and re-audit.
+
 ### Fixed
 
 - **An auth-gated server with an open `server/discover` now gets a partial

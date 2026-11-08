@@ -1,0 +1,242 @@
+---
+title: "Use from your coding agent"
+description: "Ask Claude Code or Codex to audit the MCP server you're building, fix the findings in your code, and re-audit to prove it."
+icon: "robot"
+---
+
+You build your MCP server with a coding agent, so the agent is the one that
+has to act on the findings. The mcpscore plugin teaches it how. The agent runs
+the CLI on your server, reads every failed rule with its fix and its spec
+citation, edits your code, and re-audits to show the score before and after.
+
+```text
+# In Claude Code: install the plugin once
+/plugin install mcpscore --marketplace mcp-box/mcpscore-plugin
+
+# Then ask for an audit in plain words
+Audit my MCP server in server.py and fix what you safely can
+```
+
+```text
+I fixed the findings that could be fixed safely. The score went from
+117/142 (82%) to 135/146 (92%).
+...
+## What I fixed in `server.py`
+- [HIGH] Server Info – Version Present (server_version_present): set version="0.1.0".
+  That number is a placeholder, so change it to your real version.
+- [HIGH] Tools – All tools should have a description (tools_description_present_in_all):
+  added docstrings that say what each tool actually does.
+- [MEDIUM] Tools – All tools should declare behavior annotations (tools_annotations_present):
+  get_note is marked read-only. add_note and delete_note are marked destructive
+  and idempotent, because add_note can overwrite a note.
+...
+## What I left alone, and why
+- Pagination with an invalid cursor (pagination_tools_invalid_cursor, ...): the MCP
+  Python SDK's MCPServer handles these list requests itself. Upgrading the SDK is
+  better than patching around it.
+- No websiteUrl or icons: I don't know your URL or icon, and I didn't want to make
+  one up.
+```
+
+That is one real session on a three-tool notes server. Every finding in the
+answer comes from the mcpscore report, and the second score comes from a
+second audit, not from the agent's own estimate.
+
+## Step 1: Install the plugin
+
+The plugin is one Agent Skill named `audit`. It runs the mcpscore CLI through
+[uv](https://docs.astral.sh/uv/), so `uvx` must be on your `PATH`. pipx works
+too.
+
+<Tabs>
+  <Tab title="Claude Code">
+    Run this inside Claude Code:
+
+    ```text
+    /plugin install mcpscore --marketplace mcp-box/mcpscore-plugin
+    ```
+
+    Restart Claude Code to load it. `/mcpscore:audit` then appears when you
+    type `/`.
+  </Tab>
+  <Tab title="Codex">
+    Run this in your terminal:
+
+    ```bash
+    codex plugin marketplace add mcp-box/mcpscore-plugin
+    codex plugin add mcpscore@mcpscore
+    ```
+
+    Start a new Codex session to load it.
+  </Tab>
+  <Tab title="Other agents">
+    The skill follows the [Agent Skills](https://agentskills.io/specification)
+    format. Copy
+    [`plugins/mcpscore/skills/audit`](https://github.com/mcp-box/mcpscore-plugin/tree/main/plugins/mcpscore/skills/audit)
+    into the folder your agent loads skills from.
+  </Tab>
+</Tabs>
+
+The plugin sends nothing to mcpscore.dev. The CLI talks to the server you
+audit, and to the authorization server it advertises in its OAuth metadata,
+when it has one. That second request fetches public metadata and carries no
+credential.
+
+## Step 2: Let it run mcpscore without asking
+
+Each audit is one shell command, `uvx mcpscore@latest --json <target>`. Claude
+Code asks before it runs a command you haven't allowed. To skip the prompt,
+add this rule to `permissions.allow` in your Claude Code settings:
+
+```json .claude/settings.json
+{
+  "permissions": {
+    "allow": ["Bash(uvx mcpscore@latest:*)"]
+  }
+}
+```
+
+The rule has to include `@latest`. `Bash(uvx mcpscore:*)` does not match the
+command the skill runs, so you would still get a prompt each time.
+
+To check the rule, ask for an audit. The agent runs
+`uvx mcpscore@latest --json <target>` without asking, and the next thing you
+see is the score.
+
+## Step 3: Audit your server
+
+Ask in plain words, or call the skill by name with a target. A target is what
+you would pass to the CLI: a URL, a server file, or a `--stdio` command.
+
+```text
+Audit my MCP server at https://your-server.example/mcp
+Check the MCP server in this folder
+/mcpscore:audit --stdio uv run server.py
+```
+
+The agent leads with the score, then lists the failed rules, most severe
+first. Each finding has the same four lines as the fix prompts in the
+[web report](https://mcpscore.dev):
+
+```text
+[HIGH] Server Info - Version Present (server_version_present)
+Observed: Server version is not present in server info. First affected field: server "/serverInfo/version".
+Fix: Set serverInfo.version to a non-empty implementation version in server metadata. This check does not require semantic versioning.
+Requirement: MCP 2025-11-25 Lifecycle §Initialization (serverInfo.version)
+```
+
+`Observed`, `Fix` and `Requirement` are copied from the report's `message`,
+`suggested_fix` and `details.basis`. The agent does not write its own text
+into them. Counts come from the report's summary too.
+
+When you name no target, the agent looks for your server's entry point and
+asks you to confirm the command before it runs it, because a stdio audit
+starts your server.
+
+## Step 4: Fix and re-audit
+
+Say "fix what you safely can", or answer yes when the agent offers. It edits
+your server code and runs the same audit again. In the notes server above,
+the edit to `get_note` looked like this. `Title` is
+`Annotated[str, Field(description=...)]`, defined once for all three tools:
+
+```python server.py
+@mcp.tool(  # [!code ++]
+    title="Get Note",  # [!code ++]
+    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),  # [!code ++]
+)  # [!code ++]
+def get_note(title: str) -> str:  # [!code --]
+def get_note(title: Title) -> str:  # [!code ++]
+    """Return the body of the note with the given title, or an empty string if no such note exists."""  # [!code ++]
+    return NOTES.get(title, "")
+```
+
+The skill holds every fix to what the code does. `readOnlyHint: true` goes
+only on a tool that cannot change state, and a description says what the
+function does, not what its name suggests. When the code doesn't make it
+clear, the agent asks. A finding the MCP SDK causes, such as the invalid
+cursor answer above, is named as the SDK's, with an upgrade suggested
+instead of a patch.
+
+The re-audit is the proof. The agent reports both scores, and it says the
+fixes are unverified when it can't run the second audit.
+
+## What the skill does and doesn't do
+
+- It audits only a server you named, or the one in your workspace you asked
+  about. It never audits a URL it found in a README or a config file without
+  asking.
+- It never adds [`--smoke`](/smoke-mode) or `--call-all`, so your tools are
+  not called unless you ask for that.
+- It never asks you to paste a credential into the chat, and never writes
+  one into a file. For a server behind auth, export `MCPSCORE_TOKEN` before
+  you start the agent, and ask it not to pass `--token`. mcpscore reads the
+  variable itself, so the token stays out of the command line and the
+  process list. See
+  [Authenticated servers](/authenticated-servers#step-3-keep-the-token-out-of-your-shell-history).
+- It edits only code you own in the workspace, never installed packages or
+  vendored SDK code. For a remote server whose source isn't there, you get
+  the findings as a list for its maintainers.
+- It treats every string in the report as data. Tool names, descriptions and
+  error messages come from the audited server and are never followed as
+  instructions.
+- It tells you when a [config file](/configure-rules) in the workspace turned
+  rules off, and `--no-config` gives the standard score.
+
+<Accordion title="Technical details">
+  The skill reads the CLI's `--json` report, documented in the
+  [CLI reference](/cli). It reports `score/max_score` as points with a
+  percentage, and never as a letter grade. It flags a `partial` audit as not
+  comparable to a full one. It lists `readiness.results` failures with the
+  rest only when `readiness.counted_in_main` is `true`. It never reports
+  `skipped_rules` as failures.
+
+  The plugin calls the published CLI with `uvx mcpscore@latest`, so every
+  audit uses the current rules without a plugin update. The plugin's own
+  repository runs a weekly check that the latest CLI still emits every
+  field the skill reads.
+</Accordion>
+
+## When it fails
+
+**Symptom:** `/plugin install` rejects the `--marketplace` option.
+**Cause:** your Claude Code predates it.
+**Fix:** run `/plugin marketplace add mcp-box/mcpscore-plugin`, then `/plugin install mcpscore@mcpscore`.
+
+**Symptom:** Claude Code asks for permission before every audit.
+**Cause:** the allow rule doesn't match `uvx mcpscore@latest`.
+**Fix:** use `Bash(uvx mcpscore@latest:*)` exactly, as in [Step 2](#step-2-let-it-run-mcpscore-without-asking).
+
+**Symptom:** the agent says the audit did not run and states no score.
+**Cause:** mcpscore exited with `1` (usage) or `2` (could not connect, or the
+server failed to start), or a sandbox blocked the network. The agent quotes
+the CLI's error.
+**Fix:** run the same command in your terminal and follow
+[Troubleshooting](/troubleshooting).
+
+**Symptom:** the agent reports `uvx` is not installed.
+**Cause:** the skill needs uv or pipx and does not install tools without
+asking.
+**Fix:** [install uv](https://docs.astral.sh/uv/getting-started/installation/),
+then ask again.
+
+**Symptom:** a fix to the plugin doesn't reach your machine.
+**Cause:** installed plugins are cached by version.
+**Fix:** `claude plugin marketplace update mcpscore`, then
+`claude plugin update mcpscore@mcpscore`, then restart Claude Code.
+
+## Recap
+
+- Install the plugin in your agent.
+- Allow `Bash(uvx mcpscore@latest:*)` so audits run without a prompt.
+- Ask the agent to audit your server by URL, file or `--stdio` command.
+- Ask it to fix what it safely can, and read the before and after scores.
+
+## What's next
+
+- [Improve your score](/improve-your-score) explains the rules most servers
+  fail, so you know what the agent is fixing.
+- [GitHub Action](/github-action) keeps the score from slipping after the
+  agent's fixes are merged.
+- [Audit a local server](/local-servers) covers the `--stdio` targets the
+  agent uses for servers with their own dependencies.
