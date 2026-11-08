@@ -77,8 +77,10 @@ too.
   </Tab>
 </Tabs>
 
-The plugin sends nothing to mcpscore.dev. The CLI talks only to the server
-you audit.
+The plugin sends nothing to mcpscore.dev. The CLI talks to the server you
+audit, and to the authorization server it advertises in its OAuth metadata,
+when it has one. That second request fetches public metadata and carries no
+credential.
 
 ## Step 2: Let it run mcpscore without asking
 
@@ -196,6 +198,10 @@ fixes are unverified when it can't run the second audit.
 </Accordion>
 
 ## When it fails
+
+**Symptom:** `/plugin install` rejects the `--marketplace` option.
+**Cause:** your Claude Code predates it.
+**Fix:** run `/plugin marketplace add mcp-box/mcpscore-plugin`, then `/plugin install mcpscore@mcpscore`.
 
 **Symptom:** Claude Code asks for permission before every audit.
 **Cause:** the allow rule doesn't match `uvx mcpscore@latest`.
