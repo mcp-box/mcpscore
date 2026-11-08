@@ -161,6 +161,15 @@ class TestGatewayRules:
         data = AuditData(probes=not_applicable_results(reason="stdio"))
         assert ServerDiscoverReadinessRule().skip_reason(data) == SKIP_REASON_NOT_APPLICABLE
 
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_stateless_gateway_skips_when_the_listing_hit_an_auth_gate(self, status: int):
+        probes = modern_probes(
+            probe_stateless_list=ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, {"http_status": status})
+        )
+        data = AuditData(probes=probes)
+        assert StatelessRequestReadinessRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+        assert ServerDiscoverReadinessRule().skip_reason(data) is None
+
     def test_skipped_when_probes_missing(self):
         data = AuditData(probes=None)
         assert ServerDiscoverReadinessRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
@@ -198,6 +207,55 @@ class TestDetailProbeRules:
         )
         data = AuditData(probes=probes)
         assert MetaValidationReadinessRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_skip_when_own_probe_hit_an_auth_gate(self, status: int):
+        gated = {"http_status": status}
+        probes = modern_probes(
+            **{
+                probe_id: ProbeResult(probe_id, ProbeOutcome.UNSUPPORTED, dict(gated))
+                for probe_id in (
+                    PROBE_MALFORMED_META,
+                    PROBE_HEADER_MISMATCH,
+                    PROBE_UNKNOWN_VERSION,
+                    PROBE_MISSING_RESOURCE,
+                    PROBE_UNKNOWN_METHOD,
+                    PROBE_MISSING_PROTOCOL_VERSION,
+                    PROBE_MISSING_METHOD_HEADER,
+                    PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+                    PROBE_PROMPT_NAME_HEADER_MISMATCH,
+                    PROBE_GET_STREAM_REMOVED,
+                )
+            }
+        )
+        data = AuditData(probes=probes)
+        for rule_cls in self.DETAIL_RULES:
+            assert rule_cls().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA, rule_cls.rule_id
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_gated_probe_is_insufficient_data_even_when_marked_not_applicable(self, status: int):
+        gated = {"http_status": status}
+        probes = modern_probes(
+            **{
+                probe_id: ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, dict(gated))
+                for probe_id in (
+                    PROBE_UNKNOWN_METHOD,
+                    PROBE_MISSING_METHOD_HEADER,
+                    PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+                    PROBE_PROMPT_NAME_HEADER_MISMATCH,
+                    PROBE_GET_STREAM_REMOVED,
+                )
+            }
+        )
+        data = AuditData(probes=probes)
+        for rule_cls in (
+            UnknownMethodErrorRule,
+            MissingMethodHeaderReadinessRule,
+            ResourceNameHeaderMismatchReadinessRule,
+            PromptNameHeaderMismatchReadinessRule,
+            GetStreamRemovedReadinessRule,
+        ):
+            assert rule_cls().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA, rule_cls.rule_id
 
     def test_fail_when_behavior_missing_despite_modern_support(self):
         probes = modern_probes(

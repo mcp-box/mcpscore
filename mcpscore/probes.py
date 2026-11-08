@@ -1901,7 +1901,15 @@ def observed_auth_status(probes: dict[str, ProbeResult] | None) -> int | None:
     unrelated reason — a legacy SSE fallback answering ``405``, say. Without it
     a gated server that rejects the legacy handshake looks simply unreachable.
     """
-    result = (probes or {}).get(PROBE_UNAUTHENTICATED)
+    return auth_gate_status((probes or {}).get(PROBE_UNAUTHENTICATED))
+
+
+def auth_gate_status(result: ProbeResult | None) -> int | None:
+    """HTTP status if this probe was stopped by an auth gate (401/403), else None.
+
+    A gated answer never reached the method handler, so it says nothing about
+    how the server treats the probed request.
+    """
     if result is None:
         return None
     status = result.details.get("http_status")

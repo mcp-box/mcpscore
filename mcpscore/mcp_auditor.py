@@ -28,6 +28,7 @@ from .probes import (
     PROBE_STATELESS_LIST,
     PROBE_TOOLS_INVALID_CURSOR,
     ProbeOutcome,
+    auth_gate_status,
     detect_era,
     has_modern_support,
     not_applicable_results,
@@ -275,8 +276,9 @@ class MCPAuditor:
 
         Returns:
             True when modern support was observed and the audit ran; False
-            when it was not (the caller should treat the original connection
-            failure as genuine)
+            when it was not, or when the stateless listing hit an auth gate
+            (the caller should treat the original connection failure as
+            genuine, and score a gated server as partial)
 
         """
         if isinstance(target, str):
@@ -295,6 +297,10 @@ class MCPAuditor:
             transport = MCPTransportType.STDIO
         self.last_probes = probes
         if not has_modern_support(probes):
+            return False
+        # An open server/discover does not make the server open: when the
+        # listing itself is gated, a full audit would score the 401/403s.
+        if auth_gate_status(probes.get(PROBE_STATELESS_LIST)) is not None:
             return False
 
         self._reset_run_state()
