@@ -678,3 +678,80 @@ async def test_refused_tools_listing_of_a_server_declaring_nothing(
         assert results_by_id["server_exposes_primitive"].passed is False
     else:
         assert skipped["server_exposes_primitive"] == expected
+
+
+# --- Discover answers anonymously, everything else is gated ------------------
+
+from mcpscore.probes import (  # noqa: E402
+    PROBE_HEADER_MISMATCH,
+    PROBE_MALFORMED_META,
+    PROBE_MISSING_RESOURCE,
+    PROBE_REMOVED_METHOD,
+    PROBE_SESSION_ID_ECHO,
+    PROBE_UNKNOWN_VERSION,
+)
+
+_GATED_BY_DISCOVER_OPEN = (
+    PROBE_STATELESS_LIST,
+    PROBE_MALFORMED_META,
+    PROBE_HEADER_MISMATCH,
+    PROBE_UNKNOWN_VERSION,
+    PROBE_MISSING_RESOURCE,
+    PROBE_SESSION_ID_ECHO,
+    PROBE_REMOVED_METHOD,
+)
+
+
+def _discover_open_gated_probe_results(status: int) -> dict[str, ProbeResult]:
+    """Return probes of an auth-gated server whose server/discover answers without credentials."""
+    results = _auth_gated_probe_results()
+    results[PROBE_UNAUTHENTICATED] = ProbeResult(
+        PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, {"http_status": status, "www_authenticate": "Bearer"}
+    )
+    results[PROBE_DISCOVER] = ProbeResult(
+        PROBE_DISCOVER,
+        ProbeOutcome.SUPPORTED,
+        {"http_status": 200, "supported_versions": ["2026-07-28"]},
+        payload={**DISCOVER_PAYLOAD, "supportedVersions": ["2026-07-28"]},
+    )
+    for probe_id in _GATED_BY_DISCOVER_OPEN:
+        results[probe_id] = ProbeResult(probe_id, ProbeOutcome.UNSUPPORTED, {"http_status": status})
+    return results
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_modern_only_declines_a_server_whose_listing_is_gated(
+    stub_probes, monkeypatch: pytest.MonkeyPatch, status: int
+):
+    stub_probes(_discover_open_gated_probe_results(status))
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(GATED_URL) is False
+    assert auditor.results == []
+    assert observed_auth_status(auditor.last_probes) == status
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_partial_audit_of_a_discover_open_gated_server_fails_nothing_on_the_gate(
+    stub_probes, monkeypatch: pytest.MonkeyPatch, status: int
+):
+    stub_probes(_discover_open_gated_probe_results(status))
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_partial(GATED_URL, reason="gated") is True
+
+    assert auditor.audit_data.partial is True
+    failed = [r.rule_id for r in auditor.results if not r.passed]
+    assert not [rule_id for rule_id in failed if rule_id.startswith(("readiness_", "capability_"))], failed
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    for rule_id in (
+        "readiness_2026_stateless_request",
+        "readiness_2026_meta_validation",
+        "readiness_2026_header_validation",
+        "readiness_2026_unsupported_version_error",
+        "readiness_2026_no_session_id",
+        "readiness_2026_removed_methods",
+    ):
+        assert skipped[rule_id] == "insufficient-data", rule_id

@@ -281,6 +281,10 @@ server is and scores it against the revision it negotiated:
 - Modern-only servers are fully supported over HTTP and stdio. When the
   legacy handshake fails but stateless requests succeed, the audit runs
   through the probe layer instead of reporting a connection failure.
+  A server that answers `server/discover` without credentials but refuses
+  the stateless listing with HTTP 401 or 403 is auth-gated, not modern-only:
+  it gets a partial audit, and readiness checks whose probe was refused at
+  the gate are skipped as insufficient data.
 
 ## The readiness score: separate, informative
 

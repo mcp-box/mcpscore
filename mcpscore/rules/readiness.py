@@ -48,6 +48,7 @@ from mcpscore.probes import (
     PROBE_UNKNOWN_VERSION,
     REMOVED_METHOD,
     ProbeOutcome,
+    auth_gate_status,
     has_modern_support,
 )
 from mcpscore.report_evidence import evidence_preview
@@ -128,14 +129,15 @@ class ProbeBackedReadinessRule(ReadinessBaseRule):
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Skip when this rule cannot judge anything meaningful.
 
-        That is when the probe could not observe anything, or when a detail
+        That is when the probe could not observe anything (including an
+        auth gate answering 401/403 before the method ran), or when a detail
         rule would just repeat the gateways' "no modern support" verdict.
         """
         probes = audit_data.probes or {}
         result = probes.get(self.probe_id)
         if result is not None and result.outcome is ProbeOutcome.NOT_APPLICABLE:
             return SKIP_REASON_NOT_APPLICABLE
-        if result is None or result.outcome is ProbeOutcome.ERROR:
+        if result is None or result.outcome is ProbeOutcome.ERROR or auth_gate_status(result) is not None:
             return SKIP_REASON_INSUFFICIENT_DATA
         if self.requires_modern_support and not has_modern_support(probes):
             return SKIP_REASON_REQUIRES_MODERN_SUPPORT

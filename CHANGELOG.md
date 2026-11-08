@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An auth-gated server with an open `server/discover` now gets a partial
+  audit.** A server that answered `server/discover` without credentials but
+  refused everything else with HTTP 401 or 403 was audited as a fully
+  reachable modern-only server, so `capability_tools_present` and up to seven
+  `readiness_2026_*` rules failed on the sign-in challenge. These servers now
+  get the same partial, unauthenticated-surface audit as other gated
+  servers, and a readiness check whose probe was refused at the auth gate is
+  skipped as insufficient data instead of failed.
+
 ## [1.31.1] - 2026-11-07
 
 Servers that rate-limit the audit, or ask for sign-in before serving a UI
