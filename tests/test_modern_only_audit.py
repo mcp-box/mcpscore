@@ -9,11 +9,17 @@ from mcpscore.mcp_auditor import MCPAuditor
 from mcpscore.probes import (
     PROBE_DISCOVER,
     PROBE_GET_STREAM_REMOVED,
+    PROBE_HEADER_MISMATCH,
+    PROBE_MALFORMED_META,
     PROBE_MISSING_METHOD_HEADER,
     PROBE_MISSING_PROTOCOL_VERSION,
+    PROBE_MISSING_RESOURCE,
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
+    PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
+    PROBE_UNKNOWN_VERSION,
     ProbeOutcome,
     ProbeResult,
     not_applicable_results,
@@ -681,15 +687,6 @@ async def test_refused_tools_listing_of_a_server_declaring_nothing(
 
 
 # --- Discover answers anonymously, everything else is gated ------------------
-
-from mcpscore.probes import (  # noqa: E402
-    PROBE_HEADER_MISMATCH,
-    PROBE_MALFORMED_META,
-    PROBE_MISSING_RESOURCE,
-    PROBE_REMOVED_METHOD,
-    PROBE_SESSION_ID_ECHO,
-    PROBE_UNKNOWN_VERSION,
-)
 
 _GATED_BY_DISCOVER_OPEN = (
     PROBE_STATELESS_LIST,
