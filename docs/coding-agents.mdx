@@ -82,7 +82,7 @@ you audit.
 
 ## Step 2: Let it run mcpscore without asking
 
-Each audit is one shell command, `uvx mcpscore@latest <target> --json`. Claude
+Each audit is one shell command, `uvx mcpscore@latest --json <target>`. Claude
 Code asks before it runs a command you haven't allowed. To skip the prompt,
 add this rule to `permissions.allow` in your Claude Code settings:
 
@@ -96,6 +96,10 @@ add this rule to `permissions.allow` in your Claude Code settings:
 
 The rule has to include `@latest`. `Bash(uvx mcpscore:*)` does not match the
 command the skill runs, so you would still get a prompt each time.
+
+To check the rule, ask for an audit. The agent runs
+`uvx mcpscore@latest --json <target>` without asking, and the next thing you
+see is the score.
 
 ## Step 3: Audit your server
 
@@ -162,9 +166,12 @@ fixes are unverified when it can't run the second audit.
   asking.
 - It never adds [`--smoke`](/smoke-mode) or `--call-all`, so your tools are
   not called unless you ask for that.
-- It never puts a credential on a command line or in a file. For a server
-  behind auth, export a token and the agent passes `--token "$TOKEN"`; see
-  [Authenticated servers](/authenticated-servers).
+- It never asks you to paste a credential into the chat, and never writes
+  one into a file. For a server behind auth, export `MCPSCORE_TOKEN` before
+  you start the agent, and ask it not to pass `--token`. mcpscore reads the
+  variable itself, so the token stays out of the command line and the
+  process list. See
+  [Authenticated servers](/authenticated-servers#step-3-keep-the-token-out-of-your-shell-history).
 - It edits only code you own in the workspace, never installed packages or
   vendored SDK code. For a remote server whose source isn't there, you get
   the findings as a list for its maintainers.

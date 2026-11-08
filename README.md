@@ -96,6 +96,18 @@ auth, TLS, and transport surface. `--oauth` opens the browser instead of
 taking a token, and `--header` sends an API-key header.
 More: [authenticated servers](https://docs.mcpscore.dev/authenticated-servers).
 
+## Let your coding agent fix it
+
+The mcpscore plugin lets Claude Code or Codex run the audit, fix the findings
+in your own server code, and re-audit to show the score before and after:
+
+```text
+/plugin install mcpscore --marketplace mcp-box/mcpscore-plugin
+Audit my MCP server in server.py and fix what you safely can
+```
+
+More: [use from your coding agent](https://docs.mcpscore.dev/coding-agents).
+
 ## Fail the build when the score drops
 
 ```bash
