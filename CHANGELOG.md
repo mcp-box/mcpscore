@@ -7,12 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.31.2] - 2026-11-09
+
+Servers that answer `server/discover` without credentials but ask for
+sign-in on everything else now get a partial audit, like other auth-gated
+servers, instead of failing tool and readiness rules on the sign-in
+challenge. Their scores rise. A new guide shows how to run mcpscore from
+Claude Code, Codex or another coding agent with the mcpscore plugin.
+
 ### Added
 
 - **"Use from your coding agent" guide** (`docs/coding-agents.mdx`): install
   the mcpscore plugin in Claude Code or Codex, allow
   `Bash(uvx mcpscore@latest:*)`, and have the agent audit your server, fix the
   findings in your code and re-audit.
+
+### Changed
+
+- Dependencies refreshed: sse-starlette 3.7.0. The `mcp==2.3.0` pin is the
+  latest SDK.
 
 ### Fixed
 
@@ -2575,7 +2588,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.31.1...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.31.2...HEAD
+[1.31.2]: https://github.com/mcp-box/mcpscore/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/mcp-box/mcpscore/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/mcp-box/mcpscore/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/mcp-box/mcpscore/compare/v1.29.1...v1.30.0
