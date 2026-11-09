@@ -78,9 +78,10 @@ too.
 </Tabs>
 
 The plugin sends nothing to mcpscore.dev. The CLI talks to the server you
-audit, and to the authorization server it advertises in its OAuth metadata,
-when it has one. That second request fetches public metadata and carries no
-credential.
+audit, and fetches the public OAuth discovery documents that server points to:
+its protected-resource metadata and its authorization server's metadata. They
+can be on other hosts. Those requests carry no credential, and the CLI doesn't
+send them to loopback or private addresses unless the audited server is on one.
 
 ## Step 2: Let it run mcpscore without asking
 
