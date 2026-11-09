@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.31.2] - 2026-11-09
 
 Servers that answer `server/discover` without credentials but ask for
-sign-in on everything else now get a partial audit, like other auth-gated
-servers, instead of failing tool and readiness rules on the sign-in
-challenge. Their scores rise. A new guide shows how to run mcpscore from
-Claude Code, Codex or another coding agent with the mcpscore plugin.
+sign-in on everything else now get a partial score for their
+unauthenticated surface, like other auth-gated servers, instead of a full
+score that failed tool and readiness rules on the sign-in challenge. A new
+guide shows how to run mcpscore from Claude Code, Codex or another coding
+agent with the mcpscore plugin.
 
 ### Added
 
