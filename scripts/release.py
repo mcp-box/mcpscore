@@ -176,6 +176,24 @@ REVIEW_BOT_CHECKS = frozenset({"copilot-pull-request-reviewer", "Cursor Bugbot"}
 they re-enter in_progress on every push, so counting them would make a release
 racy against the bots' review latency."""
 
+DEPENDABOT_WORKFLOW_PREFIX = "dynamic/dependabot/"
+"""Workflow path prefix of runs GitHub starts for Dependabot (dependency graph,
+version updates). They test nothing in the commit and cannot be re-run, so a
+transient failure in one must not block a release."""
+
+
+def dependabot_suite_ids(sha: str) -> set[int]:
+    """Return the check-suite IDs of Dependabot-managed workflow runs for a commit."""
+    raw = run(
+        "gh",
+        "api",
+        "--paginate",
+        f"repos/{REPO}/actions/runs?head_sha={sha}&per_page=100",
+        "--jq",
+        f'.workflow_runs[] | select(.path | startswith("{DEPENDABOT_WORKFLOW_PREFIX}")) | .check_suite_id',
+    )
+    return {int(line) for line in raw.splitlines() if line}
+
 
 def check_ci_green(sha: str) -> None:
     # --paginate: the endpoint returns 30 runs per page by default, and a failure
@@ -186,9 +204,14 @@ def check_ci_green(sha: str) -> None:
         "--paginate",
         f"repos/{REPO}/commits/{sha}/check-runs?per_page=100",
         "--jq",
-        ".check_runs[] | {name, status, conclusion, started_at, completed_at}",
+        ".check_runs[] | {name, status, conclusion, started_at, completed_at, suite: .check_suite.id}",
     )
-    runs = [r for r in map(json.loads, raw.splitlines()) if r["name"] not in REVIEW_BOT_CHECKS]
+    skipped_suites = dependabot_suite_ids(sha)
+    runs = [
+        r
+        for r in map(json.loads, raw.splitlines())
+        if r["name"] not in REVIEW_BOT_CHECKS and r.get("suite") not in skipped_suites
+    ]
     if not runs:
         fail("no CI check runs found for HEAD — has CI finished?")
 

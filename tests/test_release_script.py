@@ -170,25 +170,40 @@ class TestCheckTagAbsent:
 
 
 class TestCheckCiGreen:
-    def _stub_checks(self, monkeypatch: pytest.MonkeyPatch, runs: list[dict]) -> list[tuple[str, ...]]:
-        """Stub gh as `--paginate --jq` prints it: one JSON object per line."""
+    def _stub_checks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        runs: list[dict],
+        workflow_runs: list[dict] | None = None,
+    ) -> list[tuple[str, ...]]:
+        """Stub gh as `--paginate --jq` prints it: one line per selected value.
+
+        `workflow_runs` feeds the actions-runs query; the stub applies its jq filter.
+        """
         calls: list[tuple[str, ...]] = []
 
         def fake_run(*args: str, **_kwargs: object) -> str:
             calls.append(args)
+            if any("/actions/runs?" in a for a in args):
+                return "\n".join(
+                    str(w["check_suite_id"])
+                    for w in workflow_runs or []
+                    if w["path"].startswith(release.DEPENDABOT_WORKFLOW_PREFIX)
+                )
             return "\n".join(json.dumps(r) for r in runs)
 
         monkeypatch.setattr(release, "run", fake_run)
         return calls
 
     @staticmethod
-    def _run(name: str, conclusion: str, completed_at: str) -> dict:
+    def _run(name: str, conclusion: str, completed_at: str, suite: int = 1) -> dict:
         return {
             "name": name,
             "status": "completed",
             "conclusion": conclusion,
             "started_at": completed_at,
             "completed_at": completed_at,
+            "suite": suite,
         }
 
     def test_all_green_passes(self, monkeypatch: pytest.MonkeyPatch):
@@ -235,9 +250,48 @@ class TestCheckCiGreen:
         """The API pages at 30 runs; the request must ask gh for all of them."""
         calls = self._stub_checks(monkeypatch, [self._run("lint", "success", "2026-07-10T10:00:00Z")])
         release.check_ci_green("abc123")
-        (args,) = calls
+        (args,) = [c for c in calls if any("/check-runs?" in a for a in c)]
         assert "--paginate" in args
         assert any(a.endswith("/commits/abc123/check-runs?per_page=100") for a in args)
+
+    def test_dependabot_runs_are_not_ci_gates(self, monkeypatch: pytest.MonkeyPatch):
+        """A failed Dependabot dependency-graph run must not block a release."""
+        self._stub_checks(
+            monkeypatch,
+            [
+                self._run("lint", "success", "2026-07-10T10:00:00Z", suite=1),
+                self._run("update-uv-graph", "failure", "2026-07-10T10:00:00Z", suite=2),
+            ],
+            workflow_runs=[
+                {"path": ".github/workflows/ci.yml", "check_suite_id": 1},
+                {"path": "dynamic/dependabot/update-graph", "check_suite_id": 2},
+            ],
+        )
+        release.check_ci_green("abc123")  # must not raise
+
+    def test_other_github_managed_runs_still_gate(self, monkeypatch: pytest.MonkeyPatch):
+        """CodeQL also runs as a dynamic workflow, and its failure still blocks."""
+        self._stub_checks(
+            monkeypatch,
+            [
+                self._run("lint", "success", "2026-07-10T10:00:00Z", suite=1),
+                self._run("Analyze (python)", "failure", "2026-07-10T10:00:00Z", suite=3),
+            ],
+            workflow_runs=[
+                {"path": ".github/workflows/ci.yml", "check_suite_id": 1},
+                {"path": "dynamic/github-code-scanning/codeql", "check_suite_id": 3},
+            ],
+        )
+        with pytest.raises(SystemExit):
+            release.check_ci_green("abc123")
+
+    def test_reads_every_page_of_workflow_runs(self, monkeypatch: pytest.MonkeyPatch):
+        """The Dependabot suites are looked up for the same commit, across all pages."""
+        calls = self._stub_checks(monkeypatch, [self._run("lint", "success", "2026-07-10T10:00:00Z")])
+        release.check_ci_green("abc123")
+        (args,) = [c for c in calls if any("/actions/runs?" in a for a in c)]
+        assert "--paginate" in args
+        assert any(a.endswith("/actions/runs?head_sha=abc123&per_page=100") for a in args)
 
     def test_failure_beyond_first_page_blocks(self, monkeypatch: pytest.MonkeyPatch):
         """A failing run listed after 30 green ones still blocks the release."""
