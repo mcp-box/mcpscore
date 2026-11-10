@@ -1209,11 +1209,10 @@ class TestSessionlessPostIsBounded:
         monkeypatch.setattr(probes, "POST_READ_LIMIT", 4096)
         body = _CountingBody(b"x" * 1024)
 
-        response = await self._post(lambda _request: httpx2.Response(200, content=body))
+        with pytest.raises(probes._UnreadAnswer, match="capped") as raised:
+            await self._post(lambda _request: httpx2.Response(200, content=body))
 
-        assert response.status_code == 200
-        assert response.payload is None
-        assert response.unobservable == "capped"
+        assert raised.value.answered_status == 200
         assert body.pulled <= 6
 
     async def test_a_compressed_answer_is_never_inflated(self):
@@ -1225,12 +1224,37 @@ class TestSessionlessPostIsBounded:
             seen.append(request)
             return httpx2.Response(200, headers={"Content-Encoding": "gzip"}, content=body)
 
-        response = await self._post(handler)
+        with pytest.raises(probes._UnreadAnswer, match="encoded"):
+            await self._post(handler)
 
         assert seen[0].headers["Accept-Encoding"] == "identity"
+        assert body.pulled == 0
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_an_access_controlled_answer_is_returned_without_its_body(self, status):
+        body = _CountingBody(gzip.compress(b"denied"))
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            status, headers={"Content-Encoding": "gzip", "WWW-Authenticate": "Bearer"}, content=body
+        )
+
+        response = await self._post(handler)
+
+        assert response.status_code == status
         assert response.payload is None
         assert response.unobservable == "encoded"
+        assert response.headers["www-authenticate"] == "Bearer"
         assert body.pulled == 0
+
+    async def test_a_caller_that_needs_no_body_gets_the_status(self):
+        body = _CountingBody(gzip.compress(b"{}"))
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Encoding": "gzip"}, content=body
+        )
+
+        response = await self._post(handler, body_required=False)
+
+        assert response.status_code == 200
+        assert response.unobservable == "encoded"
 
     async def test_a_heartbeat_only_stream_ends_at_the_deadline(self, monkeypatch):
         monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
@@ -1314,7 +1338,8 @@ class TestMetadataFetchIsBounded:
         monkeypatch.setattr(probes, "METADATA_READ_LIMIT", 4096)
         body = _CountingBody(b"x" * 1024)
 
-        assert await self._get(lambda _request: httpx2.Response(200, content=body)) == (200, None)
+        with pytest.raises(probes._UnreadAnswer, match="capped"):
+            await self._get(lambda _request: httpx2.Response(200, content=body))
         assert body.pulled <= 6
 
     async def test_a_compressed_document_is_never_inflated(self):
@@ -1323,7 +1348,8 @@ class TestMetadataFetchIsBounded:
             200, headers={"Content-Encoding": "gzip"}, content=body
         )
 
-        assert await self._get(handler) == (200, None)
+        with pytest.raises(probes._UnreadAnswer, match="encoded"):
+            await self._get(handler)
         assert body.pulled == 0
 
     async def test_a_dripped_document_ends_at_the_deadline(self, monkeypatch):
@@ -1394,3 +1420,42 @@ async def test_a_probe_that_never_finishes_is_an_error_at_its_deadline(monkeypat
 
     assert results[probes.PROBE_DISCOVER].outcome is ProbeOutcome.ERROR
     assert results[probes.PROBE_DISCOVER].details == {"exception": "TimeoutError"}
+
+
+class TestAnUnreadAnswerIsNotAVerdict:
+    """A body the probe did not read is missing evidence: the probe errors, it does not fail the server."""
+
+    @staticmethod
+    def _compressed(payload: dict) -> httpx2.Response:
+        return httpx2.Response(
+            200, headers={"Content-Encoding": "gzip"}, content=gzip.compress(json.dumps(payload).encode())
+        )
+
+    async def test_a_compressed_catalog_is_an_error_not_unsupported(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "POST":
+                return httpx2.Response(405)
+            rid = json.loads(request.content).get("id")
+            return self._compressed({"jsonrpc": "2.0", "id": rid, "result": {"tools": []}})
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            results = await probes.run_all_probes(URL, client=client)
+
+        listed = results[probes.PROBE_STATELESS_LIST]
+        assert listed.outcome is ProbeOutcome.ERROR
+        assert listed.details == {"exception": "_UnreadAnswer"}
+        # The unauthenticated probe reads only the status, so it still has its observation.
+        assert results[probes.PROBE_UNAUTHENTICATED].outcome is ProbeOutcome.SUPPORTED
+        assert results[probes.PROBE_UNAUTHENTICATED].details["http_status"] == 200
+
+    async def test_metadata_that_cannot_be_read_is_an_error_not_absent(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "/.well-known/" in request.url.path:
+                return self._compressed({"resource": URL, "authorization_servers": ["https://auth.example"]})
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+
+        result = await _run(probes._probe_auth_metadata, handler)
+
+        assert result.outcome is ProbeOutcome.ERROR
+        assert result.details["exception"] == "_UnreadAnswer"
+        assert result.details["unreachable_locations"] == result.details["urls_tried"]

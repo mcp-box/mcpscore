@@ -535,6 +535,18 @@ def _answered_status(exc: BaseException) -> int | None:
     return status if isinstance(status, int) else None
 
 
+class _UnreadAnswer(httpx2.DecodingError):
+    """An answer arrived but its body was not read: compressed, over the byte cap, or cut off at the deadline.
+
+    Not having read a body says nothing about what it held, so a probe whose verdict needs the body
+    fails with this instead of judging an empty payload.
+    """
+
+    def __init__(self, why: str, status: int) -> None:
+        super().__init__(f"answer body not read ({why})")
+        self.answered_status = status
+
+
 class _ReadCapReached(Exception):  # noqa: N818 — a signal, not an error condition
     """The answer exceeded ``_RPC_READ_LIMIT`` before the response was found."""
 
@@ -702,6 +714,7 @@ class _HttpTarget:
         anonymous: bool = False,
         follow_redirects: bool = True,
         omit_headers: tuple[str, ...] = (),
+        body_required: bool = True,
     ) -> _HttpProbeResponse:
         """POST a probe request, optionally stripping headers from the final request.
 
@@ -722,9 +735,14 @@ class _HttpTarget:
 
         The answer is read the way :meth:`post_rpc` reads it, up to
         ``POST_READ_LIMIT`` bytes and within one deadline, so a server cannot
-        stall the probe or make it buffer an unbounded body.
+        stall the probe or make it buffer an unbounded body. An answer whose
+        body was not read raises ``_UnreadAnswer``: the probe is then an
+        error, not a verdict on a payload nobody saw. Two answers are returned
+        without a payload instead: an access-controlled one (401/403), whose
+        status is the observation, and any answer when ``body_required`` is
+        off, for a caller that reads only the status and headers.
         """
-        return await self.post_rpc(
+        response = await self.post_rpc(
             body,
             headers,
             follow_redirects=follow_redirects,
@@ -732,6 +750,9 @@ class _HttpTarget:
             read_limit=POST_READ_LIMIT,
             omit_headers=omit_headers,
         )
+        if response.unobservable and body_required and response.status_code not in AUTH_GATED_STATUSES:
+            raise _UnreadAnswer(response.unobservable, response.status_code)
+        return response
 
     async def post_rpc(
         self,
@@ -1770,6 +1791,7 @@ async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
         _request_body("tools/list", 7, _modern_meta(target_version)),
         _request_headers(target_version, "tools/list"),
         anonymous=True,
+        body_required=False,
     )
     details = _base_details(response)
     details["www_authenticate"] = response.headers.get("www-authenticate")
@@ -1964,7 +1986,8 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
 
     These hosts are named by the audited server, so the read is bounded: an
     identity body of at most ``METADATA_READ_LIMIT`` bytes within one deadline.
-    A document that is content-encoded or larger has no parsed result.
+    A 200 document that is content-encoded or larger raises ``_UnreadAnswer``,
+    so it counts as a location that could not be read, not as one without metadata.
     """
     request = client.build_request(
         "GET", url, headers={"Accept": "application/json", "Accept-Encoding": "identity"}, timeout=PROBE_TIMEOUT_S
@@ -1978,11 +2001,11 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
             if status != 200:
                 return status, None
             if response.headers.get("content-encoding", "").strip().lower() not in ("", "identity"):
-                return status, None
+                raise _UnreadAnswer("encoded", status)
             try:
                 raw = b"".join([chunk async for chunk in _bounded_chunks(response, METADATA_READ_LIMIT)])
             except _ReadCapReached:
-                return status, None
+                raise _UnreadAnswer("capped", status) from None
     except TimeoutError as exc:
         raise _StreamDeadline(request) from exc
     finally:
