@@ -591,11 +591,14 @@ class AuthServerMetadataPresentRule(AuthMetadataBaseRule):
         return RuleSeverity.HIGH
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when the metadata lists no HTTPS authorization server to discover."""
+        """Skip when no HTTPS authorization server is listed, or its metadata answered but was not read."""
         reason = super().skip_reason(audit_data)
         if reason is not None:
             return reason
-        if self._metadata(audit_data).get("auth_server_issuer") is None:
+        details = self._metadata(audit_data)
+        if details.get("auth_server_issuer") is None:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if details.get("auth_server_metadata_unread") and details.get("auth_server_metadata_present") is not True:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 

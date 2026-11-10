@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A server can no longer stall an audit or make it buffer an unbounded
+  answer. Every sessionless probe request, and every well-known metadata
+  document fetched from a host the server names, is now read up to a byte
+  cap and within one deadline, asks for an uncompressed body, and never
+  inflates a compressed one. Before, about twenty probes read the whole
+  answer with only a per-read timeout: a body that never ended, a small
+  compressed body that inflated to gigabytes, or a stream kept open with
+  heartbeats could hang the CLI or exhaust memory. Each probe also has an
+  overall deadline, past which it is reported as an error instead of
+  holding up the audit. An answer that was not read (compressed although
+  an uncompressed body was requested, or over the cap) is a probe error,
+  so the checks that depend on it skip instead of failing the server. An
+  answer sent on a stream that the server then leaves open is now read
+  instead of timing out.
+
 ## [1.32.0] - 2026-11-10
 
 Audits now say whether a server supports enterprise-managed authorization

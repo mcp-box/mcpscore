@@ -91,6 +91,9 @@ an SSE stream only with its first event, often a keep-alive up to 30 s apart."""
 PAGINATION_PROBE_TIMEOUT_S = 30.0
 """Total budget for the cache-scope traversal across all declared surfaces."""
 
+PROBE_RUN_DEADLINE_S = 120.0
+"""Wall time one HTTP probe may take in total, however many requests it makes."""
+
 PAGINATION_PROBE_MAX_PAGES = 100
 """Safety bound for one surface in the cache-scope traversal."""
 
@@ -386,7 +389,7 @@ class _HttpProbeResponse(_ProbeResponse):
     """URL that answered, after any same-origin redirect the request followed."""
 
     unobservable: str | None = None
-    """Why the body could not be read (``"encoded"``, ``"capped"``, ``"unfinished"``); None when it was.
+    """Why the body was not read (``"encoded"``, ``"capped"``, ``"unfinished"``, ``"unread"``); None when it was.
 
     The payload is then None.
     """
@@ -507,6 +510,12 @@ def _parse_payload_text(text: str, content_type: str) -> dict[str, Any] | None:
 _RPC_READ_LIMIT = 65_536
 """Bytes of a JSON-RPC answer read while waiting for the response before giving up."""
 
+POST_READ_LIMIT = 8 * 1024 * 1024
+"""Bytes of an answer to :meth:`_HttpTarget.post` read before giving up. Room for a large catalog page."""
+
+METADATA_READ_LIMIT = 1024 * 1024
+"""Bytes of a well-known metadata document read before giving up."""
+
 CONTROL_READ_LIMIT = 4 * 1024 * 1024
 """Bytes of a control answer (``server/discover`` or ``initialize``) read before giving up.
 
@@ -524,6 +533,18 @@ def _answered_status(exc: BaseException) -> int | None:
     """Return the HTTP status of an answer whose headers arrived before *exc* ended the exchange, if any."""
     status = getattr(exc, "answered_status", None)
     return status if isinstance(status, int) else None
+
+
+class _UnreadAnswer(httpx2.DecodingError):
+    """An answer arrived but its body was not read: compressed, over the byte cap, or cut off at the deadline.
+
+    Not having read a body says nothing about what it held, so a probe whose verdict needs the body
+    fails with this instead of judging an empty payload.
+    """
+
+    def __init__(self, why: str, status: int) -> None:
+        super().__init__(f"answer body not read ({why})")
+        self.answered_status = status
 
 
 class _ReadCapReached(Exception):  # noqa: N818 — a signal, not an error condition
@@ -622,9 +643,23 @@ async def _read_sse_response(
     return None
 
 
-def _parse_payload(response: httpx2.Response) -> dict[str, Any] | None:
-    """Extract the JSON-RPC message from a JSON or SSE response body."""
-    return _parse_payload_text(response.text, response.headers.get("content-type", ""))
+async def _read_answer(
+    response: httpx2.Response, request_id: object, limit: int | None, read_body: bool
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read one JSON-RPC answer within the byte cap. Returns (payload, why the body was not read)."""
+    if not read_body:
+        return None, "unread"
+    content_type = response.headers.get("content-type", "")
+    encoding = response.headers.get("content-encoding", "").strip().lower()
+    if encoding not in ("", "identity"):
+        return None, "encoded"
+    try:
+        if "text/event-stream" in content_type.lower():
+            return await _read_sse_response(response, request_id, limit), None
+        raw = b"".join([chunk async for chunk in _bounded_chunks(response, limit)])
+    except _ReadCapReached:
+        return None, "capped"
+    return _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type), None
 
 
 class _ProbeTarget(Protocol):
@@ -698,6 +733,7 @@ class _HttpTarget:
         anonymous: bool = False,
         follow_redirects: bool = True,
         omit_headers: tuple[str, ...] = (),
+        body_required: bool = True,
     ) -> _HttpProbeResponse:
         """POST a probe request, optionally stripping headers from the final request.
 
@@ -715,23 +751,29 @@ class _HttpTarget:
         client defaults, so a caller-supplied default cannot accidentally
         restore a header that a negative probe intends to omit. The shared
         client's defaults are never mutated because probes run concurrently.
+
+        The answer is read the way :meth:`post_rpc` reads it, up to
+        ``POST_READ_LIMIT`` bytes and within one deadline, so a server cannot
+        stall the probe or make it buffer an unbounded body. An answer whose
+        body was not read raises ``_UnreadAnswer``: the probe is then an
+        error, not a verdict on a payload nobody saw. Two answers are returned
+        without a payload instead: an access-controlled one (401/403), whose
+        status is the observation, and any answer when ``body_required`` is
+        off, for a caller that reads only the status and headers; its body
+        is then not read at all.
         """
-        request = self.client.build_request("POST", self.url, json=body, headers=headers, timeout=PROBE_TIMEOUT_S)
-        if anonymous:
-            _strip_credentials(request)
-        for header in omit_headers:
-            request.headers.pop(header, None)
-        response = (
-            await send_within_origin(self.client, request, **_no_client_auth(anonymous))
-            if follow_redirects
-            else await self.client.send(request, follow_redirects=False, **_no_client_auth(anonymous))
+        response = await self.post_rpc(
+            body,
+            headers,
+            follow_redirects=follow_redirects,
+            anonymous=anonymous,
+            read_limit=POST_READ_LIMIT,
+            omit_headers=omit_headers,
+            read_body=body_required,
         )
-        return _HttpProbeResponse(
-            status_code=response.status_code,
-            headers=dict(response.headers),
-            payload=_parse_payload(response),
-            final_url=str(response.url),
-        )
+        if response.unobservable and body_required and response.status_code not in AUTH_GATED_STATUSES:
+            raise _UnreadAnswer(response.unobservable, response.status_code)
+        return response
 
     async def post_rpc(
         self,
@@ -744,6 +786,7 @@ class _HttpTarget:
         anonymous: bool = False,
         read_limit: int | None = None,
         omit_headers: tuple[str, ...] = (),
+        read_body: bool = True,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -764,6 +807,7 @@ class _HttpTarget:
         client's ``Authorization`` and cookies are removed from the request and its
         cleanup; an ``Authorization`` passed in ``headers`` is kept. ``read_limit`` replaces the default byte cap.
         ``omit_headers`` are removed after the client's defaults are merged, as in :meth:`post`.
+        With ``read_body`` off the answer is returned once its headers arrive, with ``unobservable="unread"``.
         """
         request = self.client.build_request(
             "POST",
@@ -789,20 +833,7 @@ class _HttpTarget:
                         request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
                     )
                 )
-                content_type = response.headers.get("content-type", "")
-                encoding = response.headers.get("content-encoding", "").strip().lower()
-                payload: dict[str, Any] | None = None
-                unobservable: str | None = None
-                try:
-                    if encoding not in ("", "identity"):
-                        unobservable = "encoded"
-                    elif "text/event-stream" in content_type.lower():
-                        payload = await _read_sse_response(response, body.get("id"), read_limit)
-                    else:
-                        raw = b"".join([chunk async for chunk in _bounded_chunks(response, read_limit)])
-                        payload = _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type)
-                except _ReadCapReached:
-                    unobservable = "capped"
+                payload, unobservable = await _read_answer(response, body.get("id"), read_limit, read_body)
                 return _HttpProbeResponse(
                     status_code=response.status_code,
                     headers=dict(response.headers),
@@ -855,7 +886,8 @@ class _HttpTarget:
         is read **only when the response carries no content-encoding** — so
         ``aiter_bytes`` has nothing to decode and cannot inflate a chunk. Each
         chunk is appended only up to the remaining ``_RAW_BODY_SCAN_LIMIT``
-        capacity, so a single large chunk cannot overshoot the cap. If the
+        capacity, so a single large chunk cannot overshoot the cap. The whole
+        exchange shares one deadline, past which ``httpx2.ReadTimeout`` is raised. If the
         server compresses anyway (ignoring the identity request), the body is
         never fed to the decoder — that is where the bomb would inflate — and
         is reported unobservable.
@@ -873,43 +905,48 @@ class _HttpTarget:
         content-encoded despite the identity request; not decoded).
         """
         probe_headers = {**headers, "Accept-Encoding": "identity"}
-        async with self.client.stream(
-            "POST",
-            self.url,
-            content=content,
-            headers=probe_headers,
-            timeout=PROBE_TIMEOUT_S,
-            follow_redirects=False,
-        ) as response:
-            status_code = response.status_code
-            response_headers = dict(response.headers)
-            encoding = response.headers.get("content-encoding", "").strip().lower()
-            encoded = encoding not in ("", "identity")
-            body = bytearray()
-            truncated = False
-            limit = _RAW_BODY_SCAN_LIMIT if body_limit is None else body_limit(status_code)
-            if limit == 0:
-                return (
-                    _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),
-                    None,
-                    "unread",
-                )
-            if not encoded:
-                # No content-encoding, so aiter_bytes yields identity bytes and
-                # performs no decompression — bounding the chunks bounds peak
-                # memory. An encoded body is deliberately never iterated (the
-                # `async with` closes it without decoding).
-                async for chunk in response.aiter_bytes():
-                    space = limit - len(body)
-                    if len(chunk) > space:
-                        body.extend(chunk[:space])
-                        truncated = True
-                        break
-                    body.extend(chunk)
-                    if body_limit is not None and len(body) >= limit:
-                        # The caller needs no more; waiting for the next chunk could block on an open stream.
-                        truncated = True
-                        break
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_S):
+                async with self.client.stream(
+                    "POST",
+                    self.url,
+                    content=content,
+                    headers=probe_headers,
+                    timeout=PROBE_TIMEOUT_S,
+                    follow_redirects=False,
+                ) as response:
+                    status_code = response.status_code
+                    response_headers = dict(response.headers)
+                    encoding = response.headers.get("content-encoding", "").strip().lower()
+                    encoded = encoding not in ("", "identity")
+                    body = bytearray()
+                    truncated = False
+                    limit = _RAW_BODY_SCAN_LIMIT if body_limit is None else body_limit(status_code)
+                    if limit == 0:
+                        return (
+                            _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),
+                            None,
+                            "unread",
+                        )
+                    if not encoded:
+                        # No content-encoding, so aiter_bytes yields identity bytes and
+                        # performs no decompression — bounding the chunks bounds peak
+                        # memory. An encoded body is deliberately never iterated (the
+                        # `async with` closes it without decoding).
+                        async for chunk in response.aiter_bytes():
+                            space = limit - len(body)
+                            if len(chunk) > space:
+                                body.extend(chunk[:space])
+                                truncated = True
+                                break
+                            body.extend(chunk)
+                            if body_limit is not None and len(body) >= limit:
+                                # The caller needs no more; waiting for the next chunk could block on an open stream.
+                                truncated = True
+                                break
+        except TimeoutError as exc:
+            msg = "the answer did not finish before the deadline"
+            raise httpx2.ReadTimeout(msg) from exc
         if encoded:
             return (
                 _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),
@@ -971,19 +1008,29 @@ class _HttpTarget:
     async def request_status(
         self, method: str, headers: dict[str, str], *, wait_s: float = PROBE_TIMEOUT_S
     ) -> _HttpProbeResponse:
-        """Send a bodiless request and close without consuming the response body."""
-        async with self.client.stream(
-            method,
-            self.url,
-            headers=headers,
-            timeout=wait_s,
-            follow_redirects=False,
-        ) as response:
-            return _HttpProbeResponse(
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                payload=None,
-            )
+        """Send a bodiless request and close without consuming the response body.
+
+        ``wait_s`` bounds the whole exchange; past it ``httpx2.ReadTimeout`` is raised.
+        """
+        try:
+            async with (
+                asyncio.timeout(wait_s),
+                self.client.stream(
+                    method,
+                    self.url,
+                    headers=headers,
+                    timeout=wait_s,
+                    follow_redirects=False,
+                ) as response,
+            ):
+                return _HttpProbeResponse(
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    payload=None,
+                )
+        except TimeoutError as exc:
+            msg = "no answer before the deadline"
+            raise httpx2.ReadTimeout(msg) from exc
 
 
 @dataclass(frozen=True)
@@ -1754,6 +1801,7 @@ async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
         _request_body("tools/list", 7, _modern_meta(target_version)),
         _request_headers(target_version, "tools/list"),
         anonymous=True,
+        body_required=False,
     )
     details = _base_details(response)
     details["www_authenticate"] = response.headers.get("www-authenticate")
@@ -1945,17 +1993,47 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
     sent. When ``run_all_probes`` created the clients, these fetches already
     run on a header-free client (``_ANONYMOUS_PROBE_IDS``); the pop here also
     covers caller-injected clients.
+
+    These hosts are named by the audited server, so the read is bounded: an
+    identity body of at most ``METADATA_READ_LIMIT`` bytes within one deadline.
+    A 200 document that is content-encoded, larger, still arriving at the
+    deadline, or whose read fails partway raises ``_UnreadAnswer``, so it
+    counts as a location that could not be read, not as one without metadata.
+    A failure before the headers arrive stays the transport error it is.
     """
-    request = client.build_request("GET", url, headers={"Accept": "application/json"}, timeout=PROBE_TIMEOUT_S)
+    request = client.build_request(
+        "GET", url, headers={"Accept": "application/json", "Accept-Encoding": "identity"}, timeout=PROBE_TIMEOUT_S
+    )
     _strip_credentials(request)
-    response = await send_within_origin(client, request, auth=None)
-    if response.status_code != 200:
-        return response.status_code, None
+    response: httpx2.Response | None = None
     try:
-        parsed = response.json()
+        async with asyncio.timeout(PROBE_TIMEOUT_S):
+            response = await send_within_origin(client, request, stream=True, auth=None)
+            status = response.status_code
+            if status != 200:
+                return status, None
+            if response.headers.get("content-encoding", "").strip().lower() not in ("", "identity"):
+                raise _UnreadAnswer("encoded", status)
+            try:
+                raw = b"".join([chunk async for chunk in _bounded_chunks(response, METADATA_READ_LIMIT)])
+            except _ReadCapReached:
+                raise _UnreadAnswer("capped", status) from None
+            except httpx2.HTTPError as exc:
+                # The read failed partway through a document the server was serving.
+                raise _UnreadAnswer("unfinished", status) from exc
+    except TimeoutError as exc:
+        if response is not None and response.status_code == 200:
+            # The document was being served when the deadline passed: answered, and not read.
+            raise _UnreadAnswer("unfinished", 200) from exc
+        raise _StreamDeadline(request) from exc
+    finally:
+        if response is not None:
+            await response.aclose()
+    try:
+        parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
-        return response.status_code, None
-    return response.status_code, parsed if isinstance(parsed, dict) else None
+        return status, None
+    return status, parsed if isinstance(parsed, dict) else None
 
 
 async def _try_get_json_anonymous(
@@ -2209,6 +2287,11 @@ async def _fetch_auth_server_metadata(
     unreachable" is itself the finding, and it must not void the
     protected-resource metadata already collected by the caller.
 
+    A location that answers with a document that was not read (compressed or
+    over the byte cap) sets ``auth_server_metadata_unread``. Unless another
+    location yields usable metadata, the issuer is then unjudged rather than
+    without metadata, and the rules that read it skip.
+
     ``auth_server_metadata_error`` means *no* candidate location was contacted.
     An issuer that answers one location (even with a 404 or a non-JSON body) is
     reachable and simply publishes nothing usable there, so it records no
@@ -2228,6 +2311,11 @@ async def _fetch_auth_server_metadata(
     last_error: str | None = None
     for candidate in _auth_server_metadata_urls(issuer):
         _status, metadata, error = await _try_get_json_anonymous(client, candidate)
+        if error == _UnreadAnswer.__name__:
+            # Answered, but with a document that was not read: the issuer is reachable and unjudged.
+            reached = True
+            details["auth_server_metadata_unread"] = True
+            continue
         if error is not None:
             last_error = error
             continue
@@ -2310,7 +2398,9 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
     but "every location failed to connect" stays ERROR rather than
     UNSUPPORTED: an unreachable host is *unverified*, not proof that the
     server publishes no metadata, and the dependent rules must skip rather
-    than fail it. Locations that could not be contacted are listed in
+    than fail it. The same holds when a location answered with a document
+    that was not read (compressed or over the byte cap) and no other location
+    had usable metadata. Locations that could not be contacted are listed in
     ``unreachable_locations`` whatever the outcome, so a firewalled location is
     distinguishable from one that simply answered 404.
     """
@@ -2318,12 +2408,14 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
     candidates, challenge_url = await _metadata_candidates(target, details)
     reached = False
     last_error: str | None = None
+    unread = False
     for candidate in candidates:
         details["urls_tried"].append(candidate)
         status, metadata, error = await _try_get_json_anonymous(target.client, candidate)
         is_challenge = candidate == challenge_url
         if error is not None:
             last_error = error
+            unread = unread or error == _UnreadAnswer.__name__
             details.setdefault("unreachable_locations", []).append(candidate)
             if is_challenge and error == "InvalidURL":
                 details["challenge_metadata_invalid"] = True
@@ -2353,10 +2445,13 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
         if first is not None:
             await _fetch_auth_server_metadata(target.client, first, target.url, details)
         return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
-    if not reached:
+    if not reached or unread:
         # Keep what was established (urls_tried, unreachable_locations) — an
         # ERROR outcome is the case that most needs the diagnostic context.
-        return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.ERROR, details | {"exception": last_error})
+        # A location that answered with a document that was not read may be
+        # the one holding the metadata, so the others' 404s settle nothing.
+        error = _UnreadAnswer.__name__ if unread else last_error
+        return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.ERROR, details | {"exception": error})
     return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.UNSUPPORTED, details)
 
 
@@ -3558,9 +3653,10 @@ async def run_all_probes(
 
     async def run_one(probe_id: str, http_client: httpx2.AsyncClient, auth_challenge: str | None = None) -> ProbeResult:
         try:
-            result = await _HTTP_PROBES[probe_id](
-                _HttpTarget(http_client, url, auth_challenge, injected=client is not None)
-            )
+            async with asyncio.timeout(PROBE_RUN_DEADLINE_S):
+                result = await _HTTP_PROBES[probe_id](
+                    _HttpTarget(http_client, url, auth_challenge, injected=client is not None)
+                )
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})

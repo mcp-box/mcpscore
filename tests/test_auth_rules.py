@@ -140,6 +140,16 @@ class TestSkipGating:
         data = _data(_unauth(), _full_metadata(auth_server_issuer=None))
         assert AuthServerMetadataPresentRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
 
+    def test_as_metadata_rule_skips_when_the_issuer_document_was_not_read(self):
+        """An answer nobody read is not evidence that the issuer publishes no metadata."""
+        data = _data(_unauth(), _full_metadata(auth_server_metadata_present=False, auth_server_metadata_unread=True))
+        assert AuthServerMetadataPresentRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+        assert AuthServerPkceRule().skip_reason(data) == SKIP_REASON_INSUFFICIENT_DATA
+
+    def test_as_metadata_rule_runs_when_another_location_was_read(self):
+        data = _data(_unauth(), _full_metadata(auth_server_metadata_unread=True))
+        assert AuthServerMetadataPresentRule().skip_reason(data) is None
+
     def test_pkce_rule_skips_when_as_metadata_unreachable(self):
         """Unreachable RFC 8414 metadata is the presence rule's finding — no double-counting."""
         data = _data(_unauth(), _full_metadata(auth_server_metadata_present=False))
