@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.client
 from pathlib import Path
+import select
 import socket
 import sys
 import threading
@@ -244,6 +245,8 @@ class TestFixture:
         listener = _Listener(socket.AF_INET, "127.0.0.1", 0, NetworkFixture.__new__(NetworkFixture))
         try:
             with socket.create_connection(listener.server_address[:2], timeout=5):
+                # connect() can return before the kernel queues the connection on the listener.
+                assert select.select([listener.socket], [], [], 5)[0]
                 started = time.monotonic()
                 listener.settle(timeout=0.2)
 

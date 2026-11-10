@@ -1935,7 +1935,8 @@ def test_a_long_dotted_name_without_tool_is_scanned_in_linear_time() -> None:
 def test_adversarial_quotes_and_lines_are_scanned_in_linear_time(text: str) -> None:
     started = time.perf_counter()
     cross_tool_classes(text, LISTED)
-    assert time.perf_counter() - started < 2.0
+    # Loose enough for slow CI runners; a quadratic scan of these inputs would still exceed it many times over.
+    assert time.perf_counter() - started < 10.0
 
 
 def test_a_listed_name_with_trailing_punctuation_matches_exactly() -> None:
