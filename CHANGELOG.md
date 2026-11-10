@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-11-10
+
+Audits now say whether a server supports enterprise-managed authorization
+(Cross-App Access), where an organization's identity provider grants
+access instead of a per-user consent screen. It is reported as a fact
+beside the score and moves no one's score.
+
 ### Added
 
 - Reports say whether a server's authorization server advertises
@@ -15,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block and one CLI line. It is not scored. When the profile is listed
   without the `jwt-bearer` grant type that draft-ietf-oauth-identity-assertion-authz-grant
   §7.2 requires alongside it, the CLI warns and the block's `issue` says so.
+
+### Changed
+
+- Dependencies refreshed: no runtime package moved; the `mcp==2.3.0` pin is
+  the latest SDK.
 
 ## [1.31.2] - 2026-11-09
 
@@ -2598,7 +2610,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.31.2...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.32.0...HEAD
+[1.32.0]: https://github.com/mcp-box/mcpscore/compare/v1.31.2...v1.32.0
 [1.31.2]: https://github.com/mcp-box/mcpscore/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/mcp-box/mcpscore/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/mcp-box/mcpscore/compare/v1.30.0...v1.31.0
