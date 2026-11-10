@@ -1996,9 +1996,10 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
 
     These hosts are named by the audited server, so the read is bounded: an
     identity body of at most ``METADATA_READ_LIMIT`` bytes within one deadline.
-    A 200 document that is content-encoded, larger, or still arriving at the
-    deadline raises ``_UnreadAnswer``, so it counts as a location that could
-    not be read, not as one without metadata.
+    A 200 document that is content-encoded, larger, still arriving at the
+    deadline, or whose read fails partway raises ``_UnreadAnswer``, so it
+    counts as a location that could not be read, not as one without metadata.
+    A failure before the headers arrive stays the transport error it is.
     """
     request = client.build_request(
         "GET", url, headers={"Accept": "application/json", "Accept-Encoding": "identity"}, timeout=PROBE_TIMEOUT_S
@@ -2017,6 +2018,9 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
                 raw = b"".join([chunk async for chunk in _bounded_chunks(response, METADATA_READ_LIMIT)])
             except _ReadCapReached:
                 raise _UnreadAnswer("capped", status) from None
+            except httpx2.HTTPError as exc:
+                # The read failed partway through a document the server was serving.
+                raise _UnreadAnswer("unfinished", status) from exc
     except TimeoutError as exc:
         if response is not None and response.status_code == 200:
             # The document was being served when the deadline passed: answered, and not read.

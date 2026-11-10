@@ -1567,3 +1567,34 @@ class TestAnUnreadAnswerIsNotAVerdict:
         assert len(answered) > 1
         assert result.outcome is ProbeOutcome.ERROR
         assert result.details["exception"] == "_UnreadAnswer"
+
+    @pytest.mark.parametrize("failure", [httpx2.ReadTimeout, httpx2.ReadError, httpx2.RemoteProtocolError])
+    async def test_a_document_whose_read_fails_partway_is_unread_not_absent(self, failure):
+        answered: list[str] = []
+
+        async def broken():
+            yield b'{"resource": '
+            raise failure("connection lost")
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "/.well-known/" in request.url.path:
+                answered.append(request.url.path)
+                return httpx2.Response(200, content=broken()) if len(answered) == 1 else httpx2.Response(404)
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+
+        result = await _run(probes._probe_auth_metadata, handler)
+
+        assert len(answered) > 1
+        assert result.outcome is ProbeOutcome.ERROR
+        assert result.details["exception"] == "_UnreadAnswer"
+
+    async def test_a_failure_before_the_headers_stays_a_transport_error(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "/.well-known/" in request.url.path:
+                raise httpx2.ConnectError("refused")
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+
+        result = await _run(probes._probe_auth_metadata, handler)
+
+        assert result.outcome is ProbeOutcome.ERROR
+        assert result.details["exception"] == "ConnectError"
