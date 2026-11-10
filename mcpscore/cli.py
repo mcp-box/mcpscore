@@ -20,6 +20,7 @@ from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
 from mcpscore.probes import observed_auth_status
+from mcpscore.report_evidence import evidence_preview
 from mcpscore.sarif import build_sarif
 from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
 from mcpscore.smoke_filesystem import (
@@ -857,7 +858,8 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
         )
     enterprise = report.get("enterprise_managed_auth")
     if enterprise:
-        server = enterprise["authorization_server"]
+        # The issuer is server-supplied; the preview escapes control characters so it stays one line.
+        server = evidence_preview(enterprise["authorization_server"])
         if enterprise["issue"]:
             logger.warning(
                 "Enterprise-managed authorization (not scored): %s lists the ID-JAG grant profile but not the "

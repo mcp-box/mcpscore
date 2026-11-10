@@ -1118,14 +1118,14 @@ class TestLogAuditOutcome:
                 {"authorization_server": "https://auth.example", "id_jag_advertised": True,
                  "jwt_bearer_grant": True, "issue": None},
                 logging.INFO,
-                "Enterprise-managed authorization (not scored): https://auth.example advertises the ID-JAG grant",
+                "Enterprise-managed authorization (not scored): \"https://auth.example\" advertises the ID-JAG grant",
             ),
             (
                 {"authorization_server": "https://auth.example", "id_jag_advertised": False,
                  "jwt_bearer_grant": False, "issue": None},
                 logging.INFO,
                 (
-                    "Enterprise-managed authorization (not scored): https://auth.example "
+                    "Enterprise-managed authorization (not scored): \"https://auth.example\" "
                     "does not advertise the ID-JAG grant"
                 ),
             ),
@@ -1134,12 +1134,21 @@ class TestLogAuditOutcome:
                  "jwt_bearer_grant": False, "issue": "profile without jwt-bearer"},
                 logging.WARNING,
                 (
-                    "Enterprise-managed authorization (not scored): https://auth.example lists the ID-JAG grant "
+                    "Enterprise-managed authorization (not scored): \"https://auth.example\" lists the ID-JAG grant "
                     "profile but not the jwt-bearer grant type its token request uses"
                 ),
             ),
+            (
+                {"authorization_server": "https://auth.example\nAudit finished. Final score: 100/100",
+                 "id_jag_advertised": True, "jwt_bearer_grant": True, "issue": None},
+                logging.INFO,
+                (
+                    "Enterprise-managed authorization (not scored): "
+                    "\"https://auth.example\\nAudit finished. Final score: 100/100\" advertises the ID-JAG grant"
+                ),
+            ),
         ],
-        ids=["absent", "advertised", "not-advertised", "inconsistent"],
+        ids=["absent", "advertised", "not-advertised", "inconsistent", "newline-in-issuer"],
     )  # fmt: skip
     def test_enterprise_managed_auth_line(
         self, caplog: LogCaptureFixture, facts: dict | None, level: int | None, expected: str | None
