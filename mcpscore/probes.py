@@ -389,7 +389,7 @@ class _HttpProbeResponse(_ProbeResponse):
     """URL that answered, after any same-origin redirect the request followed."""
 
     unobservable: str | None = None
-    """Why the body could not be read (``"encoded"``, ``"capped"``, ``"unfinished"``); None when it was.
+    """Why the body was not read (``"encoded"``, ``"capped"``, ``"unfinished"``, ``"unread"``); None when it was.
 
     The payload is then None.
     """
@@ -643,6 +643,25 @@ async def _read_sse_response(
     return None
 
 
+async def _read_answer(
+    response: httpx2.Response, request_id: object, limit: int | None, read_body: bool
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read one JSON-RPC answer within the byte cap. Returns (payload, why the body was not read)."""
+    if not read_body:
+        return None, "unread"
+    content_type = response.headers.get("content-type", "")
+    encoding = response.headers.get("content-encoding", "").strip().lower()
+    if encoding not in ("", "identity"):
+        return None, "encoded"
+    try:
+        if "text/event-stream" in content_type.lower():
+            return await _read_sse_response(response, request_id, limit), None
+        raw = b"".join([chunk async for chunk in _bounded_chunks(response, limit)])
+    except _ReadCapReached:
+        return None, "capped"
+    return _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type), None
+
+
 class _ProbeTarget(Protocol):
     """What a probe needs to ask a server one sessionless question."""
 
@@ -740,7 +759,8 @@ class _HttpTarget:
         error, not a verdict on a payload nobody saw. Two answers are returned
         without a payload instead: an access-controlled one (401/403), whose
         status is the observation, and any answer when ``body_required`` is
-        off, for a caller that reads only the status and headers.
+        off, for a caller that reads only the status and headers; its body
+        is then not read at all.
         """
         response = await self.post_rpc(
             body,
@@ -749,6 +769,7 @@ class _HttpTarget:
             anonymous=anonymous,
             read_limit=POST_READ_LIMIT,
             omit_headers=omit_headers,
+            read_body=body_required,
         )
         if response.unobservable and body_required and response.status_code not in AUTH_GATED_STATUSES:
             raise _UnreadAnswer(response.unobservable, response.status_code)
@@ -765,6 +786,7 @@ class _HttpTarget:
         anonymous: bool = False,
         read_limit: int | None = None,
         omit_headers: tuple[str, ...] = (),
+        read_body: bool = True,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -785,6 +807,7 @@ class _HttpTarget:
         client's ``Authorization`` and cookies are removed from the request and its
         cleanup; an ``Authorization`` passed in ``headers`` is kept. ``read_limit`` replaces the default byte cap.
         ``omit_headers`` are removed after the client's defaults are merged, as in :meth:`post`.
+        With ``read_body`` off the answer is returned once its headers arrive, with ``unobservable="unread"``.
         """
         request = self.client.build_request(
             "POST",
@@ -810,20 +833,7 @@ class _HttpTarget:
                         request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
                     )
                 )
-                content_type = response.headers.get("content-type", "")
-                encoding = response.headers.get("content-encoding", "").strip().lower()
-                payload: dict[str, Any] | None = None
-                unobservable: str | None = None
-                try:
-                    if encoding not in ("", "identity"):
-                        unobservable = "encoded"
-                    elif "text/event-stream" in content_type.lower():
-                        payload = await _read_sse_response(response, body.get("id"), read_limit)
-                    else:
-                        raw = b"".join([chunk async for chunk in _bounded_chunks(response, read_limit)])
-                        payload = _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type)
-                except _ReadCapReached:
-                    unobservable = "capped"
+                payload, unobservable = await _read_answer(response, body.get("id"), read_limit, read_body)
                 return _HttpProbeResponse(
                     status_code=response.status_code,
                     headers=dict(response.headers),

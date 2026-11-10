@@ -1254,7 +1254,21 @@ class TestSessionlessPostIsBounded:
         response = await self._post(handler, body_required=False)
 
         assert response.status_code == 200
-        assert response.unobservable == "encoded"
+        assert response.unobservable == "unread"
+        assert body.pulled == 0
+
+    async def test_the_unauthenticated_probe_does_not_wait_for_a_body(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.5)
+        body = _CountingBody(b": heartbeat\n\n")
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Type": "text/event-stream"}, content=body
+        )
+
+        result = await asyncio.wait_for(_run(probes._probe_unauthenticated, handler), timeout=5)
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["http_status"] == 200
+        assert body.pulled == 0
 
     async def test_a_heartbeat_only_stream_ends_at_the_deadline(self, monkeypatch):
         monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
