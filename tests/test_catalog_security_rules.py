@@ -1935,7 +1935,7 @@ def test_a_long_dotted_name_without_tool_is_scanned_in_linear_time() -> None:
 def test_adversarial_quotes_and_lines_are_scanned_in_linear_time(text: str) -> None:
     started = time.perf_counter()
     cross_tool_classes(text, LISTED)
-    # About 0.1 s locally; a quadratic scan of these inputs would take minutes. The margin absorbs CI runners.
+    # Loose enough for slow CI runners; a quadratic scan of these inputs would still exceed it many times over.
     assert time.perf_counter() - started < 10.0
 
 
