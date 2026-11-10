@@ -21,6 +21,7 @@ from .enums import MCPTransportType
 from .mcp_client import MCPClient
 from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
 from .probes import (
+    PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
@@ -1121,6 +1122,8 @@ class MCPAuditor:
               observed lifecycle era (legacy / modern / dual-era)
             - readiness: Independent readiness score for the next spec
               revision, with its per-rule results and the counted_in_main flag
+            - enterprise_managed_auth: Whether the authorization server
+              advertises the ID-JAG grant (not scored), or None without its metadata
 
         """
         report: dict = {
@@ -1161,6 +1164,7 @@ class MCPAuditor:
             "package": self._package_report(),
             # Facts about a server's skills that the score leaves out; None when it declares no skills.
             "skills": report_evidence(skills_report(self.audit_data.skills)) if self.audit_data.skills else None,
+            "enterprise_managed_auth": self._enterprise_managed_auth_report(),
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
             "skipped_rules": [s.to_dict() for s in self.skipped_rules],
@@ -1194,6 +1198,33 @@ class MCPAuditor:
         if self.config is not None:
             report["config"] = self._config_report(self.config)
         return report
+
+    def _enterprise_managed_auth_report(self) -> dict | None:
+        """Report whether the authorization server advertises the ID-JAG grant, without scoring it.
+
+        Enterprise-managed authorization is an opt-in MCP extension, so not advertising it is
+        never a defect. Returns None when no authorization server metadata was found.
+        """
+        probe = (self.audit_data.probes or {}).get(PROBE_AUTH_METADATA)
+        if probe is None or probe.details.get("auth_server_metadata_present") is not True:
+            return None
+        advertised = probe.details.get("auth_server_id_jag_profile") is True
+        jwt_bearer = probe.details.get("auth_server_jwt_bearer_grant") is True
+        return {
+            "authorization_server": report_evidence(probe.details.get("auth_server_issuer")),
+            "id_jag_advertised": advertised,
+            "jwt_bearer_grant": jwt_bearer,
+            "issue": (
+                "authorization_grant_profiles_supported lists the ID-JAG profile, but grant_types_supported "
+                "does not include urn:ietf:params:oauth:grant-type:jwt-bearer, which an ID-JAG token request uses"
+                if advertised and not jwt_bearer
+                else None
+            ),
+            "basis": (
+                "draft-ietf-oauth-identity-assertion-authz-grant-06 §7.2 (Resource Authorization Server "
+                "Metadata); MCP Enterprise-Managed Authorization 2026-07-28 §6 (Discovery)"
+            ),
+        }
 
     def _package_report(self) -> dict | None:
         """Serialize the audited package coordinate and what the registry said.

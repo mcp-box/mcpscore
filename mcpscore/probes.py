@@ -195,6 +195,10 @@ PROBE_QUERY_CREDENTIAL = "probe_query_credential"
 PROBE_HOST_VALIDATION = "probe_host_validation"
 PROBE_LOCAL_BIND = "probe_local_bind"
 
+# Identity Assertion JWT Authorization Grant (ID-JAG), draft-ietf-oauth-identity-assertion-authz-grant §7.2.
+ID_JAG_GRANT_PROFILE = "urn:ietf:params:oauth:grant-profile:id-jag"
+JWT_BEARER_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
 _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_DISCOVER,
     PROBE_STATELESS_LIST,
@@ -2248,6 +2252,10 @@ async def _fetch_auth_server_metadata(
         details["auth_server_iss_parameter_supported"] = (
             metadata.get("authorization_response_iss_parameter_supported") is True
         )
+        profiles = metadata.get("authorization_grant_profiles_supported")
+        grants = metadata.get("grant_types_supported")
+        details["auth_server_id_jag_profile"] = isinstance(profiles, list) and ID_JAG_GRANT_PROFILE in profiles
+        details["auth_server_jwt_bearer_grant"] = isinstance(grants, list) and JWT_BEARER_GRANT_TYPE in grants
         return
     if not reached:
         details["auth_server_metadata_error"] = last_error

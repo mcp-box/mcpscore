@@ -113,6 +113,7 @@ change bumps `schema_version`.
 | `spec` | object | `negotiated_version`, `session_protocol_version`, `latest_version`, `readiness_target`, `era`, `catalog_versions` |
 | `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus the coverage counts `assessed`, `skipped`, `total` |
 | `skills` | object or null | Facts about a server's skills that are not scored. `null` unless the server declares the Skills extension. See [skills facts](#skills-facts) |
+| `enterprise_managed_auth` | object or null | Whether the authorization server advertises enterprise-managed authorization. Not scored. `null` when no authorization server metadata was found. See [enterprise-managed authorization facts](#enterprise-managed-authorization-facts) |
 | `smoke` | object | Present only when the run used `--smoke`. See [smoke results](#smoke-results) |
 | `config` | object | Present only when a project configuration was applied. See [configuration](#configuration) |
 
@@ -149,6 +150,26 @@ scoring it:
 | `skills_with_allowed_tools`, `skills_with_scripts` | Skills that request pre-approved tools, or bundle files under `scripts/` |
 | `skills[]` | Up to 32 of those skills: `uri`, `allowed_tools` (`null` when it is not a string), `scripts` (up to 20), `scripts_total` |
 | `openai_import` | OpenAI imports at most `skills_imported_at_most` skills and `scan_archive_limit_bytes` of archives per scan. `listed_bytes` sums the listed sizes. `fits` is `true` when the whole catalog would be imported even uncompressed, each skill within OpenAI's per-skill limits, and `false` when too many skills or a skill over its limits rule it out. It is `null` otherwise: the listing or a skill's sizes are incomplete, or only compression could bring the archives under the limit |
+
+### Enterprise-managed authorization facts
+
+[Enterprise-Managed Authorization](https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization)
+is an opt-in MCP extension: a client exchanges an identity assertion from
+the organization's identity provider (an ID-JAG) for an access token, so an
+administrator decides which servers employees can reach. A client discovers
+support in the authorization server metadata (the extension's §6
+Discovery). Not supporting it is never a defect, so mcpscore reports it
+without scoring it:
+
+| Field | Meaning |
+|---|---|
+| `authorization_server` | The issuer whose metadata was read |
+| `id_jag_advertised` | `authorization_grant_profiles_supported` includes `urn:ietf:params:oauth:grant-profile:id-jag` |
+| `jwt_bearer_grant` | `grant_types_supported` includes `urn:ietf:params:oauth:grant-type:jwt-bearer`, the grant an ID-JAG token request uses |
+| `issue` | Set when the profile is listed without the `jwt-bearer` grant, which [draft-ietf-oauth-identity-assertion-authz-grant §7.2](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/) requires. `null` otherwise |
+| `basis` | The sections these facts come from |
+
+The CLI prints one line for it, and a warning when `issue` is set.
 
 ### Smoke results
 
@@ -395,6 +416,8 @@ publish it.
 <Accordion title="Technical details: what a passing check proves">
 - A passing PKCE finding establishes advertised `S256` support, not an
   executed authorization flow.
+- `id_jag_advertised: true` establishes what the authorization server
+  metadata says, not that an ID-JAG from your identity provider is accepted.
 - An error-hygiene pass means no configured pattern was found in the sampled
   response.
 - Catalog-stability passes compare two connections made with the same

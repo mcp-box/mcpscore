@@ -1399,6 +1399,61 @@ class TestAuthMetadataProbe:
         d = (await _run(handler))[PROBE_AUTH_METADATA].details
         assert d["auth_server_iss_parameter_supported"] is supported
 
+    @pytest.mark.parametrize(
+        ("extra", "profile", "jwt_bearer"),
+        [
+            (
+                {
+                    "authorization_grant_profiles_supported": [probes.ID_JAG_GRANT_PROFILE],
+                    "grant_types_supported": ["authorization_code", probes.JWT_BEARER_GRANT_TYPE],
+                },
+                True,
+                True,
+            ),
+            (
+                {
+                    "authorization_grant_profiles_supported": [probes.ID_JAG_GRANT_PROFILE],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                },
+                True,
+                False,
+            ),
+            ({"grant_types_supported": [probes.JWT_BEARER_GRANT_TYPE]}, False, True),
+            ({}, False, False),
+            (
+                {
+                    "authorization_grant_profiles_supported": probes.ID_JAG_GRANT_PROFILE,
+                    "grant_types_supported": probes.JWT_BEARER_GRANT_TYPE,
+                },
+                False,
+                False,
+            ),
+        ],
+        ids=["profile-and-grant", "profile-only", "grant-only", "neither", "strings-not-arrays"],
+    )
+    async def test_authorization_server_id_jag(self, extra: dict, profile: bool, jwt_bearer: bool):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.method != "GET":
+                return _modern_server_handler(request)
+            path = request.url.path
+            if path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            if request.url.host == "auth.example" and path == "/.well-known/oauth-authorization-server":
+                return httpx2.Response(
+                    200,
+                    json={
+                        "issuer": "https://auth.example",
+                        "authorization_endpoint": "https://auth.example/authorize",
+                        "token_endpoint": "https://auth.example/token",
+                    }
+                    | extra,
+                )
+            return httpx2.Response(404)
+
+        d = (await _run(handler))[PROBE_AUTH_METADATA].details
+        assert d["auth_server_id_jag_profile"] is profile
+        assert d["auth_server_jwt_bearer_grant"] is jwt_bearer
+
     async def test_authorization_server_without_pkce(self):
         def handler(request: httpx2.Request) -> httpx2.Response:
             if request.method != "GET":
