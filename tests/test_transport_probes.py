@@ -1383,7 +1383,19 @@ class TestMetadataFetchIsBounded:
         )
 
         assert (status, parsed) == (None, None)
-        assert error == "_StreamDeadline"
+        assert error == "_UnreadAnswer"
+
+    async def test_no_answer_before_the_deadline_is_a_timeout(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
+
+        async def never(_request: httpx2.Request) -> httpx2.Response:
+            await asyncio.Event().wait()
+            return httpx2.Response(200)
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(never)) as client:
+            result = await asyncio.wait_for(probes._try_get_json_anonymous(client, self.DOCUMENT), timeout=5)
+
+        assert result == (None, None, "_StreamDeadline")
 
     async def test_an_error_status_body_is_not_read(self):
         body = _CountingBody(b"x" * 1024)
@@ -1530,6 +1542,27 @@ class TestAnUnreadAnswerIsNotAVerdict:
             return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
 
         result = await _run(probes._probe_auth_metadata, handler)
+
+        assert len(answered) > 1
+        assert result.outcome is ProbeOutcome.ERROR
+        assert result.details["exception"] == "_UnreadAnswer"
+
+    async def test_a_document_still_arriving_at_the_deadline_is_unread_not_absent(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
+        answered: list[str] = []
+
+        async def drip():
+            while True:
+                yield b" "
+                await asyncio.sleep(0.005)
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "/.well-known/" in request.url.path:
+                answered.append(request.url.path)
+                return httpx2.Response(200, content=drip()) if len(answered) == 1 else httpx2.Response(404)
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+
+        result = await asyncio.wait_for(_run(probes._probe_auth_metadata, handler), timeout=10)
 
         assert len(answered) > 1
         assert result.outcome is ProbeOutcome.ERROR
