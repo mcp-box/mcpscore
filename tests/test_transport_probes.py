@@ -1177,3 +1177,220 @@ class TestCapAndDeadlineKeepWhatArrived:
         result = await _run(_probe_get_stream, TestBoundedAnswers._initialize_answers(server, answer))
         assert result.outcome is ProbeOutcome.NOT_APPLICABLE
         assert result.details["reason"] == "initialize answer not observable (capped)"
+
+
+class _CountingBody:
+    """An endless response body that counts the chunks a reader pulled."""
+
+    def __init__(self, chunk: bytes) -> None:
+        self.chunk = chunk
+        self.pulled = 0
+
+    async def __aiter__(self):
+        while True:
+            self.pulled += 1
+            yield self.chunk
+            await asyncio.sleep(0)
+
+
+class TestSessionlessPostIsBounded:
+    """``_HttpTarget.post`` reads a hostile answer within a byte cap and one deadline."""
+
+    BODY = {"jsonrpc": "2.0", "id": 5, "method": "tools/list"}
+
+    @staticmethod
+    async def _post(handler, **kwargs):
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            return await asyncio.wait_for(
+                _HttpTarget(client, URL).post(TestSessionlessPostIsBounded.BODY, {}, **kwargs), timeout=5
+            )
+
+    async def test_an_endless_body_stops_at_the_cap(self, monkeypatch):
+        monkeypatch.setattr(probes, "POST_READ_LIMIT", 4096)
+        body = _CountingBody(b"x" * 1024)
+
+        response = await self._post(lambda _request: httpx2.Response(200, content=body))
+
+        assert response.status_code == 200
+        assert response.payload is None
+        assert response.unobservable == "capped"
+        assert body.pulled <= 6
+
+    async def test_a_compressed_answer_is_never_inflated(self):
+        answer = json.dumps({"jsonrpc": "2.0", "id": 5, "result": {"tools": []}}).encode()
+        body = _CountingBody(gzip.compress(answer + b" " * 100_000))
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, headers={"Content-Encoding": "gzip"}, content=body)
+
+        response = await self._post(handler)
+
+        assert seen[0].headers["Accept-Encoding"] == "identity"
+        assert response.payload is None
+        assert response.unobservable == "encoded"
+        assert body.pulled == 0
+
+    async def test_a_heartbeat_only_stream_ends_at_the_deadline(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
+
+        async def heartbeats():
+            while True:
+                yield b": heartbeat\n\n"
+                await asyncio.sleep(0.005)
+
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Type": "text/event-stream"}, content=heartbeats()
+        )
+        with pytest.raises(httpx2.ReadTimeout):
+            await self._post(handler)
+
+    async def test_a_dripped_body_ends_at_the_deadline(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
+
+        async def drip():
+            while True:
+                yield b" "
+                await asyncio.sleep(0.005)
+
+        with pytest.raises(httpx2.ReadTimeout):
+            await self._post(lambda _request: httpx2.Response(200, content=drip()))
+
+    async def test_an_answer_on_a_stream_left_open_is_returned(self):
+        first = b'data: {"jsonrpc":"2.0","id":5,"result":{"tools":[]}}\n\n'
+
+        response = await self._post(lambda _request: _open_sse_response(first=first))
+
+        assert response.result == {"tools": []}
+        assert response.unobservable is None
+
+    async def test_a_large_catalog_page_under_the_cap_is_read_whole(self):
+        tools = [{"name": f"tool_{n}", "description": "d" * 900} for n in range(1000)]
+        answer = {"jsonrpc": "2.0", "id": 5, "result": {"tools": tools}}
+
+        response = await self._post(lambda _request: httpx2.Response(200, json=answer))
+
+        assert response.result == {"tools": tools}
+
+    async def test_anonymous_post_drops_the_client_credentials(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 5, "result": {}})
+
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(handler), headers={"Authorization": "Bearer secret"}
+        ) as client:
+            await _HttpTarget(client, URL).post(self.BODY, {}, anonymous=True)
+            await _HttpTarget(client, URL).post(self.BODY, {})
+
+        assert "Authorization" not in seen[0].headers
+        assert seen[1].headers["Authorization"] == "Bearer secret"
+
+
+class TestMetadataFetchIsBounded:
+    """Well-known documents come from hosts the audited server names, so their read is bounded too."""
+
+    DOCUMENT = "https://auth.example/.well-known/oauth-authorization-server"
+
+    @staticmethod
+    async def _get(handler):
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            return await asyncio.wait_for(probes._get_json_anonymous(client, TestMetadataFetchIsBounded.DOCUMENT), 5)
+
+    async def test_a_document_is_parsed(self):
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"issuer": "https://auth.example"})
+
+        assert await self._get(handler) == (200, {"issuer": "https://auth.example"})
+        assert seen[0].headers["Accept-Encoding"] == "identity"
+
+    async def test_an_endless_document_stops_at_the_cap(self, monkeypatch):
+        monkeypatch.setattr(probes, "METADATA_READ_LIMIT", 4096)
+        body = _CountingBody(b"x" * 1024)
+
+        assert await self._get(lambda _request: httpx2.Response(200, content=body)) == (200, None)
+        assert body.pulled <= 6
+
+    async def test_a_compressed_document_is_never_inflated(self):
+        body = _CountingBody(gzip.compress(b'{"issuer":"https://auth.example"}' + b" " * 100_000))
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Encoding": "gzip"}, content=body
+        )
+
+        assert await self._get(handler) == (200, None)
+        assert body.pulled == 0
+
+    async def test_a_dripped_document_ends_at_the_deadline(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
+
+        async def drip():
+            while True:
+                yield b" "
+                await asyncio.sleep(0.005)
+
+        status, parsed, error = await asyncio.wait_for(
+            probes._try_get_json_anonymous(
+                httpx2.AsyncClient(transport=httpx2.MockTransport(lambda _r: httpx2.Response(200, content=drip()))),
+                self.DOCUMENT,
+            ),
+            timeout=5,
+        )
+
+        assert (status, parsed) == (None, None)
+        assert error == "_StreamDeadline"
+
+    async def test_an_error_status_body_is_not_read(self):
+        body = _CountingBody(b"x" * 1024)
+
+        assert await self._get(lambda _request: httpx2.Response(404, content=body)) == (404, None)
+        assert body.pulled == 0
+
+    async def test_a_document_that_is_not_json_has_no_result(self):
+        assert await self._get(lambda _request: httpx2.Response(200, content=b"<html>")) == (200, None)
+        assert await self._get(lambda _request: httpx2.Response(200, content=b"[1]")) == (200, None)
+
+
+class TestRawAndBodilessReadsShareADeadline:
+    async def test_a_dripped_answer_to_a_raw_post_ends_at_the_deadline(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
+
+        async def drip():
+            while True:
+                yield b" "
+                await asyncio.sleep(0.005)
+
+        async with httpx2.AsyncClient(
+            transport=httpx2.MockTransport(lambda _r: httpx2.Response(400, content=drip()))
+        ) as client:
+            with pytest.raises(httpx2.ReadTimeout):
+                await asyncio.wait_for(_HttpTarget(client, URL).post_raw(b"{", {}), timeout=5)
+
+    async def test_a_bodiless_request_with_no_answer_ends_at_the_deadline(self):
+        async def never(_request: httpx2.Request) -> httpx2.Response:
+            await asyncio.Event().wait()
+            return httpx2.Response(200)
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(never)) as client:
+            with pytest.raises(httpx2.ReadTimeout):
+                await asyncio.wait_for(_HttpTarget(client, URL).request_status("GET", {}, wait_s=0.05), timeout=5)
+
+
+async def test_a_probe_that_never_finishes_is_an_error_at_its_deadline(monkeypatch):
+    async def stuck(_target) -> probes.ProbeResult:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+    monkeypatch.setattr(probes, "PROBE_RUN_DEADLINE_S", 0.05)
+    monkeypatch.setitem(probes._HTTP_PROBES, probes.PROBE_DISCOVER, stuck)
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda _r: httpx2.Response(404))) as client:
+        results = await asyncio.wait_for(probes.run_all_probes(URL, client=client), timeout=30)
+
+    assert results[probes.PROBE_DISCOVER].outcome is ProbeOutcome.ERROR
+    assert results[probes.PROBE_DISCOVER].details == {"exception": "TimeoutError"}
