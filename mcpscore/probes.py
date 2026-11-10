@@ -2279,6 +2279,11 @@ async def _fetch_auth_server_metadata(
     unreachable" is itself the finding, and it must not void the
     protected-resource metadata already collected by the caller.
 
+    A location that answers with a document that was not read (compressed or
+    over the byte cap) sets ``auth_server_metadata_unread``. Unless another
+    location yields usable metadata, the issuer is then unjudged rather than
+    without metadata, and the rules that read it skip.
+
     ``auth_server_metadata_error`` means *no* candidate location was contacted.
     An issuer that answers one location (even with a 404 or a non-JSON body) is
     reachable and simply publishes nothing usable there, so it records no
@@ -2298,6 +2303,11 @@ async def _fetch_auth_server_metadata(
     last_error: str | None = None
     for candidate in _auth_server_metadata_urls(issuer):
         _status, metadata, error = await _try_get_json_anonymous(client, candidate)
+        if error == _UnreadAnswer.__name__:
+            # Answered, but with a document that was not read: the issuer is reachable and unjudged.
+            reached = True
+            details["auth_server_metadata_unread"] = True
+            continue
         if error is not None:
             last_error = error
             continue
@@ -2380,7 +2390,9 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
     but "every location failed to connect" stays ERROR rather than
     UNSUPPORTED: an unreachable host is *unverified*, not proof that the
     server publishes no metadata, and the dependent rules must skip rather
-    than fail it. Locations that could not be contacted are listed in
+    than fail it. The same holds when a location answered with a document
+    that was not read (compressed or over the byte cap) and no other location
+    had usable metadata. Locations that could not be contacted are listed in
     ``unreachable_locations`` whatever the outcome, so a firewalled location is
     distinguishable from one that simply answered 404.
     """
@@ -2388,12 +2400,14 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
     candidates, challenge_url = await _metadata_candidates(target, details)
     reached = False
     last_error: str | None = None
+    unread = False
     for candidate in candidates:
         details["urls_tried"].append(candidate)
         status, metadata, error = await _try_get_json_anonymous(target.client, candidate)
         is_challenge = candidate == challenge_url
         if error is not None:
             last_error = error
+            unread = unread or error == _UnreadAnswer.__name__
             details.setdefault("unreachable_locations", []).append(candidate)
             if is_challenge and error == "InvalidURL":
                 details["challenge_metadata_invalid"] = True
@@ -2423,10 +2437,13 @@ async def _probe_auth_metadata(target: _HttpTarget) -> ProbeResult:
         if first is not None:
             await _fetch_auth_server_metadata(target.client, first, target.url, details)
         return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details, payload=metadata)
-    if not reached:
+    if not reached or unread:
         # Keep what was established (urls_tried, unreachable_locations) — an
         # ERROR outcome is the case that most needs the diagnostic context.
-        return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.ERROR, details | {"exception": last_error})
+        # A location that answered with a document that was not read may be
+        # the one holding the metadata, so the others' 404s settle nothing.
+        error = _UnreadAnswer.__name__ if unread else last_error
+        return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.ERROR, details | {"exception": error})
     return ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.UNSUPPORTED, details)
 
 

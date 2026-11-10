@@ -1473,3 +1473,64 @@ class TestAnUnreadAnswerIsNotAVerdict:
         assert result.outcome is ProbeOutcome.ERROR
         assert result.details["exception"] == "_UnreadAnswer"
         assert result.details["unreachable_locations"] == result.details["urls_tried"]
+
+    async def test_unread_issuer_metadata_keeps_the_resource_metadata_and_is_not_absent(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.host == "auth.example":
+                return self._compressed({"issuer": "https://auth.example"})
+            if "/.well-known/" in request.url.path:
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+
+        result = await _run(probes._probe_auth_metadata, handler)
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["resource"] == URL
+        assert result.details["auth_server_issuer"] == "https://auth.example"
+        assert result.details["auth_server_metadata_present"] is False
+        assert result.details["auth_server_metadata_unread"] is True
+        # The issuer answered, so this is not a transport failure.
+        assert "auth_server_metadata_error" not in result.details
+
+    async def test_a_readable_issuer_location_wins_over_an_unread_one(self):
+        answered: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.host == "auth.example":
+                answered.append(request.url.path)
+                if len(answered) == 1:
+                    return self._compressed({"issuer": "https://auth.example"})
+                return httpx2.Response(
+                    200,
+                    json={
+                        "issuer": "https://auth.example",
+                        "authorization_endpoint": "https://auth.example/authorize",
+                        "token_endpoint": "https://auth.example/token",
+                    },
+                )
+            if "/.well-known/" in request.url.path:
+                return httpx2.Response(200, json={"resource": URL, "authorization_servers": ["https://auth.example"]})
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+
+        result = await _run(probes._probe_auth_metadata, handler)
+
+        assert len(answered) == 2
+        assert result.details["auth_server_metadata_present"] is True
+        assert result.details["auth_server_has_endpoints"] is True
+
+    async def test_an_unread_location_is_not_outvoted_by_a_404_elsewhere(self):
+        answered: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if "/.well-known/" in request.url.path:
+                answered.append(request.url.path)
+                if len(answered) == 1:
+                    return self._compressed({"resource": URL})
+                return httpx2.Response(404)
+            return httpx2.Response(401, headers={"WWW-Authenticate": "Bearer"})
+
+        result = await _run(probes._probe_auth_metadata, handler)
+
+        assert len(answered) > 1
+        assert result.outcome is ProbeOutcome.ERROR
+        assert result.details["exception"] == "_UnreadAnswer"
