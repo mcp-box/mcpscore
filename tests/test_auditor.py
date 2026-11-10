@@ -2,9 +2,12 @@ import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from mcpscore import MCPAuditor, MCPClient
 from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.probes import (
+    PROBE_AUTH_METADATA,
     PROBE_PROMPTS_INVALID_CURSOR,
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
     PROBE_RESOURCES_INVALID_CURSOR,
@@ -873,6 +876,53 @@ async def test_report_surfaces_incomplete_listings():
     report = auditor.get_audit_report()
 
     assert report["incomplete_listings"] == ["prompts", "tools"]
+
+
+def _auth_metadata_probe(**details: Any) -> dict[str, ProbeResult]:
+    return {PROBE_AUTH_METADATA: ProbeResult(PROBE_AUTH_METADATA, ProbeOutcome.SUPPORTED, details=details)}
+
+
+@pytest.mark.parametrize(
+    ("profile", "jwt_bearer", "has_issue"),
+    [(True, True, False), (True, False, True), (False, True, False), (False, False, False)],
+    ids=["advertised", "profile-without-grant", "grant-only", "neither"],
+)
+async def test_report_enterprise_managed_auth(profile: bool, jwt_bearer: bool, has_issue: bool):
+    """The ID-JAG facts come from the authorization server metadata and never touch the score."""
+    auditor = MCPAuditor()
+    auditor.rules = [DummyRule(passed=True, severity=RuleSeverity.HIGH)]
+    await auditor.audit(DummyClient(None))
+    score = (auditor.score, auditor.max_score)
+    auditor.audit_data.probes = _auth_metadata_probe(
+        auth_server_issuer="https://auth.example",
+        auth_server_metadata_present=True,
+        auth_server_id_jag_profile=profile,
+        auth_server_jwt_bearer_grant=jwt_bearer,
+    )
+
+    facts = auditor.get_audit_report()["enterprise_managed_auth"]
+
+    assert facts["authorization_server"] == "https://auth.example"
+    assert facts["id_jag_advertised"] is profile
+    assert facts["jwt_bearer_grant"] is jwt_bearer
+    assert (facts["issue"] is not None) is has_issue
+    assert "§7.2" in facts["basis"]
+    assert (auditor.score, auditor.max_score) == score
+
+
+@pytest.mark.parametrize(
+    "probes",
+    [None, {}, _auth_metadata_probe(auth_server_issuer="https://auth.example", auth_server_metadata_present=False)],
+    ids=["no-probes", "no-auth-probe", "metadata-missing"],
+)
+async def test_report_enterprise_managed_auth_absent(probes: dict | None):
+    """Without authorization server metadata there is nothing to report."""
+    auditor = MCPAuditor()
+    auditor.rules = [DummyRule(passed=True, severity=RuleSeverity.HIGH)]
+    await auditor.audit(DummyClient(None))
+    auditor.audit_data.probes = probes
+
+    assert auditor.get_audit_report()["enterprise_managed_auth"] is None
 
 
 class CitedRule(DummyRule):

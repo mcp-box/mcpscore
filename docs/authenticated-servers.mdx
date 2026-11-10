@@ -59,6 +59,19 @@ names. Those are real findings about your auth posture: a missing PKCE
 advertisement, or no way for a new client to register, shows up here
 without any credential.
 
+The audit also reads whether that authorization server supports
+[enterprise-managed authorization](https://modelcontextprotocol.io/extensions/auth/enterprise-managed-authorization),
+where access comes from the organization's identity provider instead of a
+per-user consent screen. It is an opt-in extension, so the line is not
+scored:
+
+```text
+Enterprise-managed authorization (not scored): https://api.figma.com advertises the ID-JAG grant
+```
+
+The JSON report carries it as
+[`enterprise_managed_auth`](/stability#enterprise-managed-authorization-facts).
+
 The score line says `PARTIAL` and `from 12 of 115 checks` on purpose. A
 bare `30/32` pasted into a chat reads like the score of the whole server. A
 partial score and a full score are not comparable.

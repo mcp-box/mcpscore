@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Reports say whether a server's authorization server advertises
+  enterprise-managed authorization (the ID-JAG grant profile, MCP
+  Enterprise-Managed Authorization §6), in a new `enterprise_managed_auth`
+  block and one CLI line. It is not scored. When the profile is listed
+  without the `jwt-bearer` grant type that draft-ietf-oauth-identity-assertion-authz-grant
+  §7.2 requires alongside it, the CLI warns and the block's `issue` says so.
+
 ## [1.31.2] - 2026-11-09
 
 Servers that answer `server/discover` without credentials but ask for

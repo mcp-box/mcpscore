@@ -855,6 +855,21 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
             else f"OpenAI imports at most {openai['skills_imported_at_most']} skills and 8 MiB per scan, "
             "within per-skill limits",
         )
+    enterprise = report.get("enterprise_managed_auth")
+    if enterprise:
+        server = enterprise["authorization_server"]
+        if enterprise["issue"]:
+            logger.warning(
+                "Enterprise-managed authorization (not scored): %s lists the ID-JAG grant profile but not the "
+                "jwt-bearer grant type its token request uses",
+                server,
+            )
+        else:
+            logger.info(
+                "Enterprise-managed authorization (not scored): %s %s the ID-JAG grant",
+                server,
+                "advertises" if enterprise["id_jag_advertised"] else "does not advertise",
+            )
 
 
 def log_smoke_outcome(smoke: SmokeReport) -> None:

@@ -1110,6 +1110,49 @@ class TestLogAuditOutcome:
         lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith("Skills")]
         assert lines == ([expected] if expected else [])
 
+    @pytest.mark.parametrize(
+        ("facts", "level", "expected"),
+        [
+            (None, None, None),
+            (
+                {"authorization_server": "https://auth.example", "id_jag_advertised": True,
+                 "jwt_bearer_grant": True, "issue": None},
+                logging.INFO,
+                "Enterprise-managed authorization (not scored): https://auth.example advertises the ID-JAG grant",
+            ),
+            (
+                {"authorization_server": "https://auth.example", "id_jag_advertised": False,
+                 "jwt_bearer_grant": False, "issue": None},
+                logging.INFO,
+                (
+                    "Enterprise-managed authorization (not scored): https://auth.example "
+                    "does not advertise the ID-JAG grant"
+                ),
+            ),
+            (
+                {"authorization_server": "https://auth.example", "id_jag_advertised": True,
+                 "jwt_bearer_grant": False, "issue": "profile without jwt-bearer"},
+                logging.WARNING,
+                (
+                    "Enterprise-managed authorization (not scored): https://auth.example lists the ID-JAG grant "
+                    "profile but not the jwt-bearer grant type its token request uses"
+                ),
+            ),
+        ],
+        ids=["absent", "advertised", "not-advertised", "inconsistent"],
+    )  # fmt: skip
+    def test_enterprise_managed_auth_line(
+        self, caplog: LogCaptureFixture, facts: dict | None, level: int | None, expected: str | None
+    ) -> None:
+        auditor = MagicMock(spec=MCPAuditor)
+        auditor.get_audit_report = MagicMock(return_value={**_report_payload(), "enterprise_managed_auth": facts})
+
+        with caplog.at_level(logging.INFO, logger="mcpscore.cli"):
+            log_audit_outcome(auditor)
+
+        records = [r for r in caplog.records if r.getMessage().startswith("Enterprise-managed")]
+        assert [(r.levelno, r.getMessage()) for r in records] == ([(level, expected)] if expected else [])
+
 
 class TestCollectHeaders:
     """Tests for --header / --token / MCPSCORE_TOKEN parsing."""
