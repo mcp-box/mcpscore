@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the checks that depend on it skip instead of failing the server. An
   answer sent on a stream that the server then leaves open is now read
   instead of timing out.
+- The MCP session (`initialize`, the catalog listings, resource reads and
+  other session calls) now reads each JSON answer up to 8 MiB, counted after
+  decompression, so a body that never ends or a small compressed one that
+  inflates can no longer exhaust memory. Compressed answers within the limit
+  are still read. An answer over the limit is reported as not read: a
+  handshake answer leaves the server unreachable with that reason, a listing
+  is recorded as incomplete and the capability check skips, and a resource
+  read counts as unobserved. None of them fails a check.
 
 ## [1.32.0] - 2026-11-10
 
