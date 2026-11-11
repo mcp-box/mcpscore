@@ -17,6 +17,7 @@ from mcpscore.probes import (
     PROBE_MISSING_RESOURCE,
     PROBE_ORIGIN_VALIDATION,
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_SESSION_ID_ECHO,
@@ -48,6 +49,7 @@ from mcpscore.rules.readiness import (
     MissingProtocolVersionHeaderReadinessRule,
     NoSessionIdReadinessRule,
     PromptNameHeaderMismatchReadinessRule,
+    ProtocolVersionHeaderMismatchReadinessRule,
     RemovedMethodsReadinessRule,
     ResourceNameHeaderMismatchReadinessRule,
     ResponseContentTypeRule,
@@ -85,6 +87,11 @@ def modern_probes(**overrides: ProbeResult) -> dict[str, ProbeResult]:
         ),
         PROBE_MISSING_METHOD_HEADER: ProbeResult(
             PROBE_MISSING_METHOD_HEADER, ProbeOutcome.SUPPORTED, {"http_status": 400, "error_code": -32020}
+        ),
+        PROBE_PROTOCOL_VERSION_HEADER_MISMATCH: ProbeResult(
+            PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
+            ProbeOutcome.SUPPORTED,
+            {"http_status": 400, "error_code": -32020},
         ),
         PROBE_RESOURCE_NAME_HEADER_MISMATCH: ProbeResult(
             PROBE_RESOURCE_NAME_HEADER_MISMATCH,
@@ -184,6 +191,7 @@ class TestDetailProbeRules:
         UnknownMethodErrorRule,
         MissingProtocolVersionHeaderReadinessRule,
         MissingMethodHeaderReadinessRule,
+        ProtocolVersionHeaderMismatchReadinessRule,
         ResourceNameHeaderMismatchReadinessRule,
         PromptNameHeaderMismatchReadinessRule,
         GetStreamRemovedReadinessRule,
@@ -222,6 +230,7 @@ class TestDetailProbeRules:
                     PROBE_UNKNOWN_METHOD,
                     PROBE_MISSING_PROTOCOL_VERSION,
                     PROBE_MISSING_METHOD_HEADER,
+                    PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
                     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
                     PROBE_PROMPT_NAME_HEADER_MISMATCH,
                     PROBE_GET_STREAM_REMOVED,
@@ -241,6 +250,7 @@ class TestDetailProbeRules:
                 for probe_id in (
                     PROBE_UNKNOWN_METHOD,
                     PROBE_MISSING_METHOD_HEADER,
+                    PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
                     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
                     PROBE_PROMPT_NAME_HEADER_MISMATCH,
                     PROBE_GET_STREAM_REMOVED,
@@ -251,6 +261,7 @@ class TestDetailProbeRules:
         for rule_cls in (
             UnknownMethodErrorRule,
             MissingMethodHeaderReadinessRule,
+            ProtocolVersionHeaderMismatchReadinessRule,
             ResourceNameHeaderMismatchReadinessRule,
             PromptNameHeaderMismatchReadinessRule,
             GetStreamRemovedReadinessRule,
@@ -365,6 +376,34 @@ class TestModernHttpValidationRules:
             assert not result.passed, rule.rule_id
             assert "-32020" in result.message
             assert result.details["spec"].endswith("#server-validation")
+
+    def test_protocol_version_mismatch_rule_is_low_and_cites_the_header_section(self):
+        rule = ProtocolVersionHeaderMismatchReadinessRule()
+        assert rule.severity is RuleSeverity.LOW
+        probes = modern_probes(
+            **{
+                rule.probe_id: ProbeResult(
+                    rule.probe_id,
+                    ProbeOutcome.UNSUPPORTED,
+                    {"http_status": 200, "error_code": -32601, "header_version": "2025-11-25"},
+                )
+            }
+        )
+        result = rule.check(AuditData(probes=probes))
+        assert not result.passed
+        assert result.severity is RuleSeverity.LOW
+        assert "-32020" in result.message
+        assert result.details["spec"].endswith("#protocol-version-header")
+        assert result.details["header_version"] == "2025-11-25"
+        assert "protocolVersion" in (result.suggested_fix or "")
+
+    def test_protocol_version_mismatch_rule_judges_dual_era_servers(self):
+        data = AuditData(
+            protocol_version="2025-11-25",
+            session_protocol_version="2025-11-25",
+            probes=modern_probes(),
+        )
+        assert ProtocolVersionHeaderMismatchReadinessRule().skip_reason(data) is None
 
     def test_get_rule_requires_405(self):
         probes = modern_probes(
@@ -888,6 +927,7 @@ class TestSepCitations:
         "readiness_2026_response_content_type": f"{STREAMABLE_HTTP_SPEC}#sending-messages",
         "readiness_2026_missing_protocol_version_rejected": f"{STREAMABLE_HTTP_SPEC}#server-validation",
         "readiness_2026_missing_method_header_rejected": f"{STREAMABLE_HTTP_SPEC}#server-validation",
+        "readiness_2026_protocol_version_header_mismatch_rejected": f"{STREAMABLE_HTTP_SPEC}#protocol-version-header",
         "readiness_2026_resource_name_header_mismatch_rejected": f"{STREAMABLE_HTTP_SPEC}#server-validation",
         "readiness_2026_prompt_name_header_mismatch_rejected": f"{STREAMABLE_HTTP_SPEC}#server-validation",
         "readiness_2026_no_get_stream": f"{STREAMABLE_HTTP_SPEC}#earlier-streamable-http-revisions",

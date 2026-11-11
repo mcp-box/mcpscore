@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New readiness rule `readiness_2026_protocol_version_header_mismatch_rejected`
+  (LOW, like the other header-validation rules): a server must reject a request whose `MCP-Protocol-Version`
+  header names a different revision than the body's `_meta` protocol
+  version, with HTTP 400 and `-32020` (HeaderMismatch), as Streamable HTTP
+  §Protocol Version Header requires in 2026-07-28. Dual-era servers that
+  pick a code path from the header alone answer such a request as a legacy
+  one instead; the rule judges them too.
+
 ### Fixed
 
 - A server can no longer stall an audit or make it buffer an unbounded
