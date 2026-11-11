@@ -57,7 +57,8 @@ def cap_body(response: httpx2.Response, on_cap: Callable[[], None], limit: int =
     Call before anything reads the body. The body is handed on already decoded,
     so the ``Content-Encoding`` header is dropped to keep httpx2 from decoding it twice.
     """
-    if "text/event-stream" in response.headers.get("content-type", "").lower():
+    media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type == "text/event-stream":
         return
     response.stream = _CappedBody(response, limit, on_cap)
     response.headers.pop("content-encoding", None)

@@ -261,3 +261,40 @@ async def test_a_capped_answer_outside_a_call_records_nothing() -> None:
     with pytest.raises(AnswerOverLimitError):
         await response.aread()
     assert client._unread_calls == set()
+
+
+async def test_sse_exemption_matches_the_media_type_only() -> None:
+    async def four_chunks() -> AsyncIterator[bytes]:
+        for _ in range(4):
+            yield b" " * CHUNK
+
+    response = httpx2.Response(
+        200,
+        headers={"content-type": 'application/json; profile="text/event-stream"'},
+        stream=_Body(four_chunks),
+        request=httpx2.Request("POST", URL),
+    )
+    cap_body(response, lambda: None, limit=CHUNK * 2)
+    with pytest.raises(AnswerOverLimitError):
+        await response.aread()
+
+
+async def test_status_recovery_reads_no_body() -> None:
+    async def sse_megabyte() -> AsyncIterator[bytes]:
+        for _ in range(16):
+            yield b"data: x\n\n" + b":" * CHUNK + b"\n"
+
+    body = _Body(sse_megabyte)
+    transport = httpx2.MockTransport(
+        lambda _request: httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=body)
+    )
+
+    def client_with_transport(**kwargs: Any) -> httpx2.AsyncClient:
+        return async_client(transport=transport, **kwargs)
+
+    client = MCPClient()
+    with patch.object(mcp_client, "async_client", client_with_transport):
+        recovered = await client._recover_http_response(URL)
+    assert recovered is not None
+    assert recovered.status_code == 200
+    assert body.sent == 0

@@ -1233,16 +1233,17 @@ class MCPClient:
             },
         }
         try:
-            async with async_client(
-                timeout=10.0, headers=self.headers, event_hooks={"response": [self._cap_answer]}
-            ) as client:
+            async with async_client(timeout=10.0, headers=self.headers) as client:
                 request = client.build_request(
                     "POST",
                     server_url,
                     json=body,
                     headers={"Accept": "application/json, text/event-stream"},
                 )
-                return await send_within_origin(client, request)
+                # Only the status and headers are used, so the body is never read.
+                response = await send_within_origin(client, request, stream=True)
+                await response.aclose()
+                return response
         except Exception:  # noqa: BLE001 — recovery is best-effort
             return None
 
