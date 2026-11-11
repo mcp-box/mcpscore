@@ -59,7 +59,8 @@ from .probes import (
     failure_cause,
 )
 from .redirects import REFUSED_DOWNGRADE, REFUSED_TOO_MANY, RefusedRedirect, send_within_origin, unfollowed_redirect
-from .skills import SKILLS_EXTENSION, HTTPRefusedCallError
+from .session_reads import SESSION_READ_LIMIT, cap_body
+from .skills import SKILLS_EXTENSION, HTTPRefusedCallError, UnreadAnswerError
 from .tls import async_client
 
 if TYPE_CHECKING:
@@ -486,6 +487,15 @@ class ConnectionFailure:
         return base
 
 
+_LISTING_METHODS = {
+    "tools": "tools/list",
+    "resources": "resources/list",
+    "resource_templates": "resources/templates/list",
+    "prompts": "prompts/list",
+}
+"""The JSON-RPC method behind each listing name."""
+
+
 def _call_key(method: str, params: Any) -> tuple[str, str | None]:
     """Identify a call by its method and the ``uri`` or ``name`` it targets."""
     target = params.get("uri", params.get("name")) if isinstance(params, dict) else None
@@ -642,6 +652,8 @@ class MCPClient:
         # HTTP error statuses of session calls, keyed by _call_key, until the failed call claims its own. The key
         # assumes no two identical calls are in flight at once; the Apps and Skills collectors read each URI once.
         self._refused_calls: dict[tuple[str, str | None], int] = {}
+        # Session calls whose answer body went past SESSION_READ_LIMIT and was not read, keyed like _refused_calls.
+        self._unread_calls: set[tuple[str, str | None]] = set()
 
     async def detect_and_connect(self, server_path_or_url: str | StdioCommand) -> tuple[bool, MCPTransportType | None]:
         """Automatically detect transport type and connect to MCP server.
@@ -1095,6 +1107,7 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.INVALID_URL)
             return False
 
+        self._unread_calls.clear()
         try:
             # Configure HTTP client with timeouts and retries
             client = async_client(
@@ -1108,7 +1121,10 @@ class MCPClient:
                 # and ignores this client's setting (mcp 2.2.0, #3397).
                 headers=self.headers,
                 limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
-                event_hooks={"request": [self._forget_refused_call], "response": [self._record_refused_call]},
+                event_hooks={
+                    "request": [self._forget_refused_call],
+                    "response": [self._record_refused_call, self._cap_answer],
+                },
             )
 
             # Establish connection and verify the MCP handshake
@@ -1143,6 +1159,8 @@ class MCPClient:
             self._record_handshake_failure(server_url)
             return False
         except Exception as e:
+            if self._record_unread_answer():
+                return False
             status, refused = self._observed_status(e)
             if status is None:
                 # Some SDK failures (a bare MCPError for a 401, a refused redirect) carry no HTTP
@@ -1166,6 +1184,23 @@ class MCPClient:
                 logger.debug("Error details", exc_info=e)
                 self._record_unclassified_failure(e)
             return False
+
+    def _record_unread_answer(self) -> bool:
+        """Record a connect attempt whose answer was too large to read; return whether there was one.
+
+        Not having read the answer says nothing about the server, so the
+        attempt is unclassified rather than a protocol failure.
+        """
+        if not self._unread_calls:
+            return False
+        method = min(self._unread_calls)[0]
+        self._unread_calls.clear()
+        logger.error("The %s answer exceeded the %d-byte read limit and was not read", method, SESSION_READ_LIMIT)
+        self._record_failure(
+            ConnectionErrorReason.UNKNOWN,
+            detail=f"the {method} answer exceeded the {SESSION_READ_LIMIT}-byte read limit and was not read",
+        )
+        return True
 
     async def _recover_http_response(self, server_url: str) -> httpx2.Response | None:
         """Recover the HTTP response of a failed connect attempt with one POST.
@@ -1198,7 +1233,9 @@ class MCPClient:
             },
         }
         try:
-            async with async_client(timeout=10.0, headers=self.headers) as client:
+            async with async_client(
+                timeout=10.0, headers=self.headers, event_hooks={"response": [self._cap_answer]}
+            ) as client:
                 request = client.build_request(
                     "POST",
                     server_url,
@@ -1230,6 +1267,7 @@ class MCPClient:
             self._record_failure(ConnectionErrorReason.INVALID_URL)
             return False
 
+        self._unread_calls.clear()
         try:
             # Configure HTTP client for SSE with appropriate timeouts
             client = async_client(
@@ -1243,6 +1281,7 @@ class MCPClient:
                 # and ignores this client's setting (mcp 2.2.0, #3397).
                 headers=self.headers,
                 limits=httpx2.Limits(max_connections=100, max_keepalive_connections=20),
+                event_hooks={"response": [self._cap_answer]},
             )
 
             # Establish connection using MCP SDK's sse_client
@@ -1285,6 +1324,8 @@ class MCPClient:
             self._record_handshake_failure(server_url)
             return False
         except Exception as e:
+            if self._record_unread_answer():
+                return False
             logger.error("SSE connection failed: %s", _describe_failure(e))  # noqa: TRY400
             logger.debug("Error details", exc_info=e)
             self._record_unclassified_failure(e)
@@ -1412,6 +1453,10 @@ class MCPClient:
                     timeout=INVALID_CURSOR_PROBE_TIMEOUT_S,
                 )
             except MCPError as exc:
+                unread_key = (_LISTING_METHODS[listing_name], None)
+                if unread_key in self._unread_calls:
+                    self._unread_calls.discard(unread_key)
+                    return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": "UnreadAnswer"})
                 if listing_name == "resource_templates" and exc.code == ERROR_METHOD_NOT_FOUND:
                     return ProbeResult(
                         probe_id,
@@ -1467,6 +1512,17 @@ class MCPClient:
         """Drop an earlier attempt's status when the same call is sent again."""
         if (key := await self._request_key(request)) is not None:
             self._refused_calls.pop(key, None)
+            self._unread_calls.discard(key)
+
+    async def _cap_answer(self, response: httpx2.Response) -> None:
+        """Bound the answer body's read, and remember the call whose answer was cut off."""
+        key = await self._request_key(response.request)
+
+        def record() -> None:
+            if key is not None:
+                self._unread_calls.add(key)
+
+        cap_body(response, record)
 
     async def _record_refused_call(self, response: httpx2.Response) -> None:
         """Keep the HTTP error status of a JSON-RPC request, so the failed call can report it."""
@@ -1474,8 +1530,16 @@ class MCPClient:
             self._refused_calls[key] = response.status_code
 
     def _with_http_status(self, exc: MCPError, method: str, params: Any) -> MCPError:
-        """Attach the HTTP error status of the failed call, if it got one, to its error."""
-        status = self._refused_calls.pop(_call_key(method, params), None)
+        """Attach the HTTP error status of the failed call, if it got one, to its error.
+
+        A call whose answer was too large to read gets ``UnreadAnswerError`` instead: no answer was observed.
+        """
+        key = _call_key(method, params)
+        if key in self._unread_calls:
+            self._unread_calls.discard(key)
+            self._refused_calls.pop(key, None)
+            return UnreadAnswerError(exc)
+        status = self._refused_calls.pop(key, None)
         return exc if status is None else HTTPRefusedCallError(exc, status)
 
     async def read_resource_contents(self, uri: str) -> list[dict[str, Any]]:
@@ -1523,7 +1587,17 @@ class MCPClient:
                 self.incomplete_listings.add(listing_name)
                 error: dict[str, Any] = {"outcome": "collection_error", "page_index": page_number}
                 self.listing_errors[listing_name] = error
-                if isinstance(exc, ValidationError):
+                unread_key = (_LISTING_METHODS[listing_name], None)
+                if unread_key in self._unread_calls:
+                    self._unread_calls.discard(unread_key)
+                    error["outcome"] = "unread"
+                    logger.warning(
+                        "Stopped listing %s: a page exceeded the %d-byte read limit (%d page(s) collected)",
+                        listing_name,
+                        SESSION_READ_LIMIT,
+                        page_number,
+                    )
+                elif isinstance(exc, ValidationError):
                     error.update(validation_diagnostics(exc))
                     logger.warning("Invalid %s catalog response; see collection diagnostics", listing_name)
                 elif isinstance(exc, TimeoutError):

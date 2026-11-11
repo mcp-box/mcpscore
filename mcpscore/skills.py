@@ -649,12 +649,21 @@ class HTTPRefusedCallError(MCPError):
         self.http_status = http_status
 
 
+class UnreadAnswerError(MCPError):
+    """A call whose answer body was too large to read: no answer was observed."""
+
+    def __init__(self, error: MCPError) -> None:
+        super().__init__(CONNECTION_CLOSED, "answer body over the read limit; not read", error.data)
+
+
 def rpc_error(exc: Exception) -> dict[str, Any]:
     """Classify a failed call: a JSON-RPC error, a reply that did not validate, a timeout, or no answer at all.
 
     A call answered with an HTTP error status carries ``http_status``. 401/403 is gated and 429/503 throttled, both
     unobserved whatever the body said; any other status stays the server's answer.
     """
+    if isinstance(exc, UnreadAnswerError):
+        return {"outcome": "transport", "exception": "UnreadAnswer"}
     code = getattr(exc, "code", None)
     status = getattr(exc, "http_status", None)
     if isinstance(status, int):

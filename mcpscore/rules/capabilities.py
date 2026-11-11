@@ -135,8 +135,14 @@ class CapabilityDeclarationRule(BaseRule):
         return RuleSeverity.CRITICAL
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when this feature's listing was never attempted — silence is not evidence."""
+        """Skip when this feature's listing was never attempted, or its first page was too large to read.
+
+        Silence is not evidence, and neither is an answer that was not read.
+        """
         if self.feature not in audit_data.listings_attempted:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        error = audit_data.listing_errors.get(self.feature, {})
+        if error.get("outcome") == "unread" and error.get("page_index") == 0:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
