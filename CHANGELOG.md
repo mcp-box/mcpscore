@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-11-11
+
+A new readiness check asks servers to reject a request whose
+`MCP-Protocol-Version` header contradicts the protocol version in its body,
+so modern-lifecycle servers that route on the header alone lose a few points.
+Audits also stay safe against hostile servers: every probe and every session
+answer is now read within a byte limit and a deadline, so a body that never
+ends or inflates cannot hang or exhaust an audit, and an answer that was not
+read never fails a check.
+
 ### Added
 
 - New readiness rule `readiness_2026_protocol_version_header_mismatch_rejected`
@@ -41,6 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handshake answer leaves the server unreachable with that reason, a listing
   is recorded as incomplete and the capability check skips, and a resource
   read counts as unobserved. None of them fails a check.
+
+### Changed
+
+- Dependencies refreshed: `markdown-it-py` 4.2.0 → 4.3.0; the `mcp==2.3.0`
+  pin is the latest SDK.
 
 ## [1.32.0] - 2026-11-10
 
@@ -2645,7 +2660,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.32.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.33.0...HEAD
+[1.33.0]: https://github.com/mcp-box/mcpscore/compare/v1.32.0...v1.33.0
 [1.32.0]: https://github.com/mcp-box/mcpscore/compare/v1.31.2...v1.32.0
 [1.31.2]: https://github.com/mcp-box/mcpscore/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/mcp-box/mcpscore/compare/v1.31.0...v1.31.1
