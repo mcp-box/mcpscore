@@ -187,9 +187,9 @@ def test_each_rule_guidance_contract(rule_id, failure, monkeypatch):
         assert "suggested_fix" not in wire
 
 
-def test_inventory_covers_all_57_rules():
-    assert len(RULES) == 57
-    assert sum(r.group_name == "readiness" for r in RULES.values()) == 21
+def test_inventory_covers_all_58_rules():
+    assert len(RULES) == 58
+    assert sum(r.group_name == "readiness" for r in RULES.values()) == 22
     assert sum(r.group_name == "security" for r in RULES.values()) == 18
 
 

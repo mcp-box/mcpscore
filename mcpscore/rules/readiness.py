@@ -40,6 +40,7 @@ from mcpscore.probes import (
     PROBE_MISSING_PROTOCOL_VERSION,
     PROBE_MISSING_RESOURCE,
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_SESSION_ID_ECHO,
@@ -1145,6 +1146,7 @@ class HeaderRequirementReadinessRule(ProbeBackedReadinessRule):
 
     header_description: ClassVar[str]
     repair_hint: ClassVar[str]
+    spec_section: ClassVar[str] = "server-validation"
 
     @property
     def severity(self) -> RuleSeverity:
@@ -1168,7 +1170,7 @@ class HeaderRequirementReadinessRule(ProbeBackedReadinessRule):
             passed=passed,
             message=message,
             details={
-                "spec": f"{_STREAMABLE_HTTP_SPEC}#server-validation",
+                "spec": f"{_STREAMABLE_HTTP_SPEC}#{self.spec_section}",
                 "target_version": READINESS_TARGET,
                 **probe.details,
             },
@@ -1216,6 +1218,25 @@ class MissingMethodHeaderReadinessRule(HeaderRequirementReadinessRule):
     @property
     def rule_name(self) -> str:
         return f"Readiness {READINESS_TARGET} - missing method header rejected"
+
+
+@register_rule
+class ProtocolVersionHeaderMismatchReadinessRule(HeaderRequirementReadinessRule):
+    """HTTP endpoints reject an MCP-Protocol-Version header that contradicts the body's _meta version."""
+
+    rule_id = "readiness_2026_protocol_version_header_mismatch_rejected"
+    rule_order = 22
+    probe_id = PROBE_PROTOCOL_VERSION_HEADER_MISMATCH
+    header_description = "an MCP-Protocol-Version header that contradicts the body's protocol version"
+    spec_section = "protocol-version-header"
+    repair_hint = (
+        "Compare MCP-Protocol-Version with _meta's io.modelcontextprotocol/protocolVersion before "
+        "routing by version. Return JSON-RPC -32020 (HeaderMismatch) with HTTP 400 when they differ."
+    )
+
+    @property
+    def rule_name(self) -> str:
+        return f"Readiness {READINESS_TARGET} - protocol-version header mismatch rejected"
 
 
 @register_rule

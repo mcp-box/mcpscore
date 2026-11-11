@@ -37,6 +37,7 @@ from mcpscore.probes import (
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
     PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_PROMPTS_INVALID_CURSOR,
+    PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
     PROBE_QUERY_CREDENTIAL,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
@@ -98,8 +99,10 @@ def _modern_envelope_response(request: httpx2.Request, body: dict) -> httpx2.Res
     method = body["method"]
     params = body.get("params", {})
     expected_name = params.get("uri") if method == "resources/read" else params.get("name")
+    body_version = params.get("_meta", {}).get(f"{META_PREFIX}protocolVersion")
     if (
         request.headers.get("MCP-Protocol-Version") is None
+        or (body_version is not None and request.headers.get("MCP-Protocol-Version") != body_version)
         or request.headers.get("Mcp-Method") != method
         or (method in {"resources/read", "prompts/get"} and request.headers.get("Mcp-Name") != expected_name)
     ):
@@ -264,6 +267,7 @@ async def test_legacy_server_is_unsupported_but_observed():
         PROBE_HEADER_MISMATCH,
         PROBE_MISSING_PROTOCOL_VERSION,
         PROBE_MISSING_METHOD_HEADER,
+        PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
         PROBE_RESOURCE_NAME_HEADER_MISMATCH,
         PROBE_PROMPT_NAME_HEADER_MISMATCH,
         PROBE_GET_STREAM_REMOVED,
@@ -498,7 +502,7 @@ async def test_new_http_validation_probes_reject_noncompliant_behavior():
             return httpx2.Response(200, headers={"content-type": "text/event-stream"})
         body = json.loads(request.content) if request.method == "POST" else {}
         request_id = body.get("id")
-        if request_id in {19, 20}:
+        if request_id in {19, 20, 23}:
             return _rpc_result(request_id, {"resultType": "complete", "supportedVersions": ["2026-07-28"]})
         if request_id in {21, 22} and request.headers.get("Mcp-Name", "").endswith("-mismatch"):
             return _rpc_error(request_id, ERROR_INVALID_PARAMS, "Unknown item")
@@ -509,6 +513,7 @@ async def test_new_http_validation_probes_reject_noncompliant_behavior():
     for probe_id in (
         PROBE_MISSING_PROTOCOL_VERSION,
         PROBE_MISSING_METHOD_HEADER,
+        PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
         PROBE_RESOURCE_NAME_HEADER_MISMATCH,
         PROBE_PROMPT_NAME_HEADER_MISMATCH,
         PROBE_GET_STREAM_REMOVED,
@@ -560,7 +565,7 @@ async def test_new_http_validation_probes_skip_auth_gated_requests():
         body = json.loads(request.content) if request.method == "POST" else {}
         if request.method == "GET" and request.url.path == "/mcp":
             return httpx2.Response(401)
-        if body.get("id") in {19, 20, 21, 22}:
+        if body.get("id") in {19, 20, 21, 22, 23}:
             return httpx2.Response(401)
         return _modern_server_handler(request)
 
@@ -569,6 +574,7 @@ async def test_new_http_validation_probes_skip_auth_gated_requests():
     for probe_id in (
         PROBE_MISSING_PROTOCOL_VERSION,
         PROBE_MISSING_METHOD_HEADER,
+        PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
         PROBE_RESOURCE_NAME_HEADER_MISMATCH,
         PROBE_PROMPT_NAME_HEADER_MISMATCH,
         PROBE_GET_STREAM_REMOVED,
@@ -585,13 +591,40 @@ async def test_new_http_validation_probes_do_not_follow_redirects():
             redirected_hosts.append(request.url.host)
             return httpx2.Response(200)
         body = json.loads(request.content) if request.method == "POST" else {}
-        if (request.method == "GET" and request.url.path == "/mcp") or body.get("id") in {19, 20, 21, 22}:
+        if (request.method == "GET" and request.url.path == "/mcp") or body.get("id") in {19, 20, 21, 22, 23}:
             return httpx2.Response(307, headers={"location": "https://redirect.example/mcp"})
         return _modern_server_handler(request)
 
     await _run(handler)
 
     assert redirected_hosts == []
+
+
+async def test_protocol_version_mismatch_probe_sends_contradicting_header_and_body():
+    seen: list[tuple[str | None, str | None]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        if body.get("id") == 23:
+            seen.append(
+                (
+                    request.headers.get("MCP-Protocol-Version"),
+                    body["params"]["_meta"][f"{META_PREFIX}protocolVersion"],
+                )
+            )
+            # Routes on the header alone, as a dual-era server that skips the comparison would.
+            return _rpc_error(23, ERROR_METHOD_NOT_FOUND, "Method not found", http_status=200)
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert seen == [("2025-11-25", "2026-07-28")]
+    result = results[PROBE_PROTOCOL_VERSION_HEADER_MISMATCH]
+    assert result.outcome is ProbeOutcome.UNSUPPORTED
+    assert result.details["header_version"] == "2025-11-25"
+    assert result.details["body_version"] == "2026-07-28"
+    assert result.details["http_status"] == 200
+    assert result.details["error_code"] == ERROR_METHOD_NOT_FOUND
 
 
 @pytest.mark.parametrize("returns_page", [True, False])

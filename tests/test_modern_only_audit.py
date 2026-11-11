@@ -15,6 +15,7 @@ from mcpscore.probes import (
     PROBE_MISSING_PROTOCOL_VERSION,
     PROBE_MISSING_RESOURCE,
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
+    PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
     PROBE_REMOVED_METHOD,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_SESSION_ID_ECHO,
@@ -70,6 +71,9 @@ def _modern_probe_results(discover_payload: dict | None = DISCOVER_PAYLOAD) -> d
     )
     results[PROBE_MISSING_METHOD_HEADER] = ProbeResult(
         PROBE_MISSING_METHOD_HEADER, ProbeOutcome.SUPPORTED, dict(header_ok)
+    )
+    results[PROBE_PROTOCOL_VERSION_HEADER_MISMATCH] = ProbeResult(
+        PROBE_PROTOCOL_VERSION_HEADER_MISMATCH, ProbeOutcome.SUPPORTED, dict(header_ok)
     )
     results[PROBE_RESOURCE_NAME_HEADER_MISMATCH] = ProbeResult(
         PROBE_RESOURCE_NAME_HEADER_MISMATCH, ProbeOutcome.SUPPORTED, dict(header_ok)

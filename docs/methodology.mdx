@@ -26,7 +26,7 @@ mcpscore https://mcp.deepwiki.com/mcp
 ...
 Audit finished. Final score: 96/114
 Spec: 2025-11-25 negotiated (latest: 2026-07-28) · era: legacy
-Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 21 checks assessed)
+Readiness for MCP 2026-07-28: 3/13 (informative — not part of the main score; 4 of 22 checks assessed)
 ```
 
 That run gives you three numbers: the main score (`96/114`), the spec revision
@@ -300,7 +300,7 @@ in the main score depends on the server:
 | Partial audit | Never counted, because a partial score is already not comparable | `readiness.counted_in_main: false` |
 
 DeepWiki is legacy, so its `3/13` is guidance only. Its CLI line says
-`4 of 21 checks assessed`: the server has no stateless lifecycle, so the
+`4 of 22 checks assessed`: the server has no stateless lifecycle, so the
 two gateway rules (`readiness_2026_server_discover` and
 `readiness_2026_stateless_request`) failed and 16 detail checks skipped as
 `requires-modern-support`. The report carries `readiness.assessed`,
@@ -332,6 +332,7 @@ a revision goes final.
 | `readiness_2026_no_get_stream` | MEDIUM | Modern-only endpoints SHOULD reject the removed standalone GET stream with HTTP 405 ([Streamable HTTP §Earlier Streamable HTTP Revisions](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#earlier-streamable-http-revisions)) |
 | `readiness_2026_missing_protocol_version_rejected` | LOW | Modern-only endpoints MUST reject a missing `MCP-Protocol-Version` with `-32020` + HTTP 400 ([Streamable HTTP §Server Validation](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
 | `readiness_2026_missing_method_header_rejected` | LOW | A missing `Mcp-Method` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP §Server Validation](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
+| `readiness_2026_protocol_version_header_mismatch_rejected` | LOW | An `MCP-Protocol-Version` header that contradicts the body's `_meta` protocol version MUST be rejected with `-32020` + HTTP 400, including on dual-era endpoints ([Streamable HTTP §Protocol Version Header](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#protocol-version-header)) |
 | `readiness_2026_resource_name_header_mismatch_rejected` | LOW | A `resources/read` `Mcp-Name` that contradicts `params.uri` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP §Server Validation](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
 | `readiness_2026_prompt_name_header_mismatch_rejected` | LOW | A `prompts/get` `Mcp-Name` that contradicts `params.name` MUST be rejected with `-32020` + HTTP 400 ([Streamable HTTP §Server Validation](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#server-validation)) |
 | `readiness_2026_tool_schema_dialect` | LOW | Tool schemas valid under the default JSON Schema 2020-12 dialect; no network-URI `$ref` ([Base Protocol §Schema Dialect](https://modelcontextprotocol.io/specification/2026-07-28/basic#schema-dialect), [§$ref Resolution](https://modelcontextprotocol.io/specification/2026-07-28/basic#$ref-resolution); SEP-2106) |

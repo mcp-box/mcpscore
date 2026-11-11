@@ -169,6 +169,7 @@ PROBE_MALFORMED_META = "probe_malformed_meta"
 PROBE_HEADER_MISMATCH = "probe_header_mismatch"
 PROBE_MISSING_PROTOCOL_VERSION = "probe_missing_protocol_version"
 PROBE_MISSING_METHOD_HEADER = "probe_missing_method_header"
+PROBE_PROTOCOL_VERSION_HEADER_MISMATCH = "probe_protocol_version_header_mismatch"
 PROBE_RESOURCE_NAME_HEADER_MISMATCH = "probe_resource_name_header_mismatch"
 PROBE_PROMPT_NAME_HEADER_MISMATCH = "probe_prompt_name_header_mismatch"
 PROBE_GET_STREAM_REMOVED = "probe_get_stream_removed"
@@ -209,6 +210,7 @@ _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_HEADER_MISMATCH,
     PROBE_MISSING_PROTOCOL_VERSION,
     PROBE_MISSING_METHOD_HEADER,
+    PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH,
     PROBE_PROMPT_NAME_HEADER_MISMATCH,
     PROBE_GET_STREAM_REMOVED,
@@ -248,6 +250,7 @@ HTTP_ONLY_PROBE_IDS: frozenset[str] = frozenset(
         PROBE_HEADER_MISMATCH,
         PROBE_MISSING_PROTOCOL_VERSION,
         PROBE_MISSING_METHOD_HEADER,
+        PROBE_PROTOCOL_VERSION_HEADER_MISMATCH,
         PROBE_RESOURCE_NAME_HEADER_MISMATCH,
         PROBE_PROMPT_NAME_HEADER_MISMATCH,
         PROBE_GET_STREAM_REMOVED,
@@ -1236,6 +1239,26 @@ async def _probe_missing_method_header(target: _HttpTarget) -> ProbeResult:
         omit_headers=("Mcp-Method",),
     )
     return _header_validation_result(PROBE_MISSING_METHOD_HEADER, response)
+
+
+async def _probe_protocol_version_header_mismatch(target: _HttpTarget) -> ProbeResult:
+    """Send ``server/discover`` whose ``MCP-Protocol-Version`` header contradicts the body's ``_meta`` version.
+
+    The header names the latest stateful revision while the body claims the modern target, so a
+    dual-era server that routes on the header alone answers as a legacy endpoint instead of rejecting.
+    """
+    target_version = _target_version()
+    response = await target.post(
+        _request_body("server/discover", 23, _modern_meta(target_version)),
+        _request_headers(LEGACY_INITIALIZE_VERSION, "server/discover"),
+        follow_redirects=False,
+    )
+    result = _header_validation_result(PROBE_PROTOCOL_VERSION_HEADER_MISMATCH, response)
+    return ProbeResult(
+        result.probe_id,
+        result.outcome,
+        {"header_version": LEGACY_INITIALIZE_VERSION, "body_version": target_version, **result.details},
+    )
 
 
 async def _probe_name_header_mismatch(
@@ -3457,6 +3480,7 @@ _HTTP_ONLY_PROBES: dict[str, Callable[[_HttpTarget], Awaitable[ProbeResult]]] = 
     PROBE_HEADER_MISMATCH: _probe_header_mismatch,
     PROBE_MISSING_PROTOCOL_VERSION: _probe_missing_protocol_version,
     PROBE_MISSING_METHOD_HEADER: _probe_missing_method_header,
+    PROBE_PROTOCOL_VERSION_HEADER_MISMATCH: _probe_protocol_version_header_mismatch,
     PROBE_RESOURCE_NAME_HEADER_MISMATCH: _probe_resource_name_header_mismatch,
     PROBE_PROMPT_NAME_HEADER_MISMATCH: _probe_prompt_name_header_mismatch,
     PROBE_GET_STREAM_REMOVED: _probe_get_stream_removed,
