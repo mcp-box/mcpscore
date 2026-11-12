@@ -331,3 +331,22 @@ def test_an_auth_gated_method_not_found_does_not_hide_the_capability_check() -> 
     rule = RULES["tasks_undeclared_client_rejected"]
     assert rule.skip_reason(audit) is None
     assert not rule.check(audit).passed
+
+
+@pytest.mark.parametrize("key", ["get_unknown", "result_method"])
+def test_missing_capability_to_a_declaring_client_fails(key: str) -> None:
+    rule = next(rule for rule in RULES.values() if getattr(rule, "answer_key", None) == key)
+    audit = data(answers={key: answer(code=-32021)})
+    assert rule.skip_reason(audit) is None
+    result = rule.check(audit)
+    assert not result.passed
+    if key == "get_unknown":
+        assert "-32021" in result.message
+
+
+@pytest.mark.parametrize("undeclared", [answer(code=-32602), answer(result=True)])
+def test_a_missing_declared_tasks_get_does_not_hide_an_undeclared_violation(undeclared: dict[str, Any]) -> None:
+    audit = data(answers={"get_unknown": answer(code=-32601), "get_undeclared": undeclared})
+    rule = RULES["tasks_undeclared_client_rejected"]
+    assert rule.skip_reason(audit) is None
+    assert not rule.check(audit).passed

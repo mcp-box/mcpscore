@@ -36,6 +36,16 @@ ERROR_MISSING_CLIENT_CAPABILITY = -32021
 """Missing Required Client Capability (Tasks extension §Error Handling)."""
 
 
+def _method_not_found(answer: Any) -> bool:
+    """Whether an answer is a plain Method not found: no result, not behind a 401/403."""
+    return (
+        isinstance(answer, dict)
+        and answer.get("error_code") == ERROR_METHOD_NOT_FOUND
+        and not answer.get("result")
+        and answer.get("http_status") not in AUTH_GATED_STATUSES
+    )
+
+
 class TasksBaseRule(BaseRule):
     """Base for rules that judge a server advertising the Tasks extension.
 
@@ -110,7 +120,7 @@ class TasksGetUnknownRejectedRule(_TasksAnswerRule):
     basis = f"{SEP} §Error Handling (an invalid or nonexistent taskId MUST return -32602 for tasks/get)"
     rule_order = 1
     answer_key = "get_unknown"
-    decisive_codes = frozenset({ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND})
+    decisive_codes = frozenset({ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, ERROR_MISSING_CLIENT_CAPABILITY})
 
     @property
     def rule_name(self) -> str:
@@ -128,8 +138,13 @@ class TasksGetUnknownRejectedRule(_TasksAnswerRule):
             message = "✅ tasks/get refused a task ID the server never issued with -32602"
         elif answer["result"]:
             message = "❌ tasks/get returned a result for a task ID the server never issued"
-        else:
+        elif answer["error_code"] == ERROR_METHOD_NOT_FOUND:
             message = "❌ tasks/get answered Method not found (-32601) although the server advertises Tasks"
+        else:
+            message = (
+                f"❌ tasks/get from a client declaring the Tasks extension was answered with {answer['error_code']}, "
+                "not -32602"
+            )
         return self._result(
             passed=passed,
             message=message,
@@ -155,16 +170,11 @@ class TasksUndeclaredClientRejectedRule(_TasksAnswerRule):
     decisive_codes = frozenset({ERROR_MISSING_CLIENT_CAPABILITY, ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND})
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Also skip a server that serves no ``tasks/get`` at all; ``tasks_get_unknown_rejected`` judges that."""
+        """Also skip when ``tasks/get`` is not served to either client; ``tasks_get_unknown_rejected`` judges that."""
         if reason := super().skip_reason(audit_data):
             return reason
-        declared = self._details(audit_data).get("get_unknown")
-        if (
-            isinstance(declared, dict)
-            and declared.get("error_code") == ERROR_METHOD_NOT_FOUND
-            and not declared.get("result")
-            and declared.get("http_status") not in AUTH_GATED_STATUSES
-        ):
+        details = self._details(audit_data)
+        if all(_method_not_found(details.get(key)) for key in ("get_unknown", "get_undeclared")):
             return SKIP_REASON_NOT_APPLICABLE
         return None
 
@@ -210,7 +220,7 @@ class TasksResultMethodRemovedRule(_TasksAnswerRule):
     basis = f"{SEP} §Backward Compatibility (tasks/result is removed; clients calling it MUST receive -32601)"
     rule_order = 3
     answer_key = "result_method"
-    decisive_codes = frozenset({ERROR_METHOD_NOT_FOUND, ERROR_INVALID_PARAMS})
+    decisive_codes = frozenset({ERROR_METHOD_NOT_FOUND, ERROR_INVALID_PARAMS, ERROR_MISSING_CLIENT_CAPABILITY})
 
     @property
     def rule_name(self) -> str:
