@@ -198,6 +198,7 @@ PROBE_SESSION_DELETE = "probe_session_delete"
 PROBE_QUERY_CREDENTIAL = "probe_query_credential"
 PROBE_HOST_VALIDATION = "probe_host_validation"
 PROBE_LOCAL_BIND = "probe_local_bind"
+PROBE_TASKS_EXTENSION = "probe_tasks_extension"
 
 # Identity Assertion JWT Authorization Grant (ID-JAG), draft-ietf-oauth-identity-assertion-authz-grant §7.2.
 ID_JAG_GRANT_PROFILE = "urn:ietf:params:oauth:grant-profile:id-jag"
@@ -236,6 +237,7 @@ _SINGLE_TARGET_PROBE_IDS: tuple[str, ...] = (
     PROBE_QUERY_CREDENTIAL,
     PROBE_HOST_VALIDATION,
     PROBE_LOCAL_BIND,
+    PROBE_TASKS_EXTENSION,
 )
 CATALOG_CONNECTION_PROBE_IDS: tuple[str, ...] = (
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
@@ -439,6 +441,7 @@ def _modern_meta(protocol_version: str) -> dict[str, Any]:
 SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
 UI_EXTENSION_ID = "io.modelcontextprotocol/ui"
 UI_EXTENSION_SETTINGS: dict[str, Any] = {"mimeTypes": ["text/html;profile=mcp-app"]}
+TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks"
 
 
 def _extensions_meta(protocol_version: str) -> dict[str, Any]:
@@ -1387,6 +1390,58 @@ async def _probe_missing_resource(target: _ProbeTarget) -> ProbeResult:
     details["legacy_code_emitted"] = response.error_code == ERROR_LEGACY_RESOURCE_NOT_FOUND
     outcome = ProbeOutcome.SUPPORTED if response.error_code == ERROR_INVALID_PARAMS else ProbeOutcome.UNSUPPORTED
     return ProbeResult(PROBE_MISSING_RESOURCE, outcome, details)
+
+
+UNKNOWN_TASK_PREFIX = "mcpscore-unknown-task-"
+"""Prefix of the fabricated task ID; a random suffix makes it one no server has issued."""
+
+TASKS_ERROR_MISSING_CLIENT_CAPABILITY = -32021
+"""Missing Required Client Capability (Tasks extension §Error Handling)."""
+
+
+def _tasks_answer(response: _ProbeResponse) -> dict[str, Any]:
+    """Summarize one Tasks request: HTTP status, JSON-RPC error code, and whether a result came back."""
+    answer: dict[str, Any] = {"http_status": response.status_code, "error_code": response.error_code}
+    answer["result"] = response.result is not None
+    return answer
+
+
+async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:
+    """Ask a server advertising the Tasks extension about a task it never issued (SEP-2663).
+
+    NOT_APPLICABLE unless ``server/discover`` advertises ``io.modelcontextprotocol/tasks``. Otherwise sends
+    ``tasks/get`` with and without the extension declared, and the removed ``tasks/result``, all for a random
+    task ID. No task exists for it, so nothing is read, changed or cancelled.
+    """
+    target_version = _target_version()
+    declared = _extensions_meta(target_version)
+    declared[f"{META_PREFIX}clientCapabilities"]["extensions"][TASKS_EXTENSION_ID] = {}
+    discover = await target.post(
+        _request_body("server/discover", 2400, declared),
+        _request_headers(target_version, "server/discover"),
+    )
+    capabilities = (discover.result or {}).get("capabilities")
+    extensions = capabilities.get("extensions") if isinstance(capabilities, dict) else None
+    if not isinstance(extensions, dict) or TASKS_EXTENSION_ID not in extensions:
+        return ProbeResult(
+            PROBE_TASKS_EXTENSION,
+            ProbeOutcome.NOT_APPLICABLE,
+            {"reason": "server/discover does not advertise the Tasks extension"},
+        )
+    task_id = f"{UNKNOWN_TASK_PREFIX}{uuid4().hex}"
+    params = {"taskId": task_id}
+    details: dict[str, Any] = {}
+    for key, method, meta, request_id in (
+        ("get_unknown", "tasks/get", declared, 2401),
+        ("get_undeclared", "tasks/get", _modern_meta(target_version), 2402),
+        ("result_method", "tasks/result", declared, 2403),
+    ):
+        response = await target.post(
+            _request_body(method, request_id, meta, params=params),
+            _request_headers(target_version, method, name=task_id),
+        )
+        details[key] = _tasks_answer(response)
+    return ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.SUPPORTED, details)
 
 
 async def _probe_invalid_cursor(
@@ -3473,6 +3528,7 @@ _TRANSPORT_AGNOSTIC_PROBES: dict[str, Callable[[_ProbeTarget], Awaitable[ProbeRe
     PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR: _probe_resource_templates_invalid_cursor,
     PROBE_PROMPTS_INVALID_CURSOR: _probe_prompts_invalid_cursor,
     PROBE_PAGINATION_CACHE_SCOPE: _probe_pagination_cache_scope,
+    PROBE_TASKS_EXTENSION: _probe_tasks_extension,
 }
 """Probes that judge JSON-RPC behavior, and so run over any transport."""
 

@@ -47,6 +47,7 @@ from mcpscore.probes import (
     PROBE_SESSION_DELETE,
     PROBE_SESSION_ID_ECHO,
     PROBE_STATELESS_LIST,
+    PROBE_TASKS_EXTENSION,
     PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT,
     PROBE_TOOLS_INVALID_CURSOR,
     PROBE_UNAUTHENTICATED,
@@ -233,6 +234,8 @@ async def test_modern_server_supports_all_probed_behaviors():
         # A public host: Host routing and interface binds are judged only on loopback targets.
         PROBE_HOST_VALIDATION,
         PROBE_LOCAL_BIND,
+        # The server does not advertise the Tasks extension.
+        PROBE_TASKS_EXTENSION,
     }
     for probe_id in PROBE_IDS:
         expected = ProbeOutcome.NOT_APPLICABLE if probe_id in not_applicable else ProbeOutcome.SUPPORTED

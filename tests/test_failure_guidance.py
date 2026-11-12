@@ -412,16 +412,19 @@ def test_guidance_fixtures_account_for_every_registered_rule():
     from tests.test_packaging_rules import _packaging_rules
     from tests.test_probe_guidance import RULES as PROBE_RULES
     from tests.test_skills_rules import failure_cases as skills_failure_cases
+    from tests.test_tasks_rules import failure_cases as tasks_failure_cases
 
     catalog_ids = {case[0] for case in failure_cases()}
     probe_ids = set(PROBE_RULES)
     package_ids = {rule.rule_id for rule in _packaging_rules()}
     skills_ids = {case[0] for case in skills_failure_cases()}
     apps_ids = {case[0] for case in apps_failure_cases()}
+    tasks_ids = {case[0] for case in tasks_failure_cases()}
     assert not catalog_ids & probe_ids
     assert not package_ids & (catalog_ids | probe_ids)
     assert not skills_ids & (catalog_ids | probe_ids | package_ids)
     assert not apps_ids & (catalog_ids | probe_ids | package_ids | skills_ids)
-    assert catalog_ids | probe_ids | package_ids | skills_ids | apps_ids == {
+    assert not tasks_ids & (catalog_ids | probe_ids | package_ids | skills_ids | apps_ids)
+    assert catalog_ids | probe_ids | package_ids | skills_ids | apps_ids | tasks_ids == {
         rule.rule_id for rule in create_all_rules()
     }

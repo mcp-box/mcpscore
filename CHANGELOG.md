@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Four rules for servers whose `server/discover` advertises the Tasks
+  extension (`io.modelcontextprotocol/tasks`, SEP-2663). mcpscore asks about
+  a task ID no server issued, so no real task is touched:
+  `tasks_get_unknown_rejected` (MEDIUM, `tasks/get` answers `-32602`),
+  `tasks_undeclared_client_rejected` (LOW, a client that did not declare the
+  extension gets `-32021`), `tasks_result_method_removed` (LOW, the
+  2025-11-25 `tasks/result` answers `-32601`) and
+  `tasks_legacy_capability_removed` (LOW, no 2025-11-25 `tasks` capability
+  next to the extension). A request refused for another reason, such as
+  sign-in, is not judged. Servers without the extension are not affected.
+
 ## [1.33.0] - 2026-11-11
 
 A new readiness check asks servers to reject a request whose
