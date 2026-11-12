@@ -1,7 +1,7 @@
 """Rules for servers advertising the Tasks extension (``io.modelcontextprotocol/tasks``, SEP-2663).
 
-Each rule judges a server whose ``server/discover`` advertises the extension. The probe asks only about a task ID
-no server issued, so an audit never reads, changes or cancels a real task.
+Each rule judges a server whose ``server/discover`` advertises the extension to a client declaring it. The probe
+asks only about a task ID no server issued, so an audit never reads, changes or cancels a real task.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from typing import Any
 from mcpscore.probes import (
     AUTH_GATED_STATUSES,
     PROBE_TASKS_EXTENSION,
-    TASKS_ERROR_MISSING_CLIENT_CAPABILITY,
     TASKS_EXTENSION_ID,
     ProbeOutcome,
     ProbeResult,
@@ -27,32 +26,43 @@ from .base import (
 )
 from .probe_diagnostics import diagnostic_result
 from .registry import register_rule
-from .skills import discover_capabilities
 
 SEP = "MCP Tasks Extension (SEP-2663, Final)"
 TASKS_GROUP = "tasks"
 
 ERROR_INVALID_PARAMS = -32602
 ERROR_METHOD_NOT_FOUND = -32601
-
-
-def advertises_tasks(audit_data: AuditData) -> bool:
-    """Whether ``server/discover`` advertised the Tasks extension."""
-    extensions = discover_capabilities(audit_data).get("extensions")
-    return isinstance(extensions, dict) and TASKS_EXTENSION_ID in extensions
+ERROR_MISSING_CLIENT_CAPABILITY = -32021
+"""Missing Required Client Capability (Tasks extension §Error Handling)."""
 
 
 class TasksBaseRule(BaseRule):
-    """Base for rules that judge a server advertising the Tasks extension."""
+    """Base for rules that judge a server advertising the Tasks extension.
+
+    Applicability comes from the Tasks probe's own ``server/discover``, which declares the extension the way a
+    Tasks client does; the probe is NOT_APPLICABLE when that answer does not advertise it.
+    """
 
     group_name = TASKS_GROUP
     group_order = 11
 
+    @staticmethod
+    def _probe(audit_data: AuditData) -> ProbeResult | None:
+        return (audit_data.probes or {}).get(PROBE_TASKS_EXTENSION)
+
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip unless ``server/discover`` advertised the extension."""
-        if not advertises_tasks(audit_data):
+        """Skip unless the Tasks probe found the extension advertised and got answers."""
+        probe = self._probe(audit_data)
+        if probe is not None and probe.outcome is ProbeOutcome.NOT_APPLICABLE:
             return SKIP_REASON_NOT_APPLICABLE
+        if probe is None or probe.outcome is not ProbeOutcome.SUPPORTED:
+            return SKIP_REASON_INSUFFICIENT_DATA
         return None
+
+    def _details(self, audit_data: AuditData) -> dict[str, Any]:
+        probe = self._probe(audit_data)
+        assert probe is not None  # noqa: S101 — guaranteed by skip_reason
+        return probe.details
 
     def _result(self, *, passed: bool, message: str, details: dict[str, Any], fix: str) -> RuleResult:
         return diagnostic_result(
@@ -69,33 +79,26 @@ class _TasksAnswerRule(TasksBaseRule):
     """Base for rules judging one answer of the Tasks probe.
 
     An answer judges the server only when it is a result or one of ``decisive_codes``. Anything else, such as a
-    401 or a server-specific authorization error, says the request was refused before the task was looked up.
+    401, a server-specific authorization error or a request that got no answer, is not judged.
     """
 
     answer_key: str
     decisive_codes: frozenset[int]
 
-    def _answer(self, audit_data: AuditData) -> dict[str, Any] | None:
-        probe: ProbeResult | None = (audit_data.probes or {}).get(PROBE_TASKS_EXTENSION)
-        if probe is None or probe.outcome is not ProbeOutcome.SUPPORTED:
-            return None
-        answer = probe.details.get(self.answer_key)
-        return answer if isinstance(answer, dict) else None
-
     def skip_reason(self, audit_data: AuditData) -> str | None:
-        """Skip when the request was not made or was refused for a reason this rule cannot judge."""
+        """Skip when the request got no answer or was refused for a reason this rule cannot judge."""
         if reason := super().skip_reason(audit_data):
             return reason
-        answer = self._answer(audit_data)
-        if answer is None or answer.get("http_status") in AUTH_GATED_STATUSES:
+        answer = self._details(audit_data).get(self.answer_key)
+        if not isinstance(answer, dict) or answer.get("http_status") in AUTH_GATED_STATUSES:
             return SKIP_REASON_INSUFFICIENT_DATA
         if not answer.get("result") and answer.get("error_code") not in self.decisive_codes:
             return SKIP_REASON_INSUFFICIENT_DATA
         return None
 
     def _observed(self, audit_data: AuditData) -> dict[str, Any]:
-        answer = self._answer(audit_data)
-        assert answer is not None  # noqa: S101 — guaranteed by skip_reason
+        answer = self._details(audit_data).get(self.answer_key)
+        assert isinstance(answer, dict)  # noqa: S101 — guaranteed by skip_reason
         return answer
 
 
@@ -149,14 +152,13 @@ class TasksUndeclaredClientRejectedRule(_TasksAnswerRule):
     )
     rule_order = 2
     answer_key = "get_undeclared"
-    decisive_codes = frozenset({TASKS_ERROR_MISSING_CLIENT_CAPABILITY, ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND})
+    decisive_codes = frozenset({ERROR_MISSING_CLIENT_CAPABILITY, ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND})
 
     def skip_reason(self, audit_data: AuditData) -> str | None:
         """Also skip a server that serves no ``tasks/get`` at all; ``tasks_get_unknown_rejected`` judges that."""
         if reason := super().skip_reason(audit_data):
             return reason
-        probe = (audit_data.probes or {}).get(PROBE_TASKS_EXTENSION)
-        declared = probe.details.get("get_unknown") if probe is not None else None
+        declared = self._details(audit_data).get("get_unknown")
         if isinstance(declared, dict) and declared.get("error_code") == ERROR_METHOD_NOT_FOUND:
             return SKIP_REASON_NOT_APPLICABLE
         return None
@@ -173,7 +175,7 @@ class TasksUndeclaredClientRejectedRule(_TasksAnswerRule):
         """Low check: the missing client capability is reported before the task ID is looked up."""
         answer = self._observed(audit_data)
         code = answer["error_code"]
-        passed = not answer["result"] and code == TASKS_ERROR_MISSING_CLIENT_CAPABILITY
+        passed = not answer["result"] and code == ERROR_MISSING_CLIENT_CAPABILITY
         if passed:
             message = "✅ tasks/get from a client without the Tasks extension was refused with -32021"
         elif answer["result"]:
@@ -254,8 +256,8 @@ class TasksLegacyCapabilityRemovedRule(TasksBaseRule):
 
     def check(self, audit_data: AuditData) -> RuleResult:
         """Low check: ``server/discover`` carries ``extensions["io.modelcontextprotocol/tasks"]`` without ``tasks``."""
-        legacy = discover_capabilities(audit_data).get("tasks")
-        passed = legacy is None
+        legacy = self._details(audit_data).get("legacy_tasks_capability") is True
+        passed = not legacy
         message = (
             "✅ server/discover advertises the Tasks extension without the legacy tasks capability"
             if passed
@@ -264,7 +266,7 @@ class TasksLegacyCapabilityRemovedRule(TasksBaseRule):
         return self._result(
             passed=passed,
             message=message,
-            details={"legacy_tasks_capability": legacy is not None},
+            details={"legacy_tasks_capability": legacy},
             fix=(
                 "Remove capabilities.tasks from the server/discover result; advertise only "
                 f'capabilities.extensions["{TASKS_EXTENSION_ID}"].'

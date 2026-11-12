@@ -8,7 +8,6 @@ import pytest
 
 from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
-    PROBE_DISCOVER,
     PROBE_TASKS_EXTENSION,
     TASKS_EXTENSION_ID,
     UNKNOWN_TASK_PREFIX,
@@ -43,23 +42,17 @@ def data(
     probe: ProbeResult | None = None,
     answers: dict[str, dict[str, Any]] | None = None,
 ) -> AuditData:
-    capabilities: dict[str, Any] = {"tools": {}}
-    if advertised:
-        capabilities["extensions"] = {TASKS_EXTENSION_ID: {}}
-    if legacy:
-        capabilities["tasks"] = {"requests": {"tools": {"call": {}}}}
-    discover = ProbeResult(
-        PROBE_DISCOVER,
-        ProbeOutcome.SUPPORTED,
-        {"supported_versions": ["2026-07-28"]},
-        payload={"supportedVersions": ["2026-07-28"], "capabilities": capabilities},
+    """Audit data as the Tasks probe would leave it; no separate ``server/discover`` probe is needed."""
+    if probe is None and not advertised:
+        probe = ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.NOT_APPLICABLE, {"reason": "not advertised"})
+    tasks = probe or ProbeResult(
+        PROBE_TASKS_EXTENSION, ProbeOutcome.SUPPORTED, {"legacy_tasks_capability": legacy, **GOOD, **(answers or {})}
     )
-    tasks = probe or ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.SUPPORTED, {**GOOD, **(answers or {})})
     return AuditData(
         protocol_version="2026-07-28",
         url=URL,
         transport_type=MCPTransportType.STREAMABLE_HTTP,
-        probes={PROBE_DISCOVER: discover, PROBE_TASKS_EXTENSION: tasks},
+        probes={PROBE_TASKS_EXTENSION: tasks},
     )
 
 
@@ -119,12 +112,23 @@ def test_a_server_without_the_extension_is_not_judged(rule_id: str) -> None:
     assert RULES[rule_id].skip_reason(data(advertised=False)) == SKIP_REASON_NOT_APPLICABLE
 
 
-@pytest.mark.parametrize("outcome", [ProbeOutcome.ERROR, ProbeOutcome.NOT_APPLICABLE])
-@pytest.mark.parametrize("rule_id", ["tasks_get_unknown_rejected", "tasks_undeclared_client_rejected",
-                                     "tasks_result_method_removed"])  # fmt: skip
+@pytest.mark.parametrize("outcome", [ProbeOutcome.ERROR, ProbeOutcome.UNSUPPORTED])
+@pytest.mark.parametrize("rule_id", sorted(RULES))
 def test_an_unobserved_probe_is_not_a_failure(rule_id: str, outcome: ProbeOutcome) -> None:
-    audit = data(probe=ProbeResult(PROBE_TASKS_EXTENSION, outcome, {"reason": "x"}))
+    audit = data(probe=ProbeResult(PROBE_TASKS_EXTENSION, outcome, {"exception": "ReadTimeout"}))
     assert RULES[rule_id].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+@pytest.mark.parametrize("rule_id", sorted(RULES))
+def test_a_probe_that_did_not_run_is_not_a_failure(rule_id: str) -> None:
+    audit = AuditData(protocol_version="2026-07-28", url=URL, transport_type=MCPTransportType.STREAMABLE_HTTP)
+    assert RULES[rule_id].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+@pytest.mark.parametrize("key", ["get_unknown", "get_undeclared", "result_method"])
+def test_a_request_without_an_answer_is_not_judged(key: str) -> None:
+    rule = next(rule for rule in RULES.values() if getattr(rule, "answer_key", None) == key)
+    assert rule.skip_reason(data(answers={key: {"exception": "ReadTimeout"}})) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 @pytest.mark.parametrize(
@@ -160,9 +164,11 @@ def test_a_server_without_tasks_get_loses_points_once() -> None:
     assert RULES["tasks_undeclared_client_rejected"].skip_reason(audit) == SKIP_REASON_NOT_APPLICABLE
 
 
-def test_the_legacy_capability_rule_needs_no_probe_answer() -> None:
+def test_the_legacy_capability_rule_needs_no_task_answer() -> None:
     rule = RULES["tasks_legacy_capability_removed"]
-    audit = data(legacy=True, probe=ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.ERROR, {}))
+    unanswered = {key: {"exception": "ReadTimeout"} for key in GOOD}
+    audit = data(probe=ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.SUPPORTED,
+                                   {"legacy_tasks_capability": True, **unanswered}))  # fmt: skip
     assert rule.skip_reason(audit) is None
     assert rule.check(audit).details == {"legacy_tasks_capability": True}
 
@@ -213,7 +219,7 @@ async def test_probe_asks_about_an_unissued_task_only() -> None:
         result = await _probe_tasks_extension(_HttpTarget(client, URL))
 
     assert result.outcome is ProbeOutcome.SUPPORTED
-    assert result.details == GOOD
+    assert result.details == {"legacy_tasks_capability": False, **GOOD}
     bodies = [json.loads(r.content) for r in seen]
     assert [b["method"] for b in bodies] == ["server/discover", "tasks/get", "tasks/get", "tasks/result"]
     task_ids = {b["params"]["taskId"] for b in bodies[1:]}
@@ -238,3 +244,51 @@ async def test_probe_records_a_result_for_an_unknown_task() -> None:
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
         result = await _probe_tasks_extension(_HttpTarget(client, URL))
     assert all(result.details[key] == answer(result=True) for key in GOOD)
+
+
+def _tasks_server(tasks_answer: Any, *, capabilities: dict[str, Any] | None = None) -> Any:
+    """Build a server advertising Tasks whose task methods answer with ``tasks_answer(body)``."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        if body["method"] == "server/discover":
+            caps = {"extensions": {TASKS_EXTENSION_ID: {}}, **(capabilities or {})}
+            return _rpc(body["id"], result={"supportedVersions": ["2026-07-28"], "capabilities": caps})
+        return tasks_answer(body)
+
+    return handler
+
+
+@pytest.mark.parametrize("value", [None, [], "ok", 0])
+async def test_probe_counts_a_result_of_any_value(value: Any) -> None:
+    handler = _tasks_server(
+        lambda body: httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": value})
+    )
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await _probe_tasks_extension(_HttpTarget(client, URL))
+    assert all(result.details[key]["result"] is True for key in GOOD)
+    audit = data(probe=result)
+    assert not RULES["tasks_get_unknown_rejected"].check(audit).passed
+
+
+async def test_probe_keeps_earlier_answers_when_a_later_request_fails() -> None:
+    def answer_or_fail(body: dict[str, Any]) -> httpx2.Response:
+        if body["method"] == "tasks/result":
+            raise httpx2.ReadTimeout("timed out")
+        return _rpc(body["id"], code=-32601)
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(_tasks_server(answer_or_fail))) as client:
+        result = await _probe_tasks_extension(_HttpTarget(client, URL))
+    assert result.outcome is ProbeOutcome.SUPPORTED
+    assert result.details["result_method"] == {"exception": "ReadTimeout"}
+    audit = data(probe=result)
+    assert not RULES["tasks_get_unknown_rejected"].check(audit).passed
+    assert RULES["tasks_result_method_removed"].skip_reason(audit) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+async def test_probe_records_the_legacy_capability_from_its_own_discover() -> None:
+    handler = _tasks_server(lambda body: _rpc(body["id"], code=-32602), capabilities={"tasks": {"list": {}}})
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await _probe_tasks_extension(_HttpTarget(client, URL))
+    assert result.details["legacy_tasks_capability"] is True
+    assert not RULES["tasks_legacy_capability_removed"].check(data(probe=result)).passed

@@ -1395,15 +1395,18 @@ async def _probe_missing_resource(target: _ProbeTarget) -> ProbeResult:
 UNKNOWN_TASK_PREFIX = "mcpscore-unknown-task-"
 """Prefix of the fabricated task ID; a random suffix makes it one no server has issued."""
 
-TASKS_ERROR_MISSING_CLIENT_CAPABILITY = -32021
-"""Missing Required Client Capability (Tasks extension §Error Handling)."""
-
 
 def _tasks_answer(response: _ProbeResponse) -> dict[str, Any]:
-    """Summarize one Tasks request: HTTP status, JSON-RPC error code, and whether a result came back."""
-    answer: dict[str, Any] = {"http_status": response.status_code, "error_code": response.error_code}
-    answer["result"] = response.result is not None
-    return answer
+    """Summarize one Tasks request: HTTP status, JSON-RPC error code, and whether a result came back.
+
+    A ``result`` member of any value counts, ``null`` included: it is a success reply, not a refusal.
+    """
+    payload = response.payload if isinstance(response.payload, dict) else {}
+    return {
+        "http_status": response.status_code,
+        "error_code": response.error_code,
+        "result": response.error is None and "result" in payload,
+    }
 
 
 async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:
@@ -1420,8 +1423,9 @@ async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:
         _request_body("server/discover", 2400, declared),
         _request_headers(target_version, "server/discover"),
     )
-    capabilities = (discover.result or {}).get("capabilities")
-    extensions = capabilities.get("extensions") if isinstance(capabilities, dict) else None
+    raw_capabilities = (discover.result or {}).get("capabilities")
+    capabilities: dict[str, Any] = raw_capabilities if isinstance(raw_capabilities, dict) else {}
+    extensions = capabilities.get("extensions")
     if not isinstance(extensions, dict) or TASKS_EXTENSION_ID not in extensions:
         return ProbeResult(
             PROBE_TASKS_EXTENSION,
@@ -1430,16 +1434,20 @@ async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:
         )
     task_id = f"{UNKNOWN_TASK_PREFIX}{uuid4().hex}"
     params = {"taskId": task_id}
-    details: dict[str, Any] = {}
+    details: dict[str, Any] = {"legacy_tasks_capability": capabilities.get("tasks") is not None}
     for key, method, meta, request_id in (
         ("get_unknown", "tasks/get", declared, 2401),
         ("get_undeclared", "tasks/get", _modern_meta(target_version), 2402),
         ("result_method", "tasks/result", declared, 2403),
     ):
-        response = await target.post(
-            _request_body(method, request_id, meta, params=params),
-            _request_headers(target_version, method, name=task_id),
-        )
+        try:
+            response = await target.post(
+                _request_body(method, request_id, meta, params=params),
+                _request_headers(target_version, method, name=task_id),
+            )
+        except Exception as exc:  # noqa: BLE001 — one unanswered request leaves the others' answers usable
+            details[key] = {"exception": type(exc).__name__}
+            continue
         details[key] = _tasks_answer(response)
     return ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.SUPPORTED, details)
 
