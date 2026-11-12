@@ -292,3 +292,42 @@ async def test_probe_records_the_legacy_capability_from_its_own_discover() -> No
         result = await _probe_tasks_extension(_HttpTarget(client, URL))
     assert result.details["legacy_tasks_capability"] is True
     assert not RULES["tasks_legacy_capability_removed"].check(data(probe=result)).passed
+
+
+async def test_probe_counts_a_result_sent_next_to_an_error() -> None:
+    def mixed(body: dict[str, Any]) -> httpx2.Response:
+        reply = {"jsonrpc": "2.0", "id": body["id"], "result": {}, "error": {"code": -32602, "message": "x"}}
+        return httpx2.Response(200, json=reply)
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(_tasks_server(mixed))) as client:
+        result = await _probe_tasks_extension(_HttpTarget(client, URL))
+    assert result.details["get_unknown"] == {"http_status": 200, "error_code": -32602, "result": True}
+    assert not RULES["tasks_get_unknown_rejected"].check(data(probe=result)).passed
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_refused_discover_leaves_the_rules_unjudged_not_inapplicable(status: int) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(status, json={"error": "invalid_token"})
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await _probe_tasks_extension(_HttpTarget(client, URL))
+    assert result.outcome is ProbeOutcome.UNSUPPORTED
+    assert result.details["discover"]["http_status"] == status
+    assert all(rule.skip_reason(data(probe=result)) == SKIP_REASON_INSUFFICIENT_DATA for rule in RULES.values())
+
+
+async def test_a_server_without_server_discover_is_not_applicable() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return _rpc(json.loads(request.content)["id"], code=-32601)
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        result = await _probe_tasks_extension(_HttpTarget(client, URL))
+    assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+
+
+def test_an_auth_gated_method_not_found_does_not_hide_the_capability_check() -> None:
+    audit = data(answers={"get_unknown": answer(code=-32601, http_status=401), "get_undeclared": answer(code=-32602)})
+    rule = RULES["tasks_undeclared_client_rejected"]
+    assert rule.skip_reason(audit) is None
+    assert not rule.check(audit).passed

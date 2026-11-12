@@ -159,7 +159,12 @@ class TasksUndeclaredClientRejectedRule(_TasksAnswerRule):
         if reason := super().skip_reason(audit_data):
             return reason
         declared = self._details(audit_data).get("get_unknown")
-        if isinstance(declared, dict) and declared.get("error_code") == ERROR_METHOD_NOT_FOUND:
+        if (
+            isinstance(declared, dict)
+            and declared.get("error_code") == ERROR_METHOD_NOT_FOUND
+            and not declared.get("result")
+            and declared.get("http_status") not in AUTH_GATED_STATUSES
+        ):
             return SKIP_REASON_NOT_APPLICABLE
         return None
 

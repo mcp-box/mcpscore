@@ -1399,20 +1399,18 @@ UNKNOWN_TASK_PREFIX = "mcpscore-unknown-task-"
 def _tasks_answer(response: _ProbeResponse) -> dict[str, Any]:
     """Summarize one Tasks request: HTTP status, JSON-RPC error code, and whether a result came back.
 
-    A ``result`` member of any value counts, ``null`` included: it is a success reply, not a refusal.
+    A ``result`` member of any value counts, ``null`` included, even next to an ``error``: it returns data, so the
+    reply is not a clean refusal.
     """
     payload = response.payload if isinstance(response.payload, dict) else {}
-    return {
-        "http_status": response.status_code,
-        "error_code": response.error_code,
-        "result": response.error is None and "result" in payload,
-    }
+    return {"http_status": response.status_code, "error_code": response.error_code, "result": "result" in payload}
 
 
 async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:
     """Ask a server advertising the Tasks extension about a task it never issued (SEP-2663).
 
-    NOT_APPLICABLE unless ``server/discover`` advertises ``io.modelcontextprotocol/tasks``. Otherwise sends
+    UNSUPPORTED when ``server/discover`` is refused with 401/403, NOT_APPLICABLE when its answer does not advertise
+    ``io.modelcontextprotocol/tasks`` (a legacy server answers none). Otherwise sends
     ``tasks/get`` with and without the extension declared, and the removed ``tasks/result``, all for a random
     task ID. No task exists for it, so nothing is read, changed or cancelled.
     """
@@ -1423,6 +1421,9 @@ async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:
         _request_body("server/discover", 2400, declared),
         _request_headers(target_version, "server/discover"),
     )
+    if discover.status_code in AUTH_GATED_STATUSES:
+        # Refused, so the capabilities were never observed; a server without the modern lifecycle is not applicable.
+        return ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.UNSUPPORTED, {"discover": _tasks_answer(discover)})
     raw_capabilities = (discover.result or {}).get("capabilities")
     capabilities: dict[str, Any] = raw_capabilities if isinstance(raw_capabilities, dict) else {}
     extensions = capabilities.get("extensions")
