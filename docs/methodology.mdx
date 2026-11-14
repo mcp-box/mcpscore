@@ -97,7 +97,7 @@ revisions it applies to.
 
 | Category | Rules | What it covers |
 |---|---|---|
-| Protocol | 24 | Protocol version, server name, title and version, whether the server exposes anything, advertised capabilities, transport and its HTTP envelope |
+| Protocol | 28 | Protocol version, server name, title and version, whether the server exposes anything, advertised capabilities, transport and its HTTP envelope, and the [Tasks extension](#tasks-servers-that-run-tools-as-tasks) |
 | Primitives | 79 | Tools, prompts, resources, resource templates, [skills](#skills-servers-that-publish-agent-skills) and [MCP Apps](#mcp-apps-servers-that-deliver-interactive-uis): names, titles, descriptions, JSON Schema validity, URIs, MIME types, annotations, pagination, skill integrity, UI resources |
 | Security & Auth | 26 | The server's security posture, detailed below |
 | Readiness | 21 | How ready the server is for the 2026-07-28 revision, [scored on its own axis](#the-readiness-score-separate-informative) and in the main score for modern and dual-era full audits |
@@ -193,6 +193,26 @@ not full HTML5 validity; a `blob` must be valid base64 throughout. A read
 that timed out or lost its connection is not judged. mcpscore never renders the UI or runs its scripts,
 and it never calls a tool, so the text fallback a UI tool should still
 return is not checked.
+
+### Tasks: servers that run tools as tasks
+
+A server can answer a `tools/call` with a task handle and let the client
+fetch the result later, through the
+[Tasks extension](https://modelcontextprotocol.io/seps/2663-tasks-extension)
+(`io.modelcontextprotocol/tasks`, SEP-2663). When `server/discover`
+advertises the extension, mcpscore asks about a task ID that no server
+issued: `tasks/get` with and without the extension declared, and the
+removed `tasks/result`. No real task is read, changed or cancelled, and no
+tool is called, so the result shapes of a real task are not checked. A
+request refused for another reason first, such as a 401 or a server's own
+sign-in error, is not judged. Servers that do not advertise the extension
+skip these rules as `not-applicable`.
+
+| What is checked | Rules |
+|---|---|
+| `tasks/get` for an unknown task answers `-32602` (Invalid params) ([§Error Handling](https://modelcontextprotocol.io/seps/2663-tasks-extension#error-handling)) | `tasks_get_unknown_rejected` (MEDIUM) |
+| `tasks/get` from a client that did not declare the extension answers `-32021` (Missing Required Client Capability), before looking up the task ([§Error Handling](https://modelcontextprotocol.io/seps/2663-tasks-extension#error-handling)) | `tasks_undeclared_client_rejected` (LOW) |
+| The 2025-11-25 `tasks/result` method answers `-32601`, and `server/discover` no longer advertises the 2025-11-25 `tasks` capability ([§Backward Compatibility](https://modelcontextprotocol.io/seps/2663-tasks-extension#backward-compatibility)) | `tasks_result_method_removed`, `tasks_legacy_capability_removed` (LOW) |
 
 ## How an audit runs
 

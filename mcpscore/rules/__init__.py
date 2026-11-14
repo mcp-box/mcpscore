@@ -166,6 +166,12 @@ from .skills import (
     SkillsResourcesCapabilityRule,
     SkillsResourcesManifestRule,
 )
+from .tasks import (
+    TasksGetUnknownRejectedRule,
+    TasksLegacyCapabilityRemovedRule,
+    TasksResultMethodRemovedRule,
+    TasksUndeclaredClientRejectedRule,
+)
 from .tools import (
     ToolsAnnotationsPresentRule,
     ToolsDescriptionPresentRule,
@@ -320,6 +326,10 @@ __all__ = (
     "StreamableHTTPTransportRule",
     "SupportedVersionsIncludeNegotiatedRule",
     "TLSEnabledRule",
+    "TasksGetUnknownRejectedRule",
+    "TasksLegacyCapabilityRemovedRule",
+    "TasksResultMethodRemovedRule",
+    "TasksUndeclaredClientRejectedRule",
     "ToolSchemaDialectReadinessRule",
     "ToolsAnnotationsPresentRule",
     "ToolsCatalogConnectionIndependentRule",
