@@ -784,7 +784,10 @@ def _stateless_tools(payload: dict) -> dict[str, ProbeResult]:
     return results
 
 
-async def test_a_raising_rule_is_skipped_and_the_audit_completes(stub_probes, monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("hook", ["check", "skip_reason"])
+async def test_a_raising_rule_is_skipped_and_the_audit_completes(
+    stub_probes, monkeypatch: pytest.MonkeyPatch, hook: str
+):
     stub_probes(_modern_probe_results())
     monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
     auditor = MCPAuditor()
@@ -793,7 +796,7 @@ async def test_a_raising_rule_is_skipped_and_the_audit_completes(stub_probes, mo
     def explode(_audit_data):
         raise RecursionError("maximum recursion depth exceeded")
 
-    monkeypatch.setattr(broken, "check", explode)
+    monkeypatch.setattr(broken, hook, explode)
 
     assert await auditor.audit_modern_only(URL) is True
     skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}

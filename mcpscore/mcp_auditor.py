@@ -668,44 +668,18 @@ class MCPAuditor:
                     else "informative — not part of the main score",
                 )
 
-            skip_reason: str | None = None
-            if not rule.applies_to(self._applicability_version(rule)):
-                skip_reason = SKIP_REASON_NOT_APPLICABLE
-            elif self._skipped_for_partial(rule) or self._evidence_spans_lifecycles(rule):
-                skip_reason = SKIP_REASON_INSUFFICIENT_DATA
-            else:
-                skip_reason = rule.skip_reason(self.audit_data)
-            # A rule the configuration turned off does not run. Checked last so
-            # a canonical reason wins when both apply: the report should say
-            # why the engine could not judge, not merely that nobody asked.
-            if skip_reason is None and self._disabled_by_config(rule):
-                skip_reason = SKIP_REASON_DISABLED_BY_CONFIG
-
-            if skip_reason is not None:
-                logger.info("⏭️ Skipping rule '%s': %s", rule.rule_id, skip_reason)
-                self.skipped_rules.append(
-                    SkippedRule(
-                        rule_id=rule.rule_id,
-                        rule_name=rule.rule_name,
-                        reason=skip_reason,
-                        group_name=rule.group_name,
-                    )
-                )
-                continue
-
+            # Rule code runs in skip_reason() as well as check(), so both sit inside the guard.
             try:
+                skip_reason = self._skip_reason(rule)
+                if skip_reason is not None:
+                    logger.info("⏭️ Skipping rule '%s': %s", rule.rule_id, skip_reason)
+                    self._record_skip(rule, skip_reason)
+                    continue
                 res: RuleResult = rule.check(self.audit_data)
             except Exception as exc:  # noqa: BLE001 — one broken rule must not abort the audit
                 # The exception text may repeat server data, so only its type is logged.
                 logger.warning("⚠️ Rule '%s' could not run: internal error (%s)", rule.rule_id, type(exc).__name__)
-                self.skipped_rules.append(
-                    SkippedRule(
-                        rule_id=rule.rule_id,
-                        rule_name=rule.rule_name,
-                        reason=SKIP_REASON_RULE_ERROR,
-                        group_name=rule.group_name,
-                    )
-                )
+                self._record_skip(rule, SKIP_REASON_RULE_ERROR)
                 continue
             res.rule_id = rule.rule_id
             if rule.basis and (res.details is None or "basis" not in res.details):
@@ -731,6 +705,26 @@ class MCPAuditor:
                 if res.passed:
                     self.score += res.severity.value
                 self.results.append(res)
+
+    def _record_skip(self, rule: BaseRule, reason: str) -> None:
+        """Record *rule* in skipped_rules with *reason*."""
+        self.skipped_rules.append(
+            SkippedRule(rule_id=rule.rule_id, rule_name=rule.rule_name, reason=reason, group_name=rule.group_name)
+        )
+
+    def _skip_reason(self, rule: BaseRule) -> str | None:
+        """Return why *rule* must not run on this audit, or None when it should run."""
+        if not rule.applies_to(self._applicability_version(rule)):
+            return SKIP_REASON_NOT_APPLICABLE
+        if self._skipped_for_partial(rule) or self._evidence_spans_lifecycles(rule):
+            return SKIP_REASON_INSUFFICIENT_DATA
+        skip_reason = rule.skip_reason(self.audit_data)
+        # A rule the configuration turned off does not run. Checked last so
+        # a canonical reason wins when both apply: the report should say
+        # why the engine could not judge, not merely that nobody asked.
+        if skip_reason is None and self._disabled_by_config(rule):
+            return SKIP_REASON_DISABLED_BY_CONFIG
+        return skip_reason
 
     def _disabled_by_config(self, rule: BaseRule) -> bool:
         return (
