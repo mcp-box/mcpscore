@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from .apps import collect_apps, pointer_targets
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
-from .diagnostics import entity_label, validation_diagnostics
+from .diagnostics import entity_label, nesting_exceeds, validation_diagnostics
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
 from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
@@ -39,7 +39,13 @@ from .probes import (
 )
 from .report_evidence import report_evidence
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
-from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, rule_sort_key
+from .rules.base import (
+    READINESS_GROUP,
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    SKIP_REASON_RULE_ERROR,
+    rule_sort_key,
+)
 from .rules.packaging import PACKAGING_GROUP
 from .skills import SkillsEvidence, collect_skills, declared_settings, skills_report, stateless_first_page
 from .spec import DRAFT, LATEST, Era
@@ -47,6 +53,13 @@ from .spec import DRAFT, LATEST, Era
 logger = logging.getLogger(__name__)
 
 TLS_PROBE_TIMEOUT_S = 10
+
+MAX_JSON_NESTING = 201
+"""Deepest JSON nesting the SDK session's message parser accepts (pydantic-core's limit).
+
+A stateless probe payload is a JSON-RPC ``result``, one level below the message, so
+it is held to one level less to judge both lifecycles by the same bound.
+"""
 """Timeout for probing the negotiated TLS version of an HTTPS server."""
 
 
@@ -440,6 +453,26 @@ class MCPAuditor:
         """
         from mcp_types import Tool
 
+        # Containers below the payload root, inside the message's own two levels.
+        if nesting_exceeds(payload, MAX_JSON_NESTING - 2):
+            self.audit_data.listing_errors.setdefault(
+                "tools",
+                {
+                    "outcome": "invalid_response",
+                    "page_index": 0,
+                    "issues": [
+                        {
+                            "path": "/tools",
+                            "reason": "nesting_too_deep",
+                            "expected": f"JSON nested at most {MAX_JSON_NESTING} levels",
+                        }
+                    ],
+                    "issues_total": 1,
+                    "issues_omitted": 0,
+                },
+            )
+            logger.info("Stateless tools/list response nests deeper than %d levels; not parsed", MAX_JSON_NESTING)
+            return None
         raw_tools = payload.get("tools")
         if isinstance(raw_tools, list):
             # Retain the all-or-nothing catalog semantics while keeping
@@ -613,6 +646,9 @@ class MCPAuditor:
         (readiness_score/readiness_max); everything else scores on the main axis.
         A separator line is logged before the first readiness rule so the two
         sections are visually distinct in the streamed output.
+
+        A rule that raises is recorded in skipped_rules with reason
+        ``rule-error``, and the remaining rules still run.
         """
         # Readiness promotion (methodology.mdx): a server on the modern lifecycle has its
         # readiness rules counted in the main score; legacy-only servers keep them
@@ -657,7 +693,20 @@ class MCPAuditor:
                 )
                 continue
 
-            res: RuleResult = rule.check(self.audit_data)
+            try:
+                res: RuleResult = rule.check(self.audit_data)
+            except Exception as exc:  # noqa: BLE001 — one broken rule must not abort the audit
+                # The exception text may repeat server data, so only its type is logged.
+                logger.warning("⚠️ Rule '%s' could not run: internal error (%s)", rule.rule_id, type(exc).__name__)
+                self.skipped_rules.append(
+                    SkippedRule(
+                        rule_id=rule.rule_id,
+                        rule_name=rule.rule_name,
+                        reason=SKIP_REASON_RULE_ERROR,
+                        group_name=rule.group_name,
+                    )
+                )
+                continue
             res.rule_id = rule.rule_id
             if rule.basis and (res.details is None or "basis" not in res.details):
                 res.details = {**(res.details or {}), "basis": rule.basis}

@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next to the extension). A request refused for another reason, such as
   sign-in, is not judged. Servers without the extension are not affected.
 
+### Fixed
+
+- A rule that hits an internal error no longer aborts the whole audit. The
+  rule is listed in `skipped_rules` with the new reason `rule-error` and
+  counts toward neither the score nor the maximum; every other rule still
+  runs and the report is produced.
+- A stateless `tools/list` response nested deeper than 201 JSON levels is now
+  rejected as an invalid catalog, as the session's parser already rejects it,
+  instead of crashing the audit. The tools capability check reports it.
+
 ## [1.33.0] - 2026-11-11
 
 A new readiness check asks servers to reject a request whose

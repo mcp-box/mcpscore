@@ -33,6 +33,10 @@ SKIP_REASON_INSUFFICIENT_DATA = "insufficient-data"
 probes not applicable to the transport, or session data missing) — the rule can
 neither pass nor fail, so it must not count against the score."""
 
+SKIP_REASON_RULE_ERROR = "rule-error"
+"""Skip reason when a rule raised an exception: an engine fault, not the server's, so the
+rule neither passes nor fails and the rest of the audit still runs."""
+
 READINESS_GROUP = "readiness"
 """Group name of readiness rules. The auditor scores this group on a separate
 readiness axis, never in the main score (see the multi-spec-version design)."""

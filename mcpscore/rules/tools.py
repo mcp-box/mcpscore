@@ -6,7 +6,7 @@ from typing import Any, NamedTuple, cast
 from mcp_types import Tool
 from referencing.jsonschema import UnknownDialect, specification_with
 
-from mcpscore.diagnostics import quoted_preview
+from mcpscore.diagnostics import nesting_exceeds, quoted_preview
 
 from .base import (
     SKIP_REASON_INSUFFICIENT_DATA,
@@ -1545,20 +1545,6 @@ _LEGACY_DRAFTS = frozenset({"draft-03", "draft-04"})
 _MAX_POINTER_LENGTH = 255
 
 
-def _nesting_exceeds(value: Any, limit: int) -> bool:
-    """Return whether JSON *value* nests deeper than *limit*, without recursing."""
-    stack: list[tuple[Any, int]] = [(value, 0)]
-    while stack:
-        item, depth = stack.pop()
-        children = item.values() if isinstance(item, dict) else item if isinstance(item, list) else ()
-        for child in children:
-            if isinstance(child, (dict, list)):
-                if depth + 1 > limit:
-                    return True
-                stack.append((child, depth + 1))
-    return False
-
-
 def _mentions_default(value: Any) -> bool:
     """Return whether any object in JSON *value* has a ``default`` key, whatever keyword holds it."""
     stack = [value]
@@ -1690,7 +1676,7 @@ def _check_defaults(tool: Tool) -> _DefaultsCheck:
     schema = tool.input_schema
     unjudged = _DefaultsCheck([], found=_mentions_default(schema), judged=False)
     dialect = schema.get("$schema", _JSON_SCHEMA_2020_12)
-    if not isinstance(dialect, str) or _nesting_exceeds(schema, _MAX_SCHEMA_NESTING):
+    if not isinstance(dialect, str) or nesting_exceeds(schema, _MAX_SCHEMA_NESTING):
         return unjudged
     try:
         specification = specification_with(dialect)

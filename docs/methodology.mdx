@@ -76,6 +76,7 @@ Every skip appears in the report's `skipped_rules[]` with one reason:
 | `insufficient-data` | The observation the rule needs is unavailable, for example a probe errored. The rule can neither pass nor fail |
 | `requires-modern-support` | A readiness detail check on a server with no modern-lifecycle support. The two gateway readiness rules already carry that verdict |
 | `disabled-by-config` | Your [project configuration](/configure-rules) turned the rule off |
+| `rule-error` | The rule raised an internal error in mcpscore. The rest of the audit still runs; please [report it](https://github.com/mcp-box/mcpscore/issues) |
 
 <Accordion title="Technical details: empty and unreadable catalogs">
 An empty tools catalog that was fetched successfully gives the per-tool rules
