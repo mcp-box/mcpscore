@@ -1514,6 +1514,16 @@ class MCPClient:
                             "reason": "optional resource-template listing is not implemented",
                         },
                     )
+                if is_credential_challenge(exc.error.model_dump()):
+                    return ProbeResult(
+                        probe_id,
+                        ProbeOutcome.NOT_APPLICABLE,
+                        {
+                            "error_code": exc.code,
+                            "credential_refusal": True,
+                            "reason": "listing was refused for a credential; cursor validation not observable",
+                        },
+                    )
                 outcome = ProbeOutcome.SUPPORTED if exc.code == ERROR_INVALID_PARAMS else ProbeOutcome.UNSUPPORTED
                 return ProbeResult(probe_id, outcome, {"error_code": exc.code})
             except Exception as exc:  # noqa: BLE001 — probes never abort an audit
