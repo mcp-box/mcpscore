@@ -331,3 +331,55 @@ class TestCliWording:
         assert credential_hint({"header": None}) == "--token or --header"
         assert end_sentence('error -32001: "Unauthorized"') == 'error -32001: "Unauthorized".'
         assert end_sentence('error -32001: "Required."') == 'error -32001: "Required."'
+
+
+def _refuse(request: httpx2.Request, error: dict[str, Any]) -> httpx2.Response:
+    return httpx2.Response(200, json={"jsonrpc": "2.0", "id": _request_id(request), "error": error})
+
+
+class TestRefusalEverywhere:
+    async def test_the_sse_fallback_is_skipped_after_a_credential_refusal(self):
+        client = MCPClient()
+        methods: list[str] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            methods.append(request.method)
+            return _api_key_server()(request)
+
+        with patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(handler)):
+            assert await client.detect_and_connect(URL) == (False, None)
+
+        assert "GET" not in methods
+        assert client.last_connection_error is not None
+        assert client.last_connection_error.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
+
+    async def test_a_get_refused_for_a_credential_is_not_judged(self):
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(_api_key_server())) as client:
+            result = await probes._probe_get_stream_removed(probes._HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["credential_refusal"] is True
+
+    async def test_a_refusal_named_only_in_its_data_is_a_gate(self):
+        error = {"code": -32001, "message": "Request refused", "data": "Invalid credentials"}
+        results = await _run_probes(lambda request: _refuse(request, error))
+
+        assert observed_auth_status(results) == 200
+        assert auth_gate_status(results[PROBE_DISCOVER]) == 200
+        auditor = MCPAuditor()
+        auditor.audit_data.probes = results
+        fact = auditor.get_audit_report()["credential_challenge"]
+        assert fact is not None
+        assert fact["message"] == '"Request refused"'
+
+    async def test_a_refused_stateless_notification_is_not_judged(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if json.loads(request.content).get("method") == "initialize":
+                return _refuse(request, {"code": -32601, "message": "Method not found"})
+            return _refuse(request, REFUSAL)
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            result = await probes._probe_notification_accepted(probes._HttpTarget(client, URL))
+
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["shape"] == "modern-cancelled"

@@ -75,6 +75,7 @@ __all__ = [
     "PROBE_IDS",
     "ProbeOutcome",
     "ProbeResult",
+    "credential_refused",
     "detect_era",
     "has_modern_support",
     "not_applicable_results",
@@ -889,7 +890,7 @@ class _HttpTarget:
                 await response.aclose()
 
     async def post_raw(
-        self, content: bytes, headers: dict[str, str], *, body_limit: Callable[[int], int] | None = None
+        self, content: bytes, headers: dict[str, str], *, body_limit: Callable[[httpx2.Response], int] | None = None
     ) -> tuple[_HttpProbeResponse, str | None, str | None]:
         """POST an intentionally invalid raw body without following redirects.
 
@@ -908,7 +909,7 @@ class _HttpTarget:
         never fed to the decoder — that is where the bomb would inflate — and
         is reported unobservable.
 
-        ``body_limit`` maps the status to the bytes worth reading, for a caller
+        ``body_limit`` maps the response to the bytes worth reading, for a caller
         whose verdict needs less than the full body: 0 skips the body (an open
         SSE stream is never drained), 1 tells empty from non-empty.
 
@@ -937,7 +938,7 @@ class _HttpTarget:
                     encoded = encoding not in ("", "identity")
                     body = bytearray()
                     truncated = False
-                    limit = _RAW_BODY_SCAN_LIMIT if body_limit is None else body_limit(status_code)
+                    limit = _RAW_BODY_SCAN_LIMIT if body_limit is None else body_limit(response)
                     if limit == 0:
                         return (
                             _HttpProbeResponse(status_code=status_code, headers=response_headers, payload=None),
@@ -1018,14 +1019,15 @@ class _HttpTarget:
             return
 
     async def get_status(self, headers: dict[str, str]) -> _HttpProbeResponse:
-        """GET the endpoint and close without consuming a possible legacy SSE stream."""
-        return await self.request_status("GET", headers, wait_s=GET_STREAM_TIMEOUT_S)
+        """GET the endpoint, reading a JSON answer (a refusal) but never a possible legacy SSE stream."""
+        return await self.request_status("GET", headers, wait_s=GET_STREAM_TIMEOUT_S, read_json=True)
 
     async def request_status(
-        self, method: str, headers: dict[str, str], *, wait_s: float = PROBE_TIMEOUT_S
+        self, method: str, headers: dict[str, str], *, wait_s: float = PROBE_TIMEOUT_S, read_json: bool = False
     ) -> _HttpProbeResponse:
         """Send a bodiless request and close without consuming the response body.
 
+        With ``read_json`` a JSON answer is read, up to ``POST_READ_LIMIT`` bytes; any other body is not.
         ``wait_s`` bounds the whole exchange; past it ``httpx2.ReadTimeout`` is raised.
         """
         try:
@@ -1039,10 +1041,14 @@ class _HttpTarget:
                     follow_redirects=False,
                 ) as response,
             ):
+                payload, unobservable = (
+                    await _read_answer(response, None, POST_READ_LIMIT, "json") if read_json else (None, None)
+                )
                 return _HttpProbeResponse(
                     status_code=response.status_code,
                     headers=dict(response.headers),
-                    payload=None,
+                    payload=payload,
+                    unobservable=unobservable,
                 )
         except TimeoutError as exc:
             msg = "no answer before the deadline"
@@ -1126,6 +1132,9 @@ def _base_details(response: _ProbeResponse) -> dict[str, Any]:
         message = response.error.get("message")
         if isinstance(message, str):
             details["error_message"] = message
+        if is_credential_challenge(response.error):
+            # The error's data is not recorded, and it may be what names the credential.
+            details["credential_refusal"] = True
     return details
 
 
@@ -2068,8 +2077,14 @@ def auth_gate_status(result: ProbeResult | None) -> int | None:
     status = result.details.get("http_status")
     if status in AUTH_GATED_STATUSES:
         return status
-    challenged = is_credential_challenge({"message": result.details.get("error_message")})
-    return status if challenged and isinstance(status, int) else None
+    return status if credential_refused(result.details) and isinstance(status, int) else None
+
+
+def credential_refused(details: dict[str, Any]) -> bool:
+    """Whether a probe's recorded answer was a JSON-RPC error refusing a credential."""
+    return details.get("credential_refusal") is True or is_credential_challenge(
+        {"message": details.get("error_message")}
+    )
 
 
 def _well_known_urls(url: str) -> list[str]:
@@ -3230,9 +3245,25 @@ async def _open_legacy_session(
     return _LegacySession(response, headers, session_id, initialized, body, unobservable), response, target
 
 
-def _notification_body_limit(status: int) -> int:
-    """Only a 202 needs its body, and one byte decides whether it has one."""
-    return 1 if status == 202 else 0
+_NOTIFICATION_REFUSAL_LIMIT = 4096
+"""Bytes read from a JSON 2xx/3xx answer to a notification, enough for a JSON-RPC credential refusal."""
+
+
+def _notification_body_limit(response: httpx2.Response) -> int:
+    """Return the bytes worth reading: one shows whether a 202 has a body; a JSON success may carry a refusal."""
+    if response.status_code == 202:
+        return 1
+    is_json = "json" in response.headers.get("content-type", "").lower()
+    return _NOTIFICATION_REFUSAL_LIMIT if response.status_code < 400 and is_json else 0
+
+
+def _refuses_credential(body: str | None) -> bool:
+    """Whether a raw answer body is a JSON-RPC error refusing a credential."""
+    try:
+        payload = json.loads(body) if body else None
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and is_credential_challenge(payload.get("error"))
 
 
 async def _incomplete_handshake(probe_id: str, session: _LegacySession, target: _HttpTarget) -> ProbeResult | None:
@@ -3314,6 +3345,9 @@ async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
     redirected = _redirected(PROBE_NOTIFICATION_ACCEPTED, status, details)
     if redirected is not None:
         return redirected
+    if status != 202 and _refuses_credential(body):
+        details["reason"] = "notification was refused for a credential; acceptance not observable"
+        return ProbeResult(PROBE_NOTIFICATION_ACCEPTED, ProbeOutcome.NOT_APPLICABLE, details)
     if status == 202 and body is None:
         # A compressed body was not decoded, so "no body" cannot be verified either way.
         details["reason"] = f"202 body not observable ({unobservable or 'unread'})"

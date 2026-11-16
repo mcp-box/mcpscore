@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from .apps import collect_apps, pointer_targets
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
-from .credential_challenge import challenge_summary, has_credential, is_credential_challenge
+from .credential_challenge import challenge_summary, has_credential
 from .diagnostics import entity_label, nesting_exceeds, validation_diagnostics
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
@@ -33,6 +33,7 @@ from .probes import (
     PROBE_UNAUTHENTICATED,
     ProbeOutcome,
     auth_gate_status,
+    credential_refused,
     detect_era,
     has_modern_support,
     not_applicable_results,
@@ -1287,7 +1288,7 @@ class MCPAuditor:
             return None
         status = probe.details.get("http_status")
         error = {"code": probe.details.get("error_code"), "message": probe.details.get("error_message")}
-        if status in AUTH_GATED_STATUSES or not is_credential_challenge(error):
+        if status in AUTH_GATED_STATUSES or not credential_refused(probe.details):
             return None
         return {
             "http_status": status,

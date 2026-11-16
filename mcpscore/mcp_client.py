@@ -723,10 +723,13 @@ class MCPClient:
             if http_failure is not None and http_failure.reason in (
                 ConnectionErrorReason.UNAUTHORIZED,
                 ConnectionErrorReason.FORBIDDEN,
+                ConnectionErrorReason.CREDENTIAL_REQUIRED,
             ):
                 logger.info(
-                    "Endpoint requires authentication (HTTP %s) — skipping the legacy SSE fallback",
-                    http_failure.status_code or "401/403",
+                    "Endpoint requires authentication (%s) — skipping the legacy SSE fallback",
+                    "a JSON-RPC credential refusal"
+                    if http_failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
+                    else f"HTTP {http_failure.status_code or '401/403'}",
                 )
                 return (False, None)
 

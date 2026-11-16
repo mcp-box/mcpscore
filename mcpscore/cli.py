@@ -16,11 +16,11 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from mcpscore import MCPAuditor, MCPClient, StdioCommand
 from mcpscore.config import ConfigError, RuleConfig
-from mcpscore.credential_challenge import challenge_summary, is_credential_challenge
+from mcpscore.credential_challenge import challenge_summary
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
-from mcpscore.probes import PROBE_UNAUTHENTICATED, observed_auth_status
+from mcpscore.probes import PROBE_UNAUTHENTICATED, credential_refused, observed_auth_status
 from mcpscore.report_evidence import evidence_preview
 from mcpscore.sarif import build_sarif
 from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
@@ -1203,7 +1203,7 @@ def credential_challenge_seen(
     if unauthenticated is None:
         return None
     error = {"code": unauthenticated.details.get("error_code"), "message": unauthenticated.details.get("error_message")}
-    return challenge_summary(error, headers) if is_credential_challenge(error) else None
+    return challenge_summary(error, headers) if credential_refused(unauthenticated.details) else None
 
 
 def describe_gate(status: int | None, challenge: dict[str, Any] | None, joiner: str = ", ") -> str:
