@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from mcpscore.diagnostics import quoted_preview
+from mcpscore.report_evidence import report_evidence
 
 _CREDENTIAL = r"(?:\b(?:x-)?api[-_ ]?key\b|\b(?:access|auth|bearer|api|session)[-_ ]?token\b|\bcredentials?\b)"
 _REFUSED = (
@@ -90,11 +91,12 @@ def challenge_summary(error: dict[str, Any], headers: dict[str, str] | None = No
     The message is the server's own text, escaped and quoted, with supplied credential values redacted.
     """
     message = error.get("message")
-    text = redact_values(message, headers) if isinstance(message, str) else ""
+    # Supplied credentials first, then credentials the server put in URLs it quotes.
+    text = str(report_evidence(redact_values(message, headers))) if isinstance(message, str) else ""
     code = error.get("code")
     # The header is read from redacted text: an echoed credential can look like a header name.
     return {
         "error_code": code if isinstance(code, int) else None,
         "message": quoted_preview(text, MESSAGE_PREVIEW_LIMIT) if text else None,
-        "header": challenge_header({"message": redact_values(challenge_text(error), headers)}),
+        "header": challenge_header({"message": str(report_evidence(redact_values(challenge_text(error), headers)))}),
     }

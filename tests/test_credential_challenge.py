@@ -160,6 +160,14 @@ class TestMatcher:
 
         assert redact_values("API key abcdef is invalid", headers) == "API key [redacted] is invalid"
 
+    def test_a_credential_in_a_quoted_url_is_masked(self):
+        error = {"code": -32001, "message": "API key required; see https://example.test/mcp?token=query-secret-123"}
+
+        summary = challenge_summary(error)
+
+        assert "query-secret-123" not in summary["message"]
+        assert "token=[redacted]" in summary["message"]
+
     def test_a_short_value_is_redacted_too(self):
         assert redact_values("key abc refused", {"X-API-Key": "abc"}) == "key [redacted] refused"
 
@@ -247,6 +255,36 @@ class TestClientClassification:
         assert failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
         assert failure.challenge is not None
         assert failure.challenge["message"] == '"API key [redacted] is not valid."'
+
+
+class TestSseClassification:
+    async def test_an_sse_handshake_refusal_is_credential_required_and_not_echoed(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        from unittest.mock import AsyncMock
+
+        from mcp.shared.exceptions import MCPError
+
+        client = MCPClient(headers={"X-API-Key": "sse-secret-key"})
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.initialize.side_effect = MCPError(-32001, "API key sse-secret-key is not valid.")
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch("mcpscore.mcp_client.sse_client") as sse,
+            patch("mcpscore.mcp_client.ClientSession", return_value=session),
+        ):
+            sse.return_value.__aenter__.return_value = (AsyncMock(), AsyncMock())
+            assert await client._connect_with_sse("https://api-key.example/sse") is False
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
+        assert failure.status_code is None
+        assert failure.challenge is not None
+        assert failure.challenge["message"] == '"API key [redacted] is not valid."'
+        assert "sse-secret-key" not in caplog.text
 
 
 class TestProbes:

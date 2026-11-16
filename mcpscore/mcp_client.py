@@ -1374,6 +1374,14 @@ class MCPClient:
         except Exception as e:
             if self._record_unread_answer():
                 return False
+            if (challenge := find_credential_challenge(e)) is not None:
+                # The answer came over the event stream, so no HTTP status belongs to it.
+                logger.info("Server requires a credential (JSON-RPC error %s): %s", challenge.code, server_url)
+                self._record_failure(
+                    ConnectionErrorReason.CREDENTIAL_REQUIRED,
+                    challenge=challenge_summary(challenge.error.model_dump(), self.headers),
+                )
+                return False
             logger.error("SSE connection failed: %s", _describe_failure(e))  # noqa: TRY400
             logger.debug("Error details", exc_info=e)
             self._record_unclassified_failure(e)
