@@ -379,6 +379,14 @@ class TestGetStream:
         assert result.outcome is ProbeOutcome.NOT_APPLICABLE
         assert result.details["reason"] == "GET is access-controlled"
 
+    async def test_a_handshake_whose_notification_was_refused_for_a_credential_is_incomplete(self):
+        refusal = {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "X-API-Key header is required."}}
+        server = LegacyServer(notification=httpx2.Response(200, json=refusal), get=httpx2.Response(400))
+        result = await _run(_probe_get_stream, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "handshake notification was not accepted"
+        assert "GET" not in server.methods()
+
     async def test_get_carries_the_session_and_version(self):
         server = LegacyServer()
         await _run(_probe_get_stream, server)

@@ -3273,7 +3273,7 @@ async def _incomplete_handshake(probe_id: str, session: _LegacySession, target: 
     so nothing later in it says anything about the transport contract.
     """
     status = session.initialized.status_code
-    if 200 <= status < 300:
+    if 200 <= status < 300 and not _refuses_credential(session.initialized_body):
         return None
     await target.end_session(session.initialize)
     details = {"initialized_http_status": status, "reason": "handshake notification was not accepted"}

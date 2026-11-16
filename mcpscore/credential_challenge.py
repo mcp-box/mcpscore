@@ -20,8 +20,6 @@ _CREDENTIAL_PHRASES = re.compile(
     rf"""
     {_CREDENTIAL}[^.;:]{{0,40}}?{_REFUSED}
     | {_REFUSED}[^.;:]{{0,40}}?{_CREDENTIAL}
-    | \b(?:missing|invalid|expired|revoked)\ token\b
-    | \btoken\ (?:is\ )?(?:required|missing|expired|revoked)\b
     | \bunauthori[sz]ed\b
     | \bunauthenticated\b
     | \bnot\ authenticated\b
@@ -32,7 +30,7 @@ _CREDENTIAL_PHRASES = re.compile(
 )
 """A credential named next to a refusal word, or a refusal that is about authentication itself.
 
-A bare "token" counts only right beside the refusal: pagination errors talk about cursor tokens.
+A bare "token" never counts: parse and pagination errors talk about tokens too.
 """
 _CHALLENGE_HEADER = re.compile(
     r"\b(X-[A-Za-z0-9-]*(?:key|token|auth)[A-Za-z0-9-]*|Authorization|Api-Key)\b", re.IGNORECASE
