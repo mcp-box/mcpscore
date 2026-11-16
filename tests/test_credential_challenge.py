@@ -308,6 +308,21 @@ class TestConnectionLogs:
         assert failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
         assert key not in caplog.text
 
+    async def test_a_key_at_the_cut_of_a_long_failure_line_is_not_left_in_part(self, caplog: pytest.LogCaptureFixture):
+        key = "sk_live_" + "z" * 56
+        client = MCPClient(headers={"X-API-Key": key})
+
+        def echoing(request: httpx2.Request) -> httpx2.Response:
+            return _refuse(request, {"code": -32603, "message": "x" * 470 + f" lookup of {key} crashed"})
+
+        with (
+            caplog.at_level(logging.INFO, logger="mcpscore"),
+            patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(echoing)),
+        ):
+            assert await client._connect_with_streamable_http(URL) is False
+
+        assert "sk_live_" not in caplog.text
+
     async def test_an_unclassified_failure_never_logs_a_supplied_key(self, caplog: pytest.LogCaptureFixture):
         key = "sk_live_unrecognised_0123"
         client = MCPClient(headers={"X-API-Key": key})

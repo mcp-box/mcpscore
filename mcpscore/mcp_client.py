@@ -1199,8 +1199,11 @@ class MCPClient:
             return False
 
     def _describe(self, exc: BaseException) -> str:
-        """Describe a failure in one line, with every credential value this client sends redacted."""
-        return redact_values(_describe_failure(exc), self.headers)
+        """Describe a failure in one line, with every credential value this client sends redacted.
+
+        Redaction runs before the line is escaped and cut, so a key at the cut is never left in part.
+        """
+        return _printable_detail(redact_values(failure_cause(exc), self.headers))
 
     async def _classify_connect_failure(self, e: Exception, server_url: str) -> None:
         """Record why a Streamable HTTP connect attempt failed: a gate, a refused redirect, or unclassified."""
