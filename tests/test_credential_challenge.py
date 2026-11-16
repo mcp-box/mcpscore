@@ -101,6 +101,7 @@ class TestMatcher:
             {"code": -32600, "message": "Missing access token"},
             {"code": -32001, "message": "Request refused", "data": "Invalid credentials"},
             {"code": -32001, "message": "Refused", "data": {"detail": "Configure X-API-Key for this server."}},
+            {"code": -32001, "message": f"API key {'k' * 64} is not valid."},
         ],
     )
     def test_credential_refusals_are_recognised(self, error):
@@ -117,6 +118,7 @@ class TestMatcher:
             {"code": -32603, "message": "Internal error: API key database unavailable"},
             {"code": -32602, "message": "Invalid params: cursor token is invalid"},
             {"code": -32602, "message": "Invalid cursor token"},
+            {"code": -32603, "message": "API key database unavailable. The request is not valid"},
             {"code": -32700, "message": "Parse error: invalid token at position 12"},
             {"code": -32602, "message": "Invalid token"},
             {"code": -32602, "message": "Pagination cursor token is required"},
@@ -285,6 +287,46 @@ class TestSseClassification:
         assert failure.challenge is not None
         assert failure.challenge["message"] == '"API key [redacted] is not valid."'
         assert "sse-secret-key" not in caplog.text
+
+
+class TestConnectionLogs:
+    async def test_a_long_echoed_key_is_classified_and_never_logged(self, caplog: pytest.LogCaptureFixture):
+        key = "sk_" + "q" * 64
+        client = MCPClient(headers={"X-API-Key": key})
+
+        def echoing(request: httpx2.Request) -> httpx2.Response:
+            return _refuse(request, {"code": -32001, "message": f"API key {key} is not valid."})
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="mcpscore"),
+            patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(echoing)),
+        ):
+            assert await client._connect_with_streamable_http(URL) is False
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
+        assert key not in caplog.text
+
+    async def test_an_unclassified_failure_never_logs_a_supplied_key(self, caplog: pytest.LogCaptureFixture):
+        key = "sk_live_unrecognised_0123"
+        client = MCPClient(headers={"X-API-Key": key})
+
+        def echoing(request: httpx2.Request) -> httpx2.Response:
+            return _refuse(request, {"code": -32603, "message": f"Lookup of {key} crashed"})
+
+        with (
+            caplog.at_level(logging.INFO, logger="mcpscore"),
+            patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(echoing)),
+        ):
+            assert await client._connect_with_streamable_http(URL) is False
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.UNKNOWN
+        assert "Lookup of [redacted] crashed" in caplog.text
+        assert key not in caplog.text
+        assert key not in failure.message
 
 
 class TestProbes:

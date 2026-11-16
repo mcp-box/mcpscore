@@ -17,10 +17,12 @@ _REFUSED = (
     r"(?:\brequired\b|\bmissing\b|\binvalid\b|\bexpired\b|\brevoked\b|\brejected\b|\bnot\ valid\b"
     r"|\bnot\ provided\b|\bincorrect\b|\bconfigure\b|\bmust\ be\ (?:provided|supplied|set)\b)"
 )
+# Up to six words between the two, of any length (an echoed key is one long word), within one sentence.
+_GAP = r"(?:[\s:]+\S*[^\s.;:]){0,6}?[\s:]+"
 _CREDENTIAL_PHRASES = re.compile(
     rf"""
-    {_CREDENTIAL}[^.;:]{{0,40}}?{_REFUSED}
-    | {_REFUSED}[^.;:]{{0,40}}?{_CREDENTIAL}
+    {_CREDENTIAL}{_GAP}{_REFUSED}
+    | {_REFUSED}{_GAP}{_CREDENTIAL}
     | \bunauthori[sz]ed\b
     | \bunauthenticated\b
     | \bnot\ authenticated\b

@@ -46,7 +46,7 @@ from mcp_types import (
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .apps import UI_EXTENSION, UI_EXTENSION_SETTINGS
-from .credential_challenge import challenge_summary, is_credential_challenge
+from .credential_challenge import challenge_summary, is_credential_challenge, redact_values
 from .diagnostics import validation_diagnostics
 from .enums import ConnectionErrorReason, MCPTransportType
 from .probes import (
@@ -858,7 +858,7 @@ class MCPClient:
             if error is not None:
                 self._pending_http_status = error.response.status_code
                 self._pending_refused_redirect = unfollowed_redirect(error.response)
-            logger.info("Connection attempt failed: %s", _describe_failure(e))
+            logger.info("Connection attempt failed: %s", self._describe(e))
 
     def _record_failure(
         self,
@@ -922,7 +922,7 @@ class MCPClient:
             # Keep a compact, single-line explanation so a caller can defer
             # showing it until modern-only probing has ruled out an expected
             # rejection of the legacy handshake.
-            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_describe_failure(exc))
+            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=self._describe(exc))
 
     def _observed_status(self, exc: BaseException) -> tuple[int | None, RefusedRedirect | None]:
         """Return the HTTP status a failed attempt observed, with the redirect it refused, from one response.
@@ -1172,12 +1172,12 @@ class MCPClient:
             return True
 
         except httpx2.ConnectError as e:
-            logger.error("Server unreachable: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
+            logger.error("Server unreachable: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
             logger.debug("Error details", exc_info=e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx2.TimeoutException as e:
-            logger.error("Connection timeout for server: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
+            logger.error("Connection timeout for server: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
             logger.debug("Error details", exc_info=e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
@@ -1197,6 +1197,10 @@ class MCPClient:
                 return False
             await self._classify_connect_failure(e, server_url)
             return False
+
+    def _describe(self, exc: BaseException) -> str:
+        """Describe a failure in one line, with every credential value this client sends redacted."""
+        return redact_values(_describe_failure(exc), self.headers)
 
     async def _classify_connect_failure(self, e: Exception, server_url: str) -> None:
         """Record why a Streamable HTTP connect attempt failed: a gate, a refused redirect, or unclassified."""
@@ -1228,7 +1232,7 @@ class MCPClient:
                 challenge=challenge_summary(challenge.error.model_dump(), self.headers),
             )
         else:
-            logger.error("Streamable HTTP connection failed: %s", _describe_failure(e))
+            logger.error("Streamable HTTP connection failed: %s", self._describe(e))
             logger.debug("Error details", exc_info=e)
             self._record_unclassified_failure(e)
 
@@ -1351,12 +1355,12 @@ class MCPClient:
             return True
 
         except httpx2.ConnectError as e:
-            logger.error("Server unreachable: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
+            logger.error("Server unreachable: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
             logger.debug("Error details", exc_info=e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx2.TimeoutException as e:
-            logger.error("Connection timeout for server: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
+            logger.error("Connection timeout for server: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
             logger.debug("Error details", exc_info=e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
@@ -1382,7 +1386,7 @@ class MCPClient:
                     challenge=challenge_summary(challenge.error.model_dump(), self.headers),
                 )
                 return False
-            logger.error("SSE connection failed: %s", _describe_failure(e))  # noqa: TRY400
+            logger.error("SSE connection failed: %s", self._describe(e))  # noqa: TRY400
             logger.debug("Error details", exc_info=e)
             self._record_unclassified_failure(e)
             return False
@@ -1414,7 +1418,7 @@ class MCPClient:
             self._init_result = init_result
             return init_result
         except Exception as e:
-            logger.error("Failed to initialize MCP server: %s", _describe_failure(e))  # noqa: TRY400
+            logger.error("Failed to initialize MCP server: %s", self._describe(e))  # noqa: TRY400
             logger.debug("Error details", exc_info=e)
             return None
 
