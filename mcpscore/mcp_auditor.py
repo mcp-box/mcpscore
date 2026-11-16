@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from .apps import collect_apps, pointer_targets
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
-from .diagnostics import entity_label, validation_diagnostics
+from .diagnostics import entity_label, nesting_exceeds, validation_diagnostics
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
 from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
@@ -39,7 +39,13 @@ from .probes import (
 )
 from .report_evidence import report_evidence
 from .rules import AuditData, BaseRule, RuleResult, RuleSeverity, SkippedRule, create_all_rules
-from .rules.base import READINESS_GROUP, SKIP_REASON_INSUFFICIENT_DATA, SKIP_REASON_NOT_APPLICABLE, rule_sort_key
+from .rules.base import (
+    READINESS_GROUP,
+    SKIP_REASON_INSUFFICIENT_DATA,
+    SKIP_REASON_NOT_APPLICABLE,
+    SKIP_REASON_RULE_ERROR,
+    rule_sort_key,
+)
 from .rules.packaging import PACKAGING_GROUP
 from .skills import SkillsEvidence, collect_skills, declared_settings, skills_report, stateless_first_page
 from .spec import DRAFT, LATEST, Era
@@ -47,6 +53,13 @@ from .spec import DRAFT, LATEST, Era
 logger = logging.getLogger(__name__)
 
 TLS_PROBE_TIMEOUT_S = 10
+
+MAX_JSON_NESTING = 201
+"""Deepest JSON nesting the SDK session's message parser accepts (pydantic-core's limit).
+
+A stateless probe payload is a JSON-RPC ``result``, one level below the message, so
+it is held to one level less to judge both lifecycles by the same bound.
+"""
 """Timeout for probing the negotiated TLS version of an HTTPS server."""
 
 
@@ -440,6 +453,26 @@ class MCPAuditor:
         """
         from mcp_types import Tool
 
+        # Containers below the payload root, inside the message's own two levels.
+        if nesting_exceeds(payload, MAX_JSON_NESTING - 2):
+            self.audit_data.listing_errors.setdefault(
+                "tools",
+                {
+                    "outcome": "invalid_response",
+                    "page_index": 0,
+                    "issues": [
+                        {
+                            "path": "/tools",
+                            "reason": "nesting_too_deep",
+                            "expected": f"JSON nested at most {MAX_JSON_NESTING} levels",
+                        }
+                    ],
+                    "issues_total": 1,
+                    "issues_omitted": 0,
+                },
+            )
+            logger.info("Stateless tools/list response nests deeper than %d levels; not parsed", MAX_JSON_NESTING)
+            return None
         raw_tools = payload.get("tools")
         if isinstance(raw_tools, list):
             # Retain the all-or-nothing catalog semantics while keeping
@@ -613,6 +646,9 @@ class MCPAuditor:
         (readiness_score/readiness_max); everything else scores on the main axis.
         A separator line is logged before the first readiness rule so the two
         sections are visually distinct in the streamed output.
+
+        A rule that raises is recorded in skipped_rules with reason
+        ``rule-error``, and the remaining rules still run.
         """
         # Readiness promotion (methodology.mdx): a server on the modern lifecycle has its
         # readiness rules counted in the main score; legacy-only servers keep them
@@ -632,32 +668,19 @@ class MCPAuditor:
                     else "informative — not part of the main score",
                 )
 
-            skip_reason: str | None = None
-            if not rule.applies_to(self._applicability_version(rule)):
-                skip_reason = SKIP_REASON_NOT_APPLICABLE
-            elif self._skipped_for_partial(rule) or self._evidence_spans_lifecycles(rule):
-                skip_reason = SKIP_REASON_INSUFFICIENT_DATA
-            else:
-                skip_reason = rule.skip_reason(self.audit_data)
-            # A rule the configuration turned off does not run. Checked last so
-            # a canonical reason wins when both apply: the report should say
-            # why the engine could not judge, not merely that nobody asked.
-            if skip_reason is None and self._disabled_by_config(rule):
-                skip_reason = SKIP_REASON_DISABLED_BY_CONFIG
-
-            if skip_reason is not None:
-                logger.info("⏭️ Skipping rule '%s': %s", rule.rule_id, skip_reason)
-                self.skipped_rules.append(
-                    SkippedRule(
-                        rule_id=rule.rule_id,
-                        rule_name=rule.rule_name,
-                        reason=skip_reason,
-                        group_name=rule.group_name,
-                    )
-                )
+            # Rule code runs in skip_reason() as well as check(), so both sit inside the guard.
+            try:
+                skip_reason = self._skip_reason(rule)
+                if skip_reason is not None:
+                    logger.info("⏭️ Skipping rule '%s': %s", rule.rule_id, skip_reason)
+                    self._record_skip(rule, skip_reason)
+                    continue
+                res: RuleResult = rule.check(self.audit_data)
+            except Exception as exc:  # noqa: BLE001 — one broken rule must not abort the audit
+                # The exception text may repeat server data, so only its type is logged.
+                logger.warning("⚠️ Rule '%s' could not run: internal error (%s)", rule.rule_id, type(exc).__name__)
+                self._record_skip(rule, SKIP_REASON_RULE_ERROR)
                 continue
-
-            res: RuleResult = rule.check(self.audit_data)
             res.rule_id = rule.rule_id
             if rule.basis and (res.details is None or "basis" not in res.details):
                 res.details = {**(res.details or {}), "basis": rule.basis}
@@ -682,6 +705,26 @@ class MCPAuditor:
                 if res.passed:
                     self.score += res.severity.value
                 self.results.append(res)
+
+    def _record_skip(self, rule: BaseRule, reason: str) -> None:
+        """Record *rule* in skipped_rules with *reason*."""
+        self.skipped_rules.append(
+            SkippedRule(rule_id=rule.rule_id, rule_name=rule.rule_name, reason=reason, group_name=rule.group_name)
+        )
+
+    def _skip_reason(self, rule: BaseRule) -> str | None:
+        """Return why *rule* must not run on this audit, or None when it should run."""
+        if not rule.applies_to(self._applicability_version(rule)):
+            return SKIP_REASON_NOT_APPLICABLE
+        if self._skipped_for_partial(rule) or self._evidence_spans_lifecycles(rule):
+            return SKIP_REASON_INSUFFICIENT_DATA
+        skip_reason = rule.skip_reason(self.audit_data)
+        # A rule the configuration turned off does not run. Checked last so
+        # a canonical reason wins when both apply: the report should say
+        # why the engine could not judge, not merely that nobody asked.
+        if skip_reason is None and self._disabled_by_config(rule):
+            return SKIP_REASON_DISABLED_BY_CONFIG
+        return skip_reason
 
     def _disabled_by_config(self, rule: BaseRule) -> bool:
         return (

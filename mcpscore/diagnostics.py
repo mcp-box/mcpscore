@@ -47,6 +47,20 @@ _ENTITY_LABELS = {
 }
 
 
+def nesting_exceeds(value: Any, limit: int) -> bool:
+    """Return whether JSON *value* has containers nested more than *limit* levels below it, without recursing."""
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        children = item.values() if isinstance(item, dict) else item if isinstance(item, list) else ()
+        for child in children:
+            if isinstance(child, (dict, list)):
+                if depth + 1 > limit:
+                    return True
+                stack.append((child, depth + 1))
+    return False
+
+
 def entity_label(kind: str | None) -> str:
     """Return a human-readable label shared by messages and CLI evidence."""
     return _ENTITY_LABELS.get(kind, "Catalog item") if kind is not None else "Catalog item"

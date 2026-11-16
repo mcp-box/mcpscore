@@ -1,6 +1,10 @@
 """Tests for the modern-only (probe-based, sessionless) audit flow."""
 
+import json
+
 from mcp import StdioServerParameters
+from mcp_types import jsonrpc_message_adapter
+from pydantic import ValidationError
 import pytest
 
 from mcpscore import mcp_auditor
@@ -763,3 +767,85 @@ async def test_partial_audit_of_a_discover_open_gated_server_fails_nothing_on_th
         "readiness_2026_removed_methods",
     ):
         assert skipped[rule_id] == "insufficient-data", rule_id
+
+
+def _nested_schema(levels: int) -> dict:
+    schema: dict = {"type": "object"}
+    for _ in range(levels):
+        schema = {"type": "object", "properties": {"a": schema}}
+    return schema
+
+
+def _stateless_tools(payload: dict) -> dict[str, ProbeResult]:
+    results = _modern_probe_results()
+    results[PROBE_STATELESS_LIST] = ProbeResult(
+        PROBE_STATELESS_LIST, ProbeOutcome.SUPPORTED, {"result_type": "complete"}, payload=payload
+    )
+    return results
+
+
+@pytest.mark.parametrize("hook", ["check", "skip_reason"])
+async def test_a_raising_rule_is_skipped_and_the_audit_completes(
+    stub_probes, monkeypatch: pytest.MonkeyPatch, hook: str
+):
+    stub_probes(_modern_probe_results())
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+    auditor = MCPAuditor()
+    broken = next(rule for rule in auditor.rules if rule.rule_id == "capability_tools_present")
+
+    def explode(_audit_data):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(broken, hook, explode)
+
+    assert await auditor.audit_modern_only(URL) is True
+    skipped = {rule.rule_id: rule.reason for rule in auditor.skipped_rules}
+    assert skipped["capability_tools_present"] == "rule-error"
+    judged = {res.rule_id for res in auditor.results + auditor.readiness_results}
+    assert "capability_tools_present" not in judged
+    assert "tools_names_unique" in judged  # later rules still ran
+    report = auditor.get_audit_report()
+    assert any(s["reason"] == "rule-error" for s in report["skipped_rules"])
+
+
+async def test_an_over_deep_stateless_catalog_is_an_invalid_listing(stub_probes, monkeypatch: pytest.MonkeyPatch):
+    deep_tool = {"name": "deep", "description": "Nested", "inputSchema": _nested_schema(3000)}
+    stub_probes(_stateless_tools({"resultType": "complete", "tools": [deep_tool]}))
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+    assert auditor.audit_data.tools is None
+    error = auditor.audit_data.listing_errors["tools"]
+    assert error["outcome"] == "invalid_response"
+    assert error["issues"][0]["reason"] == "nesting_too_deep"
+    assert not any(s.reason == "rule-error" for s in auditor.skipped_rules)
+    capability = next(res for res in auditor.results if res.rule_id == "capability_tools_present")
+    assert capability.passed is False
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+async def test_stateless_depth_bound_matches_the_session_parser(
+    stub_probes, monkeypatch: pytest.MonkeyPatch, extra: int
+):
+    # payload > tools > tool > inputSchema: 4 levels before the nested schema starts.
+    def payload_with_levels(levels: int) -> dict:
+        schema: dict = {}
+        for _ in range(levels - 4):
+            schema = {"x": schema}
+        return {"resultType": "complete", "tools": [{"name": "t", "inputSchema": schema}]}
+
+    payload = payload_with_levels(mcp_auditor.MAX_JSON_NESTING - 1 + extra)
+    message = json.dumps({"jsonrpc": "2.0", "id": 1, "result": payload})
+    try:
+        jsonrpc_message_adapter.validate_json(message, by_name=False)
+        session_accepts = True
+    except ValidationError:
+        session_accepts = False
+
+    stub_probes(_stateless_tools(payload))
+    monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(_fake_tls))
+    auditor = MCPAuditor()
+    assert await auditor.audit_modern_only(URL) is True
+    assert (auditor.audit_data.tools is not None) is session_accepts
+    assert session_accepts is (extra == 0)
