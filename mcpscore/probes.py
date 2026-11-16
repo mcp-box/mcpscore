@@ -58,6 +58,7 @@ from mcp.shared.message import SessionMessage
 from mcp_types import JSONRPCRequest
 from pydantic import TypeAdapter
 
+from mcpscore.credential_challenge import is_credential_challenge
 from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
 from mcpscore.skills import HTTPRefusedCallError
@@ -379,6 +380,11 @@ class _ProbeResponse:
         result = self.payload.get("result") if isinstance(self.payload, dict) else None
         return result if isinstance(result, dict) else None
 
+    @property
+    def gated(self) -> bool:
+        """Whether access control stopped the request: HTTP 401/403, or a JSON-RPC error refusing a credential."""
+        return self.status_code in AUTH_GATED_STATUSES or is_credential_challenge(self.error)
+
 
 @dataclass(frozen=True)
 class _HttpProbeResponse(_ProbeResponse):
@@ -650,12 +656,15 @@ async def _read_sse_response(
 
 
 async def _read_answer(
-    response: httpx2.Response, request_id: object, limit: int | None, read_body: bool
+    response: httpx2.Response, request_id: object, limit: int | None, read_body: bool | Literal["json"]
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Read one JSON-RPC answer within the byte cap. Returns (payload, why the body was not read)."""
-    if not read_body:
-        return None, "unread"
+    """Read one JSON-RPC answer within the byte cap. Returns (payload, why the body was not read).
+
+    ``read_body="json"`` reads only a JSON answer and leaves any other (an event stream) unread.
+    """
     content_type = response.headers.get("content-type", "")
+    if not read_body or (read_body == "json" and "json" not in content_type.lower()):
+        return None, "unread"
     encoding = response.headers.get("content-encoding", "").strip().lower()
     if encoding not in ("", "identity"):
         return None, "encoded"
@@ -792,7 +801,7 @@ class _HttpTarget:
         anonymous: bool = False,
         read_limit: int | None = None,
         omit_headers: tuple[str, ...] = (),
-        read_body: bool = True,
+        read_body: bool | Literal["json"] = True,
     ) -> _HttpProbeResponse:
         """POST one JSON-RPC request and read only until its response arrives.
 
@@ -813,7 +822,8 @@ class _HttpTarget:
         client's ``Authorization`` and cookies are removed from the request and its
         cleanup; an ``Authorization`` passed in ``headers`` is kept. ``read_limit`` replaces the default byte cap.
         ``omit_headers`` are removed after the client's defaults are merged, as in :meth:`post`.
-        With ``read_body`` off the answer is returned once its headers arrive, with ``unobservable="unread"``.
+        With ``read_body`` off the answer is returned once its headers arrive, with ``unobservable="unread"``;
+        with ``read_body="json"`` only a JSON answer is read.
         """
         request = self.client.build_request(
             "POST",
@@ -1209,7 +1219,7 @@ async def _probe_header_mismatch(target: _HttpTarget) -> ProbeResult:
 def _header_validation_result(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
     """Classify one required-header failure without misreporting an unobservable request."""
     details = _base_details(response)
-    if response.status_code in AUTH_GATED_STATUSES:
+    if response.gated:
         details["reason"] = "request is access-controlled; header validation not observable"
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
     correct = response.status_code == 400 and response.error_code == ERROR_HEADER_MISMATCH
@@ -1281,7 +1291,7 @@ async def _probe_name_header_mismatch(
         _request_headers(target_version, method, name=name),
         follow_redirects=False,
     )
-    if control.status_code in AUTH_GATED_STATUSES:
+    if control.gated:
         details = _base_details(control)
         details["reason"] = "control request is access-controlled; header validation not observable"
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
@@ -1332,7 +1342,7 @@ async def _probe_get_stream_removed(target: _HttpTarget) -> ProbeResult:
     """Verify that the removed standalone GET stream receives HTTP 405."""
     response = await target.get_status({"Accept": "text/event-stream"})
     details = _base_details(response)
-    if response.status_code in AUTH_GATED_STATUSES:
+    if response.gated:
         details["reason"] = "request is access-controlled; GET handling not observable"
         return ProbeResult(PROBE_GET_STREAM_REMOVED, ProbeOutcome.NOT_APPLICABLE, details)
     outcome = ProbeOutcome.SUPPORTED if response.status_code == 405 else ProbeOutcome.UNSUPPORTED
@@ -1421,7 +1431,7 @@ async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:
         _request_body("server/discover", 2400, declared),
         _request_headers(target_version, "server/discover"),
     )
-    if discover.status_code in AUTH_GATED_STATUSES:
+    if discover.gated:
         # Refused, so the capabilities were never observed; a server without the modern lifecycle is not applicable.
         return ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.UNSUPPORTED, {"discover": _tasks_answer(discover)})
     raw_capabilities = (discover.result or {}).get("capabilities")
@@ -1480,7 +1490,7 @@ async def _probe_invalid_cursor(
         details["response_kind"] = "page"
     else:
         details["response_kind"] = "unexpected_response"
-    if response.status_code in AUTH_GATED_STATUSES:
+    if response.gated:
         details["reason"] = "request is access-controlled; cursor validation not observable"
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
     if method == "resources/templates/list" and response.error_code == ERROR_METHOD_NOT_FOUND:
@@ -1884,11 +1894,13 @@ async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
     the details carry the status code and any authentication challenge.
     """
     target_version = _target_version()
-    response = await target.post(
+    # A JSON body is read for a credential refusal sent as a JSON-RPC error; an event stream is not waited on.
+    response = await target.post_rpc(
         _request_body("tools/list", 7, _modern_meta(target_version)),
         _request_headers(target_version, "tools/list"),
         anonymous=True,
-        body_required=False,
+        read_limit=POST_READ_LIMIT,
+        read_body="json",
     )
     details = _base_details(response)
     details["www_authenticate"] = response.headers.get("www-authenticate")
@@ -1897,7 +1909,7 @@ async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
 
 def _token_refused(response: _HttpProbeResponse) -> bool:
     """Whether the answer refuses the bearer token: 401/403, or any 4xx with an RFC 6750 ``invalid_token`` challenge."""
-    if response.status_code in AUTH_GATED_STATUSES:
+    if response.gated:
         return True
     challenge = response.headers.get("www-authenticate") or ""
     return 400 <= response.status_code < 500 and www_authenticate_param(challenge, "error") == "invalid_token"
@@ -2044,7 +2056,9 @@ def observed_auth_status(probes: dict[str, ProbeResult] | None) -> int | None:
 
 
 def auth_gate_status(result: ProbeResult | None) -> int | None:
-    """HTTP status if this probe was stopped by an auth gate (401/403), else None.
+    """HTTP status if this probe was stopped by an auth gate, else None.
+
+    The gate is a 401/403, or any status whose JSON-RPC error refuses a credential (often a 200).
 
     A gated answer never reached the method handler, so it says nothing about
     how the server treats the probed request.
@@ -2052,7 +2066,10 @@ def auth_gate_status(result: ProbeResult | None) -> int | None:
     if result is None:
         return None
     status = result.details.get("http_status")
-    return status if status in (401, 403) else None
+    if status in AUTH_GATED_STATUSES:
+        return status
+    challenged = is_credential_challenge({"message": result.details.get("error_message")})
+    return status if challenged and isinstance(status, int) else None
 
 
 def _well_known_urls(url: str) -> list[str]:
@@ -2645,7 +2662,7 @@ async def _accepted_control(
 
     if (unread := unreadable(control)) is not None:
         return unread
-    if control.status_code not in AUTH_GATED_STATUSES and not served(control, "supportedVersions"):
+    if not control.gated and not served(control, "supportedVersions"):
         details["modern_control_http_status"] = control.status_code
         body = _legacy_initialize_body(10)
         headers = {**_legacy_headers(), **host_header}
@@ -2671,7 +2688,7 @@ async def _accepted_control(
     # (and another timeout) to a server we cannot judge anyway.
     details["control_http_status"] = control.status_code
     details["control_shape"] = shape
-    if control.status_code in AUTH_GATED_STATUSES:
+    if control.gated:
         # The endpoint refuses the control too, so a refusal of the spoofed twin
         # would say nothing. Not a failure — an unanswerable question.
         details["reason"] = f"control request is access-controlled; {subject} handling not observable"
@@ -3054,7 +3071,7 @@ async def _probe_unknown_method(target: _ProbeTarget) -> ProbeResult:
         _request_headers(target_version, method),
     )
     details = _base_details(response)
-    if response.status_code in AUTH_GATED_STATUSES:
+    if response.gated:
         # The request never reached method dispatch, so how this server answers
         # an unknown method is unobservable. Auth-gated servers are healthy;
         # failing them here would report an auth posture as a transport defect.
@@ -3110,6 +3127,10 @@ def _malformed_json_result(
         )
         # Still carry the body: a server can leak data in an error response
         # whether or not its parse-error verdict is judgeable.
+        return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details, payload=leak_payload)
+    if response.error_code != -32700 and is_credential_challenge(response.error):
+        # Refused for a credential before the body was parsed: the parse verdict is not observable.
+        details["reason"] = "malformed request was refused for a credential; payload parsing not observable"
         return ProbeResult(PROBE_MALFORMED_JSON, ProbeOutcome.NOT_APPLICABLE, details, payload=leak_payload)
 
     payload = response.payload
@@ -3230,7 +3251,7 @@ async def _incomplete_handshake(probe_id: str, session: _LegacySession, target: 
 
 def _legacy_unavailable(probe_id: str, response: _HttpProbeResponse) -> ProbeResult:
     """NOT_APPLICABLE for a session probe whose ``initialize`` was refused."""
-    if response.status_code in AUTH_GATED_STATUSES:
+    if response.gated:
         reason = "initialize is access-controlled"
     elif response.unobservable:
         reason = f"initialize answer not observable ({response.unobservable})"
@@ -3269,7 +3290,7 @@ async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
         await target.end_session(session.initialize)
         status, body, shape = session.initialized.status_code, session.initialized_body, "legacy-initialized"
         unobservable = session.initialized_unobservable
-    elif response.status_code in AUTH_GATED_STATUSES or response.unobservable:
+    elif response.gated or response.unobservable:
         return _legacy_unavailable(PROBE_NOTIFICATION_ACCEPTED, response)
     else:
         version = _target_version()
@@ -3307,7 +3328,7 @@ INVALID_REQUEST_METHOD = 24
 def _judge_invalid_answer(rejected: _HttpProbeResponse, details: dict[str, Any]) -> ProbeResult:
     """Judge the answer to the invalid request; ``details`` already holds the control's observations."""
     details.update(_base_details(rejected))
-    if rejected.status_code in AUTH_GATED_STATUSES:
+    if rejected.gated:
         details["reason"] = "invalid request was refused by access control; validation not observable"
         return ProbeResult(PROBE_INVALID_REQUEST, ProbeOutcome.NOT_APPLICABLE, details)
     redirected = _redirected(PROBE_INVALID_REQUEST, rejected.status_code, details)
@@ -3359,7 +3380,7 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
     if session is not None:
         headers, body = session.headers, {"jsonrpc": "2.0", "id": 25, "method": "ping"}
         shape = "legacy-ping"
-    elif response.status_code in AUTH_GATED_STATUSES or response.unobservable:
+    elif response.gated or response.unobservable:
         return _legacy_unavailable(PROBE_INVALID_REQUEST, response)
     else:
         version = _target_version()
@@ -3368,7 +3389,7 @@ async def _probe_invalid_request(target: _HttpTarget) -> ProbeResult:
     try:
         control = await target.post_rpc(body, headers, follow_redirects=False)
         details: dict[str, Any] = {"control_http_status": control.status_code, "shape": shape}
-        if control.status_code in AUTH_GATED_STATUSES or control.result is None:
+        if control.gated or control.result is None:
             details["reason"] = (
                 f"control answer not observable ({control.unobservable})"
                 if control.unobservable

@@ -52,6 +52,12 @@ class ConnectionErrorReason(StrEnum):
     FORBIDDEN = "forbidden"
     """The server returned HTTP 403 — access is forbidden."""
 
+    CREDENTIAL_REQUIRED = "credential_required"
+    """The server refused the handshake with a JSON-RPC error naming a missing or invalid credential.
+
+    Not an HTTP 401/403: often HTTP 200 (authorization is optional in MCP). The server is gated, not broken.
+    """
+
     HTTP_ERROR = "http_error"
     """The server returned some other 4xx/5xx during the handshake."""
 

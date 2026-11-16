@@ -16,11 +16,13 @@ from pydantic import ValidationError
 
 from .apps import collect_apps, pointer_targets
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
+from .credential_challenge import challenge_summary, has_credential, is_credential_challenge
 from .diagnostics import entity_label, nesting_exceeds, validation_diagnostics
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
 from .packages import PackageCoordinate, PackageOutcome, fetch_package_metadata
 from .probes import (
+    AUTH_GATED_STATUSES,
     PROBE_AUTH_METADATA,
     PROBE_DISCOVER,
     PROBE_PROMPTS_INVALID_CURSOR,
@@ -28,6 +30,7 @@ from .probes import (
     PROBE_RESOURCES_INVALID_CURSOR,
     PROBE_STATELESS_LIST,
     PROBE_TOOLS_INVALID_CURSOR,
+    PROBE_UNAUTHENTICATED,
     ProbeOutcome,
     auth_gate_status,
     detect_era,
@@ -53,6 +56,7 @@ from .spec import DRAFT, LATEST, Era
 logger = logging.getLogger(__name__)
 
 TLS_PROBE_TIMEOUT_S = 10
+"""Timeout for probing the negotiated TLS version of an HTTPS server."""
 
 MAX_JSON_NESTING = 201
 """Deepest JSON nesting the SDK session's message parser accepts (pydantic-core's limit).
@@ -60,18 +64,18 @@ MAX_JSON_NESTING = 201
 A stateless probe payload is a JSON-RPC ``result``, one level below the message, so
 it is held to one level less to judge both lifecycles by the same bound.
 """
-"""Timeout for probing the negotiated TLS version of an HTTPS server."""
 
 
 def has_authorization_credential(headers: dict[str, str] | None) -> bool:
-    """Whether the header set carries a non-blank Authorization credential.
+    """Whether the header set carries a non-blank credential header.
 
     The single predicate behind both the report's ``authenticated`` flag and
-    the CLI's rejected-credentials messaging — other custom headers (tracing,
-    API keys we cannot classify) never count as an auth credential, and a
-    blank value (e.g. ``--header 'Authorization:'``) is no credential either.
+    the CLI's rejected-credentials messaging. A credential header is
+    ``Authorization`` or one whose name names an API key, token, auth or secret
+    (``X-API-Key``, ``X-Auth-Token``); other custom headers (tracing) never
+    count, and a blank value (``--header 'Authorization:'``) is no credential.
     """
-    return any(name.lower() == "authorization" and value.strip() for name, value in (headers or {}).items())
+    return has_credential(headers)
 
 
 SERVER_INFO_META_KEY = "io.modelcontextprotocol/serverInfo"
@@ -1167,15 +1171,16 @@ class MCPAuditor:
               revision, with its per-rule results and the counted_in_main flag
             - enterprise_managed_auth: Whether the authorization server
               advertises the ID-JAG grant (not scored), or None without its metadata
+            - credential_challenge: The non-standard credential refusal an
+              anonymous request received (not scored), or None
 
         """
         report: dict = {
             "score": self.score,
             "max_score": self.max_score,
-            # True when the audit sent an Authorization credential (--token or
-            # an explicit Authorization --header). Other custom headers (e.g.
-            # tracing) do not mark the audit authenticated. Only the flag is
-            # reported — header values are never included.
+            # True when the audit sent a credential header (--token, Authorization,
+            # or an API-key/token header such as X-API-Key). Other custom headers
+            # (e.g. tracing) do not count. Header values are never reported.
             "authenticated": has_authorization_credential(self.headers),
             # A partial audit ran without a server session (e.g. an auth-gated
             # server): only probe-derived rules scored; session-dependent rules
@@ -1208,6 +1213,7 @@ class MCPAuditor:
             # Facts about a server's skills that the score leaves out; None when it declares no skills.
             "skills": report_evidence(skills_report(self.audit_data.skills)) if self.audit_data.skills else None,
             "enterprise_managed_auth": self._enterprise_managed_auth_report(),
+            "credential_challenge": self._credential_challenge_report(),
             "summary": self.get_audit_summary(),
             "results": [res.to_dict() for res in self.results],
             "skipped_rules": [s.to_dict() for s in self.skipped_rules],
@@ -1267,6 +1273,26 @@ class MCPAuditor:
                 "draft-ietf-oauth-identity-assertion-authz-grant-06 §7.2 (Resource Authorization Server "
                 "Metadata); MCP Enterprise-Managed Authorization 2026-07-28 §6 (Discovery)"
             ),
+        }
+
+    def _credential_challenge_report(self) -> dict | None:
+        """Report a credential refusal sent as a JSON-RPC error instead of HTTP 401/403, without scoring it.
+
+        MCP authorization is optional, so the challenge is allowed; spec-following clients cannot
+        recognise it, and users must configure the credential by hand. None when the anonymous
+        request was not refused this way.
+        """
+        probe = (self.audit_data.probes or {}).get(PROBE_UNAUTHENTICATED)
+        if probe is None:
+            return None
+        status = probe.details.get("http_status")
+        error = {"code": probe.details.get("error_code"), "message": probe.details.get("error_message")}
+        if status in AUTH_GATED_STATUSES or not is_credential_challenge(error):
+            return None
+        return {
+            "http_status": status,
+            **challenge_summary(error, self.headers),
+            "basis": "MCP Authorization 2025-11-25 §Protocol Requirements (authorization is OPTIONAL)",
         }
 
     def _package_report(self) -> dict | None:

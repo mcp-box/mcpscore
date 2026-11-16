@@ -3447,11 +3447,11 @@ class TestQueryCredentialVerdicts:
             # A refused token with a 400 says nothing about what happens without it.
             (_status(400, **{"WWW-Authenticate": 'Bearer error="invalid_token"'}), _status(401)),
             (_served, _status(400)),
-            # An HTTP 200 carrying a JSON-RPC error is not served.
+            # An HTTP 200 carrying a JSON-RPC error is not served, and one that names no credential is no refusal.
             (
                 _served,
                 lambda: httpx2.Response(
-                    200, json={"jsonrpc": "2.0", "id": 7, "error": {"code": -32001, "message": "Unauthorized"}}
+                    200, json={"jsonrpc": "2.0", "id": 7, "error": {"code": -32603, "message": "Internal error"}}
                 ),
             ),
             (_status(500), _status(401)),
@@ -3469,6 +3469,16 @@ class TestQueryCredentialVerdicts:
         result = await self._probe(_scripted(_served, refused))
 
         assert result.outcome is ProbeOutcome.UNSUPPORTED
+
+    async def test_a_credential_refusal_sent_with_http_200_is_a_refusal(self):
+        def refused() -> httpx2.Response:
+            error = {"code": -32001, "message": "X-API-Key header is required."}
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": 7, "error": error})
+
+        result = await self._probe(_scripted(_served, refused))
+
+        assert result.outcome is ProbeOutcome.UNSUPPORTED
+        assert result.details["without_credential_http_status"] == 200
 
     async def test_legacy_server_is_judged_through_initialize(self):
         def initialize(has_token: bool) -> httpx2.Response:

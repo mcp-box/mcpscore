@@ -100,7 +100,7 @@ change bumps `schema_version`.
 | `target` | string | What was audited, as given on the command line |
 | `transport` | string or null | `stdio`, `streamable-http`, or `sse`. `null` for a package audit |
 | `score`, `max_score` | int | Points earned and available on the main axis |
-| `authenticated` | bool | An `Authorization` credential was sent. Never the credential itself |
+| `authenticated` | bool | A credential header was sent: `Authorization`, or one named for an API key, token, auth or secret. Never the credential itself |
 | `partial` | bool | Only the observable surface of an auth-gated server was scored |
 | `partial_reason` | string or null | Why the audit was partial |
 | `incomplete_listings` | array | Catalogs whose paginated listing could not be fully collected |
@@ -114,6 +114,7 @@ change bumps `schema_version`.
 | `readiness` | object | `score`, `max_score`, `counted_in_main`, `results[]`, plus the coverage counts `assessed`, `skipped`, `total` |
 | `skills` | object or null | Facts about a server's skills that are not scored. `null` unless the server declares the Skills extension. See [skills facts](#skills-facts) |
 | `enterprise_managed_auth` | object or null | Whether the authorization server advertises enterprise-managed authorization. Not scored. `null` when no authorization server metadata was found. See [enterprise-managed authorization facts](#enterprise-managed-authorization-facts) |
+| `credential_challenge` | object or null | The credential refusal an anonymous request got as a JSON-RPC error instead of HTTP 401/403. Not scored. `null` otherwise. See [credential challenge facts](#credential-challenge-facts) |
 | `smoke` | object | Present only when the run used `--smoke`. See [smoke results](#smoke-results) |
 | `config` | object | Present only when a project configuration was applied. See [configuration](#configuration) |
 
@@ -170,6 +171,25 @@ without scoring it:
 | `basis` | The sections these facts come from |
 
 The CLI prints one line for it, and a warning when `issue` is set.
+
+### Credential challenge facts
+
+[Authorization is optional in MCP](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#protocol-requirements),
+so a server may refuse a stranger with HTTP 200 and a JSON-RPC error naming
+the missing credential instead of a 401. mcpscore treats such an answer as
+the gate: checks it refused are skipped, and the audit is partial. A
+spec-following client cannot recognise that refusal and prompt for the
+credential, so mcpscore reports it without scoring it:
+
+| Field | Meaning |
+|---|---|
+| `http_status` | The status the refusal came with, usually `200` |
+| `error_code` | The JSON-RPC error code, often `-32001` |
+| `message` | The server's message, quoted, escaped and cut at 160 characters. Credential values you sent are replaced with `[redacted]` |
+| `header` | The header the message names, such as `X-API-Key`, or `null` |
+| `basis` | The spec section that makes the refusal allowed |
+
+The CLI prints one line for it.
 
 ### Smoke results
 
