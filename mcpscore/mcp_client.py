@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
 
@@ -905,7 +906,7 @@ class MCPClient:
             _log_refused_redirect(status, refused, server_url)
         else:
             logger.error("HTTP error %s from server: %s", status, server_url)
-            logger.debug("Error details", exc_info=error)
+            self._log_details("Error details", error)
         self._record_status_failure(status, refused)
 
     def _record_unclassified_failure(self, exc: BaseException) -> None:
@@ -1117,7 +1118,7 @@ class MCPClient:
         chance to distinguish that from a broken process with stateless probes.
         """
         logger.info("Legacy MCP initialize handshake failed for server: %s", display)
-        logger.debug("Handshake error details", exc_info=error)
+        self._log_details("Handshake error details", error)
         self._record_unclassified_failure(error)
 
     async def _connect_with_streamable_http(self, server_url: str) -> bool:
@@ -1173,12 +1174,12 @@ class MCPClient:
 
         except httpx2.ConnectError as e:
             logger.error("Server unreachable: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            self._log_details("Error details", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx2.TimeoutException as e:
             logger.error("Connection timeout for server: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            self._log_details("Error details", e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
@@ -1197,6 +1198,12 @@ class MCPClient:
                 return False
             await self._classify_connect_failure(e, server_url)
             return False
+
+    def _log_details(self, label: str, exc: BaseException) -> None:
+        """Log the full traceback at debug level, with every credential value this client sends redacted."""
+        if logger.isEnabledFor(logging.DEBUG):
+            text = "".join(traceback.format_exception(exc))
+            logger.debug("%s:\n%s", label, redact_values(text, self.headers))
 
     def _describe(self, exc: BaseException) -> str:
         """Describe a failure in one line, with every credential value this client sends redacted.
@@ -1236,7 +1243,7 @@ class MCPClient:
             )
         else:
             logger.error("Streamable HTTP connection failed: %s", self._describe(e))
-            logger.debug("Error details", exc_info=e)
+            self._log_details("Error details", e)
             self._record_unclassified_failure(e)
 
     def _record_unread_answer(self) -> bool:
@@ -1359,12 +1366,12 @@ class MCPClient:
 
         except httpx2.ConnectError as e:
             logger.error("Server unreachable: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            self._log_details("Error details", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx2.TimeoutException as e:
             logger.error("Connection timeout for server: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            self._log_details("Error details", e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
@@ -1378,7 +1385,7 @@ class MCPClient:
             self._reraise_if_cancelled()
             self._record_handshake_failure(server_url)
             return False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — every connect failure becomes classified evidence
             if self._record_unread_answer():
                 return False
             if (challenge := find_credential_challenge(e)) is not None:
@@ -1390,7 +1397,7 @@ class MCPClient:
                 )
                 return False
             logger.error("SSE connection failed: %s", self._describe(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            self._log_details("Error details", e)
             self._record_unclassified_failure(e)
             return False
 
@@ -1420,9 +1427,9 @@ class MCPClient:
             init_result: InitializeResult = await self.session.initialize()
             self._init_result = init_result
             return init_result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — a failed initialize is logged and reported as None
             logger.error("Failed to initialize MCP server: %s", self._describe(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            self._log_details("Error details", e)
             return None
 
     async def list_tools(self) -> list[Tool] | None:

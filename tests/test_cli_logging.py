@@ -117,7 +117,9 @@ class TestConnectionFailureLogging:
             mock_http.return_value.__aenter__.side_effect = httpx2.ConnectError("refused")
             await client.connect_to_server(MCPTransportType.STREAMABLE_HTTP, URL)
 
-        assert any(r.levelno == logging.DEBUG and r.exc_info for r in caplog.records)
+        # The traceback is logged as redacted text, never as raw exc_info.
+        debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("Traceback" in message and "ConnectError: refused" in message for message in debug)
 
     async def test_unclassified_failure_logs_the_cause_without_traceback(self, caplog):
         client = MCPClient()

@@ -331,7 +331,7 @@ class TestConnectionLogs:
             return _refuse(request, {"code": -32603, "message": f"Lookup of {key} crashed"})
 
         with (
-            caplog.at_level(logging.INFO, logger="mcpscore"),
+            caplog.at_level(logging.DEBUG, logger="mcpscore"),
             patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(echoing)),
         ):
             assert await client._connect_with_streamable_http(URL) is False
@@ -339,6 +339,8 @@ class TestConnectionLogs:
         failure = client.last_connection_error
         assert failure is not None
         assert failure.reason is ConnectionErrorReason.UNKNOWN
+        assert "Error details:" in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
         assert "Lookup of [redacted] crashed" in caplog.text
         assert key not in caplog.text
         assert key not in failure.message
