@@ -1030,6 +1030,7 @@ class _HttpTarget:
         With ``read_json`` a JSON answer is read, up to ``POST_READ_LIMIT`` bytes; any other body is not.
         ``wait_s`` bounds the whole exchange; past it ``httpx2.ReadTimeout`` is raised.
         """
+        answered: httpx2.Response | None = None
         try:
             async with (
                 asyncio.timeout(wait_s),
@@ -1041,6 +1042,7 @@ class _HttpTarget:
                     follow_redirects=False,
                 ) as response,
             ):
+                answered = response
                 payload, unobservable = (
                     await _read_answer(response, None, POST_READ_LIMIT, "json") if read_json else (None, None)
                 )
@@ -1050,7 +1052,17 @@ class _HttpTarget:
                     payload=payload,
                     unobservable=unobservable,
                 )
-        except TimeoutError as exc:
+        except (TimeoutError, httpx2.ReadTimeout) as exc:
+            if answered is not None:
+                # The status arrived; only the optional JSON body did not, and the status still decides.
+                return _HttpProbeResponse(
+                    status_code=answered.status_code,
+                    headers=dict(answered.headers),
+                    payload=None,
+                    unobservable="unfinished",
+                )
+            if isinstance(exc, httpx2.ReadTimeout):
+                raise
             msg = "no answer before the deadline"
             raise httpx2.ReadTimeout(msg) from exc
 
@@ -1904,13 +1916,20 @@ async def _probe_unauthenticated(target: _HttpTarget) -> ProbeResult:
     """
     target_version = _target_version()
     # A JSON body is read for a credential refusal sent as a JSON-RPC error; an event stream is not waited on.
-    response = await target.post_rpc(
-        _request_body("tools/list", 7, _modern_meta(target_version)),
-        _request_headers(target_version, "tools/list"),
-        anonymous=True,
-        read_limit=POST_READ_LIMIT,
-        read_body="json",
-    )
+    try:
+        response = await target.post_rpc(
+            _request_body("tools/list", 7, _modern_meta(target_version)),
+            _request_headers(target_version, "tools/list"),
+            anonymous=True,
+            read_limit=POST_READ_LIMIT,
+            read_body="json",
+        )
+    except httpx2.ReadTimeout as exc:
+        # The status arrived before the body stalled, and the status is the observation.
+        if (status := _answered_status(exc)) is None:
+            raise
+        details = {"http_status": status, "www_authenticate": None, "reason": "body not read before the deadline"}
+        return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)
     details = _base_details(response)
     details["www_authenticate"] = response.headers.get("www-authenticate")
     return ProbeResult(PROBE_UNAUTHENTICATED, ProbeOutcome.SUPPORTED, details)

@@ -1297,6 +1297,51 @@ class TestSessionlessPostIsBounded:
         assert result.details["http_status"] == 200
         assert body.pulled == 0
 
+    async def test_a_stalled_json_body_keeps_the_unauthenticated_status(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.1)
+
+        async def drip():
+            while True:
+                yield b" "
+                await asyncio.sleep(0.01)
+
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Type": "application/json"}, content=drip()
+        )
+
+        result = await asyncio.wait_for(_run(probes._probe_unauthenticated, handler), timeout=5)
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["http_status"] == 200
+
+    async def test_a_stalled_json_body_keeps_the_get_status(self, monkeypatch):
+        monkeypatch.setattr(probes, "GET_STREAM_TIMEOUT_S", 0.1)
+
+        async def drip():
+            while True:
+                yield b" "
+                await asyncio.sleep(0.01)
+
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            405, headers={"Content-Type": "application/json"}, content=drip()
+        )
+
+        result = await asyncio.wait_for(_run(probes._probe_get_stream_removed, handler), timeout=5)
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["http_status"] == 405
+
+    async def test_a_timeout_before_any_status_is_still_a_timeout(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise httpx2.ReadTimeout("no answer", request=request)
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            target = probes._HttpTarget(client, "https://example.test/mcp")
+            with pytest.raises(httpx2.ReadTimeout):
+                await target.get_status({"Accept": "text/event-stream"})
+            with pytest.raises(httpx2.ReadTimeout):
+                await probes._probe_unauthenticated(target)
+
     async def test_a_heartbeat_only_stream_ends_at_the_deadline(self, monkeypatch):
         monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)
 
