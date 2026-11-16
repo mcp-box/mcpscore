@@ -1434,7 +1434,10 @@ def _tasks_answer(response: _ProbeResponse) -> dict[str, Any]:
     reply is not a clean refusal.
     """
     payload = response.payload if isinstance(response.payload, dict) else {}
-    return {"http_status": response.status_code, "error_code": response.error_code, "result": "result" in payload}
+    answer = {"http_status": response.status_code, "error_code": response.error_code, "result": "result" in payload}
+    if is_credential_challenge(response.error):
+        answer["credential_refusal"] = True
+    return answer
 
 
 async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:

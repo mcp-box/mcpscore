@@ -43,6 +43,7 @@ def _method_not_found(answer: Any) -> bool:
         and answer.get("error_code") == ERROR_METHOD_NOT_FOUND
         and not answer.get("result")
         and answer.get("http_status") not in AUTH_GATED_STATUSES
+        and not answer.get("credential_refusal")
     )
 
 
@@ -101,6 +102,8 @@ class _TasksAnswerRule(TasksBaseRule):
             return reason
         answer = self._details(audit_data).get(self.answer_key)
         if not isinstance(answer, dict) or answer.get("http_status") in AUTH_GATED_STATUSES:
+            return SKIP_REASON_INSUFFICIENT_DATA
+        if answer.get("credential_refusal"):
             return SKIP_REASON_INSUFFICIENT_DATA
         if not answer.get("result") and answer.get("error_code") not in self.decisive_codes:
             return SKIP_REASON_INSUFFICIENT_DATA
