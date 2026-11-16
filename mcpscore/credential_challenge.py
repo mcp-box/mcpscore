@@ -11,27 +11,33 @@ from typing import Any
 
 from mcpscore.diagnostics import quoted_preview
 
+_CREDENTIAL = r"(?:\b(?:x-)?api[-_ ]?key\b|\b(?:access|auth|bearer|api|session)[-_ ]?token\b|\bcredentials?\b)"
+_REFUSED = (
+    r"(?:\brequired\b|\bmissing\b|\binvalid\b|\bexpired\b|\brevoked\b|\brejected\b|\bnot\ valid\b"
+    r"|\bnot\ provided\b|\bincorrect\b|\bconfigure\b|\bmust\ be\ (?:provided|supplied|set)\b)"
+)
 _CREDENTIAL_PHRASES = re.compile(
-    r"""
-    \b(?:x-)?api[-_ ]?key\b
-    | \b(?:access|auth|bearer|api|session)[-_ ]?token\b
+    rf"""
+    {_CREDENTIAL}[^.;:]{{0,40}}?{_REFUSED}
+    | {_REFUSED}[^.;:]{{0,40}}?{_CREDENTIAL}
+    | \b(?:missing|invalid|expired|revoked)\ token\b
+    | \btoken\ (?:is\ )?(?:required|missing|expired|revoked)\b
     | \bunauthori[sz]ed\b
     | \bunauthenticated\b
     | \bnot\ authenticated\b
     | \bauthentication\ (?:is\ )?(?:required|failed|missing)\b
     | \bauthori[sz]ation\ (?:header\ )?(?:is\ )?(?:required|missing)\b
-    | \b(?:missing|invalid|expired)\ (?:credentials?|token)\b
-    | \bcredentials?\ (?:are\ |is\ )?(?:required|missing|invalid)\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+"""A credential named next to a refusal word, or a refusal that is about authentication itself.
+
+A bare "token" counts only right beside the refusal: pagination errors talk about cursor tokens.
+"""
 _CHALLENGE_HEADER = re.compile(
     r"\b(X-[A-Za-z0-9-]*(?:key|token|auth)[A-Za-z0-9-]*|Authorization|Api-Key)\b", re.IGNORECASE
 )
 _CREDENTIAL_HEADER_NAME = re.compile(r"api-?key|token|auth|secret", re.IGNORECASE)
-
-_MIN_REDACTED_LENGTH = 4
-"""Shorter values are not replaced: they would mangle unrelated words in the server's text."""
 
 MESSAGE_PREVIEW_LIMIT = 160
 """Most code points of the server's own refusal text kept in reports and console lines."""
@@ -74,8 +80,7 @@ def redact_values(text: str, headers: dict[str, str] | None) -> str:
             continue
         # "Bearer <token>": a server may echo the token without its scheme.
         for secret in sorted({value.strip(), value.split()[-1]}, key=len, reverse=True):
-            if len(secret) >= _MIN_REDACTED_LENGTH:
-                text = text.replace(secret, "[redacted]")
+            text = text.replace(secret, "[redacted]")
     return text
 
 

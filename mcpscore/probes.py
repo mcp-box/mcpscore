@@ -3476,7 +3476,7 @@ async def _probe_get_stream(target: _HttpTarget) -> ProbeResult:
     if gone:
         details["reason"] = "session no longer exists; a ping in it was answered 404"
         return ProbeResult(PROBE_GET_STREAM, ProbeOutcome.NOT_APPLICABLE, details)
-    if got.status_code in AUTH_GATED_STATUSES:
+    if got.gated:
         details["reason"] = "GET is access-controlled"
         return ProbeResult(PROBE_GET_STREAM, ProbeOutcome.NOT_APPLICABLE, details)
     redirected = _redirected(PROBE_GET_STREAM, got.status_code, details)
@@ -3539,7 +3539,7 @@ async def _observe_session_delete(target: _HttpTarget, session: _LegacySession) 
         },
     )
     details: dict[str, Any] = {"http_status": deleted.status_code}
-    if deleted.status_code in AUTH_GATED_STATUSES:
+    if deleted.gated:
         details["reason"] = "DELETE is access-controlled"
         return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details), False
     redirected = _redirected(PROBE_SESSION_DELETE, deleted.status_code, details)
@@ -3561,7 +3561,7 @@ async def _observe_session_delete(target: _HttpTarget, session: _LegacySession) 
 
 def _judge_after_delete(after: _HttpProbeResponse, details: dict[str, Any]) -> ProbeResult:
     """Judge the answer to a ``ping`` in a session the server accepted to DELETE."""
-    if after.status_code in AUTH_GATED_STATUSES:
+    if after.gated:
         details["reason"] = "request after DELETE is access-controlled"
         return ProbeResult(PROBE_SESSION_DELETE, ProbeOutcome.NOT_APPLICABLE, details)
     redirected = _redirected(PROBE_SESSION_DELETE, after.status_code, details)

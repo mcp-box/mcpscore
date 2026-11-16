@@ -680,6 +680,8 @@ class MCPClient:
         self._refused_calls: dict[tuple[str, str | None], int] = {}
         # Session calls whose answer body went past SESSION_READ_LIMIT and was not read, keyed like _refused_calls.
         self._unread_calls: set[tuple[str, str | None]] = set()
+        # HTTP status of the answer to this attempt's initialize, the exchange a handshake refusal came in.
+        self._initialize_status: int | None = None
 
     async def detect_and_connect(self, server_path_or_url: str | StdioCommand) -> tuple[bool, MCPTransportType | None]:
         """Automatically detect transport type and connect to MCP server.
@@ -804,6 +806,7 @@ class MCPClient:
         # transport attempt can't leak into this one's classification.
         self._pending_http_status = None
         self._pending_refused_redirect = None
+        self._initialize_status = None
         try:
             start_time = time.perf_counter()
             streams = await stack.enter_async_context(transport_cm)
@@ -1198,7 +1201,6 @@ class MCPClient:
     async def _classify_connect_failure(self, e: Exception, server_url: str) -> None:
         """Record why a Streamable HTTP connect attempt failed: a gate, a refused redirect, or unclassified."""
         status, refused = self._observed_status(e)
-        answered_status: int | None = status
         if status is None:
             # Some SDK failures (a bare MCPError for a 401, a refused redirect) carry no HTTP
             # status. Recover it with one extra request so the gate or redirect classifies
@@ -1206,7 +1208,6 @@ class MCPClient:
             # recovery is a different request; it follows the same hops the SDK followed.
             recovered = await self._recover_http_response(server_url)
             if recovered is not None:
-                answered_status = recovered.status_code
                 if recovered.status_code in (401, 403):
                     status = recovered.status_code
                 elif (recovered_redirect := unfollowed_redirect(recovered)) is not None:
@@ -1222,7 +1223,7 @@ class MCPClient:
             logger.info("Server requires a credential (JSON-RPC error %s): %s", challenge.code, server_url)
             self._record_failure(
                 ConnectionErrorReason.CREDENTIAL_REQUIRED,
-                answered_status,
+                self._initialize_status,
                 challenge=challenge_summary(challenge.error.model_dump(), self.headers),
             )
         else:
@@ -1571,8 +1572,16 @@ class MCPClient:
         cap_body(response, record)
 
     async def _record_refused_call(self, response: httpx2.Response) -> None:
-        """Keep the HTTP error status of a JSON-RPC request, so the failed call can report it."""
-        if response.status_code >= 400 and (key := await self._request_key(response.request)) is not None:
+        """Keep the HTTP error status of a JSON-RPC request, so the failed call can report it.
+
+        The status of any answer to ``initialize`` is kept too: a handshake refused with a JSON-RPC error reports it.
+        """
+        key = await self._request_key(response.request)
+        if key is None:
+            return
+        if key[0] == "initialize":
+            self._initialize_status = response.status_code
+        if response.status_code >= 400:
             self._refused_calls[key] = response.status_code
 
     def _with_http_status(self, exc: MCPError, method: str, params: Any) -> MCPError:

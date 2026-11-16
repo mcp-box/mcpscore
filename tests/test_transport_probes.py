@@ -369,6 +369,13 @@ class TestGetStream:
         assert result.details == {"http_status": 405, "content_type": None}
         assert server.methods() == ["POST initialize", "POST notifications/initialized", "GET", "DELETE"]
 
+    async def test_a_get_refused_for_a_credential_in_session_is_not_judged(self):
+        refusal = {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "X-API-Key header is required."}}
+        server = LegacyServer(get=httpx2.Response(200, json=refusal))
+        result = await _run(_probe_get_stream, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "GET is access-controlled"
+
     async def test_get_carries_the_session_and_version(self):
         server = LegacyServer()
         await _run(_probe_get_stream, server)

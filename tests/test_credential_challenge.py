@@ -114,6 +114,9 @@ class TestMatcher:
             {"code": -32700, "message": "Parse error"},
             {"code": -32603, "message": "Internal error", "data": 7},
             {"code": -32001, "message": "Tokenizer failed on input"},
+            {"code": -32603, "message": "Internal error: API key database unavailable"},
+            {"code": -32602, "message": "Invalid params: cursor token is invalid"},
+            {"code": -32602, "message": "Invalid cursor token"},
             "Unauthorized",
             None,
         ],
@@ -140,8 +143,8 @@ class TestMatcher:
 
         assert redact_values(text, headers) == "Key [redacted] and token [redacted] refused; trace trace-0001"
 
-    def test_a_value_too_short_to_redact_safely_is_left_alone(self):
-        assert redact_values("key abc refused", {"X-API-Key": "abc"}) == "key abc refused"
+    def test_a_short_value_is_redacted_too(self):
+        assert redact_values("key abc refused", {"X-API-Key": "abc"}) == "key [redacted] refused"
 
     def test_summary_quotes_bounds_and_escapes_the_message(self):
         long = {"code": -32001, "message": "API key required.\n" + "x" * 300}
@@ -173,6 +176,22 @@ class TestClientClassification:
         assert failure.message == (
             'The MCP server requires a credential (HTTP 200, JSON-RPC error -32001: "X-API-Key header is required.").'
         )
+
+    async def test_the_status_is_the_refusals_own_not_the_recovery_requests(self):
+        client = MCPClient()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if b"status-recovery" in request.content:
+                return httpx2.Response(500)
+            return _api_key_server()(request)
+
+        with patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(handler)):
+            assert await client._connect_with_streamable_http(URL) is False
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
+        assert failure.status_code == 200
 
     async def test_a_rejected_key_is_classified_and_never_echoed(self):
         client = MCPClient(headers={"X-API-Key": "not-the-key"})
