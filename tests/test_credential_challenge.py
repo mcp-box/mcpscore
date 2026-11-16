@@ -143,6 +143,15 @@ class TestMatcher:
 
         assert redact_values(text, headers) == "Key [redacted] and token [redacted] refused; trace trace-0001"
 
+    def test_the_named_header_never_comes_from_an_echoed_credential(self):
+        key = "X-auth-0123456789abcdef"
+        error = {"code": -32001, "message": f"API key {key} is invalid."}
+
+        summary = challenge_summary(error, {"X-API-Key": key})
+
+        assert summary["header"] is None
+        assert key not in json.dumps(summary)
+
     def test_a_short_value_is_redacted_too(self):
         assert redact_values("key abc refused", {"X-API-Key": "abc"}) == "key [redacted] refused"
 
@@ -342,6 +351,20 @@ class TestCliWording:
         line = next(record.getMessage() for record in caplog.records if "Credential challenge" in record.getMessage())
         assert line.startswith("Credential challenge (not scored): anonymous requests get HTTP 200 with JSON-RPC error")
         assert line.endswith(expected)
+
+    def test_a_401_session_is_not_described_by_the_anonymous_probes_challenge(self):
+        probe = ProbeResult(
+            PROBE_UNAUTHENTICATED,
+            ProbeOutcome.SUPPORTED,
+            {"http_status": 200, "error_code": -32001, "error_message": "X-API-Key header is required."},
+        )
+        failure = ConnectionFailure(ConnectionErrorReason.FORBIDDEN, 403)
+
+        reason = gated_partial_reason(
+            failure, {PROBE_UNAUTHENTICATED: probe}, {}, session_gated=True, probed_status=200
+        )
+
+        assert reason.startswith("Server requires authentication (HTTP 403); scored the unauthenticated surface")
 
     def test_helpers(self):
         assert describe_gate(401, None) == "HTTP 401"

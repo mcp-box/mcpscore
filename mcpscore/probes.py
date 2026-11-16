@@ -3537,6 +3537,7 @@ async def _observe_session_delete(target: _HttpTarget, session: _LegacySession) 
             "Mcp-Session-Id": cast("str", session.session_id),
             "MCP-Protocol-Version": session.headers["MCP-Protocol-Version"],
         },
+        read_json=True,
     )
     details: dict[str, Any] = {"http_status": deleted.status_code}
     if deleted.gated:

@@ -43,6 +43,7 @@ class LegacyServer:
     invalid: httpx2.Response | None = None
     get: httpx2.Response = field(default_factory=lambda: httpx2.Response(405))
     delete_status: int = 200
+    delete: httpx2.Response | None = None
     honours_delete: bool = True
     requests: list[httpx2.Request] = field(default_factory=list)
     deleted: bool = False
@@ -52,6 +53,8 @@ class LegacyServer:
         if request.method == "GET":
             return self.get
         if request.method == "DELETE":
+            if self.delete is not None:
+                return self.delete
             if 200 <= self.delete_status < 300 and self.honours_delete:
                 self.deleted = True
             return httpx2.Response(self.delete_status)
@@ -433,6 +436,15 @@ class TestSessionDelete:
         assert result.outcome is ProbeOutcome.SUPPORTED
         assert result.details == {"http_status": 200, "after_delete_http_status": 404}
         assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE", "POST ping"]
+
+    @pytest.mark.parametrize("status", [200, 400])
+    async def test_a_delete_refused_for_a_credential_is_not_judged(self, status: int):
+        refusal = {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "X-API-Key header is required."}}
+        server = LegacyServer(delete=httpx2.Response(status, json=refusal))
+        result = await _run(_probe_session_delete, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "DELETE is access-controlled"
+        assert "POST ping" not in server.methods()
 
     async def test_delete_carries_the_session_and_version(self):
         server = LegacyServer()

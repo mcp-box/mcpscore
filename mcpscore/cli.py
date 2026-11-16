@@ -1134,7 +1134,11 @@ def gated_partial_reason(
 
     The gate is the session's own refusal when ``session_gated``, else the one the anonymous probe saw.
     """
-    challenge = credential_challenge_seen(failure, probes, headers)
+    # A session refused with 401/403 is described by that refusal, never by the anonymous probe's.
+    status_gated = (
+        session_gated and failure is not None and failure.reason is not ConnectionErrorReason.CREDENTIAL_REQUIRED
+    )
+    challenge = None if status_gated else credential_challenge_seen(failure, probes, headers)
     status: int | None
     if session_gated:
         assert failure is not None  # noqa: S101 — session_gated implies it

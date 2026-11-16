@@ -92,8 +92,9 @@ def challenge_summary(error: dict[str, Any], headers: dict[str, str] | None = No
     message = error.get("message")
     text = redact_values(message, headers) if isinstance(message, str) else ""
     code = error.get("code")
+    # The header is read from redacted text: an echoed credential can look like a header name.
     return {
         "error_code": code if isinstance(code, int) else None,
         "message": quoted_preview(text, MESSAGE_PREVIEW_LIMIT) if text else None,
-        "header": challenge_header(error),
+        "header": challenge_header({"message": redact_values(challenge_text(error), headers)}),
     }
