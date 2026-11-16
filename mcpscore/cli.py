@@ -1240,7 +1240,8 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str], target
     if args.callback_port is not None and not 1 <= args.callback_port <= 65535:
         logger.error("Usage error: --callback-port must be between 1 and 65535")
         sys.exit(1)
-    if has_authorization_credential(headers):
+    # Only an Authorization header conflicts: a gateway API key can travel with the OAuth token.
+    if any(name.lower() == "authorization" and value.strip() for name, value in headers.items()):
         logger.error(
             "Usage error: --oauth conflicts with an existing Authorization credential "
             "(--token, an Authorization --header, or the MCPSCORE_TOKEN environment variable) — pick one"

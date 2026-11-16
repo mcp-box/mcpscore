@@ -75,12 +75,14 @@ def has_credential(headers: dict[str, str] | None) -> bool:
 
 def redact_values(text: str, headers: dict[str, str] | None) -> str:
     """Replace every credential header value the caller supplied that appears in *text* with ``[redacted]``."""
+    secrets: set[str] = set()
     for name, value in (headers or {}).items():
-        if not is_credential_header(name) or not value.strip():
-            continue
-        # "Bearer <token>": a server may echo the token without its scheme.
-        for secret in sorted({value.strip(), value.split()[-1]}, key=len, reverse=True):
-            text = text.replace(secret, "[redacted]")
+        if is_credential_header(name) and value.strip():
+            # "Bearer <token>": a server may echo the token without its scheme.
+            secrets |= {value.strip(), value.split()[-1]}
+    # Longest first across all headers, so a short value never replaces part of a longer one.
+    for secret in sorted(secrets, key=len, reverse=True):
+        text = text.replace(secret, "[redacted]")
     return text
 
 

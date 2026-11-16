@@ -1201,7 +1201,9 @@ class MCPClient:
     async def _classify_connect_failure(self, e: Exception, server_url: str) -> None:
         """Record why a Streamable HTTP connect attempt failed: a gate, a refused redirect, or unclassified."""
         status, refused = self._observed_status(e)
-        if status is None:
+        # A JSON-RPC refusal is the original exchange's own answer; a recovery request must not override it.
+        challenge = find_credential_challenge(e)
+        if status is None and challenge is None:
             # Some SDK failures (a bare MCPError for a 401, a refused redirect) carry no HTTP
             # status. Recover it with one extra request so the gate or redirect classifies
             # correctly. Only a recovered 401/403 or refused redirect is trusted, since the
@@ -1212,7 +1214,6 @@ class MCPClient:
                     status = recovered.status_code
                 elif (recovered_redirect := unfollowed_redirect(recovered)) is not None:
                     status, refused = recovered.status_code, recovered_redirect
-        challenge = find_credential_challenge(e)
         if status in (401, 403):
             logger.info("Server requires authentication (HTTP %s): %s", status, server_url)
             self._record_failure(reason_for_status(status), status)

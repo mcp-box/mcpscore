@@ -152,6 +152,11 @@ class TestMatcher:
         assert summary["header"] is None
         assert key not in json.dumps(summary)
 
+    def test_a_short_value_never_splits_a_longer_one_from_another_header(self):
+        headers = {"X-Auth-Token": "abc", "X-API-Key": "abcdef"}
+
+        assert redact_values("API key abcdef is invalid", headers) == "API key [redacted] is invalid"
+
     def test_a_short_value_is_redacted_too(self):
         assert redact_values("key abc refused", {"X-API-Key": "abc"}) == "key [redacted] refused"
 
@@ -201,6 +206,27 @@ class TestClientClassification:
         assert failure is not None
         assert failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
         assert failure.status_code == 200
+
+    @pytest.mark.parametrize(
+        "recovery",
+        [httpx2.Response(401), httpx2.Response(307, headers={"location": "https://elsewhere.example/mcp"})],
+    )
+    async def test_a_recovery_answer_never_overrides_the_refusal(self, recovery: httpx2.Response):
+        client = MCPClient()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if b"status-recovery" in request.content:
+                return recovery
+            return _api_key_server()(request)
+
+        with patch("mcpscore.mcp_client.async_client", side_effect=_mock_client(handler)):
+            assert await client._connect_with_streamable_http(URL) is False
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
+        assert failure.challenge is not None
+        assert failure.challenge["header"] == "X-API-Key"
 
     async def test_a_rejected_key_is_classified_and_never_echoed(self):
         client = MCPClient(headers={"X-API-Key": "not-the-key"})
