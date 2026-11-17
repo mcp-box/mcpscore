@@ -36,9 +36,10 @@ _CREDENTIAL_PHRASES = re.compile(
 
 A bare "token" never counts: parse and pagination errors talk about tokens too.
 """
-_CHALLENGE_HEADER = re.compile(
-    r"\b(X-[A-Za-z0-9-]*(?:key|token|auth)[A-Za-z0-9-]*|Authorization|Api-Key)\b", re.IGNORECASE
-)
+# A whole header name is matched first and checked for a credential word second; one pattern doing both
+# rescans a long "X-X-X-..." run from every "X-".
+_HEADER_NAME = re.compile(r"\b(?:X-[A-Za-z0-9-]+|Authorization|Api-Key)\b", re.IGNORECASE)
+_X_HEADER_CREDENTIAL = re.compile(r"key|token|auth", re.IGNORECASE)
 _CREDENTIAL_HEADER_NAME = re.compile(r"api-?key|token|auth|secret", re.IGNORECASE)
 
 MESSAGE_PREVIEW_LIMIT = 160
@@ -61,8 +62,11 @@ def is_credential_challenge(error: object) -> bool:
 
 def challenge_header(error: object) -> str | None:
     """Return the request header a credential challenge names (e.g. ``X-API-Key``), spelled as the server wrote it."""
-    match = _CHALLENGE_HEADER.search(challenge_text(error))
-    return match[1] if match else None
+    for match in _HEADER_NAME.finditer(challenge_text(error)):
+        name = match[0]
+        if name[:2].lower() != "x-" or _X_HEADER_CREDENTIAL.search(name, 2):
+            return name
+    return None
 
 
 def is_credential_header(name: str) -> bool:

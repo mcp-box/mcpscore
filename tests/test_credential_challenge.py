@@ -195,6 +195,13 @@ class TestMatcher:
         assert not is_credential_challenge({"code": -32001, "message": message})
         assert time.perf_counter() - started < 1
 
+    def test_a_long_header_like_run_is_scanned_in_linear_time(self):
+        message = "X-" * 30_000 + " send X-API-Key"
+
+        started = time.perf_counter()
+        assert challenge_header({"message": message}) == "X-API-Key"
+        assert time.perf_counter() - started < 1
+
 
 class TestClientClassification:
     @pytest.mark.parametrize(
