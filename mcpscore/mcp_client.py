@@ -925,7 +925,9 @@ class MCPClient:
             # rejection of the legacy handshake.
             self._record_failure(ConnectionErrorReason.UNKNOWN, detail=self._describe(exc))
 
-    def _observed_status(self, exc: BaseException) -> tuple[int | None, RefusedRedirect | None]:
+    def _observed_status(
+        self, exc: BaseException, *, teardown: bool = True
+    ) -> tuple[int | None, RefusedRedirect | None]:
         """Return the HTTP status a failed attempt observed, with the redirect it refused, from one response.
 
         Teardown's observation wins when there is one; otherwise the first
@@ -933,8 +935,9 @@ class MCPClient:
         response: a status from teardown must never be paired with a
         redirect found in a different exception, which would report a
         REDIRECTED failure whose status and target belong to two requests.
+        With ``teardown=False`` only ``exc`` is read.
         """
-        if self._pending_http_status is not None:
+        if teardown and self._pending_http_status is not None:
             return self._pending_http_status, self._pending_refused_redirect
         error = find_http_status_error(exc)
         if error is None:
@@ -1214,9 +1217,10 @@ class MCPClient:
 
     async def _classify_connect_failure(self, e: Exception, server_url: str) -> None:
         """Record why a Streamable HTTP connect attempt failed: a gate, a refused redirect, or unclassified."""
-        status, refused = self._observed_status(e)
-        # A JSON-RPC refusal is the original exchange's own answer; a recovery request must not override it.
+        # A JSON-RPC refusal is the original exchange's own answer; teardown and recovery requests must not
+        # override it.
         challenge = find_credential_challenge(e)
+        status, refused = self._observed_status(e, teardown=challenge is None)
         if status is None and challenge is None:
             # Some SDK failures (a bare MCPError for a 401, a refused redirect) carry no HTTP
             # status. Recover it with one extra request so the gate or redirect classifies

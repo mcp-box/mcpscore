@@ -3276,15 +3276,14 @@ async def _open_legacy_session(
 
 
 _NOTIFICATION_REFUSAL_LIMIT = 4096
-"""Bytes read from a JSON 2xx/3xx answer to a notification, enough for a JSON-RPC credential refusal."""
+"""Bytes read from a JSON answer to a notification, enough for a JSON-RPC credential refusal."""
 
 
 def _notification_body_limit(response: httpx2.Response) -> int:
-    """Return the bytes worth reading: one shows whether a 202 has a body; a JSON success may carry a refusal."""
+    """Return the bytes worth reading: one shows whether a 202 has a body; any other JSON answer may be a refusal."""
     if response.status_code == 202:
         return 1
-    is_json = "json" in response.headers.get("content-type", "").lower()
-    return _NOTIFICATION_REFUSAL_LIMIT if response.status_code < 400 and is_json else 0
+    return _NOTIFICATION_REFUSAL_LIMIT if "json" in response.headers.get("content-type", "").lower() else 0
 
 
 def _refuses_credential(body: str | None) -> bool:
@@ -3375,6 +3374,9 @@ async def _probe_notification_accepted(target: _HttpTarget) -> ProbeResult:
     redirected = _redirected(PROBE_NOTIFICATION_ACCEPTED, status, details)
     if redirected is not None:
         return redirected
+    if status in AUTH_GATED_STATUSES:
+        details["reason"] = "notification POST is access-controlled"
+        return ProbeResult(PROBE_NOTIFICATION_ACCEPTED, ProbeOutcome.NOT_APPLICABLE, details)
     if status != 202 and _refuses_credential(body):
         details["reason"] = "notification was refused for a credential; acceptance not observable"
         return ProbeResult(PROBE_NOTIFICATION_ACCEPTED, ProbeOutcome.NOT_APPLICABLE, details)

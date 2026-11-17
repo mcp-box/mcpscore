@@ -169,6 +169,20 @@ class TestNotificationAccepted:
             await _run(_probe_get_stream, fails)
         assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE"]
 
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_a_gated_handshake_notification_is_not_judged(self, status):
+        result = await _run(_probe_notification_accepted, LegacyServer(notification=httpx2.Response(status)))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "notification POST is access-controlled"
+
+    async def test_an_error_status_refusing_a_credential_is_not_judged(self):
+        refusal = {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "X-API-Key header is required."}}
+        result = await _run(
+            _probe_notification_accepted, _modern_handler(notification=httpx2.Response(400, json=refusal))
+        )
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "notification was refused for a credential; acceptance not observable"
+
     async def test_open_sse_answer_is_judged_from_its_status(self):
         server = LegacyServer(notification=_open_sse_response())
         result = await asyncio.wait_for(_run(_probe_notification_accepted, server), timeout=2)

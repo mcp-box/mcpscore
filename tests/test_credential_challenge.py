@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import patch
 
 import httpx2
+from mcp.shared.exceptions import MCPError
 import pytest
 
 from mcpscore import mcp_auditor, probes
@@ -43,6 +44,7 @@ from mcpscore.probes import (
     auth_gate_status,
     observed_auth_status,
 )
+from mcpscore.redirects import RefusedRedirect
 
 FIXTURE = json.loads(
     (Path(__file__).parent / "fixtures" / "credential_challenge_http200.json").read_text(encoding="utf-8")
@@ -195,6 +197,22 @@ class TestMatcher:
 
 
 class TestClientClassification:
+    @pytest.mark.parametrize(
+        ("status", "refused"),
+        [(401, None), (307, RefusedRedirect("https://elsewhere.example/mcp", "another origin"))],
+    )
+    async def test_a_teardown_status_never_overrides_the_refusal(self, status, refused):
+        client = MCPClient()
+        client._initialize_status = 200
+        client._pending_http_status, client._pending_refused_redirect = status, refused
+
+        await client._classify_connect_failure(MCPError(code=-32001, message="X-API-Key header is required."), URL)
+
+        failure = client.last_connection_error
+        assert failure is not None
+        assert failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
+        assert failure.status_code == 200
+
     async def test_the_handshake_refusal_is_credential_required(self):
         client = MCPClient()
 
