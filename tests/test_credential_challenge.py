@@ -431,6 +431,21 @@ class TestPartialAudit:
         assert "Lookup of [redacted] crashed" in serialized
         assert key not in serialized
 
+    @pytest.mark.parametrize("order", [1, -1])
+    def test_a_redacted_key_never_overwrites_another(self, order):
+        headers = {"X-API-Key": "secret12345"}
+        tools = {"tool-secret12345": "echoed", "tool-[redacted]": "literal"}
+        by_index = {"tool-secret12345": 0, "tool-[redacted]": 1}
+        report = {
+            "tools": dict(list(tools.items())[::order]),
+            "index": dict(list(by_index.items())[::-order]),
+        }
+
+        redacted = redact_tree(report, headers)
+
+        assert redacted["tools"] == {"tool-[redacted]": "literal", "tool-[redacted] [masked name 2]": "echoed"}
+        assert redacted["index"] == {"tool-[redacted]": 1, "tool-[redacted] [masked name 2]": 0}
+
     def test_a_short_value_is_not_searched_across_the_report(self):
         report = {"message": "auth is true", "items": ["true"]}
         assert redact_tree(report, {"X-Auth-Enabled": "true"}) == report

@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from mcpscore.diagnostics import quoted_preview
-from mcpscore.report_evidence import report_evidence
+from mcpscore.report_evidence import masked_names, report_evidence
 
 _CREDENTIAL = r"(?:\b(?:x-)?api[-_ ]?key\b|\b(?:access|auth|bearer|api|session)[-_ ]?token\b|\bcredentials?\b)"
 _REFUSED = (
@@ -106,7 +106,8 @@ def redact_tree(value: Any, headers: dict[str, str] | None) -> Any:
     if isinstance(value, str):
         return redact_values(value, headers, min_length=REPORT_REDACTION_MIN_LENGTH)
     if isinstance(value, dict):
-        return {redact_tree(key, headers): redact_tree(item, headers) for key, item in value.items()}
+        names = masked_names(value, lambda name: redact_tree(name, headers))
+        return {names[key]: redact_tree(item, headers) for key, item in value.items()}
     if isinstance(value, list | tuple):
         return [redact_tree(item, headers) for item in value]
     return value
