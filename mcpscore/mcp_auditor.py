@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from .apps import collect_apps, pointer_targets
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
-from .credential_challenge import challenge_summary, has_credential
+from .credential_challenge import challenge_summary
 from .diagnostics import entity_label, nesting_exceeds, validation_diagnostics
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
@@ -68,15 +68,13 @@ it is held to one level less to judge both lifecycles by the same bound.
 
 
 def has_authorization_credential(headers: dict[str, str] | None) -> bool:
-    """Whether the header set carries a non-blank credential header.
+    """Whether the header set carries a non-blank Authorization credential.
 
-    The single predicate behind both the report's ``authenticated`` flag and
-    the CLI's rejected-credentials messaging. A credential header is
-    ``Authorization`` or one whose name names an API key, token, auth or secret
-    (``X-API-Key``, ``X-Auth-Token``); other custom headers (tracing) never
-    count, and a blank value (``--header 'Authorization:'``) is no credential.
+    The predicate behind the report's ``authenticated`` flag. Other custom
+    headers, API keys included, never set it, and a blank value
+    (``--header 'Authorization:'``) is no credential either.
     """
-    return has_credential(headers)
+    return any(name.lower() == "authorization" and value.strip() for name, value in (headers or {}).items())
 
 
 SERVER_INFO_META_KEY = "io.modelcontextprotocol/serverInfo"
@@ -1179,9 +1177,10 @@ class MCPAuditor:
         report: dict = {
             "score": self.score,
             "max_score": self.max_score,
-            # True when the audit sent a credential header (--token, Authorization,
-            # or an API-key/token header such as X-API-Key). Other custom headers
-            # (e.g. tracing) do not count. Header values are never reported.
+            # True when the audit sent an Authorization credential (--token or
+            # an explicit Authorization --header). Other custom headers (e.g.
+            # tracing) do not mark the audit authenticated. Only the flag is
+            # reported — header values are never included.
             "authenticated": has_authorization_credential(self.headers),
             # A partial audit ran without a server session (e.g. an auth-gated
             # server): only probe-derived rules scored; session-dependent rules

@@ -100,7 +100,7 @@ change bumps `schema_version`.
 | `target` | string | What was audited, as given on the command line |
 | `transport` | string or null | `stdio`, `streamable-http`, or `sse`. `null` for a package audit |
 | `score`, `max_score` | int | Points earned and available on the main axis |
-| `authenticated` | bool | A credential header was sent: `Authorization`, or one named for an API key, token, auth or secret. Never the credential itself |
+| `authenticated` | bool | An `Authorization` credential was sent. Never the credential itself |
 | `partial` | bool | Only the observable surface of an auth-gated server was scored |
 | `partial_reason` | string or null | Why the audit was partial |
 | `incomplete_listings` | array | Catalogs whose paginated listing could not be fully collected |

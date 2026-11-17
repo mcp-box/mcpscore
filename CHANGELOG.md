@@ -15,9 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Error connecting", the message names the header to pass with `--header`,
   and checks the refusal answered are skipped instead of failed. The new
   unscored `credential_challenge` report field records the refusal.
-- `authenticated` is now `true` for any credential header (`Authorization`,
-  or a name with api-key, token, auth or secret, such as `X-API-Key`), so a
-  rejected API key reports "Server rejected the provided credentials".
+- A rejected credential in any credential header (`Authorization`, or a name
+  with api-key, token, auth or secret, such as `X-API-Key`) now reports
+  "Server rejected the provided credentials". The report's `authenticated`
+  flag still counts `Authorization` only.
 - Four rules for servers whose `server/discover` advertises the Tasks
   extension (`io.modelcontextprotocol/tasks`, SEP-2663). mcpscore asks about
   a task ID no server issued, so no real task is touched:

@@ -137,11 +137,10 @@ Using 2 custom header(s).
 ...
 ```
 
-A header whose name names an API key, a token, auth or a secret
-(`X-Api-Key`, `X-Auth-Token`) sets `authenticated: true` in the report, the
-same as `Authorization`. Other headers, like `X-Tenant`, are sent on every
-request without that claim. An explicit `Authorization` header wins over
-`--token` and `MCPSCORE_TOKEN`.
+Only an `Authorization` header sets `authenticated: true` in the report.
+Other headers are sent on every request, but the report makes no claim
+that the audit ran behind the gate. An explicit `Authorization` header wins
+over `--token` and `MCPSCORE_TOKEN`.
 
 Some API-key servers refuse a stranger with HTTP 200 and a JSON-RPC error
 instead of a 401. MCP allows it, because [authorization is optional](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#protocol-requirements),
@@ -236,7 +235,7 @@ If the secret is missing or expired, the run becomes a partial audit and
 
 | Report field | Meaning |
 |---|---|
-| `authenticated` | `true` when the audit sent a non-blank credential header: `Authorization`, or one named for an API key, token, auth or secret. |
+| `authenticated` | `true` when the audit sent a non-blank `Authorization` credential. |
 | `credential_challenge` | The refusal a server sends as a JSON-RPC error instead of a 401, or `null`. Not scored. |
 | `partial` | `true` when only the unauthenticated surface was scored. |
 | `partial_reason` | Why the audit is partial, in the same words as the terminal output. |

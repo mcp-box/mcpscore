@@ -143,7 +143,7 @@ class TestMatcher:
         assert has_credential({"X-Auth-Token": "t"})
         assert not has_credential({"X-Trace": "1"})
         assert not has_credential({"X-API-Key": "  "})
-        assert has_authorization_credential({"X-API-Key": "k"})
+        assert not has_authorization_credential({"X-API-Key": "k"})
 
     def test_supplied_credentials_are_redacted_from_the_server_text(self):
         headers = {"X-API-Key": "sk-live-指南-1234", "Authorization": "Bearer tok-5678", "X-Trace": "trace-0001"}

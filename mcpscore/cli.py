@@ -16,9 +16,8 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from mcpscore import MCPAuditor, MCPClient, StdioCommand
 from mcpscore.config import ConfigError, RuleConfig
-from mcpscore.credential_challenge import challenge_summary
+from mcpscore.credential_challenge import challenge_summary, has_credential
 from mcpscore.enums import ConnectionErrorReason
-from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
 from mcpscore.probes import PROBE_UNAUTHENTICATED, credential_refused, observed_auth_status
 from mcpscore.report_evidence import evidence_preview
@@ -1149,11 +1148,10 @@ def gated_partial_reason(
     else:
         status = probed_status or 401
     gate = describe_gate(status, challenge)
-    # Same predicate as the report's `authenticated` flag: only a credential
-    # header counts. "Rejected" also requires that the session itself was
+    # Any credential header counts (Authorization, X-API-Key, ...). "Rejected" also requires that the session itself was
     # refused; the gate probe runs anonymously, so its 401 says nothing about the
     # caller's token, and a session that died elsewhere never exercised it.
-    credentials_rejected = session_gated and has_authorization_credential(headers)
+    credentials_rejected = session_gated and has_credential(headers)
     if credentials_rejected:
         logger.info("Server rejected the provided credentials — running a partial audit of the observable surface.")
         logger.info("(Check that the --token/--header credentials are valid for this server.)")
@@ -1161,7 +1159,7 @@ def gated_partial_reason(
             f"Server rejected the provided credentials ({gate}); scored the unauthenticated "
             "surface only — check that the token or headers are valid for this server."
         )
-    if not session_gated and has_authorization_credential(headers):
+    if not session_gated and has_credential(headers):
         # Gated per an anonymous probe, but the session failed
         # separately — say so, and do not blame the credential.
         session_status = failure.status_code if failure is not None else None
