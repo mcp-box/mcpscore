@@ -22,8 +22,9 @@ _SECRET_QUERY_KEYS = frozenset(
     }
 )
 # Userinfo may hold an apostrophe (an RFC 3986 sub-delim), so an optional "...@" part admits one; the rest of
-# the URL stops at quotes, so a URL quoted in prose ends at its closing quote.
-_URL = re.compile(r"[a-z][a-z0-9+.-]*://(?:[^\s\"<>/?#@]*@)?[^\s\"'<>]+", re.IGNORECASE)
+# the URL stops at quotes, so a URL quoted in prose ends at its closing quote. The scheme is bounded so a long
+# letter run without "://" is not rescanned from every position.
+_URL = re.compile(r"[a-z][a-z0-9+.-]{0,31}://(?:[^\s\"<>/?#@]*@)?[^\s\"'<>]+", re.IGNORECASE)
 _AUTHORITY = re.compile(r"([a-z][a-z0-9+.-]*://)([^/?#]*)", re.IGNORECASE)
 
 

@@ -18,7 +18,8 @@ _REFUSED = (
     r"|\bnot\ provided\b|\bincorrect\b|\bconfigure\b|\bmust\ be\ (?:provided|supplied|set)\b)"
 )
 # Up to six words between the two, of any length (an echoed key is one long word), within one sentence.
-_GAP = r"(?:[\s:]+\S*[^\s.;:]){0,6}?[\s:]+"
+# Words never contain a separator, so each split is unique and matching stays linear.
+_GAP = r"(?:[\s:]+[^\s:]*[^\s.;:]){0,6}?[\s:]+"
 _CREDENTIAL_PHRASES = re.compile(
     rf"""
     {_CREDENTIAL}{_GAP}{_REFUSED}

@@ -6,6 +6,7 @@ The fixture is the recorded anonymous exchange of a public API-key server; no te
 import json
 import logging
 from pathlib import Path
+import time
 from typing import Any
 from unittest.mock import patch
 
@@ -182,6 +183,15 @@ class TestMatcher:
         assert summary["message"].startswith('"API key required.\\n')
         assert summary["message"].endswith(" [truncated]")
         assert summary["header"] is None
+
+    @pytest.mark.parametrize("prefix", ["api key ", "missing "])
+    def test_a_colon_run_in_server_text_matches_in_linear_time(self, prefix):
+        # A colon is a separator, never part of a word, so the gap has one split per input.
+        message = prefix + "a:" * 20_000 + "!"
+
+        started = time.perf_counter()
+        assert not is_credential_challenge({"code": -32001, "message": message})
+        assert time.perf_counter() - started < 1
 
 
 class TestClientClassification:
