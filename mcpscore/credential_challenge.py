@@ -79,17 +79,37 @@ def has_credential(headers: dict[str, str] | None) -> bool:
     return any(is_credential_header(name) and value.strip() for name, value in (headers or {}).items())
 
 
-def redact_values(text: str, headers: dict[str, str] | None) -> str:
-    """Replace every credential header value the caller supplied that appears in *text* with ``[redacted]``."""
+def redact_values(text: str, headers: dict[str, str] | None, *, min_length: int = 1) -> str:
+    """Replace every credential header value the caller supplied that appears in *text* with ``[redacted]``.
+
+    Values shorter than *min_length* are left alone.
+    """
     secrets: set[str] = set()
     for name, value in (headers or {}).items():
         if is_credential_header(name) and value.strip():
             # "Bearer <token>": a server may echo the token without its scheme.
-            secrets |= {value.strip(), value.split()[-1]}
+            secrets |= {secret for secret in (value.strip(), value.split()[-1]) if len(secret) >= min_length}
     # Longest first across all headers, so a short value never replaces part of a longer one.
     for secret in sorted(secrets, key=len, reverse=True):
         text = text.replace(secret, "[redacted]")
     return text
+
+
+REPORT_REDACTION_MIN_LENGTH = 8
+"""Shortest supplied value searched for across a whole report; a shorter one would rewrite ordinary words."""
+
+
+def redact_tree(value: Any, headers: dict[str, str] | None) -> Any:
+    """Return a copy of a report value with every supplied credential value redacted from its strings and keys."""
+    if not has_credential(headers):
+        return value
+    if isinstance(value, str):
+        return redact_values(value, headers, min_length=REPORT_REDACTION_MIN_LENGTH)
+    if isinstance(value, dict):
+        return {redact_tree(key, headers): redact_tree(item, headers) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [redact_tree(item, headers) for item in value]
+    return value
 
 
 def challenge_summary(error: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:

@@ -85,7 +85,9 @@ def mock_auditor() -> MagicMock:
     # no probe observations, i.e. no evidence of an auth gate. `audit_data` is
     # read by finish_server_audit on the partial and modern-only paths, and
     # `catalog_versions` by the smoke phase (a bare mock would read as recovered).
+    # `headers` is read to redact the smoke section.
     auditor.last_probes = None
+    auditor.headers = None
     auditor.audit_data = MagicMock(transport_type=None, catalog_versions={})
     return auditor
 

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from mcpscore import MCPAuditor, MCPClient, StdioCommand
 from mcpscore.config import ConfigError, RuleConfig
-from mcpscore.credential_challenge import challenge_summary, has_credential
+from mcpscore.credential_challenge import challenge_summary, has_credential, redact_tree
 from mcpscore.enums import ConnectionErrorReason
 from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
 from mcpscore.probes import PROBE_UNAUTHENTICATED, credential_refused, observed_auth_status
@@ -724,7 +724,7 @@ def finish_server_audit(
     if args.json or args.sarif:
         report = build_report(target_display, transport, auditor)
         if smoke is not None:
-            report["smoke"] = smoke.to_dict()
+            report["smoke"] = redact_tree(smoke.to_dict(), auditor.headers)
         if args.json:
             sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
         if args.sarif:

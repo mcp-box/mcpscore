@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from .apps import collect_apps, pointer_targets
 from .config import SKIP_REASON_DISABLED_BY_CONFIG, RuleConfig
-from .credential_challenge import challenge_summary
+from .credential_challenge import challenge_summary, redact_tree
 from .diagnostics import entity_label, nesting_exceeds, validation_diagnostics
 from .enums import MCPTransportType
 from .mcp_client import MCPClient
@@ -1246,7 +1246,8 @@ class MCPAuditor:
         # report is byte-identical to one from an engine without this feature.
         if self.config is not None:
             report["config"] = self._config_report(self.config)
-        return report
+        # A server may echo a supplied credential in any text it returns.
+        return redact_tree(report, self.headers)
 
     def _enterprise_managed_auth_report(self) -> dict | None:
         """Report whether the authorization server advertises the ID-JAG grant, without scoring it.

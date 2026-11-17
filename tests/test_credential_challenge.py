@@ -28,6 +28,7 @@ from mcpscore.credential_challenge import (
     challenge_summary,
     has_credential,
     is_credential_challenge,
+    redact_tree,
     redact_values,
 )
 from mcpscore.enums import ConnectionErrorReason
@@ -405,6 +406,35 @@ class TestProbes:
 
 
 class TestPartialAudit:
+    async def test_a_supplied_key_echoed_in_any_server_text_is_redacted_from_the_report(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        key = "sk-live-指南-0123456789"
+
+        def echoing(request: httpx2.Request) -> httpx2.Response:
+            error = {"code": -32603, "message": f"Lookup of {key} crashed"}
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": _request_id(request), "error": error})
+
+        async def real_probes(url: str, client: Any = None, headers: Any = None) -> dict[str, ProbeResult]:
+            return await _run_probes(echoing)
+
+        async def fake_tls(url: str) -> str:
+            return "TLSv1.3"
+
+        monkeypatch.setattr(mcp_auditor, "run_all_probes", real_probes)
+        monkeypatch.setattr(MCPAuditor, "_probe_tls_version", staticmethod(fake_tls))
+        auditor = MCPAuditor(headers={"X-API-Key": key})
+
+        assert await auditor.audit_partial(URL, reason="auth") is True
+        serialized = json.dumps(auditor.get_audit_report(), ensure_ascii=False)
+
+        assert "Lookup of [redacted] crashed" in serialized
+        assert key not in serialized
+
+    def test_a_short_value_is_not_searched_across_the_report(self):
+        report = {"message": "auth is true", "items": ["true"]}
+        assert redact_tree(report, {"X-Auth-Enabled": "true"}) == report
+
     async def test_only_observable_rules_score_and_the_challenge_is_reported(self, monkeypatch: pytest.MonkeyPatch):
         handler = _api_key_server()
 
