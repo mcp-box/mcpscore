@@ -79,6 +79,7 @@ __all__ = [
     "detect_era",
     "has_modern_support",
     "not_applicable_results",
+    "probe_gated",
     "run_all_probes",
     "run_stdio_probes",
 ]
@@ -2100,6 +2101,13 @@ def auth_gate_status(result: ProbeResult | None) -> int | None:
     if status in AUTH_GATED_STATUSES:
         return status
     return status if credential_refused(result.details) and isinstance(status, int) else None
+
+
+def probe_gated(result: ProbeResult | None) -> bool:
+    """Whether an auth gate stopped this probe: HTTP 401/403, or a credential refusal on any transport (stdio too)."""
+    if result is None:
+        return False
+    return result.details.get("http_status") in AUTH_GATED_STATUSES or credential_refused(result.details)
 
 
 def credential_refused(details: dict[str, Any]) -> bool:

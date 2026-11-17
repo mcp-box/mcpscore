@@ -32,11 +32,11 @@ from .probes import (
     PROBE_TOOLS_INVALID_CURSOR,
     PROBE_UNAUTHENTICATED,
     ProbeOutcome,
-    auth_gate_status,
     credential_refused,
     detect_era,
     has_modern_support,
     not_applicable_results,
+    probe_gated,
     run_all_probes,
     run_stdio_probes,
     stateless_session,
@@ -319,7 +319,7 @@ class MCPAuditor:
             return False
         # An open server/discover does not make the server open: when the
         # listing itself is gated, a full audit would score the 401/403s.
-        if auth_gate_status(probes.get(PROBE_STATELESS_LIST)) is not None:
+        if probe_gated(probes.get(PROBE_STATELESS_LIST)):
             return False
 
         self._reset_run_state()
