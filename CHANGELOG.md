@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The invalid pagination cursor checks are skipped instead of failed when the
+  probe is answered with HTTP 408, 429 or 503. A timed-out or rate-limited
+  request says nothing about whether the server validates cursors.
+
 ## [1.34.0] - 2026-11-18
 
 API-key servers that refuse an anonymous request with a JSON-RPC error

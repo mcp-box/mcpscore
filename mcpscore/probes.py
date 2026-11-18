@@ -61,7 +61,7 @@ from pydantic import TypeAdapter
 from mcpscore.credential_challenge import is_credential_challenge
 from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
-from mcpscore.skills import HTTPRefusedCallError
+from mcpscore.skills import THROTTLED_STATUSES, HTTPRefusedCallError
 from mcpscore.spec import DRAFT, LATEST, SPEC_VERSIONS, Era, Lifecycle
 from mcpscore.tls import async_client, client_ssl_context
 from mcpscore.url_credentials import credential_query_params, without_credential_params
@@ -1488,6 +1488,10 @@ async def _probe_tasks_extension(target: _ProbeTarget) -> ProbeResult:
     return ProbeResult(PROBE_TASKS_EXTENSION, ProbeOutcome.SUPPORTED, details)
 
 
+_UNOBSERVED_LIST_STATUSES = THROTTLED_STATUSES | {408}
+"""Statuses that refuse a list request before the server reads its cursor: a timeout or a rate limit."""
+
+
 async def _probe_invalid_cursor(
     target: _ProbeTarget,
     *,
@@ -1517,6 +1521,9 @@ async def _probe_invalid_cursor(
         details["response_kind"] = "unexpected_response"
     if response.gated:
         details["reason"] = "request is access-controlled; cursor validation not observable"
+        return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
+    if response.status_code in _UNOBSERVED_LIST_STATUSES:
+        details["reason"] = "request was timed out or rate-limited; cursor validation not observable"
         return ProbeResult(probe_id, ProbeOutcome.NOT_APPLICABLE, details)
     if method == "resources/templates/list" and response.error_code == ERROR_METHOD_NOT_FOUND:
         details["reason"] = "optional resource-template listing is not implemented"

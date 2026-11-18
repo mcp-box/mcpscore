@@ -655,6 +655,40 @@ async def test_invalid_cursor_probes_reject_servers_that_accept_fabricated_curso
         assert results[probe_id].details["response_kind"] == ("page" if returns_page else "unexpected_response")
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (408, ProbeOutcome.NOT_APPLICABLE),
+        (429, ProbeOutcome.NOT_APPLICABLE),
+        (503, ProbeOutcome.NOT_APPLICABLE),
+        (500, ProbeOutcome.UNSUPPORTED),
+    ],
+)
+async def test_invalid_cursor_probes_do_not_judge_a_timed_out_or_rate_limited_request(status, expected):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content) if request.method == "POST" else {}
+        cursor = body.get("params", {}).get("cursor")
+        if isinstance(cursor, str) and cursor.startswith(INVALID_CURSOR_PREFIX):
+            return httpx2.Response(status, text="Too Many Requests")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    for probe_id in (
+        PROBE_TOOLS_INVALID_CURSOR,
+        PROBE_RESOURCES_INVALID_CURSOR,
+        PROBE_RESOURCE_TEMPLATES_INVALID_CURSOR,
+        PROBE_PROMPTS_INVALID_CURSOR,
+    ):
+        result = results[probe_id]
+        assert result.outcome is expected
+        assert result.details["http_status"] == status
+        if expected is ProbeOutcome.NOT_APPLICABLE:
+            assert result.details["reason"] == (
+                "request was timed out or rate-limited; cursor validation not observable"
+            )
+
+
 async def test_resource_template_cursor_probe_skips_an_unimplemented_optional_surface():
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content) if request.method == "POST" else {}
