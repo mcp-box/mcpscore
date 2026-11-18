@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-11-18
+
+API-key servers that refuse an anonymous request with a JSON-RPC error
+instead of a 401 now get a partial audit and the name of the header to pass,
+where they used to be called unreachable. Servers that advertise the Tasks
+extension get four new checks; servers without it are not affected, and other
+scores do not move. A rule that hits an internal error is now skipped instead
+of aborting the audit.
+
 ### Added
 
 - Servers that refuse a stranger with a JSON-RPC error naming a credential
@@ -36,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token the same way a 401 does. `auth_token_not_in_query` can therefore fail
   a server that serves `?token=` and refuses the request without it with
   HTTP 200 and such an error; it used to skip it.
+- Dependencies refreshed: `httpx2` and `httpcore2` 2.16.2, `python-multipart`
+  0.0.34. The `mcp==2.3.0` pin is already the latest SDK.
 
 ### Fixed
 
@@ -2700,7 +2711,8 @@ declared is graded.
 - Transport rule: SSE transport support detection.
 - Tools rules: unique names and valid name format checks.
 
-[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.33.0...HEAD
+[Unreleased]: https://github.com/mcp-box/mcpscore/compare/v1.34.0...HEAD
+[1.34.0]: https://github.com/mcp-box/mcpscore/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/mcp-box/mcpscore/compare/v1.32.0...v1.33.0
 [1.32.0]: https://github.com/mcp-box/mcpscore/compare/v1.31.2...v1.32.0
 [1.31.2]: https://github.com/mcp-box/mcpscore/compare/v1.31.1...v1.31.2
