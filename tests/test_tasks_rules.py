@@ -142,6 +142,13 @@ def test_a_refusal_before_the_lookup_is_not_judged(key: str, refusal: dict[str, 
     assert rule.skip_reason(data(answers={key: refusal})) == SKIP_REASON_INSUFFICIENT_DATA
 
 
+@pytest.mark.parametrize("key", ["get_unknown", "get_undeclared", "result_method"])
+def test_a_credential_refusal_with_a_judged_code_is_not_judged(key: str) -> None:
+    rule = next(rule for rule in RULES.values() if getattr(rule, "answer_key", None) == key)
+    refusal = {**answer(code=min(rule.decisive_codes)), "credential_refusal": True}
+    assert rule.skip_reason(data(answers={key: refusal})) == SKIP_REASON_INSUFFICIENT_DATA
+
+
 @pytest.mark.parametrize(
     ("key", "observed"),
     [

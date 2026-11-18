@@ -43,6 +43,7 @@ class LegacyServer:
     invalid: httpx2.Response | None = None
     get: httpx2.Response = field(default_factory=lambda: httpx2.Response(405))
     delete_status: int = 200
+    delete: httpx2.Response | None = None
     honours_delete: bool = True
     requests: list[httpx2.Request] = field(default_factory=list)
     deleted: bool = False
@@ -52,6 +53,8 @@ class LegacyServer:
         if request.method == "GET":
             return self.get
         if request.method == "DELETE":
+            if self.delete is not None:
+                return self.delete
             if 200 <= self.delete_status < 300 and self.honours_delete:
                 self.deleted = True
             return httpx2.Response(self.delete_status)
@@ -165,6 +168,20 @@ class TestNotificationAccepted:
         with pytest.raises(httpx2.ReadTimeout):
             await _run(_probe_get_stream, fails)
         assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE"]
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_a_gated_handshake_notification_is_not_judged(self, status):
+        result = await _run(_probe_notification_accepted, LegacyServer(notification=httpx2.Response(status)))
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "notification POST is access-controlled"
+
+    async def test_an_error_status_refusing_a_credential_is_not_judged(self):
+        refusal = {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "X-API-Key header is required."}}
+        result = await _run(
+            _probe_notification_accepted, _modern_handler(notification=httpx2.Response(400, json=refusal))
+        )
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "notification was refused for a credential; acceptance not observable"
 
     async def test_open_sse_answer_is_judged_from_its_status(self):
         server = LegacyServer(notification=_open_sse_response())
@@ -369,6 +386,21 @@ class TestGetStream:
         assert result.details == {"http_status": 405, "content_type": None}
         assert server.methods() == ["POST initialize", "POST notifications/initialized", "GET", "DELETE"]
 
+    async def test_a_get_refused_for_a_credential_in_session_is_not_judged(self):
+        refusal = {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "X-API-Key header is required."}}
+        server = LegacyServer(get=httpx2.Response(200, json=refusal))
+        result = await _run(_probe_get_stream, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "GET is access-controlled"
+
+    async def test_a_handshake_whose_notification_was_refused_for_a_credential_is_incomplete(self):
+        refusal = {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "X-API-Key header is required."}}
+        server = LegacyServer(notification=httpx2.Response(200, json=refusal), get=httpx2.Response(400))
+        result = await _run(_probe_get_stream, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "handshake notification was not accepted"
+        assert "GET" not in server.methods()
+
     async def test_get_carries_the_session_and_version(self):
         server = LegacyServer()
         await _run(_probe_get_stream, server)
@@ -426,6 +458,15 @@ class TestSessionDelete:
         assert result.outcome is ProbeOutcome.SUPPORTED
         assert result.details == {"http_status": 200, "after_delete_http_status": 404}
         assert server.methods() == ["POST initialize", "POST notifications/initialized", "DELETE", "POST ping"]
+
+    @pytest.mark.parametrize("status", [200, 400])
+    async def test_a_delete_refused_for_a_credential_is_not_judged(self, status: int):
+        refusal = {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "X-API-Key header is required."}}
+        server = LegacyServer(delete=httpx2.Response(status, json=refusal))
+        result = await _run(_probe_session_delete, server)
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["reason"] == "DELETE is access-controlled"
+        assert "POST ping" not in server.methods()
 
     async def test_delete_carries_the_session_and_version(self):
         server = LegacyServer()
@@ -1269,6 +1310,51 @@ class TestSessionlessPostIsBounded:
         assert result.outcome is ProbeOutcome.SUPPORTED
         assert result.details["http_status"] == 200
         assert body.pulled == 0
+
+    async def test_a_stalled_json_body_keeps_the_unauthenticated_status(self, monkeypatch):
+        monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.1)
+
+        async def drip():
+            while True:
+                yield b" "
+                await asyncio.sleep(0.01)
+
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            200, headers={"Content-Type": "application/json"}, content=drip()
+        )
+
+        result = await asyncio.wait_for(_run(probes._probe_unauthenticated, handler), timeout=5)
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["http_status"] == 200
+
+    async def test_a_stalled_json_body_keeps_the_get_status(self, monkeypatch):
+        monkeypatch.setattr(probes, "GET_STREAM_TIMEOUT_S", 0.1)
+
+        async def drip():
+            while True:
+                yield b" "
+                await asyncio.sleep(0.01)
+
+        handler = lambda _request: httpx2.Response(  # noqa: E731
+            405, headers={"Content-Type": "application/json"}, content=drip()
+        )
+
+        result = await asyncio.wait_for(_run(probes._probe_get_stream_removed, handler), timeout=5)
+
+        assert result.outcome is ProbeOutcome.SUPPORTED
+        assert result.details["http_status"] == 405
+
+    async def test_a_timeout_before_any_status_is_still_a_timeout(self):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise httpx2.ReadTimeout("no answer", request=request)
+
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            target = probes._HttpTarget(client, "https://example.test/mcp")
+            with pytest.raises(httpx2.ReadTimeout):
+                await target.get_status({"Accept": "text/event-stream"})
+            with pytest.raises(httpx2.ReadTimeout):
+                await probes._probe_unauthenticated(target)
 
     async def test_a_heartbeat_only_stream_ends_at_the_deadline(self, monkeypatch):
         monkeypatch.setattr(probes, "PROBE_TIMEOUT_S", 0.05)

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
 
@@ -46,6 +47,7 @@ from mcp_types import (
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .apps import UI_EXTENSION, UI_EXTENSION_SETTINGS
+from .credential_challenge import challenge_summary, is_credential_challenge, redact_values
 from .diagnostics import validation_diagnostics
 from .enums import ConnectionErrorReason, MCPTransportType
 from .probes import (
@@ -406,6 +408,7 @@ _REASON_MESSAGES: dict[ConnectionErrorReason, str] = {
     # suggests --token; the web service cannot).
     ConnectionErrorReason.UNAUTHORIZED: "The MCP server requires authentication (HTTP 401).",
     ConnectionErrorReason.FORBIDDEN: "The MCP server refused access (HTTP 403).",
+    ConnectionErrorReason.CREDENTIAL_REQUIRED: "The MCP server requires a credential.",
     ConnectionErrorReason.HTTP_ERROR: "The server returned an HTTP error during the MCP handshake.",
     ConnectionErrorReason.REDIRECTED: (
         "The server answered with a redirect mcpscore does not follow (like the MCP SDK, it follows a redirect "
@@ -435,6 +438,7 @@ _REASON_RANK: dict[ConnectionErrorReason, int] = {
     ConnectionErrorReason.REDIRECTED: 5,
     ConnectionErrorReason.FORBIDDEN: 6,
     ConnectionErrorReason.UNAUTHORIZED: 6,
+    ConnectionErrorReason.CREDENTIAL_REQUIRED: 6,
 }
 
 
@@ -450,6 +454,8 @@ class ConnectionFailure:
     """Absolute target of the redirect the server answered with, for REDIRECTED."""
     redirect_reason: str | None = None
     """Why the redirect was refused ("another origin", ...), for REDIRECTED."""
+    challenge: dict[str, Any] | None = None
+    """The refusal's ``error_code``, quoted ``message`` and named ``header``, for CREDENTIAL_REQUIRED."""
 
     @property
     def message(self) -> str:
@@ -482,6 +488,9 @@ class ConnectionFailure:
                 f"The server redirected{status} to {self.location}, which mcpscore does not follow{why} — "
                 "audit that URL instead if it is the intended server."
             )
+        if self.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED and self.challenge is not None:
+            status = f"HTTP {self.status_code}, " if self.status_code is not None else ""
+            return f"{base[:-1]} ({status}JSON-RPC error {self.challenge['error_code']}: {self.challenge['message']})."
         if self.detail is not None:
             return f"{base} Details: {self.detail}"
         return base
@@ -526,6 +535,24 @@ def find_http_status_error(exc: BaseException) -> httpx2.HTTPStatusError | None:
             continue
         seen.add(id(current))
         if isinstance(current, httpx2.HTTPStatusError):
+            return current
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+        stack.append(current.__cause__)
+        stack.append(current.__context__)
+    return None
+
+
+def find_credential_challenge(exc: BaseException) -> MCPError | None:
+    """Find a JSON-RPC error refusing a credential anywhere in an exception tree."""
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, MCPError) and is_credential_challenge(current.error.model_dump()):
             return current
         if isinstance(current, BaseExceptionGroup):
             stack.extend(current.exceptions)
@@ -654,6 +681,8 @@ class MCPClient:
         self._refused_calls: dict[tuple[str, str | None], int] = {}
         # Session calls whose answer body went past SESSION_READ_LIMIT and was not read, keyed like _refused_calls.
         self._unread_calls: set[tuple[str, str | None]] = set()
+        # HTTP status of the answer to this attempt's initialize, the exchange a handshake refusal came in.
+        self._initialize_status: int | None = None
 
     async def detect_and_connect(self, server_path_or_url: str | StdioCommand) -> tuple[bool, MCPTransportType | None]:
         """Automatically detect transport type and connect to MCP server.
@@ -697,10 +726,13 @@ class MCPClient:
             if http_failure is not None and http_failure.reason in (
                 ConnectionErrorReason.UNAUTHORIZED,
                 ConnectionErrorReason.FORBIDDEN,
+                ConnectionErrorReason.CREDENTIAL_REQUIRED,
             ):
                 logger.info(
-                    "Endpoint requires authentication (HTTP %s) — skipping the legacy SSE fallback",
-                    http_failure.status_code or "401/403",
+                    "Endpoint requires authentication (%s) — skipping the legacy SSE fallback",
+                    "a JSON-RPC credential refusal"
+                    if http_failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED
+                    else f"HTTP {http_failure.status_code or '401/403'}",
                 )
                 return (False, None)
 
@@ -775,6 +807,7 @@ class MCPClient:
         # transport attempt can't leak into this one's classification.
         self._pending_http_status = None
         self._pending_refused_redirect = None
+        self._initialize_status = None
         try:
             start_time = time.perf_counter()
             streams = await stack.enter_async_context(transport_cm)
@@ -826,7 +859,7 @@ class MCPClient:
             if error is not None:
                 self._pending_http_status = error.response.status_code
                 self._pending_refused_redirect = unfollowed_redirect(error.response)
-            logger.info("Connection attempt failed: %s", _describe_failure(e))
+            logger.info("Connection attempt failed: %s", self._describe(e))
 
     def _record_failure(
         self,
@@ -834,6 +867,7 @@ class MCPClient:
         status_code: int | None = None,
         detail: str | None = None,
         refused: RefusedRedirect | None = None,
+        challenge: dict[str, Any] | None = None,
     ) -> None:
         """Record why the current connect attempt failed."""
         self.last_connection_error = ConnectionFailure(
@@ -842,6 +876,7 @@ class MCPClient:
             detail=detail,
             location=refused.target if refused is not None else None,
             redirect_reason=refused.why if refused is not None else None,
+            challenge=challenge,
         )
 
     def _record_status_failure(self, status: int, refused: RefusedRedirect | None) -> None:
@@ -871,7 +906,7 @@ class MCPClient:
             _log_refused_redirect(status, refused, server_url)
         else:
             logger.error("HTTP error %s from server: %s", status, server_url)
-            logger.debug("Error details", exc_info=error)
+            self._log_details("Error details", error)
         self._record_status_failure(status, refused)
 
     def _record_unclassified_failure(self, exc: BaseException) -> None:
@@ -888,9 +923,11 @@ class MCPClient:
             # Keep a compact, single-line explanation so a caller can defer
             # showing it until modern-only probing has ruled out an expected
             # rejection of the legacy handshake.
-            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=_describe_failure(exc))
+            self._record_failure(ConnectionErrorReason.UNKNOWN, detail=self._describe(exc))
 
-    def _observed_status(self, exc: BaseException) -> tuple[int | None, RefusedRedirect | None]:
+    def _observed_status(
+        self, exc: BaseException, *, teardown: bool = True
+    ) -> tuple[int | None, RefusedRedirect | None]:
         """Return the HTTP status a failed attempt observed, with the redirect it refused, from one response.
 
         Teardown's observation wins when there is one; otherwise the first
@@ -898,8 +935,9 @@ class MCPClient:
         response: a status from teardown must never be paired with a
         redirect found in a different exception, which would report a
         REDIRECTED failure whose status and target belong to two requests.
+        With ``teardown=False`` only ``exc`` is read.
         """
-        if self._pending_http_status is not None:
+        if teardown and self._pending_http_status is not None:
             return self._pending_http_status, self._pending_refused_redirect
         error = find_http_status_error(exc)
         if error is None:
@@ -1083,7 +1121,7 @@ class MCPClient:
         chance to distinguish that from a broken process with stateless probes.
         """
         logger.info("Legacy MCP initialize handshake failed for server: %s", display)
-        logger.debug("Handshake error details", exc_info=error)
+        self._log_details("Handshake error details", error)
         self._record_unclassified_failure(error)
 
     async def _connect_with_streamable_http(self, server_url: str) -> bool:
@@ -1138,13 +1176,13 @@ class MCPClient:
             return True
 
         except httpx2.ConnectError as e:
-            logger.error("Server unreachable: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            logger.error("Server unreachable: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
+            self._log_details("Error details", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx2.TimeoutException as e:
-            logger.error("Connection timeout for server: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            logger.error("Connection timeout for server: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
+            self._log_details("Error details", e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
@@ -1158,32 +1196,59 @@ class MCPClient:
             self._reraise_if_cancelled()
             self._record_handshake_failure(server_url)
             return False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — every connect failure becomes classified evidence
             if self._record_unread_answer():
                 return False
-            status, refused = self._observed_status(e)
-            if status is None:
-                # Some SDK failures (a bare MCPError for a 401, a refused redirect) carry no HTTP
-                # status. Recover it with one extra request so the gate or redirect classifies
-                # correctly. Only a recovered 401/403 or refused redirect is trusted, since the
-                # recovery is a different request; it follows the same hops the SDK followed.
-                recovered = await self._recover_http_response(server_url)
-                if recovered is not None:
-                    if recovered.status_code in (401, 403):
-                        status = recovered.status_code
-                    elif (recovered_redirect := unfollowed_redirect(recovered)) is not None:
-                        status, refused = recovered.status_code, recovered_redirect
-            if status in (401, 403):
-                logger.info("Server requires authentication (HTTP %s): %s", status, server_url)
-                self._record_failure(reason_for_status(status), status)
-            elif refused is not None:
-                _log_refused_redirect(status, refused, server_url)
-                self._record_failure(ConnectionErrorReason.REDIRECTED, status, refused=refused)
-            else:
-                logger.error("Streamable HTTP connection failed: %s", _describe_failure(e))  # noqa: TRY400
-                logger.debug("Error details", exc_info=e)
-                self._record_unclassified_failure(e)
+            await self._classify_connect_failure(e, server_url)
             return False
+
+    def _log_details(self, label: str, exc: BaseException) -> None:
+        """Log the full traceback at debug level, with every credential value this client sends redacted."""
+        if logger.isEnabledFor(logging.DEBUG):
+            text = "".join(traceback.format_exception(exc))
+            logger.debug("%s:\n%s", label, redact_values(text, self.headers))
+
+    def _describe(self, exc: BaseException) -> str:
+        """Describe a failure in one line, with every credential value this client sends redacted.
+
+        Redaction runs before the line is escaped and cut, so a key at the cut is never left in part.
+        """
+        return _printable_detail(redact_values(failure_cause(exc), self.headers))
+
+    async def _classify_connect_failure(self, e: Exception, server_url: str) -> None:
+        """Record why a Streamable HTTP connect attempt failed: a gate, a refused redirect, or unclassified."""
+        # A JSON-RPC refusal is the original exchange's own answer; teardown and recovery requests must not
+        # override it.
+        challenge = find_credential_challenge(e)
+        status, refused = self._observed_status(e, teardown=challenge is None)
+        if status is None and challenge is None:
+            # Some SDK failures (a bare MCPError for a 401, a refused redirect) carry no HTTP
+            # status. Recover it with one extra request so the gate or redirect classifies
+            # correctly. Only a recovered 401/403 or refused redirect is trusted, since the
+            # recovery is a different request; it follows the same hops the SDK followed.
+            recovered = await self._recover_http_response(server_url)
+            if recovered is not None:
+                if recovered.status_code in (401, 403):
+                    status = recovered.status_code
+                elif (recovered_redirect := unfollowed_redirect(recovered)) is not None:
+                    status, refused = recovered.status_code, recovered_redirect
+        if status in (401, 403):
+            logger.info("Server requires authentication (HTTP %s): %s", status, server_url)
+            self._record_failure(reason_for_status(status), status)
+        elif refused is not None:
+            _log_refused_redirect(status, refused, server_url)
+            self._record_failure(ConnectionErrorReason.REDIRECTED, status, refused=refused)
+        elif challenge is not None:
+            logger.info("Server requires a credential (JSON-RPC error %s): %s", challenge.code, server_url)
+            self._record_failure(
+                ConnectionErrorReason.CREDENTIAL_REQUIRED,
+                self._initialize_status,
+                challenge=challenge_summary(challenge.error.model_dump(), self.headers),
+            )
+        else:
+            logger.error("Streamable HTTP connection failed: %s", self._describe(e))
+            self._log_details("Error details", e)
+            self._record_unclassified_failure(e)
 
     def _record_unread_answer(self) -> bool:
         """Record a connect attempt whose answer was too large to read; return whether there was one.
@@ -1304,13 +1369,13 @@ class MCPClient:
             return True
 
         except httpx2.ConnectError as e:
-            logger.error("Server unreachable: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            logger.error("Server unreachable: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
+            self._log_details("Error details", e)
             self._record_failure(ConnectionErrorReason.UNREACHABLE)
             return False
         except httpx2.TimeoutException as e:
-            logger.error("Connection timeout for server: %s (%s)", server_url, _describe_failure(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            logger.error("Connection timeout for server: %s (%s)", server_url, self._describe(e))  # noqa: TRY400
+            self._log_details("Error details", e)
             self._record_failure(ConnectionErrorReason.TIMEOUT)
             return False
         except httpx2.HTTPStatusError as e:
@@ -1324,11 +1389,19 @@ class MCPClient:
             self._reraise_if_cancelled()
             self._record_handshake_failure(server_url)
             return False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — every connect failure becomes classified evidence
             if self._record_unread_answer():
                 return False
-            logger.error("SSE connection failed: %s", _describe_failure(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+            if (challenge := find_credential_challenge(e)) is not None:
+                # The answer came over the event stream, so no HTTP status belongs to it.
+                logger.info("Server requires a credential (JSON-RPC error %s): %s", challenge.code, server_url)
+                self._record_failure(
+                    ConnectionErrorReason.CREDENTIAL_REQUIRED,
+                    challenge=challenge_summary(challenge.error.model_dump(), self.headers),
+                )
+                return False
+            logger.error("SSE connection failed: %s", self._describe(e))  # noqa: TRY400
+            self._log_details("Error details", e)
             self._record_unclassified_failure(e)
             return False
 
@@ -1358,9 +1431,9 @@ class MCPClient:
             init_result: InitializeResult = await self.session.initialize()
             self._init_result = init_result
             return init_result
-        except Exception as e:
-            logger.error("Failed to initialize MCP server: %s", _describe_failure(e))  # noqa: TRY400
-            logger.debug("Error details", exc_info=e)
+        except Exception as e:  # noqa: BLE001 — a failed initialize is logged and reported as None
+            logger.error("Failed to initialize MCP server: %s", self._describe(e))  # noqa: TRY400
+            self._log_details("Error details", e)
             return None
 
     async def list_tools(self) -> list[Tool] | None:
@@ -1467,6 +1540,16 @@ class MCPClient:
                             "reason": "optional resource-template listing is not implemented",
                         },
                     )
+                if is_credential_challenge(exc.error.model_dump()):
+                    return ProbeResult(
+                        probe_id,
+                        ProbeOutcome.NOT_APPLICABLE,
+                        {
+                            "error_code": exc.code,
+                            "credential_refusal": True,
+                            "reason": "listing was refused for a credential; cursor validation not observable",
+                        },
+                    )
                 outcome = ProbeOutcome.SUPPORTED if exc.code == ERROR_INVALID_PARAMS else ProbeOutcome.UNSUPPORTED
                 return ProbeResult(probe_id, outcome, {"error_code": exc.code})
             except Exception as exc:  # noqa: BLE001 — probes never abort an audit
@@ -1526,8 +1609,16 @@ class MCPClient:
         cap_body(response, record)
 
     async def _record_refused_call(self, response: httpx2.Response) -> None:
-        """Keep the HTTP error status of a JSON-RPC request, so the failed call can report it."""
-        if response.status_code >= 400 and (key := await self._request_key(response.request)) is not None:
+        """Keep the HTTP error status of a JSON-RPC request, so the failed call can report it.
+
+        The status of any answer to ``initialize`` is kept too: a handshake refused with a JSON-RPC error reports it.
+        """
+        key = await self._request_key(response.request)
+        if key is None:
+            return
+        if key[0] == "initialize":
+            self._initialize_status = response.status_code
+        if response.status_code >= 400:
             self._refused_calls[key] = response.status_code
 
     def _with_http_status(self, exc: MCPError, method: str, params: Any) -> MCPError:

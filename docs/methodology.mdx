@@ -305,7 +305,9 @@ server is and scores it against the revision it negotiated:
   A server that answers `server/discover` without credentials but refuses
   the stateless listing with HTTP 401 or 403 is auth-gated, not modern-only:
   it gets a partial audit, and readiness checks whose probe was refused at
-  the gate are skipped as insufficient data.
+  the gate are skipped as insufficient data. A JSON-RPC error that refuses
+  a missing or invalid credential counts as the gate too, whatever its HTTP
+  status, because [authorization is optional](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#protocol-requirements).
 
 ## The readiness score: separate, informative
 

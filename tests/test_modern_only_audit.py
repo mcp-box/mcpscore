@@ -849,3 +849,29 @@ async def test_stateless_depth_bound_matches_the_session_parser(
     assert await auditor.audit_modern_only(URL) is True
     assert (auditor.audit_data.tools is not None) is session_accepts
     assert session_accepts is (extra == 0)
+
+
+STDIO_REFUSAL = {"http_status": None, "error_code": -32001, "credential_refusal": True}
+
+
+async def test_a_stdio_listing_refused_for_a_credential_is_not_a_modern_only_audit(monkeypatch: pytest.MonkeyPatch):
+    results = _modern_probe_results()
+    results[PROBE_STATELESS_LIST] = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, dict(STDIO_REFUSAL))
+
+    async def fake_run_stdio_probes(target, *, require_modern_support: bool = False) -> dict[str, ProbeResult]:
+        return results
+
+    monkeypatch.setattr(mcp_auditor, "run_stdio_probes", fake_run_stdio_probes)
+
+    assert await MCPAuditor().audit_modern_only(StdioServerParameters(command="python", args=["server.py"])) is False
+
+
+def test_a_stdio_probe_refused_for_a_credential_is_not_a_readiness_failure():
+    from mcpscore.rules.base import AuditData
+    from mcpscore.rules.readiness import StatelessRequestReadinessRule
+
+    results = _modern_probe_results()
+    results[PROBE_STATELESS_LIST] = ProbeResult(PROBE_STATELESS_LIST, ProbeOutcome.UNSUPPORTED, dict(STDIO_REFUSAL))
+    audit = AuditData(protocol_version="2026-07-28", transport_type=MCPTransportType.STDIO, probes=results)
+
+    assert StatelessRequestReadinessRule().skip_reason(audit) == "insufficient-data"

@@ -12,14 +12,14 @@ import logging
 import os
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from mcpscore import MCPAuditor, MCPClient, StdioCommand
 from mcpscore.config import ConfigError, RuleConfig
+from mcpscore.credential_challenge import challenge_summary, has_credential, redact_tree
 from mcpscore.enums import ConnectionErrorReason
-from mcpscore.mcp_auditor import has_authorization_credential
 from mcpscore.packages import InvalidCoordinateError, PackageCoordinate
-from mcpscore.probes import observed_auth_status
+from mcpscore.probes import PROBE_UNAUTHENTICATED, credential_refused, observed_auth_status
 from mcpscore.report_evidence import evidence_preview
 from mcpscore.sarif import build_sarif
 from mcpscore.smoke import SmokeReport, SmokeVerdict, run_smoke_checks
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
     from mcpscore import MCPTransportType
     from mcpscore.mcp_client import ConnectionFailure
+    from mcpscore.probes import ProbeResult
     from mcpscore.smoke import SmokeCheckResult
 
 logger = logging.getLogger(__name__)
@@ -723,7 +724,7 @@ def finish_server_audit(
     if args.json or args.sarif:
         report = build_report(target_display, transport, auditor)
         if smoke is not None:
-            report["smoke"] = smoke.to_dict()
+            report["smoke"] = redact_tree(smoke.to_dict(), auditor.headers)
         if args.json:
             sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
         if args.sarif:
@@ -872,6 +873,15 @@ def log_audit_outcome(auditor: MCPAuditor) -> None:
                 server,
                 "advertises" if enterprise["id_jag_advertised"] else "does not advertise",
             )
+    challenge = report.get("credential_challenge")
+    if challenge:
+        configure = f"configure {challenge['header']} by hand" if challenge["header"] else "configure it by hand"
+        logger.info(
+            "Credential challenge (not scored): anonymous requests get %s instead of an HTTP 401, so "
+            "spec-following clients cannot prompt for the credential; users %s.",
+            describe_gate(challenge["http_status"], challenge, " with "),
+            configure.replace("configure", "must configure", 1),
+        )
 
 
 def log_smoke_outcome(smoke: SmokeReport) -> None:
@@ -1111,6 +1121,109 @@ def build_report(target: str, transport: MCPTransportType | None, auditor: MCPAu
     }
 
 
+def gated_partial_reason(
+    failure: ConnectionFailure | None,
+    probes: dict[str, ProbeResult] | None,
+    headers: dict[str, str],
+    *,
+    session_gated: bool,
+    probed_status: int | None,
+) -> str:
+    """Log why a gated server gets a partial audit, and return the report's ``partial_reason``.
+
+    The gate is the session's own refusal when ``session_gated``, else the one the anonymous probe saw.
+    """
+    # A session refused with 401/403 is described by that refusal, never by the anonymous probe's.
+    status_gated = (
+        session_gated and failure is not None and failure.reason is not ConnectionErrorReason.CREDENTIAL_REQUIRED
+    )
+    challenge = None if status_gated else credential_challenge_seen(failure, probes, headers)
+    status: int | None
+    if session_gated:
+        assert failure is not None  # noqa: S101 — session_gated implies it
+        if failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED:
+            status = failure.status_code
+        else:
+            status = failure.status_code or (403 if failure.reason is ConnectionErrorReason.FORBIDDEN else 401)
+    else:
+        status = probed_status or 401
+    gate = describe_gate(status, challenge)
+    # Any credential header counts (Authorization, X-API-Key, ...). "Rejected" also requires that the session itself was
+    # refused; the gate probe runs anonymously, so its 401 says nothing about the
+    # caller's token, and a session that died elsewhere never exercised it.
+    credentials_rejected = session_gated and has_credential(headers)
+    if credentials_rejected:
+        logger.info("Server rejected the provided credentials — running a partial audit of the observable surface.")
+        logger.info("(Check that the --token/--header credentials are valid for this server.)")
+        return (
+            f"Server rejected the provided credentials ({gate}); scored the unauthenticated "
+            "surface only — check that the token or headers are valid for this server."
+        )
+    if not session_gated and has_credential(headers):
+        # Gated per an anonymous probe, but the session failed
+        # separately — say so, and do not blame the credential.
+        session_status = failure.status_code if failure is not None else None
+        detail = f" (HTTP {session_status})" if session_status else ""
+        logger.info(
+            "Server requires authentication, and the session could not be established%s — "
+            "running a partial audit of the observable surface.",
+            detail,
+        )
+        logger.info("(Your credentials were not exercised: the connection failed before they were used.)")
+        return (
+            f"Server requires authentication ({gate}); the session could not be "
+            f"established{detail}, so the supplied credentials were never exercised — scored the "
+            "unauthenticated surface only."
+        )
+    if challenge is not None:
+        hint = credential_hint(challenge)
+        logger.info("Server requires a credential — running a partial audit of the observable surface.")
+        logger.info(
+            "(The server answered %s Pass it with %s.)", end_sentence(describe_gate(status, challenge, " with ")), hint
+        )
+        return f"Server requires a credential ({gate}); scored the unauthenticated surface only — pass it with {hint}."
+    logger.info("Server requires authentication — running a partial audit of the observable surface.")
+    logger.info("(Pass a token with --token or --header to audit behind the gate.)")
+    return (
+        f"Server requires authentication ({gate}); scored the unauthenticated surface "
+        "only — pass a token to audit behind the gate."
+    )
+
+
+def end_sentence(text: str) -> str:
+    """Append a full stop unless the text already ends with one, inside or outside a closing quote."""
+    return text if text.rstrip('"').endswith((".", "!", "?")) else f"{text}."
+
+
+def credential_challenge_seen(
+    failure: ConnectionFailure | None, probes: dict[str, ProbeResult] | None, headers: dict[str, str]
+) -> dict[str, Any] | None:
+    """Return the credential refusal (code, quoted message, header) the session or the anonymous probe saw."""
+    if failure is not None and failure.reason is ConnectionErrorReason.CREDENTIAL_REQUIRED:
+        return failure.challenge
+    unauthenticated = (probes or {}).get(PROBE_UNAUTHENTICATED)
+    if unauthenticated is None:
+        return None
+    error = {"code": unauthenticated.details.get("error_code"), "message": unauthenticated.details.get("error_message")}
+    return challenge_summary(error, headers) if credential_refused(unauthenticated.details) else None
+
+
+def describe_gate(status: int | None, challenge: dict[str, Any] | None, joiner: str = ", ") -> str:
+    """Describe the gate: 'HTTP 401', or 'HTTP 200<joiner>JSON-RPC error -32001: "…"' for a credential refusal."""
+    if challenge is None:
+        return f"HTTP {status}"
+    error = f"JSON-RPC error {challenge['error_code']}: {challenge['message']}"
+    return f"HTTP {status}{joiner}{error}" if status is not None else error
+
+
+def credential_hint(challenge: dict[str, Any]) -> str:
+    """Return how to pass the credential: the header the server named, else the generic flags."""
+    header = challenge.get("header")
+    if header is None or header.lower() == "authorization":
+        return "--token or --header"
+    return f'--header "{header}: <value>"'
+
+
 async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str], target: str | StdioCommand) -> None:
     """Run the --oauth browser flow and place the token into the header dict.
 
@@ -1125,7 +1238,8 @@ async def _apply_oauth(args: argparse.Namespace, headers: dict[str, str], target
     if args.callback_port is not None and not 1 <= args.callback_port <= 65535:
         logger.error("Usage error: --callback-port must be between 1 and 65535")
         sys.exit(1)
-    if has_authorization_credential(headers):
+    # Only an Authorization header conflicts: a gateway API key can travel with the OAuth token.
+    if any(name.lower() == "authorization" and value.strip() for name, value in headers.items()):
         logger.error(
             "Usage error: --oauth conflicts with an existing Authorization credential "
             "(--token, an Authorization --header, or the MCPSCORE_TOKEN environment variable) — pick one"
@@ -1289,6 +1403,7 @@ async def async_main() -> None:
                 session_gated = failure is not None and failure.reason in (
                     ConnectionErrorReason.UNAUTHORIZED,
                     ConnectionErrorReason.FORBIDDEN,
+                    ConnectionErrorReason.CREDENTIAL_REQUIRED,
                 )
                 # A gated server does not always fail with 401: without a legacy endpoint the
                 # handshake dies elsewhere (405 on the SSE fallback is common) and only the
@@ -1299,55 +1414,13 @@ async def async_main() -> None:
                     # session: a server whose SSE fallback answers 405 is still
                     # gated at 401, and saying "requires authentication (HTTP
                     # 405)" would send the reader hunting the wrong problem.
-                    if session_gated:
-                        assert failure is not None  # noqa: S101 — session_gated implies it
-                        status = failure.status_code or (
-                            403 if failure.reason is ConnectionErrorReason.FORBIDDEN else 401
-                        )
-                    else:
-                        status = probed_status or 401
-                    # Same predicate as the report's `authenticated` flag: only an Authorization
-                    # credential counts. "Rejected" also requires that the session itself was
-                    # refused; the gate probe runs anonymously, so its 401 says nothing about the
-                    # caller's token, and a session that died elsewhere never exercised it.
-                    credentials_rejected = session_gated and has_authorization_credential(headers)
-                    if credentials_rejected:
-                        logger.info(
-                            "Server rejected the provided credentials — "
-                            "running a partial audit of the observable surface."
-                        )
-                        logger.info("(Check that the --token/--header credentials are valid for this server.)")
-                        partial_reason = (
-                            f"Server rejected the provided credentials (HTTP {status}); scored the unauthenticated "
-                            "surface only — check that the token or headers are valid for this server."
-                        )
-                    elif not session_gated and has_authorization_credential(headers):
-                        # Gated per an anonymous probe, but the session failed
-                        # separately — say so, and do not blame the credential.
-                        session_status = failure.status_code if failure is not None else None
-                        detail = f" (HTTP {session_status})" if session_status else ""
-                        logger.info(
-                            "Server requires authentication, and the session could not be established%s — "
-                            "running a partial audit of the observable surface.",
-                            detail,
-                        )
-                        logger.info(
-                            "(Your credentials were not exercised: the connection failed before they were used.)"
-                        )
-                        partial_reason = (
-                            f"Server requires authentication (HTTP {status}); the session could not be "
-                            f"established{detail}, so the supplied credentials were never exercised — scored the "
-                            "unauthenticated surface only."
-                        )
-                    else:
-                        logger.info(
-                            "Server requires authentication — running a partial audit of the observable surface."
-                        )
-                        logger.info("(Pass a token with --token or --header to audit behind the gate.)")
-                        partial_reason = (
-                            f"Server requires authentication (HTTP {status}); scored the unauthenticated surface "
-                            "only — pass a token to audit behind the gate."
-                        )
+                    partial_reason = gated_partial_reason(
+                        failure,
+                        auditor.last_probes,
+                        headers,
+                        session_gated=session_gated,
+                        probed_status=probed_status,
+                    )
                     await auditor.audit_partial(http_url, reason=partial_reason)
                     smoke = (
                         SmokeReport.not_executed(

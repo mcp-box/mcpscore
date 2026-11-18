@@ -49,8 +49,8 @@ from mcpscore.probes import (
     PROBE_UNKNOWN_VERSION,
     REMOVED_METHOD,
     ProbeOutcome,
-    auth_gate_status,
     has_modern_support,
+    probe_gated,
 )
 from mcpscore.report_evidence import evidence_preview
 from mcpscore.skills import UNOBSERVED_OUTCOMES, size_value
@@ -136,7 +136,7 @@ class ProbeBackedReadinessRule(ReadinessBaseRule):
         """
         probes = audit_data.probes or {}
         result = probes.get(self.probe_id)
-        if result is None or result.outcome is ProbeOutcome.ERROR or auth_gate_status(result) is not None:
+        if result is None or result.outcome is ProbeOutcome.ERROR or probe_gated(result):
             return SKIP_REASON_INSUFFICIENT_DATA
         if result.outcome is ProbeOutcome.NOT_APPLICABLE:
             return SKIP_REASON_NOT_APPLICABLE

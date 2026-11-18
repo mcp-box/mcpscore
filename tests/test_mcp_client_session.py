@@ -82,6 +82,17 @@ class TestMCPClientSessionOperations:
             params = getattr(mock_connected_client.session, method_name).call_args.kwargs["params"]
             assert params.cursor.startswith(INVALID_CURSOR_PREFIX)
 
+    async def test_invalid_cursor_probes_skip_a_listing_refused_for_a_credential(self, mock_connected_client):
+        mock_connected_client.session.list_tools.side_effect = MCPError(
+            code=-32001, message="X-API-Key header is required."
+        )
+
+        results = await mock_connected_client.probe_invalid_cursors({"tools": PROBE_TOOLS_INVALID_CURSOR})
+
+        result = results[PROBE_TOOLS_INVALID_CURSOR]
+        assert result.outcome is ProbeOutcome.NOT_APPLICABLE
+        assert result.details["credential_refusal"] is True
+
     async def test_invalid_cursor_probes_distinguish_acceptance_and_errors(self, mock_connected_client):
         mock_connected_client.session.list_tools.return_value = ListToolsResult(tools=[])
         mock_connected_client.session.list_resources.side_effect = MCPError(code=INTERNAL_ERROR, message="boom")

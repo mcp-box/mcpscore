@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import time
 from typing import Any
 
 from mcp_types import LoggingCapability, ServerCapabilities, Tool
@@ -709,3 +710,13 @@ def test_evidence_preview_keeps_discovery_urls_whole_and_renders_lists_item_by_i
     assert evidence_preview(["2026-07-28", "2025-11-25"]) == '"2026-07-28", "2025-11-25"'
     assert evidence_preview([]) == "(none)"
     assert evidence_preview([str(n) for n in range(12)]).endswith('"9", … 2 more')
+
+
+def test_a_long_letter_run_is_masked_in_linear_time():
+    raw = "key" * 20_000 + " https://user:pw@example.test/mcp?token=secret"
+
+    started = time.perf_counter()
+    masked = report_evidence(raw)
+
+    assert time.perf_counter() - started < 1
+    assert masked.endswith(" https://example.test/mcp?token=[redacted]")

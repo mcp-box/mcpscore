@@ -142,6 +142,23 @@ Other headers are sent on every request, but the report makes no claim
 that the audit ran behind the gate. An explicit `Authorization` header wins
 over `--token` and `MCPSCORE_TOKEN`.
 
+Some API-key servers refuse a stranger with HTTP 200 and a JSON-RPC error
+instead of a 401. MCP allows it, because [authorization is optional](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#protocol-requirements),
+so mcpscore treats that error as the gate, runs the partial audit, and
+names the header the server asked for:
+
+```text
+Server requires a credential — running a partial audit of the observable surface.
+(The server answered HTTP 200 with JSON-RPC error -32001: "X-API-Key header is required." Pass it with --header "X-API-Key: <value>".)
+...
+Audit finished. PARTIAL score: 7/7 from 2 of 133 checks — not comparable to a full audit.
+Credential challenge (not scored): anonymous requests get HTTP 200 with JSON-RPC error -32001: "X-API-Key header is required." instead of an HTTP 401, so spec-following clients cannot prompt for the credential; users must configure X-API-Key by hand.
+```
+
+Checks whose request was refused this way are skipped, not failed. The
+report's [`credential_challenge`](/stability#credential-challenge-facts)
+records the refusal without scoring it.
+
 ## Step 5: Sign in through the browser with OAuth
 
 When you have no token to paste, `--oauth` gets one. It opens your browser
@@ -219,6 +236,7 @@ If the secret is missing or expired, the run becomes a partial audit and
 | Report field | Meaning |
 |---|---|
 | `authenticated` | `true` when the audit sent a non-blank `Authorization` credential. |
+| `credential_challenge` | The refusal a server sends as a JSON-RPC error instead of a 401, or `null`. Not scored. |
 | `partial` | `true` when only the unauthenticated surface was scored. |
 | `partial_reason` | Why the audit is partial, in the same words as the terminal output. |
 
@@ -239,10 +257,11 @@ If the secret is missing or expired, the run becomes a partial audit and
 
 **`PARTIAL score` although you passed `--header`**
 
-- Cause: the header was not `Authorization`, so the server still answered
-  401 to mcpscore's session.
-- Fix: send the credential in the header the server checks. If the server
-  expects a bearer token, use `--token`.
+- Cause: the server checks a different header, so it still refused
+  mcpscore's session.
+- Fix: send the credential in the header the server checks. The partial
+  reason names it when the server's refusal does. If the server expects a
+  bearer token, use `--token`.
 
 **`Gate failed — --fail-under 80: this was a partial audit`** (exit `3`)
 

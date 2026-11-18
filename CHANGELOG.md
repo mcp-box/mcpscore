@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Servers that refuse a stranger with a JSON-RPC error naming a credential
+  (often HTTP 200 and `-32001`, "X-API-Key header is required.") instead of
+  a 401 are now recognised as gated. They get a partial audit instead of
+  "Error connecting", the message names the header to pass with `--header`,
+  and checks the refusal answered are skipped instead of failed. The new
+  unscored `credential_challenge` report field records the refusal.
+- A rejected credential in any credential header (`Authorization`, or a name
+  with api-key, token, auth or secret, such as `X-API-Key`) now reports
+  "Server rejected the provided credentials". The report's `authenticated`
+  flag still counts `Authorization` only.
 - Four rules for servers whose `server/discover` advertises the Tasks
   extension (`io.modelcontextprotocol/tasks`, SEP-2663). mcpscore asks about
   a task ID no server issued, so no real task is touched:
@@ -19,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tasks_legacy_capability_removed` (LOW, no 2025-11-25 `tasks` capability
   next to the extension). A request refused for another reason, such as
   sign-in, is not judged. Servers without the extension are not affected.
+
+### Changed
+
+- A credential refusal sent as a JSON-RPC error now counts as refusing a
+  token the same way a 401 does. `auth_token_not_in_query` can therefore fail
+  a server that serves `?token=` and refuses the request without it with
+  HTTP 200 and such an error; it used to skip it.
 
 ### Fixed
 

@@ -85,7 +85,9 @@ def mock_auditor() -> MagicMock:
     # no probe observations, i.e. no evidence of an auth gate. `audit_data` is
     # read by finish_server_audit on the partial and modern-only paths, and
     # `catalog_versions` by the smoke phase (a bare mock would read as recovered).
+    # `headers` is read to redact the smoke section.
     auditor.last_probes = None
+    auditor.headers = None
     auditor.audit_data = MagicMock(transport_type=None, catalog_versions={})
     return auditor
 
@@ -1607,6 +1609,33 @@ class TestOAuthCliFlow:
             await async_main()
 
         assert captured["headers"] == {"Authorization": "Bearer flow-token"}
+
+    async def test_oauth_combines_with_an_api_key_header(
+        self, monkeypatch: MonkeyPatch, mock_client: MagicMock, mock_auditor: MagicMock
+    ) -> None:
+        import mcpscore.oauth
+
+        monkeypatch.delenv("MCPSCORE_TOKEN", raising=False)
+        monkeypatch.setattr(sys, "argv", ["mcpscore", "https://x/mcp", "--oauth", "--header", "X-API-Key: gateway"])
+
+        async def fake_flow(server_url: str, **kwargs) -> str:
+            return "flow-token"
+
+        monkeypatch.setattr(mcpscore.oauth, "obtain_token_interactively", fake_flow)
+        captured = {}
+
+        def capture_client(**kwargs):
+            captured["headers"] = kwargs.get("headers")
+            return mock_client
+
+        mock_client.detect_and_connect = AsyncMock(return_value=(True, MCPTransportType.STREAMABLE_HTTP))
+        with (
+            patch("mcpscore.cli.MCPClient", side_effect=capture_client),
+            patch("mcpscore.cli.MCPAuditor", return_value=mock_auditor),
+        ):
+            await async_main()
+
+        assert captured["headers"] == {"X-API-Key": "gateway", "Authorization": "Bearer flow-token"}
 
     async def test_oauth_flow_failure_exits_1(
         self, monkeypatch: MonkeyPatch, mock_client: MagicMock, mock_auditor: MagicMock, caplog: LogCaptureFixture

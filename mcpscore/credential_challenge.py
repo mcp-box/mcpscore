@@ -1,0 +1,130 @@
+"""Recognise credential refusals sent as a JSON-RPC error instead of HTTP 401/403, and credential headers.
+
+MCP authorization is optional (2025-11-25 Authorization §Protocol Requirements), so a server may
+refuse an anonymous request with HTTP 200 and a JSON-RPC error naming the missing credential.
+Such an answer never reached the method handler: it is a gate, like a 401, and never a verdict on
+the probed request.
+"""
+
+import re
+from typing import Any
+
+from mcpscore.diagnostics import quoted_preview
+from mcpscore.report_evidence import masked_names, report_evidence
+
+_CREDENTIAL = r"(?:\b(?:x-)?api[-_ ]?key\b|\b(?:access|auth|bearer|api|session)[-_ ]?token\b|\bcredentials?\b)"
+_REFUSED = (
+    r"(?:\brequired\b|\bmissing\b|\binvalid\b|\bexpired\b|\brevoked\b|\brejected\b|\bnot\ valid\b"
+    r"|\bnot\ provided\b|\bincorrect\b|\bconfigure\b|\bmust\ be\ (?:provided|supplied|set)\b)"
+)
+# Up to six words between the two, of any length (an echoed key is one long word), within one sentence.
+# Words never contain a separator, so each split is unique and matching stays linear.
+_GAP = r"(?:[\s:]+[^\s:]*[^\s.;:]){0,6}?[\s:]+"
+_CREDENTIAL_PHRASES = re.compile(
+    rf"""
+    {_CREDENTIAL}{_GAP}{_REFUSED}
+    | {_REFUSED}{_GAP}{_CREDENTIAL}
+    | \bunauthori[sz]ed\b
+    | \bunauthenticated\b
+    | \bnot\ authenticated\b
+    | \bauthentication\ (?:is\ )?(?:required|failed|missing)\b
+    | \bauthori[sz]ation\ (?:header\ )?(?:is\ )?(?:required|missing)\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+"""A credential named next to a refusal word, or a refusal that is about authentication itself.
+
+A bare "token" never counts: parse and pagination errors talk about tokens too.
+"""
+# A whole header name is matched first and checked for a credential word second; one pattern doing both
+# rescans a long "X-X-X-..." run from every "X-".
+_HEADER_NAME = re.compile(r"\b(?:X-[A-Za-z0-9-]+|Authorization|Api-Key)\b", re.IGNORECASE)
+_X_HEADER_CREDENTIAL = re.compile(r"key|token|auth", re.IGNORECASE)
+_CREDENTIAL_HEADER_NAME = re.compile(r"api-?key|token|auth|secret", re.IGNORECASE)
+
+MESSAGE_PREVIEW_LIMIT = 160
+"""Most code points of the server's own refusal text kept in reports and console lines."""
+
+
+def challenge_text(error: object) -> str:
+    """Return a JSON-RPC error object's ``message`` and ``data`` text (a string, or an object's string values)."""
+    if not isinstance(error, dict):
+        return ""
+    data = error.get("data")
+    parts = [error.get("message"), *(data.values() if isinstance(data, dict) else [data])]
+    return " ".join(part for part in parts if isinstance(part, str))
+
+
+def is_credential_challenge(error: object) -> bool:
+    """Whether a JSON-RPC error object refuses the request for a missing or invalid credential."""
+    return bool(_CREDENTIAL_PHRASES.search(challenge_text(error)))
+
+
+def challenge_header(error: object) -> str | None:
+    """Return the request header a credential challenge names (e.g. ``X-API-Key``), spelled as the server wrote it."""
+    for match in _HEADER_NAME.finditer(challenge_text(error)):
+        name = match[0]
+        if name[:2].lower() != "x-" or _X_HEADER_CREDENTIAL.search(name, 2):
+            return name
+    return None
+
+
+def is_credential_header(name: str) -> bool:
+    """Whether a request header name carries a credential (Authorization, an API key, a token, a secret)."""
+    return _CREDENTIAL_HEADER_NAME.search(name) is not None
+
+
+def has_credential(headers: dict[str, str] | None) -> bool:
+    """Whether the header set carries a non-blank credential header."""
+    return any(is_credential_header(name) and value.strip() for name, value in (headers or {}).items())
+
+
+def redact_values(text: str, headers: dict[str, str] | None, *, min_length: int = 1) -> str:
+    """Replace every credential header value the caller supplied that appears in *text* with ``[redacted]``.
+
+    Values shorter than *min_length* are left alone.
+    """
+    secrets: set[str] = set()
+    for name, value in (headers or {}).items():
+        if is_credential_header(name) and value.strip():
+            # "Bearer <token>": a server may echo the token without its scheme.
+            secrets |= {secret for secret in (value.strip(), value.split()[-1]) if len(secret) >= min_length}
+    # Longest first across all headers, so a short value never replaces part of a longer one.
+    for secret in sorted(secrets, key=len, reverse=True):
+        text = text.replace(secret, "[redacted]")
+    return text
+
+
+REPORT_REDACTION_MIN_LENGTH = 8
+"""Shortest supplied value searched for across a whole report; a shorter one would rewrite ordinary words."""
+
+
+def redact_tree(value: Any, headers: dict[str, str] | None) -> Any:
+    """Return a copy of a report value with every supplied credential value redacted from its strings and keys."""
+    if not has_credential(headers):
+        return value
+    if isinstance(value, str):
+        return redact_values(value, headers, min_length=REPORT_REDACTION_MIN_LENGTH)
+    if isinstance(value, dict):
+        names = masked_names(value, lambda name: redact_tree(name, headers))
+        return {names[key]: redact_tree(item, headers) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [redact_tree(item, headers) for item in value]
+    return value
+
+
+def challenge_summary(error: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+    """Return the report-safe facts of a credential challenge: code, quoted bounded message, named header.
+
+    The message is the server's own text, escaped and quoted, with supplied credential values redacted.
+    """
+    message = error.get("message")
+    # Supplied credentials first, then credentials the server put in URLs it quotes.
+    text = str(report_evidence(redact_values(message, headers))) if isinstance(message, str) else ""
+    code = error.get("code")
+    # The header is read from redacted text: an echoed credential can look like a header name.
+    return {
+        "error_code": code if isinstance(code, int) else None,
+        "message": quoted_preview(text, MESSAGE_PREVIEW_LIMIT) if text else None,
+        "header": challenge_header({"message": str(report_evidence(redact_values(challenge_text(error), headers)))}),
+    }
