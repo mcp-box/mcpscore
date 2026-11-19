@@ -59,10 +59,12 @@ from .probes import (
     ProbeResult,
     client_version,
     failure_cause,
+    throttled_result,
 )
 from .redirects import REFUSED_DOWNGRADE, REFUSED_TOO_MANY, RefusedRedirect, send_within_origin, unfollowed_redirect
 from .session_reads import SESSION_READ_LIMIT, cap_body
 from .skills import SKILLS_EXTENSION, HTTPRefusedCallError, UnreadAnswerError
+from .throttling import THROTTLED_STATUSES
 from .tls import async_client
 
 if TYPE_CHECKING:
@@ -1526,11 +1528,13 @@ class MCPClient:
                     fetch_pages[listing_name](params=PaginatedRequestParams(cursor=cursor)),
                     timeout=INVALID_CURSOR_PROBE_TIMEOUT_S,
                 )
-            except MCPError as exc:
-                unread_key = (_LISTING_METHODS[listing_name], None)
-                if unread_key in self._unread_calls:
-                    self._unread_calls.discard(unread_key)
+            except MCPError as raised:
+                exc = self._with_http_status(raised, _LISTING_METHODS[listing_name], None)
+                if isinstance(exc, UnreadAnswerError):
                     return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": "UnreadAnswer"})
+                status = getattr(exc, "http_status", None)
+                if isinstance(status, int) and status in THROTTLED_STATUSES:
+                    return throttled_result(probe_id, status)
                 if listing_name == "resource_templates" and exc.code == ERROR_METHOD_NOT_FOUND:
                     return ProbeResult(
                         probe_id,

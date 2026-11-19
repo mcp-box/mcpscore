@@ -85,6 +85,31 @@ async def test_read_keeps_the_http_status(response: httpx2.Response, expected: d
         await client.cleanup()
 
 
+@pytest.mark.parametrize(
+    "response",
+    [httpx2.Response(429, text="Too Many Requests"), _rpc_error(429, -32602, "Invalid cursor")],
+    ids=["plain-text", "json-rpc-invalid-params"],
+)
+async def test_throttled_session_cursor_probe_is_not_judged(response: httpx2.Response) -> None:
+    client = await _connected(response)
+    try:
+        results = await client.probe_invalid_cursors({"tools": probes.PROBE_TOOLS_INVALID_CURSOR})
+    finally:
+        await client.cleanup()
+    result = results[probes.PROBE_TOOLS_INVALID_CURSOR]
+    assert result.outcome is probes.ProbeOutcome.ERROR
+    assert result.details["http_status"] == 429
+
+
+async def test_session_cursor_probe_still_judges_a_server_error() -> None:
+    client = await _connected(httpx2.Response(500, text="boom"))
+    try:
+        results = await client.probe_invalid_cursors({"tools": probes.PROBE_TOOLS_INVALID_CURSOR})
+    finally:
+        await client.cleanup()
+    assert results[probes.PROBE_TOOLS_INVALID_CURSOR].outcome is probes.ProbeOutcome.UNSUPPORTED
+
+
 async def test_raw_request_keeps_the_http_status() -> None:
     client = await _connected(httpx2.Response(429, text="slow down"))
     try:

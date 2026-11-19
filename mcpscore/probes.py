@@ -710,9 +710,13 @@ def _unless_throttled(result: ProbeResult, answers: list[int]) -> ProbeResult:
     """
     if not answers or result.outcome not in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
         return result
-    status = answers[0]
+    return throttled_result(result.probe_id, answers[0])
+
+
+def throttled_result(probe_id: str, status: int) -> ProbeResult:
+    """``ERROR`` for a probe whose request was answered with a throttled status."""
     return ProbeResult(
-        result.probe_id,
+        probe_id,
         ProbeOutcome.ERROR,
         {"reason": f"HTTP {status}: the server was throttling or unavailable", "http_status": status},
     )
@@ -1825,7 +1829,8 @@ async def _probe_catalog_connection_independence(
 ) -> dict[str, ProbeResult]:
     """Compare complete modern catalogs over two independent connections.
 
-    Transport errors become ``ERROR`` results and are recorded in ``failures`` when given.
+    Transport errors become ``ERROR`` results and are recorded in ``failures`` when given. A throttled answer
+    leaves unjudged the surface that got it, and every surface when ``server/discover`` got it.
     """
     target_version = _target_version()
 
@@ -1842,16 +1847,17 @@ async def _probe_catalog_connection_independence(
             raise
 
     try:
-        first_discover, second_discover = await gather_pair(
-            first.post(
-                _request_body("server/discover", 2100, _modern_meta(target_version)),
-                _request_headers(target_version, "server/discover"),
-            ),
-            second.post(
-                _request_body("server/discover", 2101, _modern_meta(target_version)),
-                _request_headers(target_version, "server/discover"),
-            ),
-        )
+        with _watch_throttling() as discover_throttled:
+            first_discover, second_discover = await gather_pair(
+                first.post(
+                    _request_body("server/discover", 2100, _modern_meta(target_version)),
+                    _request_headers(target_version, "server/discover"),
+                ),
+                second.post(
+                    _request_body("server/discover", 2101, _modern_meta(target_version)),
+                    _request_headers(target_version, "server/discover"),
+                ),
+            )
     except Exception as exc:  # noqa: BLE001 — probe transport failures are data
         if failures is not None:
             for probe_id in CATALOG_CONNECTION_PROBE_IDS:
@@ -1949,7 +1955,14 @@ async def _probe_catalog_connection_independence(
 
     # A stdio target has one response stream. Keep surfaces sequential so two
     # readers never race to consume a response intended for the other request.
-    results = [await compare(index, *surface) for index, surface in enumerate(_CATALOG_CONNECTION_SURFACES)]
+    results: list[ProbeResult] = []
+    for index, surface in enumerate(_CATALOG_CONNECTION_SURFACES):
+        with _watch_throttling() as surface_throttled:
+            observed = await compare(index, *surface)
+        result = _unless_throttled(observed, [*discover_throttled, *surface_throttled])
+        if result is not observed and failures is not None:
+            failures.record_result(result)
+        results.append(result)
     return {result.probe_id: result for result in results}
 
 
@@ -3885,19 +3898,6 @@ async def run_all_probes(
         failures.record_result(result)
         return result
 
-    async def _connection_results(
-        primary_client: httpx2.AsyncClient, comparison_client: httpx2.AsyncClient
-    ) -> dict[str, ProbeResult]:
-        with _watch_throttling() as throttled:
-            results = await _probe_catalog_connection_independence(
-                _HttpTarget(primary_client, url), _HttpTarget(comparison_client, url), failures
-            )
-        judged = {probe_id: _unless_throttled(result, throttled) for probe_id, result in results.items()}
-        for probe_id, result in judged.items():
-            if result is not results[probe_id]:
-                failures.record_result(result)
-        return judged
-
     async def run_with(
         select: Callable[[str], httpx2.AsyncClient],
         comparison_client: httpx2.AsyncClient | None,
@@ -3906,7 +3906,11 @@ async def run_all_probes(
         # Compare pristine clients before any single-target response can mutate
         # the primary client's cookie jar and create a different auth context.
         connection_results = (
-            await _connection_results(primary_client, comparison_client)
+            await _probe_catalog_connection_independence(
+                _HttpTarget(primary_client, url),
+                _HttpTarget(comparison_client, url),
+                failures,
+            )
             if comparison_client is not None and comparison_client is not primary_client
             else not_applicable_results(
                 "a second independent probe client was not supplied",

@@ -2401,6 +2401,57 @@ async def test_catalog_connection_probe_reports_surface_specific_differences():
     assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
 
 
+def _throttling(handler, method: str, status: int = 429):
+    """Answer *method* with a plain-text throttled status and everything else with *handler*."""
+
+    def throttled(request: httpx2.Request) -> httpx2.Response:
+        if json.loads(request.content)["method"] == method:
+            return httpx2.Response(status, text="Too Many Requests")
+        return handler(request)
+
+    return throttled
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_leaves_only_the_throttled_surface_unjudged():
+    first_catalogs = {"tools": [], "resources": [{"uri": "file:///a"}], "prompts": [{"name": "review"}]}
+    second_catalogs = {**first_catalogs, "resources": [{"uri": "file:///b"}]}
+
+    async with (
+        _client(_throttling(_catalog_handler(first_catalogs), "tools/list")) as first,
+        _client(_catalog_handler(second_catalogs)) as second,
+    ):
+        results = await run_all_probes(URL, client=first, fresh_client=second)
+
+    assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.ERROR
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_leaves_every_surface_unjudged_when_discovery_was_throttled():
+    catalogs: dict[str, list[dict]] = {"tools": [], "resources": [], "prompts": []}
+    handler = _catalog_handler(catalogs)
+
+    def unavailable_discover(request: httpx2.Request) -> httpx2.Response:
+        answer = handler(request)
+        if json.loads(request.content)["method"] == "server/discover":
+            return httpx2.Response(503, json=json.loads(answer.content))
+        return answer
+
+    failures = probes._ProbeFailureLog(URL)
+    async with _client(unavailable_discover) as first, _client(handler) as second:
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL), _HttpTarget(second, URL), failures
+        )
+
+    assert {result.outcome for result in results.values()} == {ProbeOutcome.ERROR}
+    assert {result.details["http_status"] for result in results.values()} == {503}
+    assert failures._probes_by_cause == {
+        "HTTP 503: the server was throttling or unavailable": list(probes.CATALOG_CONNECTION_PROBE_IDS)
+    }
+
+
 @pytest.mark.asyncio
 async def test_catalog_connection_probe_compares_complete_paginated_catalogs():
     requested_cursors: list[str | None] = []
