@@ -8,6 +8,7 @@ import httpx2
 import pytest
 
 from mcpscore import probes
+from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
     ERROR_HEADER_MISMATCH,
     ERROR_INVALID_PARAMS,
@@ -73,6 +74,8 @@ from mcpscore.probes import (
     not_applicable_results,
     run_all_probes,
 )
+from mcpscore.rules import AuditData, ErrorDataLeakRule
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 
 URL = "https://server.example/mcp"
 
@@ -1064,6 +1067,26 @@ async def test_no_probe_judges_a_throttled_server(status):
         "reason": f"HTTP {status}: the server was throttling or unavailable",
         "http_status": status,
     }
+
+
+@pytest.mark.parametrize("control_status", [200, 429])
+async def test_a_throttled_page_is_not_scanned_for_leaks(control_status):
+    """The leak rule judges any captured body, whatever the probe outcome, so a limiter's page must not be kept."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            try:
+                json.loads(request.content)
+            except json.JSONDecodeError:
+                return httpx2.Response(429, text="Too Many Requests")
+            if control_status != 200:
+                return httpx2.Response(control_status, text="Too Many Requests")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+    audit_data = AuditData(transport_type=MCPTransportType.STREAMABLE_HTTP, probes=results)
+
+    assert ErrorDataLeakRule().skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
 
 
 async def test_a_throttled_answer_does_not_fail_a_probe_expecting_an_answer():

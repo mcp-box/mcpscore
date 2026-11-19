@@ -3205,7 +3205,8 @@ def _malformed_json_result(
     """
     details = _base_details(response)
     details["control_http_status"] = control.status_code
-    leak_payload = {"error_body": raw_body}
+    # A limiter's or gateway's capacity page is not the server's answer to bad input, so it is never scanned.
+    leak_payload = {"error_body": None if response.status_code in THROTTLED_STATUSES else raw_body}
 
     # The control proves that this endpoint parses valid JSON-RPC rather than
     # returning one canned parse-error response for every POST. Modern servers
