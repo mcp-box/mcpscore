@@ -62,6 +62,7 @@ async def _connected(read_response: httpx2.Response) -> MCPClient:
     [
         (httpx2.Response(429, text="Too Many Requests"), {"outcome": "throttled", "http_status": 429}),
         (httpx2.Response(503, text="busy"), {"outcome": "throttled", "http_status": 503}),
+        (httpx2.Response(408, text="Request Timeout"), {"outcome": "throttled", "http_status": 408}),
         (httpx2.Response(401, json={"detail": "Authentication required"}), {"outcome": "gated", "http_status": 401}),
         (httpx2.Response(403, text=""), {"outcome": "gated", "http_status": 403}),
         (
@@ -71,7 +72,7 @@ async def _connected(read_response: httpx2.Response) -> MCPClient:
         (_rpc_error(429, -32029, "Request limit reached."), {"outcome": "throttled", "http_status": 429}),
         (_rpc_error(401, -32001, "Unauthorized"), {"outcome": "gated", "http_status": 401}),
     ],
-    ids=["429", "503", "401-json-body", "403", "500", "429-json-rpc-error", "401-json-rpc-error"],
+    ids=["429", "503", "408", "401-json-body", "403", "500", "429-json-rpc-error", "401-json-rpc-error"],
 )
 async def test_read_keeps_the_http_status(response: httpx2.Response, expected: dict[str, Any]) -> None:
     client = await _connected(response)

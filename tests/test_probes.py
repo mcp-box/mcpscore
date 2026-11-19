@@ -25,6 +25,7 @@ from mcpscore.probes import (
     PROBE_HEADER_MISMATCH,
     PROBE_HOST_VALIDATION,
     PROBE_IDS,
+    PROBE_INVALID_REQUEST,
     PROBE_INVALID_TOKEN,
     PROBE_LOCAL_BIND,
     PROBE_MALFORMED_JSON,
@@ -1040,12 +1041,69 @@ async def test_malformed_json_probe_rejects_unrelated_client_error():
         try:
             json.loads(request.content) if request.method == "POST" else {}
         except json.JSONDecodeError:
-            return httpx2.Response(429)
+            return httpx2.Response(422)
         return _modern_server_handler(request)
 
     results = await _run(handler)
 
     assert results[PROBE_MALFORMED_JSON].outcome is ProbeOutcome.UNSUPPORTED
+
+
+@pytest.mark.parametrize("status", [408, 429, 503])
+async def test_no_probe_judges_a_throttled_server(status):
+    """A limiter that answers plain text before the MCP handler leaves every probe unjudged."""
+    results = await _run(lambda _request: httpx2.Response(status, text="Too Many Requests"))
+
+    judged = {
+        probe_id: result.outcome
+        for probe_id, result in results.items()
+        if result.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED)
+    }
+    assert judged == {}
+    assert results[PROBE_TOOLS_INVALID_CURSOR].details == {
+        "reason": f"HTTP {status}: the server was throttling or unavailable",
+        "http_status": status,
+    }
+
+
+async def test_a_throttled_answer_does_not_fail_a_probe_expecting_an_answer():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            cursor = json.loads(request.content).get("params", {}).get("cursor")
+            if isinstance(cursor, str) and cursor.startswith(INVALID_CURSOR_PREFIX):
+                return httpx2.Response(429, text="Too Many Requests")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.ERROR
+    assert results[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
+
+
+async def test_a_throttled_answer_does_not_pass_a_probe_expecting_a_rejection():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            body = json.loads(request.content)
+            if isinstance(body, dict) and not isinstance(body.get("method"), str):
+                return httpx2.Response(429, text="Too Many Requests")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_INVALID_REQUEST].outcome is ProbeOutcome.ERROR
+
+
+async def test_a_server_error_on_bad_input_is_still_judged():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            cursor = json.loads(request.content).get("params", {}).get("cursor")
+            if isinstance(cursor, str) and cursor.startswith(INVALID_CURSOR_PREFIX):
+                return httpx2.Response(500, text="Internal Server Error")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.UNSUPPORTED
 
 
 async def test_malformed_json_probe_accepts_normative_error_at_any_http_status():

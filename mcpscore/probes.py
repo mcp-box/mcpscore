@@ -31,7 +31,8 @@ their JSON-RPC half — see :func:`_http_status_is`.
 from __future__ import annotations
 
 import asyncio
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager, nullcontext, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -45,7 +46,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable, Mapping
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Iterable, Mapping
 
     from mcp import StdioServerParameters
 from urllib.parse import urlsplit
@@ -63,6 +64,7 @@ from mcpscore.redirects import REDIRECT_STATUSES, send_within_origin
 from mcpscore.report_evidence import report_evidence
 from mcpscore.skills import HTTPRefusedCallError
 from mcpscore.spec import DRAFT, LATEST, SPEC_VERSIONS, Era, Lifecycle
+from mcpscore.throttling import THROTTLED_STATUSES
 from mcpscore.tls import async_client, client_ssl_context
 from mcpscore.url_credentials import credential_query_params, without_credential_params
 
@@ -679,6 +681,43 @@ async def _read_answer(
     return _parse_payload_text(raw.decode("utf-8", errors="replace"), content_type), None
 
 
+_throttled_answers: ContextVar[list[int] | None] = ContextVar("_throttled_answers", default=None)
+"""Throttled statuses answered to the probe running in this context; None outside a probe run."""
+
+
+def _note_status(status: int) -> None:
+    """Record an answer with a throttled status for the probe running in this context."""
+    answers = _throttled_answers.get()
+    if answers is not None and status in THROTTLED_STATUSES:
+        answers.append(status)
+
+
+@contextmanager
+def _watch_throttling() -> Generator[list[int]]:
+    """Collect the throttled statuses answered to the requests sent inside the block, including from its subtasks."""
+    answers: list[int] = []
+    token = _throttled_answers.set(answers)
+    try:
+        yield answers
+    finally:
+        _throttled_answers.reset(token)
+
+
+def _unless_throttled(result: ProbeResult, answers: list[int]) -> ProbeResult:
+    """Turn a result into ``ERROR`` when any of its requests was throttled, so no rule judges it.
+
+    A 429 reads as a rejection to a probe that expects one and as a failure to a probe that expects an answer.
+    """
+    if not answers or result.outcome not in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED):
+        return result
+    status = answers[0]
+    return ProbeResult(
+        result.probe_id,
+        ProbeOutcome.ERROR,
+        {"reason": f"HTTP {status}: the server was throttling or unavailable", "http_status": status},
+    )
+
+
 class _ProbeTarget(Protocol):
     """What a probe needs to ask a server one sessionless question."""
 
@@ -851,6 +890,7 @@ class _HttpTarget:
                         request, follow_redirects=False, stream=True, **_no_client_auth(anonymous)
                     )
                 )
+                _note_status(response.status_code)
                 payload, unobservable = await _read_answer(response, body.get("id"), read_limit, read_body)
                 return _HttpProbeResponse(
                     status_code=response.status_code,
@@ -934,6 +974,7 @@ class _HttpTarget:
                     follow_redirects=False,
                 ) as response:
                     status_code = response.status_code
+                    _note_status(status_code)
                     response_headers = dict(response.headers)
                     encoding = response.headers.get("content-encoding", "").strip().lower()
                     encoded = encoding not in ("", "identity")
@@ -1044,6 +1085,7 @@ class _HttpTarget:
                 ) as response,
             ):
                 answered = response
+                _note_status(response.status_code)
                 payload, unobservable = (
                     await _read_answer(response, None, POST_READ_LIMIT, "json") if read_json else (None, None)
                 )
@@ -2159,6 +2201,7 @@ async def _get_json_anonymous(client: httpx2.AsyncClient, url: str) -> tuple[int
         async with asyncio.timeout(PROBE_TIMEOUT_S):
             response = await send_within_origin(client, request, stream=True, auth=None)
             status = response.status_code
+            _note_status(status)
             if status != 200:
                 return status, None
             if response.headers.get("content-encoding", "").strip().lower() not in ("", "identity"):
@@ -2956,7 +2999,7 @@ def _connection_refused(exc: BaseException) -> bool:
 
 def _inconclusive_status(status: object) -> bool:
     """Whether an HTTP status refuses any request alike: a timeout (408), a rate limit (429) or a server error."""
-    return isinstance(status, int) and (status in (408, 429) or status >= 500)
+    return isinstance(status, int) and (status in THROTTLED_STATUSES or status >= 500)
 
 
 def _direct_client(headers: Mapping[str, str] | None = None) -> httpx2.AsyncClient:
@@ -3830,15 +3873,30 @@ async def run_all_probes(
 
     async def run_one(probe_id: str, http_client: httpx2.AsyncClient, auth_challenge: str | None = None) -> ProbeResult:
         try:
-            async with asyncio.timeout(PROBE_RUN_DEADLINE_S):
-                result = await _HTTP_PROBES[probe_id](
-                    _HttpTarget(http_client, url, auth_challenge, injected=client is not None)
-                )
+            with _watch_throttling() as throttled:
+                async with asyncio.timeout(PROBE_RUN_DEADLINE_S):
+                    result = await _HTTP_PROBES[probe_id](
+                        _HttpTarget(http_client, url, auth_challenge, injected=client is not None)
+                    )
         except Exception as e:  # noqa: BLE001 — a probe failure is data, never an audit abort
             failures.record(probe_id, e)
             return ProbeResult(probe_id, ProbeOutcome.ERROR, {"exception": type(e).__name__})
+        result = _unless_throttled(result, throttled)
         failures.record_result(result)
         return result
+
+    async def _connection_results(
+        primary_client: httpx2.AsyncClient, comparison_client: httpx2.AsyncClient
+    ) -> dict[str, ProbeResult]:
+        with _watch_throttling() as throttled:
+            results = await _probe_catalog_connection_independence(
+                _HttpTarget(primary_client, url), _HttpTarget(comparison_client, url), failures
+            )
+        judged = {probe_id: _unless_throttled(result, throttled) for probe_id, result in results.items()}
+        for probe_id, result in judged.items():
+            if result is not results[probe_id]:
+                failures.record_result(result)
+        return judged
 
     async def run_with(
         select: Callable[[str], httpx2.AsyncClient],
@@ -3848,11 +3906,7 @@ async def run_all_probes(
         # Compare pristine clients before any single-target response can mutate
         # the primary client's cookie jar and create a different auth context.
         connection_results = (
-            await _probe_catalog_connection_independence(
-                _HttpTarget(primary_client, url),
-                _HttpTarget(comparison_client, url),
-                failures,
-            )
+            await _connection_results(primary_client, comparison_client)
             if comparison_client is not None and comparison_client is not primary_client
             else not_applicable_results(
                 "a second independent probe client was not supplied",

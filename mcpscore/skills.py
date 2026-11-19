@@ -31,6 +31,7 @@ import yaml
 
 from .html_text import unescape
 from .report_evidence import report_evidence
+from .throttling import THROTTLED_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -635,7 +636,6 @@ UNOBSERVED_OUTCOMES = frozenset({"timeout", "transport", "gated", "throttled"})
 """Call outcomes that say nothing about the method: no answer, or an HTTP refusal for want of a credential or rate."""
 
 GATED_STATUSES = frozenset({401, 403})
-THROTTLED_STATUSES = frozenset({429, 503})
 
 
 class HTTPRefusedCallError(MCPError):
@@ -659,7 +659,7 @@ class UnreadAnswerError(MCPError):
 def rpc_error(exc: Exception) -> dict[str, Any]:
     """Classify a failed call: a JSON-RPC error, a reply that did not validate, a timeout, or no answer at all.
 
-    A call answered with an HTTP error status carries ``http_status``. 401/403 is gated and 429/503 throttled, both
+    A call answered with an HTTP error status carries ``http_status``. 401/403 is gated and 408/429/503 throttled, both
     unobserved whatever the body said; any other status stays the server's answer.
     """
     if isinstance(exc, UnreadAnswerError):
