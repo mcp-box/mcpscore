@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A rate limiter no longer decides check results. When a probe request is
+  answered with 408, 429 or 503, often plain text from a limiter in front of
+  the MCP handler, the probe is now "could not verify" and its checks are
+  skipped. This includes the invalid-cursor checks that run over a legacy
+  session, where a 429 used to read as JSON-RPC error -32603. Before, such an answer failed checks that expect an answer (the
+  invalid-cursor, unknown-method and header checks among them) and passed
+  checks that expect a rejection, such as invalid-request and notification
+  handling. Other 5xx answers are still judged: a 500 on bad input can be a
+  real server bug. Skill checks now also treat a 408 as throttled.
+
 ## [1.34.0] - 2026-11-18
 
 API-key servers that refuse an anonymous request with a JSON-RPC error

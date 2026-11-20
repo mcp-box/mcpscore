@@ -8,6 +8,7 @@ import httpx2
 import pytest
 
 from mcpscore import probes
+from mcpscore.enums import MCPTransportType
 from mcpscore.probes import (
     ERROR_HEADER_MISMATCH,
     ERROR_INVALID_PARAMS,
@@ -25,6 +26,7 @@ from mcpscore.probes import (
     PROBE_HEADER_MISMATCH,
     PROBE_HOST_VALIDATION,
     PROBE_IDS,
+    PROBE_INVALID_REQUEST,
     PROBE_INVALID_TOKEN,
     PROBE_LOCAL_BIND,
     PROBE_MALFORMED_JSON,
@@ -72,6 +74,8 @@ from mcpscore.probes import (
     not_applicable_results,
     run_all_probes,
 )
+from mcpscore.rules import AuditData, ErrorDataLeakRule
+from mcpscore.rules.base import SKIP_REASON_INSUFFICIENT_DATA
 
 URL = "https://server.example/mcp"
 
@@ -1040,12 +1044,89 @@ async def test_malformed_json_probe_rejects_unrelated_client_error():
         try:
             json.loads(request.content) if request.method == "POST" else {}
         except json.JSONDecodeError:
-            return httpx2.Response(429)
+            return httpx2.Response(422)
         return _modern_server_handler(request)
 
     results = await _run(handler)
 
     assert results[PROBE_MALFORMED_JSON].outcome is ProbeOutcome.UNSUPPORTED
+
+
+@pytest.mark.parametrize("status", [408, 429, 503])
+async def test_no_probe_judges_a_throttled_server(status):
+    """A limiter that answers plain text before the MCP handler leaves every probe unjudged."""
+    results = await _run(lambda _request: httpx2.Response(status, text="Too Many Requests"))
+
+    judged = {
+        probe_id: result.outcome
+        for probe_id, result in results.items()
+        if result.outcome in (ProbeOutcome.SUPPORTED, ProbeOutcome.UNSUPPORTED)
+    }
+    assert judged == {}
+    assert results[PROBE_TOOLS_INVALID_CURSOR].details == {
+        "reason": f"HTTP {status}: the server was throttling or unavailable",
+        "http_status": status,
+    }
+
+
+@pytest.mark.parametrize("control_status", [200, 429])
+async def test_a_throttled_page_is_not_scanned_for_leaks(control_status):
+    """The leak rule judges any captured body, whatever the probe outcome, so a limiter's page must not be kept."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            try:
+                json.loads(request.content)
+            except json.JSONDecodeError:
+                return httpx2.Response(429, text="Too Many Requests")
+            if control_status != 200:
+                return httpx2.Response(control_status, text="Too Many Requests")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+    audit_data = AuditData(transport_type=MCPTransportType.STREAMABLE_HTTP, probes=results)
+
+    assert ErrorDataLeakRule().skip_reason(audit_data) == SKIP_REASON_INSUFFICIENT_DATA
+
+
+async def test_a_throttled_answer_does_not_fail_a_probe_expecting_an_answer():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            cursor = json.loads(request.content).get("params", {}).get("cursor")
+            if isinstance(cursor, str) and cursor.startswith(INVALID_CURSOR_PREFIX):
+                return httpx2.Response(429, text="Too Many Requests")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.ERROR
+    assert results[PROBE_DISCOVER].outcome is ProbeOutcome.SUPPORTED
+
+
+async def test_a_throttled_answer_does_not_pass_a_probe_expecting_a_rejection():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            body = json.loads(request.content)
+            if isinstance(body, dict) and not isinstance(body.get("method"), str):
+                return httpx2.Response(429, text="Too Many Requests")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_INVALID_REQUEST].outcome is ProbeOutcome.ERROR
+
+
+async def test_a_server_error_on_bad_input_is_still_judged():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            cursor = json.loads(request.content).get("params", {}).get("cursor")
+            if isinstance(cursor, str) and cursor.startswith(INVALID_CURSOR_PREFIX):
+                return httpx2.Response(500, text="Internal Server Error")
+        return _modern_server_handler(request)
+
+    results = await _run(handler)
+
+    assert results[PROBE_TOOLS_INVALID_CURSOR].outcome is ProbeOutcome.UNSUPPORTED
 
 
 async def test_malformed_json_probe_accepts_normative_error_at_any_http_status():
@@ -2341,6 +2422,57 @@ async def test_catalog_connection_probe_reports_surface_specific_differences():
     assert tools.details["only_second"] == ["replace"]
     assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
     assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+def _throttling(handler, method: str, status: int = 429):
+    """Answer *method* with a plain-text throttled status and everything else with *handler*."""
+
+    def throttled(request: httpx2.Request) -> httpx2.Response:
+        if json.loads(request.content)["method"] == method:
+            return httpx2.Response(status, text="Too Many Requests")
+        return handler(request)
+
+    return throttled
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_leaves_only_the_throttled_surface_unjudged():
+    first_catalogs = {"tools": [], "resources": [{"uri": "file:///a"}], "prompts": [{"name": "review"}]}
+    second_catalogs = {**first_catalogs, "resources": [{"uri": "file:///b"}]}
+
+    async with (
+        _client(_throttling(_catalog_handler(first_catalogs), "tools/list")) as first,
+        _client(_catalog_handler(second_catalogs)) as second,
+    ):
+        results = await run_all_probes(URL, client=first, fresh_client=second)
+
+    assert results[PROBE_TOOLS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.ERROR
+    assert results[PROBE_RESOURCES_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.UNSUPPORTED
+    assert results[PROBE_PROMPTS_CATALOG_CONNECTION_INDEPENDENT].outcome is ProbeOutcome.SUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_catalog_connection_probe_leaves_every_surface_unjudged_when_discovery_was_throttled():
+    catalogs: dict[str, list[dict]] = {"tools": [], "resources": [], "prompts": []}
+    handler = _catalog_handler(catalogs)
+
+    def unavailable_discover(request: httpx2.Request) -> httpx2.Response:
+        answer = handler(request)
+        if json.loads(request.content)["method"] == "server/discover":
+            return httpx2.Response(503, json=json.loads(answer.content))
+        return answer
+
+    failures = probes._ProbeFailureLog(URL)
+    async with _client(unavailable_discover) as first, _client(handler) as second:
+        results = await _probe_catalog_connection_independence(
+            _HttpTarget(first, URL), _HttpTarget(second, URL), failures
+        )
+
+    assert {result.outcome for result in results.values()} == {ProbeOutcome.ERROR}
+    assert {result.details["http_status"] for result in results.values()} == {503}
+    assert failures._probes_by_cause == {
+        "HTTP 503: the server was throttling or unavailable": list(probes.CATALOG_CONNECTION_PROBE_IDS)
+    }
 
 
 @pytest.mark.asyncio

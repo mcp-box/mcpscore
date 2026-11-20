@@ -62,6 +62,7 @@ async def _connected(read_response: httpx2.Response) -> MCPClient:
     [
         (httpx2.Response(429, text="Too Many Requests"), {"outcome": "throttled", "http_status": 429}),
         (httpx2.Response(503, text="busy"), {"outcome": "throttled", "http_status": 503}),
+        (httpx2.Response(408, text="Request Timeout"), {"outcome": "throttled", "http_status": 408}),
         (httpx2.Response(401, json={"detail": "Authentication required"}), {"outcome": "gated", "http_status": 401}),
         (httpx2.Response(403, text=""), {"outcome": "gated", "http_status": 403}),
         (
@@ -71,7 +72,7 @@ async def _connected(read_response: httpx2.Response) -> MCPClient:
         (_rpc_error(429, -32029, "Request limit reached."), {"outcome": "throttled", "http_status": 429}),
         (_rpc_error(401, -32001, "Unauthorized"), {"outcome": "gated", "http_status": 401}),
     ],
-    ids=["429", "503", "401-json-body", "403", "500", "429-json-rpc-error", "401-json-rpc-error"],
+    ids=["429", "503", "408", "401-json-body", "403", "500", "429-json-rpc-error", "401-json-rpc-error"],
 )
 async def test_read_keeps_the_http_status(response: httpx2.Response, expected: dict[str, Any]) -> None:
     client = await _connected(response)
@@ -82,6 +83,31 @@ async def test_read_keeps_the_http_status(response: httpx2.Response, expected: d
         assert rpc_error(caught.value) == expected
     finally:
         await client.cleanup()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [httpx2.Response(429, text="Too Many Requests"), _rpc_error(429, -32602, "Invalid cursor")],
+    ids=["plain-text", "json-rpc-invalid-params"],
+)
+async def test_throttled_session_cursor_probe_is_not_judged(response: httpx2.Response) -> None:
+    client = await _connected(response)
+    try:
+        results = await client.probe_invalid_cursors({"tools": probes.PROBE_TOOLS_INVALID_CURSOR})
+    finally:
+        await client.cleanup()
+    result = results[probes.PROBE_TOOLS_INVALID_CURSOR]
+    assert result.outcome is probes.ProbeOutcome.ERROR
+    assert result.details["http_status"] == 429
+
+
+async def test_session_cursor_probe_still_judges_a_server_error() -> None:
+    client = await _connected(httpx2.Response(500, text="boom"))
+    try:
+        results = await client.probe_invalid_cursors({"tools": probes.PROBE_TOOLS_INVALID_CURSOR})
+    finally:
+        await client.cleanup()
+    assert results[probes.PROBE_TOOLS_INVALID_CURSOR].outcome is probes.ProbeOutcome.UNSUPPORTED
 
 
 async def test_raw_request_keeps_the_http_status() -> None:
